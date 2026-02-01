@@ -1,0 +1,259 @@
+services:
+  # ===================
+  # Backend Services
+  # ===================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mms-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-mms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mms_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-mms}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG=${DEBUG:-false}
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - mms-network
+
+
+  # Celery Fast Worker (autobidder, positions - time-critical)
+  celery-fast:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mms-celery-fast
+    restart: unless-stopped
+    command: celery -A celery_app.celery worker -Q fast -c 4 --loglevel=info -n fast@%h
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-mms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mms_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-mms}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - mms-network
+
+  # Celery Heavy Worker (historical data sync - long-running)
+  celery-heavy:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mms-celery-heavy
+    restart: unless-stopped
+    command: celery -A celery_app.celery worker -Q heavy,default -c 2 --loglevel=info -n heavy@%h
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-mms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mms_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-mms}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - mms-network
+
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mms-celery-beat
+    restart: unless-stopped
+    command: celery -A celery_app.celery beat --loglevel=info
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - celery-fast
+      - celery-heavy
+    networks:
+      - mms-network
+
+
+  # ===================
+  # Frontend
+  # ===================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: mms-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+    networks:
+      - mms-network
+
+  # ===================
+  # Nginx Reverse Proxy
+  # ===================
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: mms-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - mms-network
+
+  # ===================
+  # Databases
+  # ===================
+  postgres:
+    image: postgres:15-alpine
+    container_name: mms-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-mms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mms_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-mms}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mms} -d ${POSTGRES_DB:-mms}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mms-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: mms-clickhouse
+    restart: unless-stopped
+    environment:
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mms-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: mms-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mms-network
+
+  # ===================
+  # Database Admin Tools
+  # ===================
+  
+  # pgAdmin - PostgreSQL web interface
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: mms-pgadmin
+    restart: unless-stopped
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@mms.local}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - mms-network
+
+  # Tabix - ClickHouse web interface
+  tabix:
+    image: spoonest/clickhouse-tabix-web-client:stable
+    container_name: mms-tabix
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - clickhouse
+    networks:
+      - mms-network
+
+# ===================
+# Volumes
+# ===================
+volumes:
+  postgres_data:
+  clickhouse_data:
+  redis_data:
+  pgadmin_data:
+
+# ===================
+# Networks
+# ===================
+networks:
+  mms-network:
+    driver: bridge
