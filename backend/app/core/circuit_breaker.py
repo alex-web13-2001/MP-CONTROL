@@ -19,6 +19,7 @@ Redis Keys:
     - mms:circuit:{shop_id}:last_proxy - Last proxy used (to detect proxy rotation)
 """
 
+import asyncio
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -86,7 +87,20 @@ class CircuitBreaker:
         self._key_prefix = "mms:circuit"
     
     async def _get_redis(self) -> aioredis.Redis:
-        """Get or create Redis connection."""
+        """Get or create Redis connection, recreating if loop changed."""
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if self._redis:
+            try:
+                if self._redis.connection_pool.connection_kwargs.get("loop") != current_loop:
+                    await self._redis.close()
+                    self._redis = None
+            except Exception:
+                self._redis = None
+        
         if self._redis is None:
             self._redis = await aioredis.from_url(
                 self.redis_url,

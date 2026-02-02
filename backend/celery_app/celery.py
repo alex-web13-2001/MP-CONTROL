@@ -11,7 +11,7 @@ celery_app = Celery(
     "mms_worker",
     broker=settings.get_celery_broker_url(),
     backend=settings.get_celery_result_backend(),
-    include=["celery_app.tasks"],
+    include=["celery_app.tasks.tasks"],
 )
 
 # ===================

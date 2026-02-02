@@ -43,6 +43,7 @@ MARKETPLACE_URLS = {
     "wildberries": "https://suppliers-api.wildberries.ru",
     "wildberries_adv": "https://advert-api.wb.ru",
     "wildberries_stats": "https://statistics-api.wildberries.ru",
+    "wildberries_common": "https://common-api.wildberries.ru",
     "ozon": "https://api-seller.ozon.ru",
 }
 
@@ -192,24 +193,28 @@ class MarketplaceClient:
         """Log request to proxy_usage_log for analytics."""
         proxy_id = self._current_proxy.id if self._current_proxy else None
         
-        await self.db.execute(
-            text("""
-                INSERT INTO proxy_usage_log 
-                (proxy_id, shop_id, endpoint, method, status_code, response_time_ms, is_success, error_message)
-                VALUES (:proxy_id, :shop_id, :endpoint, :method, :status_code, :response_time_ms, :is_success, :error_message)
-            """),
-            {
-                "proxy_id": proxy_id,
-                "shop_id": self.shop_id,
-                "endpoint": endpoint,
-                "method": method,
-                "status_code": status_code,
-                "response_time_ms": response_time_ms,
-                "is_success": is_success,
-                "error_message": error_message,
-            }
-        )
-        await self.db.commit()
+        try:
+            async with self.db.begin_nested():
+                await self.db.execute(
+                    text("""
+                        INSERT INTO proxy_usage_log 
+                        (proxy_id, shop_id, endpoint, method, status_code, response_time_ms, is_success, error_message)
+                        VALUES (:proxy_id, :shop_id, :endpoint, :method, :status_code, :response_time_ms, :is_success, :error_message)
+                    """),
+                    {
+                        "proxy_id": proxy_id,
+                        "shop_id": self.shop_id,
+                        "endpoint": endpoint,
+                        "method": method,
+                        "status_code": status_code,
+                        "response_time_ms": response_time_ms,
+                        "is_success": is_success,
+                        "error_message": str(error_message)[:1000] if error_message else None,
+                    }
+                )
+        except Exception:
+            # Logging failed (e.g. FK violation), but we shouldn't break the main flow
+            pass
     
     async def _make_request(
         self,

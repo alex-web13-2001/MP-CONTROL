@@ -1,0 +1,204 @@
+"""
+Finance Reports API endpoints.
+
+Endpoints for downloading and managing WB/Ozon finance reports.
+"""
+
+from datetime import date
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from celery.result import AsyncResult
+
+from celery_app.tasks.tasks import download_wb_finance_reports, sync_wb_finance_history
+
+
+# ... (skipping unchanged parts)
+
+
+
+
+router = APIRouter(prefix="/finance-reports", tags=["Finance Reports"])
+
+
+# ===================
+# Schemas
+# ===================
+
+class DownloadReportsRequest(BaseModel):
+    """Request to start downloading finance reports."""
+    shop_id: int = Field(..., description="Shop ID in our system")
+    date_from: str = Field(..., description="Start date (YYYY-MM-DD)")
+    date_to: str = Field(..., description="End date (YYYY-MM-DD)")
+    api_key: str = Field(..., description="WB API key")
+
+
+class SyncReportsRequest(BaseModel):
+    """Request to sync finance reports for N months."""
+    shop_id: int = Field(..., description="Shop ID in our system")
+    api_key: str = Field(..., description="WB API key")
+    months: int = Field(3, ge=1, le=12, description="Number of months to sync (default: 3)")
+
+
+class DownloadReportsResponse(BaseModel):
+    """Response with task ID for tracking."""
+    task_id: str
+    message: str
+
+
+class TaskStatusResponse(BaseModel):
+    """Response with task status."""
+    task_id: str
+    status: str  # PENDING, STARTED, PROGRESS, SUCCESS, FAILURE
+    progress: Optional[dict] = None
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+# ===================
+# Endpoints
+# ===================
+
+@router.post("/download", response_model=DownloadReportsResponse)
+async def start_download_reports(request: DownloadReportsRequest):
+    """
+    Start downloading WB finance reports for a period.
+    
+    This endpoint queues a Celery task that will:
+    1. Get all unique report IDs for the period
+    2. Request file generation for each report
+    3. Poll until files are ready
+    4. Download all CSV files
+    
+    Use the returned task_id to check progress via GET /status/{task_id}
+    """
+    # Validate dates
+    try:
+        date.fromisoformat(request.date_from)
+        date.fromisoformat(request.date_to)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date format. Use YYYY-MM-DD"
+        )
+    
+    # Queue the Celery task
+    task = download_wb_finance_reports.delay(
+        shop_id=request.shop_id,
+        date_from=request.date_from,
+        date_to=request.date_to,
+        api_key=request.api_key,
+    )
+    
+    return DownloadReportsResponse(
+        task_id=task.id,
+        message=f"Started downloading reports for period {request.date_from} to {request.date_to}",
+    )
+
+
+@router.post("/sync", response_model=DownloadReportsResponse)
+async def start_sync_reports(request: SyncReportsRequest):
+    """
+    Start FULL sync: download WB reports for N months and load into ClickHouse.
+    
+    This is the main endpoint for initial data loading. It will:
+    1. Generate weekly date ranges for the specified months
+    2. Download each weekly report from WB API
+    3. Parse CSV data and insert into fact_finances table
+    4. Report progress throughout the process
+    
+    **Typical duration**: 30-120 minutes for 6 months of data.
+    
+    Use the returned task_id to check progress via GET /status/{task_id}
+    """
+    # Queue the Celery task
+    # Convert months to days_back
+    days_back = request.months * 30
+    
+    task = sync_wb_finance_history.delay(
+        shop_id=request.shop_id,
+        api_key=request.api_key,
+        days_back=days_back,
+    )
+    
+    return DownloadReportsResponse(
+        task_id=task.id,
+        message=f"Started full sync for {request.months} months (~{days_back} days). This may take 30-120 minutes.",
+    )
+
+
+@router.get("/status/{task_id}", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """
+    Get the status of a download/sync task.
+    
+    Status values:
+    - PENDING: Task is waiting to be executed
+    - STARTED: Task has started
+    - PROGRESS: Task is in progress (check progress field)
+    - SUCCESS: Task completed successfully (check result field)
+    - FAILURE: Task failed (check error field)
+    """
+    result = AsyncResult(task_id)
+    
+    response = TaskStatusResponse(
+        task_id=task_id,
+        status=result.status,
+    )
+    
+    if result.status == "PROGRESS":
+        response.progress = result.info
+    elif result.status == "SUCCESS":
+        response.result = result.result
+    elif result.status == "FAILURE":
+        response.error = str(result.result) if result.result else "Unknown error"
+    
+    return response
+
+
+@router.get("/list")
+async def list_downloaded_reports(
+    shop_id: Optional[int] = Query(None, description="Filter by shop ID"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    List downloaded report files.
+    
+    Returns information about files stored in /app/data/wb_reports/
+    """
+    import os
+    from pathlib import Path
+    
+    reports_dir = Path("/app/data/wb_reports")
+    
+    if not reports_dir.exists():
+        return {"reports": [], "total": 0}
+    
+    files = []
+    for f in reports_dir.glob("wb_report_*.csv"):
+        # Parse filename: wb_report_{shop_id}_{report_id}_{timestamp}.csv
+        parts = f.stem.split("_")
+        if len(parts) >= 4:
+            file_shop_id = int(parts[2]) if parts[2].isdigit() else None
+            
+            # Filter by shop_id if specified
+            if shop_id and file_shop_id != shop_id:
+                continue
+            
+            files.append({
+                "filename": f.name,
+                "shop_id": file_shop_id,
+                "report_id": parts[3] if len(parts) > 3 else None,
+                "size_bytes": f.stat().st_size,
+                "created_at": f.stat().st_mtime,
+            })
+    
+    # Sort by creation time, newest first
+    files.sort(key=lambda x: x["created_at"], reverse=True)
+    
+    return {
+        "reports": files[:limit],
+        "total": len(files),
+    }
+

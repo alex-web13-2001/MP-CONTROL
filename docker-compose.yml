@@ -18,6 +18,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mms}
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DEBUG=${DEBUG:-false}
@@ -51,6 +54,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mms}
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
@@ -78,6 +84,9 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-mms}
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
@@ -160,7 +169,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - "5455:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mms} -d ${POSTGRES_DB:-mms}"]
       interval: 10s
@@ -175,8 +184,6 @@ services:
     restart: unless-stopped
     environment:
       - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./docker/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql

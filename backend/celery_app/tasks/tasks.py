@@ -140,3 +140,374 @@ def send_notification(self, user_id: int, message: str):
     """Send notification to user (email, telegram, etc.)."""
     # TODO: Implement notification sending
     return {"user_id": user_id, "sent": True}
+
+
+# ===================
+# WB FINANCE REPORTS
+# Download weekly realization reports
+# ===================
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def download_wb_finance_reports(
+    self,
+    shop_id: int,
+    date_from: str,
+    date_to: str,
+    api_key: str,
+):
+    """
+    Download WB weekly finance reports for a period.
+    
+    This task:
+    1. Gets all unique report IDs for the period
+    2. For each report: request generation, poll status, download CSV
+    3. Returns list of downloaded file paths
+    
+    Routed to HEAVY queue due to potential long duration.
+    
+    Args:
+        shop_id: Shop ID in our system
+        date_from: Start date (YYYY-MM-DD)
+        date_to: End date (YYYY-MM-DD)
+        api_key: WB API key (decrypted)
+    
+    Returns:
+        Dict with status and list of results
+    """
+    import asyncio
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import settings
+    from app.services.wb_finance_report_service import WBFinanceReportService
+    
+    async def run_sync():
+        # Create async database session
+        engine = create_async_engine(settings.database_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        
+        async with async_session() as db:
+            async with WBFinanceReportService(
+                db=db,
+                shop_id=shop_id,
+                api_key=api_key,
+            ) as service:
+                def progress_callback(current, total, report_id):
+                    # Update Celery task state for monitoring
+                    self.update_state(
+                        state='PROGRESS',
+                        meta={
+                            'current': current,
+                            'total': total,
+                            'report_id': report_id,
+                        }
+                    )
+                
+                results = await service.sync_reports_for_period(
+                    date_from=date_from,
+                    date_to=date_to,
+                    progress_callback=progress_callback,
+                )
+                
+                return results
+        
+        await engine.dispose()
+    
+    try:
+        results = asyncio.run(run_sync())
+        
+        success_count = sum(1 for r in results if r.get('status') == 'success')
+        error_count = sum(1 for r in results if r.get('status') == 'error')
+        
+        return {
+            "status": "completed",
+            "shop_id": shop_id,
+            "date_from": date_from,
+            "date_to": date_to,
+            "total_reports": len(results),
+            "success_count": success_count,
+            "error_count": error_count,
+            "results": results,
+        }
+    except Exception as exc:
+        self.retry(exc=exc, countdown=60, max_retries=3)
+
+
+@celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
+def sync_wb_finance_history(
+    self,
+    shop_id: int,
+    api_key: str,
+    days_back: int = 180,  # Default 6 months
+):
+    """
+    Historical Sync: Download WB finance reports for the last N days.
+    
+    This task:
+    1. Generates weekly date ranges for the past days_back
+    2. For each week: downloads the finance report
+    3. Parses CSV/JSON data and inserts into fact_finances
+    4. Reports progress throughout
+    
+    Routed to HEAVY queue - can run for 1-2 hours.
+    
+    Args:
+        shop_id: Shop ID in our system
+        api_key: WB API key (decrypted)
+        days_back: Number of days to look back (default: 180 ~ 6 months)
+    
+    Returns:
+        Dict with sync statistics
+    """
+    import asyncio
+    import os
+    from datetime import date
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_finance_report_service import WBFinanceReportService
+    from app.services.wb_finance_loader import (
+        WBReportParser,
+        ClickHouseLoader,
+        generate_week_ranges,
+    )
+    
+    settings = get_settings()
+    
+    # Generate week ranges based on days_back
+    months = max(1, days_back // 30)
+    week_ranges = generate_week_ranges(months)
+    total_weeks = len(week_ranges)
+    
+    stats = {
+        "shop_id": shop_id,
+        "days_back": days_back,
+        "total_weeks": total_weeks,
+        "processed_weeks": 0,
+        "total_rows_inserted": 0,
+        "errors": [],
+    }
+    
+    async def download_and_process():
+        # Create database session for downloading
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        
+        async with async_session() as db:
+            async with WBFinanceReportService(
+                db=db,
+                shop_id=shop_id,
+                api_key=api_key,
+            ) as download_service:
+                
+                # Connect to ClickHouse for loading
+                loader = ClickHouseLoader(
+                    host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                    port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                    username=os.getenv("CLICKHOUSE_USER", "default"),
+                    password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+                    database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+                )
+                
+                with loader:
+                    parser = WBReportParser(shop_id)
+                    
+                    for i, (date_from, date_to) in enumerate(week_ranges):
+                        date_from_str = date_from.strftime("%Y-%m-%d")
+                        date_to_str = date_to.strftime("%Y-%m-%d")
+                        
+                        # Optimization: Skip if data exists to save API budget
+                        if loader.get_row_count(shop_id, date_from, date_to) > 0:
+                            stats["processed_weeks"] += 1
+                            self.update_state(
+                                state='PROGRESS',
+                                meta={
+                                    'current_week': i + 1,
+                                    'total_weeks': total_weeks,
+                                    'date_range': f"{date_from_str} - {date_to_str}",
+                                    'rows_inserted': stats["total_rows_inserted"],
+                                    'status': 'Skipped (already loaded)'
+                                }
+                            )
+                            await asyncio.sleep(0.1)
+                            continue
+
+                        # Update progress
+                        self.update_state(
+                            state='PROGRESS',
+                            meta={
+                                'current_week': i + 1,
+                                'total_weeks': total_weeks,
+                                'date_range': f"{date_from_str} - {date_to_str}",
+                                'rows_inserted': stats["total_rows_inserted"],
+                            }
+                        )
+                        
+                        try:
+                            # Step 1: Get report data directly (JSON)
+                            # This replaces the old flow of ID -> Generate -> Poll -> Download
+                            rows_data = await download_service.get_report_data(
+                                date_from_str, date_to_str
+                            )
+                            
+                            if not rows_data:
+                                stats["processed_weeks"] += 1
+                                # Still wait to respect rate limits even if empty
+                                await asyncio.sleep(5)
+                                continue
+                            
+                            # Step 2: Parse JSON rows
+                            rows = list(parser.parse_json_rows(rows_data))
+                            
+                            if rows:
+                                inserted = loader.insert_batch(rows)
+                                stats["total_rows_inserted"] += inserted
+                            
+                            stats["processed_weeks"] += 1
+                            
+                            # Small pause between weeks
+                            await asyncio.sleep(5)
+                            
+                        except Exception as e:
+                            await db.rollback()
+                            stats["errors"].append({
+                                "week": f"{date_from_str} - {date_to_str}",
+                                "error": str(e),
+                            })
+        
+        await engine.dispose()
+    
+    try:
+        asyncio.run(download_and_process())
+        
+        stats["status"] = "completed"
+        return stats
+        
+    except Exception as exc:
+        stats["status"] = "failed"
+        stats["fatal_error"] = str(exc)
+        self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+@celery_app.task(bind=True, time_limit=14400, soft_time_limit=14100)
+def sync_wb_advert_history(
+    self,
+    shop_id: int,
+    api_key: str,
+    days_back: int = 180,
+):
+    """
+    Sync Advertising Data (History).
+    
+    1. Fetches ALL campaigns -> dim_advert_campaigns.
+    2. Fetches Full Stats for 6 months (in 7-day chunks) -> fact_advert_stats.
+    3. Respects strict rate limit: 1 request per minute per batch (50 campaigns).
+    
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import date, timedelta
+    from app.services.wb_advertising_report_service import WBAdvertisingReportService
+    from app.services.wb_advertising_loader import WBAdvertisingLoader
+    
+    # helper to split list into chunks
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+            
+    # helper to generate 7-day intervals
+    def generate_intervals(days_back: int):
+        intervals = []
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days_back)
+        
+        current = start_date
+        while current < end_date:
+            next_end = current + timedelta(days=6)
+            if next_end > end_date:
+                next_end = end_date
+            intervals.append((current, next_end))
+            current = next_end + timedelta(days=1)
+        return intervals
+
+    async def run_sync():
+        service = WBAdvertisingReportService(api_key=api_key)
+        loader = WBAdvertisingLoader(
+            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+            username=os.getenv("CLICKHOUSE_USER", "default"),
+            database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+        )
+        
+        try:
+            with loader:
+                # 1. Fetch Campaigns
+                self.update_state(state='PROGRESS', meta={'status': 'Fetching campaigns list...'})
+                campaigns = await service.get_campaigns()
+                
+                # Filter valid campaigns
+                campaigns = [c for c in campaigns if c.get("advertId")]
+                
+                # Save DIM
+                loader.load_campaigns(campaigns, shop_id)
+                campaign_ids = [c["advertId"] for c in campaigns]
+                total_campaigns = len(campaign_ids)
+                
+                # 2. Prepare Chunks
+                # Request limit: 50 campaigns per request.
+                batches = list(chunk_list(campaign_ids, 50))
+                intervals = generate_intervals(days_back)
+                total_steps = len(batches) * len(intervals)
+                current_step = 0
+                
+                stats_inserted = 0
+                
+                # 3. Loop
+                for interval in intervals:
+                    d_from = interval[0].strftime("%Y-%m-%d")
+                    d_to = interval[1].strftime("%Y-%m-%d")
+                    
+                    for batch in batches:
+                        current_step += 1
+                        
+                        self.update_state(state='PROGRESS', meta={
+                            'current': current_step,
+                            'total': total_steps,
+                            'status': f'Fetching stats {d_from} - {d_to} (Batch size {len(batch)})'
+                        })
+                        
+                        try:
+                            # Fetch
+                            full_stats = await service.get_full_stats(batch, d_from, d_to)
+                            
+                            # Parse & Insert
+                            rows = loader.parse_full_stats(full_stats, shop_id)
+                            count = loader.insert_stats(rows)
+                            stats_inserted += count
+                            
+                            # Rate Limit Sleep
+                            await asyncio.sleep(65)
+                            
+                        except Exception as e:
+                            # Log error but continue
+                            # 429 might mean we need longer sleep.
+                            print(f"Error fetching batch: {e}")
+                            await asyncio.sleep(65) 
+                            
+            return {
+                "status": "completed",
+                "campaigns_loaded": total_campaigns,
+                "stats_rows_inserted": stats_inserted,
+                "days_back": days_back
+            }
+            
+        except Exception as e:
+            raise e
+
+    try:
+        return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=60, max_retries=3)
+
+
+

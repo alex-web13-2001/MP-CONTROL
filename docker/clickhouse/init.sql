@@ -207,14 +207,160 @@ FROM mms_analytics.positions
 GROUP BY shop_id, sku, keyword, minute;
 
 -- ===================
+-- Unified finances table (Heart of the system)
+-- Accepts data from: WB API, Ozon API, Excel/CSV files
+-- Using ReplacingMergeTree for idempotency
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_finances (
+    -- 1. CORE GROUP (Common for all marketplaces)
+    event_date Date,
+    shop_id UInt32,
+    marketplace Enum8('wb' = 1, 'ozon' = 2),
+    order_id String,              -- Order/Shipment number
+    external_id String,           -- nmId (WB) or SKU (Ozon)
+    vendor_code String,           -- Seller's article code (for linking)
+    rrd_id UInt64 DEFAULT 0,      -- Unique report line ID (IMPORTANT for deduplication)
+    operation_type String,        -- Продажа, Возврат, Логистика, Корректировка
+    
+    -- MAIN MONEY
+    quantity Int32,
+    retail_amount Decimal(18, 2), -- Customer price
+    payout_amount Decimal(18, 2), -- Net amount to seller
+    
+    -- 2. GEOGRAPHY & WAREHOUSES
+    warehouse_name String,        -- Склад отгрузки (office_name)
+    delivery_address String,      -- ПВЗ / Регион (ppvz_office_name)
+    region_name String,           -- Область/Округ (gi_box_type_name или вычисляемое)
+    
+    -- 3. DETAILED EXPENSES (Unit Economics)
+    commission_amount Decimal(18, 2),
+    logistics_total Decimal(18, 2),
+    ads_total Decimal(18, 2),     -- If deducted from report
+    penalty_total Decimal(18, 2), -- Penalties
+    storage_fee Decimal(18, 2) DEFAULT 0,   -- NEW
+    acceptance_fee Decimal(18, 2) DEFAULT 0, -- NEW
+    bonus_amount Decimal(18, 2) DEFAULT 0,  -- NEW
+    
+    -- 4. IDENTIFIERS (Tracing)
+    shk_id String,                -- Barcode of unit
+    rid String,                   -- Unique Order ID (WB rid)
+    srid String,                  -- Global Order ID (WB srid)
+    
+    -- 5. WB SPECIFIC GROUP (Wildberries only)
+    wb_gi_id UInt64 DEFAULT 0,              -- Supply number (Номер поставки)
+    wb_ppvz_for_pay Decimal(18, 2) DEFAULT 0,
+    wb_delivery_rub Decimal(18, 2) DEFAULT 0,
+    wb_storage_amount Decimal(18, 2) DEFAULT 0, -- Legacy/Specific field
+    
+    -- 6. OZON SPECIFIC GROUP (Ozon only)
+    ozon_acquiring Decimal(18, 2) DEFAULT 0,
+    ozon_last_mile Decimal(18, 2) DEFAULT 0,
+    ozon_milestone Decimal(18, 2) DEFAULT 0,
+    ozon_marketing_services Decimal(18, 2) DEFAULT 0,
+
+    -- 7. SERVICE FIELDS
+    source_file_name String,      -- Filename for audit
+    raw_payload String,           -- Full JSON row (backup)
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(event_date)
+ORDER BY (shop_id, marketplace, event_date, order_id, external_id, rrd_id);
+
+-- Latest fact_finances view (deduplicated without FINAL)
+CREATE VIEW IF NOT EXISTS mms_analytics.fact_finances_latest AS
+SELECT
+    shop_id,
+    marketplace,
+    event_date,
+    order_id,
+    external_id,
+    external_id,
+    argMax(vendor_code, updated_at) as vendor_code,
+    argMax(rrd_id, updated_at) as rrd_id,
+    argMax(operation_type, updated_at) as operation_type,
+    argMax(quantity, updated_at) as quantity,
+    argMax(retail_amount, updated_at) as retail_amount,
+    argMax(payout_amount, updated_at) as payout_amount,
+    
+    -- Geography
+    argMax(warehouse_name, updated_at) as warehouse_name,
+    argMax(delivery_address, updated_at) as delivery_address,
+    argMax(region_name, updated_at) as region_name,
+    
+    -- Expenses
+    argMax(commission_amount, updated_at) as commission_amount,
+    argMax(logistics_total, updated_at) as logistics_total,
+    argMax(ads_total, updated_at) as ads_total,
+    argMax(penalty_total, updated_at) as penalty_total,
+    argMax(storage_fee, updated_at) as storage_fee,
+    argMax(acceptance_fee, updated_at) as acceptance_fee,
+    argMax(bonus_amount, updated_at) as bonus_amount,
+    
+    -- Identifiers
+    argMax(shk_id, updated_at) as shk_id,
+    argMax(rid, updated_at) as rid,
+    argMax(srid, updated_at) as srid,
+
+    -- WB specific
+    argMax(wb_gi_id, updated_at) as wb_gi_id,
+    argMax(wb_ppvz_for_pay, updated_at) as wb_ppvz_for_pay,
+    argMax(wb_delivery_rub, updated_at) as wb_delivery_rub,
+    argMax(wb_storage_amount, updated_at) as wb_storage_amount,
+    -- Ozon specific
+    argMax(ozon_acquiring, updated_at) as ozon_acquiring,
+    argMax(ozon_last_mile, updated_at) as ozon_last_mile,
+    argMax(ozon_milestone, updated_at) as ozon_milestone,
+    argMax(ozon_marketing_services, updated_at) as ozon_marketing_services,
+    -- Service
+    argMax(source_file_name, updated_at) as source_file_name,
+    argMax(raw_payload, updated_at) as raw_payload,
+    max(updated_at) as updated_at
+FROM mms_analytics.fact_finances
+GROUP BY shop_id, marketplace, event_date, order_id, external_id;
+
+-- ===================
 -- USAGE NOTES:
 -- ===================
 -- For frontend queries, ALWAYS use *_latest views:
 --   SELECT * FROM orders_latest WHERE shop_id = 1
+--   SELECT * FROM fact_finances_latest WHERE shop_id = 1
 -- 
 -- FINAL is still available but slow at scale:
 --   SELECT * FROM orders FINAL WHERE shop_id = 1
 --
 -- For background maintenance:
 --   OPTIMIZE TABLE orders FINAL
+--   OPTIMIZE TABLE fact_finances FINAL
 -- ===================
+
+
+-- ===================
+-- Advertising campaigns dictionary
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.dim_advert_campaigns (
+    shop_id UInt32,
+    advert_id UInt64,
+    name String,
+    type Enum8('search' = 1, 'carousel' = 2, 'card' = 4, 'recommend' = 5, 'auto' = 7, 'search_plus_catalog' = 8, 'recommend_plus_carousel' = 9),
+    status Int8,
+    updated_at DateTime
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (shop_id, advert_id);
+
+-- ===================
+-- Advertising facts (detailed stats)
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_advert_stats (
+    date Date,
+    shop_id UInt32,
+    advert_id UInt64,
+    nm_id UInt64,
+    views UInt32,
+    clicks UInt32,
+    spend Decimal(18, 2),
+    ctr Float32,
+    cpc Decimal(18, 2),
+    updated_at DateTime
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(date)
+ORDER BY (shop_id, nm_id, date, advert_id);

@@ -67,7 +67,28 @@ class RedisRateLimiter:
         self._key_prefix = "mms:ratelimit"
     
     async def _get_redis(self) -> aioredis.Redis:
-        """Get or create Redis connection."""
+        """Get or create Redis connection, recreating if loop changed."""
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        # Check if existing connection belongs to a different (or closed) loop
+        if self._redis:
+            try:
+                # redis-py 4.2+ stores loop in connection_pool.connection_kwargs,
+                # but older aioredis might trigger error on usage if loop is closed.
+                # A simple check is to verify if the loop is running and matches.
+                # For safety in Celery with asyncio.run, we recreate if loop mismatch.
+                # Note: aioredis/redis-py usually auto-detects loop for new connections,
+                # but existing clients are bound to the creation loop.
+                if self._redis.connection_pool.connection_kwargs.get("loop") != current_loop:
+                    await self._redis.close()
+                    self._redis = None
+            except Exception:
+                # If checking fails, assume invalid
+                self._redis = None
+        
         if self._redis is None:
             self._redis = await aioredis.from_url(
                 self.redis_url,
