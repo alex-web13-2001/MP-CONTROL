@@ -1,0 +1,58 @@
+[2026-02-02 18:24:42,043: WARNING/MainProcess] /usr/local/lib/python3.11/site-packages/celery/worker/consumer/consumer.py:507: CPendingDeprecationWarning: The broker_connection_retry configuration setting will no longer determine
+whether broker connection retries are made during startup in Celery 6.0 and above.
+If you wish to retain the existing behavior for retrying connections on startup,
+you should set broker_connection_retry_on_startup to True.
+  warnings.warn(
+
+[2026-02-02 18:24:42,142: INFO/MainProcess] Connected to redis://redis:6379/0
+[2026-02-02 18:24:42,144: WARNING/MainProcess] /usr/local/lib/python3.11/site-packages/celery/worker/consumer/consumer.py:507: CPendingDeprecationWarning: The broker_connection_retry configuration setting will no longer determine
+whether broker connection retries are made during startup in Celery 6.0 and above.
+[2026-02-02 18:24:42,043: WARNING/MainProcess] /usr/local/lib/python3.11/site-packages/celery/worker/consumer/consumer.py:507: CPendingDeprecationWarning: The broker_connection_retry configuration setting will no longer determine
+whether broker connection retries are made during startup in Celery 6.0 and above.
+If you wish to retain the existing behavior for retrying connections on startup,
+you should set broker_connection_retry_on_startup to True.
+  warnings.warn(
+
+[2026-02-02 18:24:42,142: INFO/MainProcess] Connected to redis://redis:6379/0
+[2026-02-02 18:24:42,144: WARNING/MainProcess] /usr/local/lib/python3.11/site-packages/celery/worker/consumer/consumer.py:507: CPendingDeprecationWarning: The broker_connection_retry configuration setting will no longer determine
+whether broker connection retries are made during startup in Celery 6.0 and above.
+If you wish to retain the existing behavior for retrying connections on startup,
+you should set broker_connection_retry_on_startup to True.
+  warnings.warn(
+
+[2026-02-02 18:24:42,162: INFO/MainProcess] mingle: searching for neighbors
+[2026-02-02 18:24:43,218: INFO/MainProcess] mingle: sync with 1 nodes
+[2026-02-02 18:24:43,219: INFO/MainProcess] mingle: sync complete
+[2026-02-02 18:24:43,242: INFO/MainProcess] heavy@d2cf506fc4c3 ready.
+[2026-02-02 18:24:49,966: INFO/MainProcess] Task celery_app.tasks.tasks.sync_wb_advert_history[5cd0894c-44c7-47ca-8b0a-ba02a3edfaa4] received
+[2026-02-02 18:24:51,710: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v1/promotion/count "HTTP/1.1 200 OK"
+[2026-02-02 18:24:51,713: INFO/ForkPoolWorker-2] WB Count Response: all=55 campaigns
+[2026-02-02 18:24:51,714: INFO/ForkPoolWorker-2] Extracted 55 campaigns from count response
+[2026-02-02 18:24:51,797: INFO/ForkPoolWorker-2] Found 54 campaigns for V3 stats sync
+[2026-02-02 18:24:51,797: INFO/ForkPoolWorker-2] Processing 6 intervals x 2 batches = 12 requests
+[2026-02-02 18:24:53,615: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v3/fullstats?ids=10859963%2C11299519%2C20230947%2C21456635%2C21827022%2C22279823%2C23062389%2C23153977%2C23257699%2C23257751%2C23258209%2C23316089%2C24012213%2C24285853%2C24590982%2C24661012%2C25060081%2C25176004%2C25330698%2C25690526%2C25692071%2C25996698%2C26332767%2C26673833%2C28111644%2C28738460%2C28740549%2C28740624%2C11061798%2C20359078%2C24660402%2C31321215%2C32595838%2C32599388%2C10838649%2C32847915%2C32848308%2C33084969%2C33281744%2C33426845%2C33426911%2C11325854%2C11374850%2C29934021%2C33202713%2C33218886%2C33219613%2C33220312%2C33262037%2C33282045&beginDate=2025-08-06&endDate=2025-09-04 "HTTP/1.1 200 OK"
+[2026-02-02 18:24:54,146: INFO/ForkPoolWorker-2] Parsing V3 fullstats: 10 campaigns
+[2026-02-02 18:24:54,156: INFO/ForkPoolWorker-2] Parsed 1085 aggregated V3 stats rows
+[2026-02-02 18:24:54,268: INFO/ForkPoolWorker-2] Step 1/12: Inserted 1085 rows
+[2026-02-02 18:26:00,346: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v3/fullstats?ids=33329672%2C33367979%2C33426415%2C33581653&beginDate=2025-08-06&endDate=2025-09-04 "HTTP/1.1 200 OK"
+[2026-02-02 18:26:00,353: WARNING/ForkPoolWorker-2] Error fetching batch: object of type 'NoneType' has no len()
+If you wish to retain the existing behavior for retrying connections on startup,
+you should set broker_connection_retry_on_startup to True.
+  warnings.warn(
+
+[2026-02-02 18:24:42,162: INFO/MainProcess] mingle: searching for neighbors
+[2026-02-02 18:24:43,218: INFO/MainProcess] mingle: sync with 1 nodes
+[2026-02-02 18:24:43,219: INFO/MainProcess] mingle: sync complete
+[2026-02-02 18:24:43,242: INFO/MainProcess] heavy@d2cf506fc4c3 ready.
+[2026-02-02 18:24:49,966: INFO/MainProcess] Task celery_app.tasks.tasks.sync_wb_advert_history[5cd0894c-44c7-47ca-8b0a-ba02a3edfaa4] received
+[2026-02-02 18:24:51,710: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v1/promotion/count "HTTP/1.1 200 OK"
+[2026-02-02 18:24:51,713: INFO/ForkPoolWorker-2] WB Count Response: all=55 campaigns
+[2026-02-02 18:24:51,714: INFO/ForkPoolWorker-2] Extracted 55 campaigns from count response
+[2026-02-02 18:24:51,797: INFO/ForkPoolWorker-2] Found 54 campaigns for V3 stats sync
+[2026-02-02 18:24:51,797: INFO/ForkPoolWorker-2] Processing 6 intervals x 2 batches = 12 requests
+[2026-02-02 18:24:53,615: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v3/fullstats?ids=10859963%2C11299519%2C20230947%2C21456635%2C21827022%2C22279823%2C23062389%2C23153977%2C23257699%2C23257751%2C23258209%2C23316089%2C24012213%2C24285853%2C24590982%2C24661012%2C25060081%2C25176004%2C25330698%2C25690526%2C25692071%2C25996698%2C26332767%2C26673833%2C28111644%2C28738460%2C28740549%2C28740624%2C11061798%2C20359078%2C24660402%2C31321215%2C32595838%2C32599388%2C10838649%2C32847915%2C32848308%2C33084969%2C33281744%2C33426845%2C33426911%2C11325854%2C11374850%2C29934021%2C33202713%2C33218886%2C33219613%2C33220312%2C33262037%2C33282045&beginDate=2025-08-06&endDate=2025-09-04 "HTTP/1.1 200 OK"
+[2026-02-02 18:24:54,146: INFO/ForkPoolWorker-2] Parsing V3 fullstats: 10 campaigns
+[2026-02-02 18:24:54,156: INFO/ForkPoolWorker-2] Parsed 1085 aggregated V3 stats rows
+[2026-02-02 18:24:54,268: INFO/ForkPoolWorker-2] Step 1/12: Inserted 1085 rows
+[2026-02-02 18:26:00,346: INFO/ForkPoolWorker-2] HTTP Request: GET https://advert-api.wildberries.ru/adv/v3/fullstats?ids=33329672%2C33367979%2C33426415%2C33581653&beginDate=2025-08-06&endDate=2025-09-04 "HTTP/1.1 200 OK"
+[2026-02-02 18:26:00,353: WARNING/ForkPoolWorker-2] Error fetching batch: object of type 'NoneType' has no len()

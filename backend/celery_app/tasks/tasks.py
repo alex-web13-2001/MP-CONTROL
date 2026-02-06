@@ -396,11 +396,16 @@ def sync_wb_advert_history(
     days_back: int = 180,
 ):
     """
-    Sync Advertising Data (History).
+    Sync Advertising Data (History) using V3 API.
     
     1. Fetches ALL campaigns -> dim_advert_campaigns.
-    2. Fetches Full Stats for 6 months (in 7-day chunks) -> fact_advert_stats.
-    3. Respects strict rate limit: 1 request per minute per batch (50 campaigns).
+    2. Fetches Full Stats using V3 API (in 30-day chunks) -> fact_advert_stats_v3.
+    3. Respects strict rate limit: 1 request per minute (60-70 sec pause).
+    
+    V3 API constraints:
+    - Max period: 31 days per request
+    - Max campaigns: 50 per request
+    - Rate limit: ~1 request per minute
     
     Queue: HEAVY.
     """
@@ -409,21 +414,24 @@ def sync_wb_advert_history(
     from datetime import date, timedelta
     from app.services.wb_advertising_report_service import WBAdvertisingReportService
     from app.services.wb_advertising_loader import WBAdvertisingLoader
+    import logging
     
-    # helper to split list into chunks
+    logger = logging.getLogger(__name__)
+    
+    # Helper to split list into chunks
     def chunk_list(lst, n):
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
             
-    # helper to generate 7-day intervals
-    def generate_intervals(days_back: int):
+    # Helper to generate 30-day intervals for V3 API
+    def generate_intervals_30days(days_back: int):
         intervals = []
         end_date = date.today()
         start_date = end_date - timedelta(days=days_back)
         
         current = start_date
         while current < end_date:
-            next_end = current + timedelta(days=6)
+            next_end = current + timedelta(days=29)  # 30 days inclusive
             if next_end > end_date:
                 next_end = end_date
             intervals.append((current, next_end))
@@ -445,24 +453,27 @@ def sync_wb_advert_history(
                 self.update_state(state='PROGRESS', meta={'status': 'Fetching campaigns list...'})
                 campaigns = await service.get_campaigns()
                 
-                # Filter valid campaigns
-                campaigns = [c for c in campaigns if c.get("advertId")]
+                # Filter valid campaigns (status 7, 9, 11 only)
+                campaigns = [c for c in campaigns if c.get("advertId") and c.get("status") in [7, 9, 11]]
                 
                 # Save DIM
                 loader.load_campaigns(campaigns, shop_id)
                 campaign_ids = [c["advertId"] for c in campaigns]
                 total_campaigns = len(campaign_ids)
                 
-                # 2. Prepare Chunks
-                # Request limit: 50 campaigns per request.
+                logger.info(f"Found {total_campaigns} campaigns for V3 stats sync")
+                
+                # 2. Prepare Chunks (max 50 per request)
                 batches = list(chunk_list(campaign_ids, 50))
-                intervals = generate_intervals(days_back)
+                intervals = generate_intervals_30days(days_back)
                 total_steps = len(batches) * len(intervals)
                 current_step = 0
                 
                 stats_inserted = 0
                 
-                # 3. Loop
+                logger.info(f"Processing {len(intervals)} intervals x {len(batches)} batches = {total_steps} requests")
+                
+                # 3. Loop through intervals and batches
                 for interval in intervals:
                     d_from = interval[0].strftime("%Y-%m-%d")
                     d_to = interval[1].strftime("%Y-%m-%d")
@@ -473,41 +484,37 @@ def sync_wb_advert_history(
                         self.update_state(state='PROGRESS', meta={
                             'current': current_step,
                             'total': total_steps,
-                            'status': f'Fetching stats {d_from} - {d_to} (Batch size {len(batch)})'
+                            'status': f'V3: Fetching {d_from} - {d_to} ({len(batch)} campaigns)'
                         })
                         
                         try:
-                            # Fetch
-                            full_stats = await service.get_full_stats(batch, d_from, d_to)
+                            # Fetch V3 stats
+                            full_stats = await service.get_full_stats_v3(batch, d_from, d_to)
                             
-                            # Parse & Insert
-                            rows = loader.parse_full_stats(full_stats, shop_id)
-                            count = loader.insert_stats(rows)
+                            # Parse & Insert into V3 table
+                            rows = loader.parse_full_stats_v3(full_stats, shop_id)
+                            count = loader.insert_stats_v3(rows)
                             stats_inserted += count
                             
-                            # Rate Limit Sleep
+                            logger.info(f"Step {current_step}/{total_steps}: Inserted {count} rows")
+                            
+                            # Rate Limit Sleep (60-70 sec)
                             await asyncio.sleep(65)
                             
                         except Exception as e:
-                            # Log error but continue
-                            # 429 might mean we need longer sleep.
-                            print(f"Error fetching batch: {e}")
-                            await asyncio.sleep(65) 
+                            logger.warning(f"Error fetching batch: {e}")
+                            # Wait longer on error
+                            await asyncio.sleep(70) 
                             
             return {
                 "status": "completed",
                 "campaigns_loaded": total_campaigns,
                 "stats_rows_inserted": stats_inserted,
-                "days_back": days_back
+                "days_back": days_back,
+                "api_version": "V3"
             }
-            
         except Exception as e:
+            logger.error(f"sync_wb_advert_history failed: {e}")
             raise e
-
-    try:
-        return asyncio.run(run_sync())
-    except Exception as exc:
-        self.retry(exc=exc, countdown=60, max_retries=3)
-
-
-
+            
+    return asyncio.get_event_loop().run_until_complete(run_sync())
