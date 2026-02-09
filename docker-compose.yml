@@ -187,6 +187,7 @@ services:
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       - ./docker/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./docker/clickhouse/users.d:/etc/clickhouse-server/users.d
     ports:
       - "8123:8123"
       - "9000:9000"

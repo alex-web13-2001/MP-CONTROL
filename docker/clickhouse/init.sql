@@ -364,3 +364,93 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_advert_stats (
 ) ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(date)
 ORDER BY (shop_id, nm_id, date, advert_id);
+
+-- ===================
+-- Advertising RAW History (for accumulation, NOT replacement!)
+-- Uses MergeTree to APPEND data, enabling intraday analytics
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.ads_raw_history (
+    -- Fetch timestamp (for intraday graphs!)
+    fetched_at DateTime,
+    
+    -- Keys
+    shop_id UInt32,
+    advert_id UInt64,
+    nm_id UInt64,
+    
+    -- Enrichment
+    vendor_code String DEFAULT '',
+    
+    -- Campaign classification (CRITICAL for CPC vs CPM logic)
+    campaign_type UInt8 DEFAULT 0,  -- 1=search, 7=auto, 8=search_plus_catalog, etc.
+    
+    -- Metrics (cumulative for the day from WB)
+    views UInt32,
+    clicks UInt32,
+    ctr Float32,
+    cpc Decimal(18, 2),
+    spend Decimal(18, 2),
+    atbs UInt32,
+    orders UInt32,
+    revenue Decimal(18, 2),
+    
+    -- Bid tracking (for change detection)
+    cpm Decimal(18, 2) DEFAULT 0,
+    
+    -- Flags
+    is_associated UInt8 DEFAULT 0  -- 1 = item not in campaign's official list (Halo)
+    
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(fetched_at)
+ORDER BY (shop_id, advert_id, nm_id, fetched_at)
+TTL fetched_at + INTERVAL 6 MONTH;
+
+-- ===================
+-- Materialized View: Daily aggregates for Sales Map
+-- Automatically aggregates 15-minute snapshots to daily MAX values
+-- Use this for queries instead of raw data!
+-- ===================
+CREATE MATERIALIZED VIEW IF NOT EXISTS mms_analytics.ads_daily_mv
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(date)
+ORDER BY (shop_id, advert_id, nm_id, date)
+AS SELECT
+    toDate(fetched_at) as date,
+    shop_id,
+    advert_id,
+    nm_id,
+    argMax(vendor_code, fetched_at) as vendor_code,
+    argMax(campaign_type, fetched_at) as campaign_type,
+    -- Take maximum values for the day (WB stats are cumulative)
+    max(views) as views,
+    max(clicks) as clicks,
+    max(spend) as spend,
+    max(atbs) as atbs,
+    max(orders) as orders,
+    max(revenue) as revenue,
+    max(cpm) as cpm,
+    argMax(is_associated, fetched_at) as is_associated,
+    max(fetched_at) as updated_at
+FROM mms_analytics.ads_raw_history
+GROUP BY date, shop_id, advert_id, nm_id;
+
+-- ===================
+-- Hourly aggregates view for detailed timeline
+-- ===================
+CREATE MATERIALIZED VIEW IF NOT EXISTS mms_analytics.ads_hourly_mv
+ENGINE = ReplacingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (shop_id, advert_id, nm_id, hour)
+AS SELECT
+    toStartOfHour(fetched_at) as hour,
+    shop_id,
+    advert_id,
+    nm_id,
+    max(views) as views,
+    max(clicks) as clicks,
+    max(spend) as spend,
+    max(orders) as orders,
+    max(revenue) as revenue,
+    max(fetched_at) as updated_at
+FROM mms_analytics.ads_raw_history
+GROUP BY hour, shop_id, advert_id, nm_id;

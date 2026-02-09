@@ -185,3 +185,26 @@ CREATE TRIGGER update_proxies_updated_at BEFORE UPDATE ON proxies
 
 CREATE TRIGGER update_rate_limits_updated_at BEFORE UPDATE ON rate_limits
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Advertising Event Log (for timeline visualization)
+-- ===================
+CREATE TABLE IF NOT EXISTS event_log (
+    id SERIAL PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
+    
+    shop_id INTEGER NOT NULL,
+    advert_id BIGINT NOT NULL,
+    nm_id BIGINT,  -- NULL for campaign-level events
+    
+    event_type VARCHAR(50) NOT NULL,  -- BID_CHANGE, STATUS_CHANGE, ITEM_ADD, ITEM_REMOVE, ITEM_INACTIVE
+    old_value TEXT,
+    new_value TEXT,
+    
+    event_metadata JSONB  -- Additional context (campaign_type, reason, etc.)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_log_shop ON event_log(shop_id);
+CREATE INDEX IF NOT EXISTS idx_event_log_advert ON event_log(advert_id);
+CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
+CREATE INDEX IF NOT EXISTS idx_event_log_created ON event_log(created_at);

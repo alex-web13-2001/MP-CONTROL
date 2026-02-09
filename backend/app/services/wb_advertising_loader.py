@@ -42,6 +42,26 @@ class FactAdvertStatsV3Row:
         if self.updated_at is None:
             self.updated_at = datetime.now()
 
+@dataclass
+class AdsRawHistoryRow:
+    """Row for ads_raw_history table (MergeTree, accumulates history)."""
+    fetched_at: datetime
+    shop_id: int
+    advert_id: int
+    nm_id: int
+    vendor_code: str
+    campaign_type: int  # CRITICAL for CPC vs CPM differentiation
+    views: int
+    clicks: int
+    ctr: float
+    cpc: Decimal
+    spend: Decimal
+    atbs: int
+    orders: int
+    revenue: Decimal
+    cpm: Decimal
+    is_associated: int  # 0 or 1
+
 class WBAdvertisingLoader:
     """
     Loader for WB Advertising data into ClickHouse.
@@ -51,6 +71,7 @@ class WBAdvertisingLoader:
     DB_NAME = "mms_analytics"
     TABLE_DIM = "dim_advert_campaigns"
     TABLE_FACT_V3 = "fact_advert_stats_v3"
+    TABLE_HISTORY = "ads_raw_history"
 
     def __init__(self, 
                  host: str = "clickhouse", 
@@ -224,3 +245,133 @@ class WBAdvertisingLoader:
             column_names=["date", "shop_id", "advert_id", "nm_id", "views", "clicks", "atbs", "orders", "revenue", "spend", "updated_at"]
         )
         return len(data)
+
+    def parse_stats_for_history(
+        self,
+        full_stats: List[Dict[str, Any]],
+        shop_id: int,
+        campaign_items: Dict[int, List[int]],  # advert_id -> [nm_ids]
+        vendor_code_cache: Dict[int, str],  # nm_id -> vendor_code
+        cpm_values: Dict[int, Decimal],  # advert_id -> cpm
+        campaign_types: Dict[int, int] = None  # advert_id -> type
+    ) -> List[AdsRawHistoryRow]:
+        """
+        Parse V3 fullstats for history accumulation.
+        
+        Args:
+            full_stats: Response from /adv/v3/fullstats
+            shop_id: Shop ID
+            campaign_items: Dict mapping advert_id to list of official nm_ids
+            vendor_code_cache: Dict mapping nm_id to vendor_code
+            cpm_values: Dict mapping advert_id to current CPM
+        
+        Returns:
+            List of AdsRawHistoryRow with is_associated flag set
+        """
+        rows = []
+        now = datetime.now()
+        
+        for campaign in full_stats:
+            advert_id = int(campaign.get("advertId", 0))
+            official_items = set(campaign_items.get(advert_id, []))
+            cpm = cpm_values.get(advert_id, Decimal(0))
+            campaign_type = (campaign_types or {}).get(advert_id, 0)
+            
+            days = campaign.get("days", [])
+            for d in days:
+                apps = d.get("apps", [])
+                for app in apps:
+                    nms_list = app.get("nms", [])
+                    for nm in nms_list:
+                        nm_id = int(nm.get("nmId", 0))
+                        views = int(nm.get("views", 0))
+                        clicks = int(nm.get("clicks", 0))
+                        spend = Decimal(str(nm.get("sum", 0)))
+                        
+                        # Calculate CTR and CPC
+                        ctr = (clicks / views * 100) if views > 0 else 0.0
+                        cpc = (spend / clicks) if clicks > 0 else Decimal(0)
+                        
+                        # Determine if this is an associated item
+                        is_associated = 0 if nm_id in official_items or not official_items else 1
+                        
+                        # Get vendor_code from cache
+                        vendor_code = vendor_code_cache.get(nm_id, "")
+                        
+                        rows.append(AdsRawHistoryRow(
+                            fetched_at=now,
+                            shop_id=shop_id,
+                            advert_id=advert_id,
+                            nm_id=nm_id,
+                            vendor_code=vendor_code,
+                            campaign_type=campaign_type,
+                            views=views,
+                            clicks=clicks,
+                            ctr=ctr,
+                            cpc=cpc,
+                            spend=spend,
+                            atbs=int(nm.get("atbs", 0)),
+                            orders=int(nm.get("orders", 0)),
+                            revenue=Decimal(str(nm.get("sum_price", 0))),
+                            cpm=cpm,
+                            is_associated=is_associated
+                        ))
+        
+        logger.info(f"Parsed {len(rows)} history rows")
+        return rows
+
+    def insert_history(self, rows: List[AdsRawHistoryRow]) -> int:
+        """
+        Insert rows into ads_raw_history.
+        Uses MergeTree engine - data is APPENDED, not replaced!
+        """
+        if not rows or not self._client:
+            return 0
+        
+        data = [
+            (
+                r.fetched_at, r.shop_id, r.advert_id, r.nm_id, r.vendor_code,
+                r.campaign_type, r.views, r.clicks, r.ctr, float(r.cpc), float(r.spend),
+                r.atbs, r.orders, float(r.revenue), float(r.cpm), r.is_associated
+            )
+            for r in rows
+        ]
+        
+        self._client.insert(
+            f"{self.DB_NAME}.{self.TABLE_HISTORY}",
+            data,
+            column_names=[
+                "fetched_at", "shop_id", "advert_id", "nm_id", "vendor_code",
+                "campaign_type", "views", "clicks", "ctr", "cpc", "spend",
+                "atbs", "orders", "revenue", "cpm", "is_associated"
+            ]
+        )
+        logger.info(f"Inserted {len(data)} rows into ads_raw_history")
+        return len(data)
+
+    def get_vendor_code_cache(self, nm_ids: List[int]) -> Dict[int, str]:
+        """
+        Fetch vendor_codes from fact_finances for given nm_ids.
+        Returns dict: nm_id -> vendor_code
+        """
+        if not nm_ids or not self._client:
+            return {}
+        
+        nm_ids_str = ",".join(str(x) for x in nm_ids)
+        query = f"""
+            SELECT 
+                JSONExtractUInt(raw_payload, 'nm_id') as nm_id,
+                argMax(vendor_code, updated_at) as vendor_code
+            FROM {self.DB_NAME}.fact_finances
+            WHERE JSONExtractUInt(raw_payload, 'nm_id') IN ({nm_ids_str})
+            GROUP BY nm_id
+        """
+        
+        result = self._client.query(query)
+        cache = {}
+        for row in result.result_rows:
+            if row[0] and row[1]:
+                cache[int(row[0])] = str(row[1])
+        
+        logger.info(f"Loaded vendor_code cache for {len(cache)} items")
+        return cache

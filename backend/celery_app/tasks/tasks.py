@@ -394,13 +394,16 @@ def sync_wb_advert_history(
     shop_id: int,
     api_key: str,
     days_back: int = 180,
+    accumulate_history: bool = True,
 ):
     """
     Sync Advertising Data (History) using V3 API.
     
-    1. Fetches ALL campaigns -> dim_advert_campaigns.
-    2. Fetches Full Stats using V3 API (in 30-day chunks) -> fact_advert_stats_v3.
-    3. Respects strict rate limit: 1 request per minute (60-70 sec pause).
+    NEW FEATURES:
+    - Accumulates data in ads_raw_history (MergeTree, not replacing)
+    - Detects bid/status/item changes and logs to event_log
+    - Enriches data with vendor_code
+    - Sets is_associated flag for Halo items
     
     V3 API constraints:
     - Max period: 31 days per request
@@ -414,6 +417,7 @@ def sync_wb_advert_history(
     from datetime import date, timedelta
     from app.services.wb_advertising_report_service import WBAdvertisingReportService
     from app.services.wb_advertising_loader import WBAdvertisingLoader
+    from app.services.event_detector import EventDetector
     import logging
     
     logger = logging.getLogger(__name__)
@@ -437,6 +441,46 @@ def sync_wb_advert_history(
             intervals.append((current, next_end))
             current = next_end + timedelta(days=1)
         return intervals
+    
+    # Helper to save events to PostgreSQL
+    def save_events_to_db(events: list):
+        """Persist detected events to PostgreSQL event_log table."""
+        import psycopg2
+        import json
+        
+        if not events:
+            return
+        
+        try:
+            conn = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "postgres"),
+                port=os.getenv("POSTGRES_PORT", 5432),
+                user=os.getenv("POSTGRES_USER", "mms"),
+                password=os.getenv("POSTGRES_PASSWORD", "mms"),
+                database=os.getenv("POSTGRES_DB", "mms")
+            )
+            cursor = conn.cursor()
+            
+            for event in events:
+                cursor.execute("""
+                    INSERT INTO event_log (shop_id, advert_id, nm_id, event_type, old_value, new_value, event_metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    event.get("shop_id"),
+                    event.get("advert_id"),
+                    event.get("nm_id"),
+                    event.get("event_type"),
+                    event.get("old_value"),
+                    event.get("new_value"),
+                    json.dumps(event.get("event_metadata")) if event.get("event_metadata") else None
+                ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.info(f"Saved {len(events)} events to event_log")
+        except Exception as e:
+            logger.error(f"Error saving events to DB: {e}")
 
     async def run_sync():
         service = WBAdvertisingReportService(api_key=api_key)
@@ -446,6 +490,7 @@ def sync_wb_advert_history(
             username=os.getenv("CLICKHOUSE_USER", "default"),
             database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
         )
+        event_detector = EventDetector(redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"))
         
         try:
             with loader:
@@ -463,17 +508,61 @@ def sync_wb_advert_history(
                 
                 logger.info(f"Found {total_campaigns} campaigns for V3 stats sync")
                 
-                # 2. Prepare Chunks (max 50 per request)
+                # 2. Fetch Campaign Settings (for bid detection & item lists)
+                campaign_items = {}
+                cpm_values = {}
+                campaign_types = {}  # NEW: for CPC vs CPM differentiation
+                events_detected = 0
+                
+                if accumulate_history:
+                    self.update_state(state='PROGRESS', meta={'status': 'Fetching campaign settings...'})
+                    
+                    for batch in chunk_list(campaign_ids, 50):
+                        try:
+                            settings = await service.get_campaign_settings(batch)
+                            
+                            # Detect bid/status/item changes (with debouncing)
+                            events = event_detector.detect_changes(shop_id, settings)
+                            events_detected += len(events)
+                            
+                            # PERSIST EVENTS to PostgreSQL
+                            if events:
+                                save_events_to_db(events)
+                            
+                            # Extract items, CPM, and types for history parsing
+                            batch_items, batch_cpm, batch_types = event_detector.extract_all_campaign_data(settings)
+                            campaign_items.update(batch_items)
+                            cpm_values.update(batch_cpm)
+                            campaign_types.update(batch_types)
+                            
+                            await asyncio.sleep(1)  # Small delay between settings batches
+                        except Exception as e:
+                            logger.warning(f"Error fetching campaign settings: {e}")
+                
+                # 3. Prepare vendor_code cache (for enrichment)
+                vendor_code_cache = {}
+                if accumulate_history:
+                    # Collect all nm_ids from campaign items
+                    all_nm_ids = set()
+                    for items in campaign_items.values():
+                        all_nm_ids.update(items)
+                    
+                    if all_nm_ids:
+                        self.update_state(state='PROGRESS', meta={'status': 'Loading vendor_code cache...'})
+                        vendor_code_cache = loader.get_vendor_code_cache(list(all_nm_ids))
+                
+                # 4. Prepare Chunks (max 50 per request)
                 batches = list(chunk_list(campaign_ids, 50))
                 intervals = generate_intervals_30days(days_back)
                 total_steps = len(batches) * len(intervals)
                 current_step = 0
                 
                 stats_inserted = 0
+                history_inserted = 0
                 
                 logger.info(f"Processing {len(intervals)} intervals x {len(batches)} batches = {total_steps} requests")
                 
-                # 3. Loop through intervals and batches
+                # 5. Loop through intervals and batches
                 for interval in intervals:
                     d_from = interval[0].strftime("%Y-%m-%d")
                     d_to = interval[1].strftime("%Y-%m-%d")
@@ -491,12 +580,22 @@ def sync_wb_advert_history(
                             # Fetch V3 stats
                             full_stats = await service.get_full_stats_v3(batch, d_from, d_to)
                             
-                            # Parse & Insert into V3 table
+                            # Parse & Insert into V3 table (legacy, for compatibility)
                             rows = loader.parse_full_stats_v3(full_stats, shop_id)
                             count = loader.insert_stats_v3(rows)
                             stats_inserted += count
                             
-                            logger.info(f"Step {current_step}/{total_steps}: Inserted {count} rows")
+                            # NEW: Insert into history table (accumulation)
+                            if accumulate_history and full_stats:
+                                history_rows = loader.parse_stats_for_history(
+                                    full_stats, shop_id,
+                                    campaign_items, vendor_code_cache, cpm_values,
+                                    campaign_types
+                                )
+                                history_count = loader.insert_history(history_rows)
+                                history_inserted += history_count
+                            
+                            logger.info(f"Step {current_step}/{total_steps}: Inserted {count} rows (history: {history_count if accumulate_history else 'N/A'})")
                             
                             # Rate Limit Sleep (60-70 sec)
                             await asyncio.sleep(65)
@@ -510,8 +609,11 @@ def sync_wb_advert_history(
                 "status": "completed",
                 "campaigns_loaded": total_campaigns,
                 "stats_rows_inserted": stats_inserted,
+                "history_rows_inserted": history_inserted,
+                "events_detected": events_detected,
                 "days_back": days_back,
-                "api_version": "V3"
+                "api_version": "V3",
+                "accumulate_history": accumulate_history
             }
         except Exception as e:
             logger.error(f"sync_wb_advert_history failed: {e}")

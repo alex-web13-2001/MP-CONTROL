@@ -116,7 +116,42 @@ class WBAdvertisingReportService:
                 
             return response.json()
 
+    async def get_campaign_settings(self, campaign_ids: List[int]) -> List[Dict[str, Any]]:
+        """
+        Get campaign settings including CPM/CPC bids and item lists.
+        
+        Method: POST /adv/v1/promotion/adverts (updated Oct 2025)
+        Request body: array of campaign IDs (max 50)
+        
+        Response includes:
+        - advertId: campaign ID
+        - type: campaign type (9 = unified, formerly 8)
+        - status: campaign status
+        - unitedParams: bid settings and item lists
+        
+        This is used for:
+        1. Bid change detection (comparing CPM with Redis state)
+        2. Identifying associated items (items in fullstats but not in params)
+        """
+        url = f"{self.BASE_URL}/adv/v1/promotion/adverts"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # POST with JSON body of campaign IDs
+            response = await client.post(url, headers=self.headers, json=campaign_ids)
+            
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "60")
+                logger.warning(f"Rate limit on /adv/v1/promotion/adverts. Retry-After: {retry_after}s")
+                raise httpx.HTTPStatusError("Rate Limit", request=response.request, response=response)
+            
+            if response.status_code != 200:
+                logger.error(f"WB API v1/promotion/adverts Error: {response.text}")
+                response.raise_for_status()
+            
+            return response.json()
+
     async def get_balance(self) -> Dict[str, Any]:
+
         """
         Get current advertising balance.
         
