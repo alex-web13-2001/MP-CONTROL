@@ -282,3 +282,208 @@ class EventDetector:
                 continue
         
         return campaign_items, cpm_values, campaign_types
+
+
+class CommercialEventDetector:
+    """
+    Detects commercial events by comparing current data with Redis cache.
+    
+    Events detected:
+    - PRICE_CHANGE: Product price changed
+    - STOCK_OUT: Stock dropped to 0 at a warehouse (was > 0)
+    - STOCK_REPLENISH: Stock increased by 50+ units in one jump
+    - CONTENT_CHANGE: Main product image URL changed
+    - ITEM_INACTIVE: All stocks = 0 but ad campaign is active
+    
+    IMPORTANT: Separated from EventDetector to keep ad logic independent.
+    """
+
+    def __init__(self, redis_url: str = "redis://redis:6379/0"):
+        self.state_manager = RedisStateManager(redis_url)
+
+    def detect_price_changes(
+        self,
+        shop_id: int,
+        prices_data: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect PRICE_CHANGE events.
+        
+        Compares current convertedPrice with Redis state:price:{shop_id}:{nm_id}.
+        """
+        events = []
+
+        for item in prices_data:
+            nm_id = item["nm_id"]
+            current_price = float(item["converted_price"])
+
+            if current_price <= 0:
+                continue
+
+            old_price = self.state_manager.get_price(shop_id, nm_id)
+
+            if old_price is not None and old_price != current_price:
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,  # Not ad-related
+                    "nm_id": nm_id,
+                    "event_type": "PRICE_CHANGE",
+                    "old_value": str(old_price),
+                    "new_value": str(current_price),
+                    "event_metadata": {
+                        "vendor_code": item.get("vendor_code", ""),
+                        "discount": item.get("discount", 0),
+                    },
+                })
+                logger.info(
+                    f"Detected PRICE_CHANGE: nm={nm_id} "
+                    f"{old_price} -> {current_price}"
+                )
+
+        logger.info(f"Detected {len(events)} PRICE_CHANGE events")
+        return events
+
+    def detect_stock_events(
+        self,
+        shop_id: int,
+        stocks_data: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect STOCK_OUT and STOCK_REPLENISH events.
+        
+        STOCK_OUT:      old > 0  AND  new == 0
+        STOCK_REPLENISH: new - old >= 50  (large restock jump)
+        """
+        events = []
+        REPLENISH_THRESHOLD = 50
+
+        for item in stocks_data:
+            nm_id = item["nm_id"]
+            warehouse = item["warehouse_name"]
+            current_qty = item["amount"]
+
+            old_qty = self.state_manager.get_stock(shop_id, nm_id, warehouse)
+
+            if old_qty is None:
+                # First data point — skip comparison
+                continue
+
+            # STOCK_OUT: was in stock, now gone
+            if old_qty > 0 and current_qty == 0:
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "STOCK_OUT",
+                    "old_value": str(old_qty),
+                    "new_value": "0",
+                    "event_metadata": {"warehouse_name": warehouse},
+                })
+                logger.info(
+                    f"Detected STOCK_OUT: nm={nm_id} "
+                    f"warehouse={warehouse} ({old_qty} -> 0)"
+                )
+
+            # STOCK_REPLENISH: large restock jump
+            elif current_qty - old_qty >= REPLENISH_THRESHOLD:
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "STOCK_REPLENISH",
+                    "old_value": str(old_qty),
+                    "new_value": str(current_qty),
+                    "event_metadata": {
+                        "warehouse_name": warehouse,
+                        "delta": current_qty - old_qty,
+                    },
+                })
+                logger.info(
+                    f"Detected STOCK_REPLENISH: nm={nm_id} "
+                    f"warehouse={warehouse} ({old_qty} -> {current_qty})"
+                )
+
+        logger.info(
+            f"Detected {len([e for e in events if e['event_type'] == 'STOCK_OUT'])} STOCK_OUT "
+            f"and {len([e for e in events if e['event_type'] == 'STOCK_REPLENISH'])} STOCK_REPLENISH events"
+        )
+        return events
+
+    def detect_content_changes(
+        self,
+        shop_id: int,
+        cards_data: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect CONTENT_CHANGE events (main image URL changed).
+        """
+        events = []
+
+        for card in cards_data:
+            nm_id = card["nm_id"]
+            current_url = card.get("main_image_url", "")
+
+            if not current_url:
+                continue
+
+            old_url = self.state_manager.get_image_url(shop_id, nm_id)
+
+            if old_url is not None and old_url != current_url:
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "CONTENT_CHANGE",
+                    "old_value": old_url,
+                    "new_value": current_url,
+                    "event_metadata": {"title": card.get("title", "")},
+                })
+                logger.info(f"Detected CONTENT_CHANGE: nm={nm_id}")
+
+        logger.info(f"Detected {len(events)} CONTENT_CHANGE events")
+        return events
+
+    def detect_inactive_ads_by_stock(
+        self,
+        shop_id: int,
+        stocks_data: List[Dict[str, Any]],
+        active_campaign_items: Dict[int, List[int]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect ITEM_INACTIVE events: all warehouse stocks = 0 but ad is running.
+        
+        Args:
+            stocks_data: Current stock data
+            active_campaign_items: {advert_id: [nm_id, ...]} for active campaigns
+        """
+        events = []
+
+        # Build total stock per nm_id across all warehouses
+        total_stock: Dict[int, int] = {}
+        for item in stocks_data:
+            nm_id = item["nm_id"]
+            total_stock[nm_id] = total_stock.get(nm_id, 0) + item["amount"]
+
+        # Check each active campaign's items
+        for advert_id, nm_ids in active_campaign_items.items():
+            for nm_id in nm_ids:
+                stock = total_stock.get(nm_id, 0)
+                if stock == 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": nm_id,
+                        "event_type": "ITEM_INACTIVE",
+                        "old_value": None,
+                        "new_value": "0",
+                        "event_metadata": {
+                            "reason": "zero_stock_all_warehouses",
+                        },
+                    })
+                    logger.info(
+                        f"Detected ITEM_INACTIVE (zero stock): "
+                        f"advert={advert_id} nm={nm_id}"
+                    )
+
+        logger.info(f"Detected {len(events)} ITEM_INACTIVE events (zero stock)")
+        return events

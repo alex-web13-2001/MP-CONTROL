@@ -454,3 +454,22 @@ AS SELECT
     max(fetched_at) as updated_at
 FROM mms_analytics.ads_raw_history
 GROUP BY hour, shop_id, advert_id, nm_id;
+
+-- ===================
+-- Commercial Monitoring: Inventory snapshots (prices + stocks)
+-- Each row = one product on one warehouse at a point in time
+-- Uses MergeTree (APPEND, not replace) for time-series data
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_inventory_snapshot (
+    fetched_at DateTime,
+    shop_id UInt32,
+    nm_id UInt64,
+    warehouse_name String,
+    warehouse_id UInt32 DEFAULT 0,
+    quantity UInt32,
+    price Decimal(18, 2),
+    discount UInt8
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(fetched_at)
+ORDER BY (shop_id, nm_id, fetched_at)
+TTL fetched_at + INTERVAL 1 YEAR;

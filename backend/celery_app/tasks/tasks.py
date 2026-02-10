@@ -619,4 +619,343 @@ def sync_wb_advert_history(
             logger.error(f"sync_wb_advert_history failed: {e}")
             raise e
             
-    return asyncio.get_event_loop().run_until_complete(run_sync())
+    return asyncio.run(run_sync())
+
+
+# ===================
+# COMMERCIAL MONITORING TASKS
+# Prices, stocks, warehouses, content
+# ===================
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def sync_commercial_data(
+    self,
+    shop_id: int,
+    api_key: str,
+):
+    """
+    Commercial Monitoring: Sync prices and stocks (every 30 min).
+    
+    Flow:
+        Step 1: Fetch prices -> Redis + dim_products
+        Step 2: Fetch stocks -> Redis
+        Step 3: Detect events (PRICE_CHANGE, STOCK_OUT, STOCK_REPLENISH)
+        Step 4: Batch insert into ClickHouse fact_inventory_snapshot
+        Step 5: Check ITEM_INACTIVE (zero stock + active ads)
+    
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    import json
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_prices_service import WBPricesService
+    from app.services.wb_stocks_service import WBStocksService
+    from app.services.event_detector import CommercialEventDetector
+    from app.core.clickhouse import get_clickhouse_client
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    stats = {
+        "shop_id": shop_id,
+        "prices_fetched": 0,
+        "stocks_fetched": 0,
+        "events_detected": 0,
+        "snapshot_rows": 0,
+        "errors": [],
+    }
+
+    # Helper to save events to PostgreSQL (reuse pattern from advert task)
+    def save_events_to_db(events: list):
+        import psycopg2
+        if not events:
+            return
+        try:
+            conn = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "postgres"),
+                port=os.getenv("POSTGRES_PORT", 5432),
+                user=os.getenv("POSTGRES_USER", "mms"),
+                password=os.getenv("POSTGRES_PASSWORD", "mms"),
+                database=os.getenv("POSTGRES_DB", "mms"),
+            )
+            cursor = conn.cursor()
+            for event in events:
+                cursor.execute("""
+                    INSERT INTO event_log (shop_id, advert_id, nm_id, event_type, old_value, new_value, event_metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    event.get("shop_id"),
+                    event.get("advert_id"),
+                    event.get("nm_id"),
+                    event.get("event_type"),
+                    event.get("old_value"),
+                    event.get("new_value"),
+                    json.dumps(event.get("event_metadata")) if event.get("event_metadata") else None,
+                ))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.info(f"Saved {len(events)} commercial events to event_log")
+        except Exception as e:
+            logger.error(f"Error saving commercial events to DB: {e}")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        fetched_at = datetime.utcnow()
+
+        async with async_session() as db:
+            # ===== Step 1: Fetch Prices =====
+            self.update_state(state="PROGRESS", meta={"status": "Fetching prices..."})
+
+            prices_service = WBPricesService(
+                db=db, shop_id=shop_id, api_key=api_key,
+                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            )
+            prices_data = await prices_service.fetch_all_prices()
+            stats["prices_fetched"] = len(prices_data)
+
+            if prices_data:
+                await prices_service.update_products_db(prices_data)
+
+            # ===== Step 2: Detect PRICE_CHANGE (before updating Redis!) =====
+            self.update_state(state="PROGRESS", meta={"status": "Detecting price events..."})
+
+            event_detector = CommercialEventDetector(
+                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0")
+            )
+            all_events = []
+
+            if prices_data:
+                price_events = event_detector.detect_price_changes(shop_id, prices_data)
+                all_events.extend(price_events)
+                # Now update Redis state (after detection)
+                prices_service.update_redis_state(prices_data)
+
+            # ===== Step 3: Fetch Stocks =====
+            self.update_state(state="PROGRESS", meta={"status": "Fetching stocks..."})
+
+            stocks_service = WBStocksService(
+                db=db, shop_id=shop_id, api_key=api_key,
+                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            )
+            nm_ids = await stocks_service.get_product_nm_ids()
+
+            stocks_data = []
+            if nm_ids:
+                stocks_data = await stocks_service.fetch_stocks(nm_ids)
+                stats["stocks_fetched"] = len(stocks_data)
+
+            # ===== Step 4: Detect STOCK_OUT / STOCK_REPLENISH =====
+            self.update_state(state="PROGRESS", meta={"status": "Detecting stock events..."})
+
+            if stocks_data:
+                stock_events = event_detector.detect_stock_events(shop_id, stocks_data)
+                all_events.extend(stock_events)
+                # Ensure warehouse dictionary
+                warehouse_map = await stocks_service.ensure_warehouses(stocks_data)
+                # Now update Redis state (after detection)
+                stocks_service.update_redis_state(stocks_data)
+            else:
+                warehouse_map = {}
+
+            # ===== Step 5: Batch insert into ClickHouse =====
+            self.update_state(state="PROGRESS", meta={"status": "Inserting into ClickHouse..."})
+
+            # Build prices map for snapshot rows
+            prices_map = {
+                item["nm_id"]: {
+                    "converted_price": item["converted_price"],
+                    "discount": item["discount"],
+                }
+                for item in prices_data
+            }
+
+            snapshot_rows = stocks_service.prepare_snapshot_rows(
+                stocks_data, warehouse_map, prices_map, fetched_at
+            )
+
+            if snapshot_rows:
+                try:
+                    ch_client = get_clickhouse_client()
+                    column_names = [
+                        "fetched_at", "shop_id", "nm_id", "warehouse_name",
+                        "warehouse_id", "quantity", "price", "discount",
+                    ]
+                    rows = [
+                        [r[col] for col in column_names]
+                        for r in snapshot_rows
+                    ]
+                    ch_client.insert(
+                        "mms_analytics.fact_inventory_snapshot",
+                        rows,
+                        column_names=column_names,
+                    )
+                    stats["snapshot_rows"] = len(rows)
+                    ch_client.close()
+                    logger.info(f"Inserted {len(rows)} rows into fact_inventory_snapshot")
+                except Exception as e:
+                    logger.error(f"ClickHouse insert error: {e}")
+                    stats["errors"].append(str(e))
+
+            # ===== Step 6: Save events to PostgreSQL =====
+            stats["events_detected"] = len(all_events)
+            save_events_to_db(all_events)
+
+        await engine.dispose()
+
+    try:
+        asyncio.run(run_sync())
+        stats["status"] = "completed"
+        return stats
+    except Exception as exc:
+        stats["status"] = "failed"
+        stats["fatal_error"] = str(exc)
+        self.retry(exc=exc, countdown=120, max_retries=2)
+
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=550)
+def sync_warehouses(
+    self,
+    shop_id: int,
+    api_key: str,
+):
+    """
+    Sync WB warehouse dictionary (daily).
+    
+    Fetches all WB offices and upserts into dim_warehouses.
+    Queue: HEAVY.
+    """
+    import asyncio
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_warehouses_service import WBWarehousesService
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            service = WBWarehousesService(db=db, shop_id=shop_id, api_key=api_key)
+            synced = await service.sync_warehouses()
+            return {"shop_id": shop_id, "warehouses_synced": synced, "status": "completed"}
+
+        await engine.dispose()
+
+    try:
+        return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def sync_product_content(
+    self,
+    shop_id: int,
+    api_key: str,
+):
+    """
+    Sync product content data (daily).
+    
+    Fetches product cards (titles, photos, dimensions, categories)
+    and detects CONTENT_CHANGE events.
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    import json
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_content_service import WBContentService
+    from app.services.event_detector import CommercialEventDetector
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    def save_events_to_db(events: list):
+        import psycopg2
+        if not events:
+            return
+        try:
+            conn = psycopg2.connect(
+                host=os.getenv("POSTGRES_HOST", "postgres"),
+                port=os.getenv("POSTGRES_PORT", 5432),
+                user=os.getenv("POSTGRES_USER", "mms"),
+                password=os.getenv("POSTGRES_PASSWORD", "mms"),
+                database=os.getenv("POSTGRES_DB", "mms"),
+            )
+            cursor = conn.cursor()
+            for event in events:
+                cursor.execute("""
+                    INSERT INTO event_log (shop_id, advert_id, nm_id, event_type, old_value, new_value, event_metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    event.get("shop_id"),
+                    event.get("advert_id"),
+                    event.get("nm_id"),
+                    event.get("event_type"),
+                    event.get("old_value"),
+                    event.get("new_value"),
+                    json.dumps(event.get("event_metadata")) if event.get("event_metadata") else None,
+                ))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.info(f"Saved {len(events)} content events to event_log")
+        except Exception as e:
+            logger.error(f"Error saving content events to DB: {e}")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            self.update_state(state="PROGRESS", meta={"status": "Fetching product cards..."})
+
+            service = WBContentService(
+                db=db, shop_id=shop_id, api_key=api_key,
+                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"),
+            )
+            cards_data = await service.fetch_all_cards()
+
+            if not cards_data:
+                return {"shop_id": shop_id, "products_updated": 0, "status": "no_data"}
+
+            # Detect content changes BEFORE updating Redis
+            self.update_state(state="PROGRESS", meta={"status": "Detecting content changes..."})
+            event_detector = CommercialEventDetector(
+                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0")
+            )
+            events = event_detector.detect_content_changes(shop_id, cards_data)
+            save_events_to_db(events)
+
+            # Update DB and Redis
+            self.update_state(state="PROGRESS", meta={"status": "Updating product content..."})
+            updated = await service.update_products_db(cards_data)
+            service.update_redis_image_state(cards_data)
+
+            return {
+                "shop_id": shop_id,
+                "products_updated": updated,
+                "events_detected": len(events),
+                "status": "completed",
+            }
+
+        await engine.dispose()
+
+    try:
+        return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)

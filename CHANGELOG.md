@@ -2,6 +2,31 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-11
+
+### Added — Модуль «Коммерческий мониторинг»
+
+- **Цены и скидки:** Сервис `wb_prices_service.py` — загрузка цен через `GET /api/v2/list/goods/filter` (discounts-prices-api), пагинация, upsert в `dim_products` (PostgreSQL), кэш в Redis.
+- **Остатки FBO:** Сервис `wb_stocks_service.py` — загрузка остатков через `GET /api/v1/supplier/stocks` (statistics-api), авто-создание складов в `dim_warehouses`.
+- **Справочник складов:** Сервис `wb_warehouses_service.py` — синхронизация через `GET /api/v3/warehouses` (marketplace-api), ежесуточно.
+- **Контент товаров:** Сервис `wb_content_service.py` — загрузка карточек через `POST /content/v2/get/cards/list` (content-api), курсорная пагинация, обновление названий, фото, габаритов, категорий.
+- **Event Detector (коммерческий):** Класс `CommercialEventDetector` — детекция `PRICE_CHANGE`, `STOCK_OUT`, `STOCK_REPLENISH`, `CONTENT_CHANGE`, `ITEM_INACTIVE` (реклама на товар с нулевым остатком).
+- **Celery Tasks:** 3 новые задачи — `sync_commercial_data` (30 мин), `sync_warehouses` (4:00), `sync_product_content` (4:30).
+- **API Endpoints:** Router `/commercial` с 5 эндпоинтами — sync, sync-warehouses, sync-content, status, turnover.
+- **PostgreSQL:** Таблицы `dim_products` (справочник товаров) и `dim_warehouses` (справочник складов).
+- **ClickHouse:** Таблица `fact_inventory_snapshot` (MergeTree, TTL 1 год) для хранения снимков остатков и цен.
+- **Redis State:** Методы `get/set_price`, `get/set_stock`, `get/set_image_url` для кэширования состояний.
+- **WB Domains:** Добавлены `wildberries_prices`, `wildberries_content` и `wildberries_marketplace` в `MARKETPLACE_URLS`.
+
+### Fixed — Коммерческий модуль (тестирование с реальным API)
+
+- **DNS:** Домен `advert-api.wb.ru` → `advert-api.wildberries.ru` (не резолвился из Docker).
+- **Stocks API:** Endpoint `/api/v3/stocks` (advert-api, 404) → `/api/v1/supplier/stocks` (statistics-api, 200).
+- **Warehouses API:** Endpoint `/api/v1/offices` (common-api, 404) → `/api/v3/warehouses` (marketplace-api, 200).
+- **Prices mapping:** Поле `convertedPrice` → `discountedPrice`, `discount` перенесён с уровня sizes на уровень товара.
+- **Зависимость:** Добавлен `psycopg2-binary==2.9.9` для записи events в PostgreSQL из Celery.
+- **Event Loop:** `sync_wb_advert_history` — заменён deprecated `asyncio.get_event_loop().run_until_complete()` на `asyncio.run()` (ошибка "There is no current event loop in thread 'MainThread'").
+
 ## [Unreleased] - 2026-02-02
 
 ### Added

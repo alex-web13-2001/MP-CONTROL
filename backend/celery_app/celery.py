@@ -1,6 +1,7 @@
 """Celery application configuration with separate queues."""
 
 from celery import Celery
+from celery.schedules import crontab
 from kombu import Exchange, Queue
 
 from app.config import get_settings
@@ -44,6 +45,11 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.load_historical_data": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_full_history": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_marketplace_data": {"queue": "heavy", "routing_key": "heavy"},
+    
+    # Commercial monitoring tasks
+    "celery_app.tasks.tasks.sync_commercial_data": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_warehouses": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_product_content": {"queue": "heavy", "routing_key": "heavy"},
 }
 
 # ===================
@@ -98,6 +104,34 @@ celery_app.conf.beat_schedule = {
     # "daily-sync": {
     #     "task": "celery_app.tasks.tasks.sync_marketplace_data",
     #     "schedule": crontab(hour=3, minute=0),
+    #     "options": {"queue": "heavy"},
+    # },
+    
+    # === Commercial Monitoring ===
+    
+    # Prices + Stocks sync - every 30 minutes on HEAVY queue
+    # NOTE: Requires shop_id and api_key — will be dispatched by a coordinator task
+    # Uncomment when ready to use with specific shop credentials
+    # "commercial-sync-30min": {
+    #     "task": "celery_app.tasks.tasks.sync_commercial_data",
+    #     "schedule": 1800.0,  # Every 30 minutes
+    #     "args": [1, "YOUR_API_KEY"],  # Replace with actual shop_id and api_key
+    #     "options": {"queue": "heavy", "priority": 6},
+    # },
+    
+    # Warehouse dictionary sync - daily at 4:00 AM
+    # "commercial-sync-warehouses": {
+    #     "task": "celery_app.tasks.tasks.sync_warehouses",
+    #     "schedule": crontab(hour=4, minute=0),
+    #     "args": [1, "YOUR_API_KEY"],
+    #     "options": {"queue": "heavy"},
+    # },
+    
+    # Product content sync - daily at 4:30 AM
+    # "commercial-sync-content": {
+    #     "task": "celery_app.tasks.tasks.sync_product_content",
+    #     "schedule": crontab(hour=4, minute=30),
+    #     "args": [1, "YOUR_API_KEY"],
     #     "options": {"queue": "heavy"},
     # },
 }

@@ -208,3 +208,57 @@ CREATE INDEX IF NOT EXISTS idx_event_log_shop ON event_log(shop_id);
 CREATE INDEX IF NOT EXISTS idx_event_log_advert ON event_log(advert_id);
 CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type);
 CREATE INDEX IF NOT EXISTS idx_event_log_created ON event_log(created_at);
+
+-- ===================
+-- Commercial Monitoring: Products Dictionary
+-- ===================
+CREATE TABLE IF NOT EXISTS dim_products (
+    id SERIAL PRIMARY KEY,
+    shop_id INTEGER NOT NULL,
+    nm_id BIGINT NOT NULL,
+    vendor_code VARCHAR(100),
+    name VARCHAR(500),
+    main_image_url TEXT,
+    
+    -- Dimensions (for logistics cost calculation)
+    length DECIMAL(8, 2),   -- cm
+    width DECIMAL(8, 2),    -- cm
+    height DECIMAL(8, 2),   -- cm
+    
+    -- Current pricing (updated every 30 min)
+    current_price DECIMAL(12, 2),
+    current_discount INTEGER DEFAULT 0,
+    
+    -- Classification
+    category VARCHAR(255),
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    
+    UNIQUE(shop_id, nm_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dim_products_shop ON dim_products(shop_id);
+CREATE INDEX IF NOT EXISTS idx_dim_products_nm ON dim_products(nm_id);
+CREATE INDEX IF NOT EXISTS idx_dim_products_vendor ON dim_products(vendor_code);
+
+CREATE TRIGGER update_dim_products_updated_at BEFORE UPDATE ON dim_products
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Commercial Monitoring: Warehouses Dictionary
+-- ===================
+CREATE TABLE IF NOT EXISTS dim_warehouses (
+    warehouse_id INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    address TEXT,
+    city VARCHAR(150),
+    is_verified BOOLEAN DEFAULT false,  -- false = auto-created from stock response
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dim_warehouses_name ON dim_warehouses(name);
+
+CREATE TRIGGER update_dim_warehouses_updated_at BEFORE UPDATE ON dim_warehouses
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -145,3 +145,40 @@ class RedisStateManager:
         """Store last views count for specific item."""
         key = f"{self.PREFIX}:views:{shop_id}:{advert_id}:{nm_id}"
         self.client.setex(key, self.TTL_SECONDS, str(views))
+
+    # ============ Commercial Monitoring State ============
+
+    COMMERCIAL_TTL = 2 * 24 * 60 * 60  # 2 days (enough for 30-min intervals)
+
+    def get_price(self, shop_id: int, nm_id: int) -> Optional[float]:
+        """Get last known converted price for a product."""
+        key = f"state:price:{shop_id}:{nm_id}"
+        val = self.client.get(key)
+        return float(val) if val else None
+
+    def set_price(self, shop_id: int, nm_id: int, price: float) -> None:
+        """Store current converted price for a product."""
+        key = f"state:price:{shop_id}:{nm_id}"
+        self.client.setex(key, self.COMMERCIAL_TTL, str(price))
+
+    def get_stock(self, shop_id: int, nm_id: int, warehouse: str) -> Optional[int]:
+        """Get last known stock quantity for a product at a specific warehouse."""
+        key = f"state:stock:{shop_id}:{nm_id}:{warehouse}"
+        val = self.client.get(key)
+        return int(val) if val else None
+
+    def set_stock(self, shop_id: int, nm_id: int, warehouse: str, quantity: int) -> None:
+        """Store current stock quantity for a product at a specific warehouse."""
+        key = f"state:stock:{shop_id}:{nm_id}:{warehouse}"
+        self.client.setex(key, self.COMMERCIAL_TTL, str(quantity))
+
+    def get_image_url(self, shop_id: int, nm_id: int) -> Optional[str]:
+        """Get last known main image URL for a product."""
+        key = f"state:image:{shop_id}:{nm_id}"
+        return self.client.get(key)
+
+    def set_image_url(self, shop_id: int, nm_id: int, url: str) -> None:
+        """Store current main image URL for a product."""
+        key = f"state:image:{shop_id}:{nm_id}"
+        self.client.setex(key, self.COMMERCIAL_TTL, url)
+

@@ -40,10 +40,13 @@ from app.core.circuit_breaker import (
 
 # Marketplace base URLs
 MARKETPLACE_URLS = {
-    "wildberries": "https://suppliers-api.wildberries.ru",
-    "wildberries_adv": "https://advert-api.wb.ru",
+    "wildberries": "https://supplier-api.wildberries.ru",
+    "wildberries_adv": "https://advert-api.wildberries.ru",
     "wildberries_stats": "https://statistics-api.wildberries.ru",
     "wildberries_common": "https://common-api.wildberries.ru",
+    "wildberries_prices": "https://discounts-prices-api.wildberries.ru",
+    "wildberries_content": "https://content-api.wildberries.ru",
+    "wildberries_marketplace": "https://marketplace-api.wildberries.ru",
     "ozon": "https://api-seller.ozon.ru",
 }
 
