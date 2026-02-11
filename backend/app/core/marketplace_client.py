@@ -47,6 +47,7 @@ MARKETPLACE_URLS = {
     "wildberries_prices": "https://discounts-prices-api.wildberries.ru",
     "wildberries_content": "https://content-api.wildberries.ru",
     "wildberries_marketplace": "https://marketplace-api.wildberries.ru",
+    "wildberries_analytics": "https://seller-analytics-api.wildberries.ru",
     "ozon": "https://api-seller.ozon.ru",
 }
 

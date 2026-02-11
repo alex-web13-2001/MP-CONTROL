@@ -134,6 +134,16 @@ celery_app.conf.beat_schedule = {
     #     "args": [1, "YOUR_API_KEY"],
     #     "options": {"queue": "heavy"},
     # },
+
+    # === Sales Funnel Analytics ===
+
+    # Sales funnel sync - every 30 minutes on HEAVY queue (append-only)
+    # "sync-sales-funnel-30min": {
+    #     "task": "celery_app.tasks.tasks.sync_sales_funnel",
+    #     "schedule": 1800.0,  # Every 30 minutes
+    #     "args": [1, "YOUR_API_KEY"],
+    #     "options": {"queue": "heavy", "priority": 5},
+    # },
 }
 
 

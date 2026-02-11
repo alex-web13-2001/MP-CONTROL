@@ -262,3 +262,36 @@ CREATE INDEX IF NOT EXISTS idx_dim_warehouses_name ON dim_warehouses(name);
 
 CREATE TRIGGER update_dim_warehouses_updated_at BEFORE UPDATE ON dim_warehouses
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Content Monitoring: Product Content Hashes (SEO/CTR audit)
+-- ===================
+-- Stores hash "snapshots" of product content for change detection.
+-- Compared nightly against fresh API data to detect:
+--   CONTENT_TITLE_CHANGED, CONTENT_DESC_CHANGED,
+--   CONTENT_MAIN_PHOTO_CHANGED, CONTENT_PHOTO_ORDER_CHANGED
+CREATE TABLE IF NOT EXISTS dim_product_content (
+    id SERIAL PRIMARY KEY,
+    shop_id INTEGER NOT NULL,
+    nm_id BIGINT NOT NULL,
+
+    -- MD5 hashes for fast comparison
+    title_hash VARCHAR(32),           -- MD5(title)
+    description_hash VARCHAR(32),     -- MD5(description)
+
+    -- Photo tracking
+    main_photo_id TEXT,               -- File-ID extracted from WB CDN URL (not full URL)
+    photos_hash VARCHAR(32),          -- MD5(sorted photo file-IDs JSON)
+    photos_count INTEGER DEFAULT 0,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(shop_id, nm_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dim_product_content_shop ON dim_product_content(shop_id);
+CREATE INDEX IF NOT EXISTS idx_dim_product_content_nm ON dim_product_content(nm_id);
+
+CREATE TRIGGER update_dim_product_content_updated_at BEFORE UPDATE ON dim_product_content
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

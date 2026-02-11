@@ -473,3 +473,61 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_inventory_snapshot (
 PARTITION BY toYYYYMM(fetched_at)
 ORDER BY (shop_id, nm_id, fetched_at)
 TTL fetched_at + INTERVAL 1 YEAR;
+
+-- ===================
+-- Sales Funnel Analytics (WB Seller Analytics API)
+-- Daily funnel metrics per product: views, cart, orders, buyouts, conversions
+-- MergeTree: every sync INSERTs new rows (append-only) to keep history
+-- of how metrics change throughout the day (every 30 min)
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_sales_funnel (
+    fetched_at      DateTime DEFAULT now(),  -- when this snapshot was taken
+    event_date      Date,
+    shop_id         UInt32,
+    nm_id           UInt64,
+
+    -- Funnel metrics
+    open_count       UInt32 DEFAULT 0,      -- Card views
+    cart_count       UInt32 DEFAULT 0,      -- Add to cart
+    order_count      UInt32 DEFAULT 0,      -- Orders (qty)
+    order_sum        Decimal(18, 2) DEFAULT 0,  -- Orders (sum)
+    buyout_count     UInt32 DEFAULT 0,      -- Buyouts (qty)
+    buyout_sum       Decimal(18, 2) DEFAULT 0,  -- Buyouts (sum)
+    cancel_count     UInt32 DEFAULT 0,      -- Cancels (qty)
+    cancel_sum       Decimal(18, 2) DEFAULT 0,  -- Cancels (sum)
+
+    -- Conversions
+    add_to_cart_pct  Float32 DEFAULT 0,     -- CR: card → cart (%)
+    cart_to_order_pct Float32 DEFAULT 0,    -- CR: cart → order (%)
+    buyout_pct       Float32 DEFAULT 0,     -- Buyout rate (%)
+
+    -- Additional
+    avg_price        Decimal(18, 2) DEFAULT 0,
+    add_to_wishlist  UInt32 DEFAULT 0
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(event_date)
+ORDER BY (shop_id, nm_id, event_date, fetched_at)
+TTL event_date + INTERVAL 2 YEAR;
+
+-- Latest sales funnel view (shows most recent snapshot per product+date)
+CREATE VIEW IF NOT EXISTS mms_analytics.fact_sales_funnel_latest AS
+SELECT
+    shop_id,
+    nm_id,
+    event_date,
+    argMax(open_count, fetched_at) as open_count,
+    argMax(cart_count, fetched_at) as cart_count,
+    argMax(order_count, fetched_at) as order_count,
+    argMax(order_sum, fetched_at) as order_sum,
+    argMax(buyout_count, fetched_at) as buyout_count,
+    argMax(buyout_sum, fetched_at) as buyout_sum,
+    argMax(cancel_count, fetched_at) as cancel_count,
+    argMax(cancel_sum, fetched_at) as cancel_sum,
+    argMax(add_to_cart_pct, fetched_at) as add_to_cart_pct,
+    argMax(cart_to_order_pct, fetched_at) as cart_to_order_pct,
+    argMax(buyout_pct, fetched_at) as buyout_pct,
+    argMax(avg_price, fetched_at) as avg_price,
+    argMax(add_to_wishlist, fetched_at) as add_to_wishlist,
+    max(fetched_at) as last_fetched_at
+FROM mms_analytics.fact_sales_funnel
+GROUP BY shop_id, nm_id, event_date;

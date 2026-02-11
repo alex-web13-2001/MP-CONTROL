@@ -18,6 +18,24 @@
 - **Redis State:** Методы `get/set_price`, `get/set_stock`, `get/set_image_url` для кэширования состояний.
 - **WB Domains:** Добавлены `wildberries_prices`, `wildberries_content` и `wildberries_marketplace` в `MARKETPLACE_URLS`.
 
+### Added — Модуль «Контент-мониторинг и SEO-аудит»
+
+- **Content Hashing:** Расширен `wb_content_service.py` — MD5-хеширование title, description, фото. Извлечение stable photo_id из WB CDN URL (защита от ложных срабатываний CDN-смены).
+- **ContentEventDetector:** Новый класс в `event_detector.py` — 4 типа событий: `CONTENT_TITLE_CHANGED`, `CONTENT_DESC_CHANGED`, `CONTENT_MAIN_PHOTO_CHANGED`, `CONTENT_PHOTO_ORDER_CHANGED`.
+- **PostgreSQL:** Таблица `dim_product_content` (хеши: title_hash, description_hash, main_photo_id, photos_hash, photos_count).
+- **Redis State:** Методы `get/set_content_hash` для кэширования хешей контента (TTL 3 дня).
+- **Celery Task:** Расширен `sync_product_content` — 5-шаговый pipeline: fetch → load hashes → detect events → upsert hashes → update products.
+
+### Added — Модуль «Воронка продаж WB»
+
+- **API Сервис:** `wb_sales_funnel_service.py` — класс `WBSalesFunnelService` для загрузки данных воронки продаж с автоматическим разбиением на чанки (max 20 nmIds, 7 дней).
+- **Три метода загрузки:** `fetch_history_by_days` (подневная история), `fetch_aggregate` (агрегат за 365 дней), CSV-отчёт (create → poll → download → parse ZIP).
+- **ClickHouse:** Таблица `fact_sales_funnel` (MergeTree append-only, TTL 2 года) — 14 метрик + `fetched_at` для хранения истории изменений каждые 30 мин.
+- **ClickHouse View:** `fact_sales_funnel_latest` — дедупликация через argMax для быстрых запросов (последний снимок).
+- **Celery Tasks:** `sync_sales_funnel` (каждые 30 мин, append) и `backfill_sales_funnel` (однократно, 6 мес через CSV nm-report → 7,366 rows, 52 продукта).
+- **Beat Schedule:** `sync-sales-funnel-30min` каждые 30 минут (закомментирован, готов к активации).
+- **WB Domain:** Добавлен `wildberries_analytics` = `seller-analytics-api.wildberries.ru` в `MARKETPLACE_URLS`.
+
 ### Fixed — Коммерческий модуль (тестирование с реальным API)
 
 - **DNS:** Домен `advert-api.wb.ru` → `advert-api.wildberries.ru` (не резолвился из Docker).

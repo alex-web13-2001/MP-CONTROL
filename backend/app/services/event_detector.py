@@ -487,3 +487,133 @@ class CommercialEventDetector:
 
         logger.info(f"Detected {len(events)} ITEM_INACTIVE events (zero stock)")
         return events
+
+
+class ContentEventDetector:
+    """
+    Detects content/SEO events by comparing current card data with
+    the reference hashes stored in dim_product_content (PostgreSQL).
+    
+    Events detected:
+    - CONTENT_TITLE_CHANGED: Title text changed (affects SEO/organic)
+    - CONTENT_DESC_CHANGED: Description changed (affects SEO)
+    - CONTENT_MAIN_PHOTO_CHANGED: Main photo replaced (affects CTR)
+    - CONTENT_PHOTO_ORDER_CHANGED: Photos added/removed/reordered (affects CR)
+    
+    IMPORTANT: Comparison uses PostgreSQL (not Redis) because content
+    is checked once per day. Redis is used as supplementary cache.
+    """
+
+    def detect_content_events(
+        self,
+        shop_id: int,
+        cards_data: List[Dict[str, Any]],
+        existing_hashes: Dict[int, Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Compare current card hashes with stored reference hashes.
+        
+        Args:
+            shop_id: Shop ID
+            cards_data: Fresh cards from WBContentService.fetch_all_cards()
+            existing_hashes: {nm_id: {title_hash, description_hash, 
+                             main_photo_id, photos_hash, photos_count}}
+                             from dim_product_content
+        
+        Returns:
+            List of event dicts ready for event_log insertion.
+        """
+        events = []
+
+        for card in cards_data:
+            nm_id = card["nm_id"]
+            old = existing_hashes.get(nm_id)
+
+            if not old:
+                # First time seeing this product — no comparison possible
+                continue
+
+            # === CONTENT_TITLE_CHANGED ===
+            if (
+                card["title_hash"]
+                and old.get("title_hash")
+                and card["title_hash"] != old["title_hash"]
+            ):
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "CONTENT_TITLE_CHANGED",
+                    "old_value": old["title_hash"],
+                    "new_value": card["title_hash"],
+                    "event_metadata": {
+                        "new_title": card.get("title", "")[:200],  # Truncate for metadata
+                    },
+                })
+                logger.info(f"Detected CONTENT_TITLE_CHANGED: nm={nm_id}")
+
+            # === CONTENT_DESC_CHANGED ===
+            if (
+                card["description_hash"]
+                and old.get("description_hash")
+                and card["description_hash"] != old["description_hash"]
+            ):
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "CONTENT_DESC_CHANGED",
+                    "old_value": old["description_hash"],
+                    "new_value": card["description_hash"],
+                    "event_metadata": None,
+                })
+                logger.info(f"Detected CONTENT_DESC_CHANGED: nm={nm_id}")
+
+            # === CONTENT_MAIN_PHOTO_CHANGED ===
+            # Most important for CTR! Uses photo_id (not full URL)
+            if (
+                card["main_photo_id"]
+                and old.get("main_photo_id")
+                and card["main_photo_id"] != old["main_photo_id"]
+            ):
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "CONTENT_MAIN_PHOTO_CHANGED",
+                    "old_value": old["main_photo_id"],
+                    "new_value": card["main_photo_id"],
+                    "event_metadata": {
+                        "old_count": old.get("photos_count", 0),
+                        "new_count": card["photos_count"],
+                    },
+                })
+                logger.info(f"Detected CONTENT_MAIN_PHOTO_CHANGED: nm={nm_id}")
+
+            # === CONTENT_PHOTO_ORDER_CHANGED ===
+            # Detects added/removed/reordered secondary photos (affects CR)
+            # Only fires if main photo is unchanged (otherwise MAIN_PHOTO_CHANGED covers it)
+            elif (
+                card["photos_hash"]
+                and old.get("photos_hash")
+                and card["photos_hash"] != old["photos_hash"]
+            ):
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": 0,
+                    "nm_id": nm_id,
+                    "event_type": "CONTENT_PHOTO_ORDER_CHANGED",
+                    "old_value": old["photos_hash"],
+                    "new_value": card["photos_hash"],
+                    "event_metadata": {
+                        "old_count": old.get("photos_count", 0),
+                        "new_count": card["photos_count"],
+                    },
+                })
+                logger.info(f"Detected CONTENT_PHOTO_ORDER_CHANGED: nm={nm_id}")
+
+        logger.info(
+            f"Content audit: {len(events)} events detected "
+            f"({len(cards_data)} products checked)"
+        )
+        return events

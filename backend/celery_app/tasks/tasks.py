@@ -865,10 +865,15 @@ def sync_product_content(
     api_key: str,
 ):
     """
-    Sync product content data (daily).
+    Sync product content data + SEO audit (daily).
     
-    Fetches product cards (titles, photos, dimensions, categories)
-    and detects CONTENT_CHANGE events.
+    1. Fetch product cards (titles, descriptions, photos, dimensions)
+    2. Load existing content hashes from dim_product_content
+    3. Detect content events (title/desc/photo changes)
+    4. Upsert new hashes as reference for next comparison
+    5. Update dim_products and Redis state
+    6. Save events to event_log
+    
     Queue: HEAVY.
     """
     import asyncio
@@ -876,9 +881,10 @@ def sync_product_content(
     import json
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import text as sa_text
     from app.config import get_settings
     from app.services.wb_content_service import WBContentService
-    from app.services.event_detector import CommercialEventDetector
+    from app.services.event_detector import ContentEventDetector
     import logging
 
     logger = logging.getLogger(__name__)
@@ -922,7 +928,11 @@ def sync_product_content(
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
-            self.update_state(state="PROGRESS", meta={"status": "Fetching product cards..."})
+            # Step 1: Fetch fresh cards from WB API
+            self.update_state(state="PROGRESS", meta={
+                "status": "Fetching product cards...",
+                "step": "1/5",
+            })
 
             service = WBContentService(
                 db=db, shop_id=shop_id, api_key=api_key,
@@ -933,23 +943,73 @@ def sync_product_content(
             if not cards_data:
                 return {"shop_id": shop_id, "products_updated": 0, "status": "no_data"}
 
-            # Detect content changes BEFORE updating Redis
-            self.update_state(state="PROGRESS", meta={"status": "Detecting content changes..."})
-            event_detector = CommercialEventDetector(
-                redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0")
+            # Step 2: Load existing content hashes from dim_product_content
+            self.update_state(state="PROGRESS", meta={
+                "status": "Loading reference hashes from DB...",
+                "step": "2/5",
+                "products_fetched": len(cards_data),
+            })
+
+            rows = await db.execute(
+                sa_text("""
+                    SELECT nm_id, title_hash, description_hash, 
+                           main_photo_id, photos_hash, photos_count
+                    FROM dim_product_content
+                    WHERE shop_id = :shop_id
+                """),
+                {"shop_id": shop_id},
             )
-            events = event_detector.detect_content_changes(shop_id, cards_data)
+            existing_hashes = {}
+            for row in rows.fetchall():
+                existing_hashes[row[0]] = {
+                    "title_hash": row[1],
+                    "description_hash": row[2],
+                    "main_photo_id": row[3],
+                    "photos_hash": row[4],
+                    "photos_count": row[5] or 0,
+                }
+
+            # Step 3: Detect content events
+            self.update_state(state="PROGRESS", meta={
+                "status": "Detecting content changes...",
+                "step": "3/5",
+                "existing_hashes": len(existing_hashes),
+            })
+
+            content_detector = ContentEventDetector()
+            events = content_detector.detect_content_events(
+                shop_id, cards_data, existing_hashes
+            )
             save_events_to_db(events)
 
-            # Update DB and Redis
-            self.update_state(state="PROGRESS", meta={"status": "Updating product content..."})
+            # Step 4: Upsert content hashes (new reference)
+            self.update_state(state="PROGRESS", meta={
+                "status": "Updating content hashes...",
+                "step": "4/5",
+                "events_detected": len(events),
+            })
+
+            hashes_upserted = await service.upsert_content_hashes(cards_data)
+
+            # Step 5: Update dim_products and Redis
+            self.update_state(state="PROGRESS", meta={
+                "status": "Updating product data and Redis...",
+                "step": "5/5",
+            })
+
             updated = await service.update_products_db(cards_data)
             service.update_redis_image_state(cards_data)
 
             return {
                 "shop_id": shop_id,
                 "products_updated": updated,
+                "hashes_upserted": hashes_upserted,
                 "events_detected": len(events),
+                "event_types": {
+                    etype: len([e for e in events if e["event_type"] == etype])
+                    for etype in set(e["event_type"] for e in events)
+                } if events else {},
+                "existing_hashes_count": len(existing_hashes),
                 "status": "completed",
             }
 
@@ -957,5 +1017,247 @@ def sync_product_content(
 
     try:
         return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+# ====================
+# SALES FUNNEL TASKS
+# Fetch WB funnel analytics: views, cart, orders, buyouts, conversions
+# ====================
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=550)
+def sync_sales_funnel(self, shop_id: int, api_key: str):
+    """
+    Every-30-min Sync: fetch last 2 days of sales funnel data.
+
+    Every sync INSERTs new rows (append-only) — this preserves history
+    of how WB metrics change throughout the day.
+    Use fact_sales_funnel_latest view for latest values.
+
+    Pipeline:
+    1. Get nm_ids from dim_products
+    2. Fetch daily history for yesterday + today
+    3. INSERT into ClickHouse fact_sales_funnel (append, not replace)
+
+    Routed to HEAVY queue.
+    """
+    import asyncio
+    import os
+    from datetime import date, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_sales_funnel_service import (
+        WBSalesFunnelService,
+        SalesFunnelLoader,
+    )
+
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            async with WBSalesFunnelService(db, shop_id, api_key) as svc:
+                # Step 1: Get nm_ids
+                self.update_state(state="PROGRESS", meta={
+                    "status": "Getting product list...",
+                    "step": "1/3",
+                })
+                nm_ids = await svc.get_product_nm_ids()
+                if not nm_ids:
+                    return {
+                        "shop_id": shop_id,
+                        "status": "no_products",
+                        "message": "No products found in dim_products",
+                    }
+
+                # Step 2: Fetch history for last 2 days
+                end = date.today()
+                start = end - timedelta(days=1)
+
+                self.update_state(state="PROGRESS", meta={
+                    "status": f"Fetching funnel data for {len(nm_ids)} products...",
+                    "step": "2/3",
+                    "nm_ids_count": len(nm_ids),
+                    "period": f"{start} — {end}",
+                })
+
+                def on_progress(done, total):
+                    self.update_state(state="PROGRESS", meta={
+                        "status": f"API requests: {done}/{total}",
+                        "step": "2/3",
+                    })
+
+                rows = await svc.fetch_history_by_days(
+                    nm_ids, start, end,
+                    progress_callback=on_progress,
+                )
+
+                # Step 3: INSERT into ClickHouse (append-only)
+                self.update_state(state="PROGRESS", meta={
+                    "status": f"Inserting {len(rows)} rows into ClickHouse...",
+                    "step": "3/3",
+                })
+
+                loader = SalesFunnelLoader(
+                    host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                    port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                    username=os.getenv("CLICKHOUSE_USER", "default"),
+                    password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+                )
+                with loader:
+                    inserted = loader.insert_rows(rows)
+
+                return {
+                    "shop_id": shop_id,
+                    "status": "completed",
+                    "nm_ids": len(nm_ids),
+                    "period": f"{start} — {end}",
+                    "rows_fetched": len(rows),
+                    "rows_inserted": inserted,
+                }
+
+        await engine.dispose()
+
+    try:
+        return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=120, max_retries=2)
+
+
+@celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
+def backfill_sales_funnel(
+    self,
+    shop_id: int,
+    api_key: str,
+    months: int = 6,
+):
+    """
+    One-time Backfill: load historical funnel data.
+
+    Strategy:
+    1. Try CSV report (async: create → poll → download → parse)
+    2. Fallback: History API week-by-week
+
+    Routed to HEAVY queue. Can run up to 2 hours.
+    """
+    import asyncio
+    import os
+    from datetime import date, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_sales_funnel_service import (
+        WBSalesFunnelService,
+        SalesFunnelLoader,
+    )
+
+    settings = get_settings()
+
+    async def run_backfill():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        end = date.today()
+        start = end - timedelta(days=months * 30)
+
+        async with async_session() as db:
+            async with WBSalesFunnelService(db, shop_id, api_key) as svc:
+                # Step 1: Get nm_ids
+                self.update_state(state="PROGRESS", meta={
+                    "status": "Getting product list...",
+                    "step": "1/4",
+                })
+                nm_ids = await svc.get_product_nm_ids()
+                if not nm_ids:
+                    return {
+                        "shop_id": shop_id,
+                        "status": "no_products",
+                    }
+
+                rows = []
+                method_used = "unknown"
+
+                # Step 2: Try CSV report first
+                self.update_state(state="PROGRESS", meta={
+                    "status": "Creating CSV report...",
+                    "step": "2/4",
+                    "period": f"{start} — {end}",
+                })
+
+                try:
+                    report_id = await svc.create_csv_report(start, end, "day")
+
+                    # Poll until ready
+                    self.update_state(state="PROGRESS", meta={
+                        "status": f"Waiting for CSV report {report_id[:8]}...",
+                        "step": "2/4",
+                    })
+
+                    status = await svc.poll_csv_report(report_id)
+
+                    if status == "SUCCESS":
+                        # Download and parse
+                        self.update_state(state="PROGRESS", meta={
+                            "status": "Downloading CSV report...",
+                            "step": "3/4",
+                        })
+                        zip_data = await svc.download_csv_report(report_id)
+                        rows = svc.parse_csv_report(zip_data)
+                        method_used = "csv_report"
+                    else:
+                        raise RuntimeError(f"CSV report status: {status}")
+
+                except Exception as csv_err:
+                    # Fallback: use History API
+                    self.update_state(state="PROGRESS", meta={
+                        "status": f"CSV failed ({csv_err}), using History API...",
+                        "step": "2/4",
+                    })
+
+                    def on_progress(done, total):
+                        self.update_state(state="PROGRESS", meta={
+                            "status": f"History API: {done}/{total} requests",
+                            "step": "3/4",
+                        })
+
+                    rows = await svc.fetch_history_by_days(
+                        nm_ids, start, end,
+                        progress_callback=on_progress,
+                    )
+                    method_used = "history_api"
+
+                # Step 4: Insert into ClickHouse
+                self.update_state(state="PROGRESS", meta={
+                    "status": f"Inserting {len(rows)} rows into ClickHouse...",
+                    "step": "4/4",
+                })
+
+                loader = SalesFunnelLoader(
+                    host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                    port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                    username=os.getenv("CLICKHOUSE_USER", "default"),
+                    password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+                )
+                with loader:
+                    inserted = loader.insert_rows(rows)
+
+                return {
+                    "shop_id": shop_id,
+                    "status": "completed",
+                    "method": method_used,
+                    "period": f"{start} — {end}",
+                    "nm_ids": len(nm_ids),
+                    "rows_parsed": len(rows),
+                    "rows_inserted": inserted,
+                }
+
+        await engine.dispose()
+
+    try:
+        return asyncio.run(run_backfill())
     except Exception as exc:
         self.retry(exc=exc, countdown=300, max_retries=2)

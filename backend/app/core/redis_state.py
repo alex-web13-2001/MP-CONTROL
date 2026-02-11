@@ -182,3 +182,38 @@ class RedisStateManager:
         key = f"state:image:{shop_id}:{nm_id}"
         self.client.setex(key, self.COMMERCIAL_TTL, url)
 
+    # ============ Content Monitoring State (SEO audit) ============
+
+    CONTENT_TTL = 3 * 24 * 60 * 60  # 3 days (checked once per day)
+
+    def get_content_hash(self, shop_id: int, nm_id: int) -> Optional[Dict[str, str]]:
+        """Get last known content hashes for a product."""
+        key = f"state:content:{shop_id}:{nm_id}"
+        raw = self.client.hgetall(key)
+        if not raw:
+            return None
+        return raw
+
+    def set_content_hash(
+        self,
+        shop_id: int,
+        nm_id: int,
+        title_hash: str = "",
+        desc_hash: str = "",
+        photos_hash: str = "",
+        main_photo_id: str = "",
+    ) -> None:
+        """Store content hashes for a product."""
+        key = f"state:content:{shop_id}:{nm_id}"
+        mapping = {}
+        if title_hash:
+            mapping["title_hash"] = title_hash
+        if desc_hash:
+            mapping["desc_hash"] = desc_hash
+        if photos_hash:
+            mapping["photos_hash"] = photos_hash
+        if main_photo_id:
+            mapping["main_photo_id"] = main_photo_id
+        if mapping:
+            self.client.hset(key, mapping=mapping)
+            self.client.expire(key, self.CONTENT_TTL)
