@@ -2,7 +2,13 @@
 
 Все изменения в проекте документируются в этом файле.
 
-## [Unreleased] - 2026-02-11
+## [Unreleased] - 2026-02-12
+
+### Changed — Миграция рекламного модуля на MarketplaceClient
+
+- **wb_advertising_report_service.py:** 4 вызова `httpx.AsyncClient()` → `MarketplaceClient(wildberries_adv)` с proxy rotation, rate limiting, circuit breaker, JA3 spoofing.
+- **Celery:** `sync_wb_advert_history` обновлён — `create_async_engine` + `AsyncSession` для передачи `db` в `WBAdvertisingReportService(db, shop_id, api_key)`.
+- **Итого:** 0 модулей с прямыми httpx/requests вызовами. Все API запросы через MarketplaceClient.
 
 ### Added — Модуль «Коммерческий мониторинг»
 
@@ -25,6 +31,14 @@
 - **PostgreSQL:** Таблица `dim_product_content` (хеши: title_hash, description_hash, main_photo_id, photos_hash, photos_count).
 - **Redis State:** Методы `get/set_content_hash` для кэширования хешей контента (TTL 3 дня).
 - **Celery Task:** Расширен `sync_product_content` — 5-шаговый pipeline: fetch → load hashes → detect events → upsert hashes → update products.
+
+### Added — Модуль «Оперативные заказы и Логистика»
+
+- **API Сервис:** `wb_orders_service.py` — async `WBOrdersService` через `MarketplaceClient(wildberries_stats)` с proxy rotation, rate limiting, circuit breaker. Пагинация через `lastChangeDate` (flag=0), до 80K строк/страница.
+- **ClickHouse:** Таблица `fact_orders_raw` (ReplacingMergeTree по g_number, TTL 2 года) — дедупликация по synced_at, view `fact_orders_raw_latest`.
+- **Celery Tasks:** `sync_orders` (каждые 10 мин, dateFrom=1 час) и `backfill_orders` (однократно, N дней).
+- **Beat Schedule:** `sync-orders-10min` каждые 600 сек (закомментирован, готов к активации).
+- **Данные:** 17,541 заказ за 4+ мес (окт 2025 — фев 2026), 47 продуктов, 951 отмена, 58.8M RUB выручки. Пагинация через lastChangeDate.
 
 ### Added — Модуль «Воронка продаж WB»
 

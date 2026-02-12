@@ -144,6 +144,16 @@ celery_app.conf.beat_schedule = {
     #     "args": [1, "YOUR_API_KEY"],
     #     "options": {"queue": "heavy", "priority": 5},
     # },
+
+    # === Operative Orders ===
+
+    # Orders sync - every 10 minutes on HEAVY queue
+    # "sync-orders-10min": {
+    #     "task": "celery_app.tasks.tasks.sync_orders",
+    #     "schedule": 600.0,  # Every 10 minutes
+    #     "args": [1, "YOUR_API_KEY"],
+    #     "options": {"queue": "heavy", "priority": 6},
+    # },
 }
 
 

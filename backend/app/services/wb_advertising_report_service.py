@@ -1,51 +1,61 @@
 
 import asyncio
 import logging
-import httpx
 from typing import List, Dict, Any, Optional
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.marketplace_client import MarketplaceClient
+
 logger = logging.getLogger(__name__)
+
 
 class WBAdvertisingReportService:
     """
     Service for interacting with WB Advertising API V3.
-    
-    Base URL: https://advert-api.wildberries.ru
+
+    Uses MarketplaceClient for:
+        - Proxy rotation (sticky sessions)
+        - Rate limiting (Redis-synced)
+        - Circuit breaker (auto-disable on auth errors)
+        - JA3 fingerprint spoofing
+
+    Base URL: https://advert-api.wildberries.ru (marketplace='wildberries_adv')
     """
-    
-    BASE_URL = "https://advert-api.wildberries.ru"
-    
-    def __init__(self, api_key: str):
+
+    def __init__(self, db: AsyncSession, shop_id: int, api_key: str):
+        self.db = db
+        self.shop_id = shop_id
         self.api_key = api_key
-        self.headers = {
-            "Authorization": self.api_key,
-            "Content-Type": "application/json",
-        }
-        
+
     async def get_campaigns(self) -> List[Dict[str, Any]]:
         """
         Get list of campaigns from Count endpoint.
-        
+
         The Count endpoint returns all campaign IDs in advert_list,
         so we extract them directly without needing separate adverts call.
         """
-        count_url = f"{self.BASE_URL}/adv/v1/promotion/count"
-        
-        async with httpx.AsyncClient() as client:
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
             try:
-                count_resp = await client.get(count_url, headers=self.headers)
-                if count_resp.status_code != 200:
-                    logger.error(f"WB API Count Error: {count_resp.text}")
-                    count_resp.raise_for_status()
-                
-                count_data = count_resp.json()
+                response = await client.get("/adv/v1/promotion/count")
+
+                if not response.is_success:
+                    logger.error(f"WB API Count Error: status={response.status_code}, error={response.error}")
+                    return []
+
+                count_data = response.data
                 logger.info(f"WB Count Response: all={count_data.get('all', 0)} campaigns")
-                
+
                 total_count = count_data.get("all", 0)
                 if total_count == 0:
                     logger.info("Seller has no advertising campaigns")
                     return []
-                
+
                 # Extract campaigns directly from count response
                 campaigns = []
                 if "adverts" in count_data:
@@ -53,7 +63,7 @@ class WBAdvertisingReportService:
                         adv_type = group.get("type")
                         status = group.get("status")
                         advert_list = group.get("advert_list", [])
-                        
+
                         for advert in advert_list:
                             campaigns.append({
                                 "advertId": advert["advertId"],
@@ -61,10 +71,10 @@ class WBAdvertisingReportService:
                                 "status": status,
                                 "changeTime": advert.get("changeTime"),
                             })
-                
+
                 logger.info(f"Extracted {len(campaigns)} campaigns from count response")
                 return campaigns
-                
+
             except Exception as e:
                 logger.error(f"Failed to fetch campaign counts: {e}")
                 raise e
@@ -72,94 +82,106 @@ class WBAdvertisingReportService:
     async def get_full_stats_v3(self, campaign_ids: List[int], begin_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
         Get full statistics for campaigns using V3 API.
-        
+
         Method: GET /adv/v3/fullstats
         Query params:
             - ids: comma-separated campaign IDs (max 50)
             - beginDate: YYYY-MM-DD
             - endDate: YYYY-MM-DD
-        
+
         Max period: 31 days
-        Rate Limit: 1 request per minute (handled by caller).
-        
+        Rate Limit: 1 request per minute (handled by MarketplaceClient).
+
         Response includes advertId at root level and full funnel metrics:
         - views, clicks, atbs (carts), orders, shks (items), sum (spend), sum_price (revenue)
         """
-        url = f"{self.BASE_URL}/adv/v3/fullstats"
-        
         # Convert campaign IDs to comma-separated string
         ids_str = ",".join(str(cid) for cid in campaign_ids)
-        
+
         params = {
             "ids": ids_str,
             "beginDate": begin_date,
             "endDate": end_date
         }
-        
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(url, headers=self.headers, params=params)
-            
-            if response.status_code == 429:
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.get("/adv/v3/fullstats", params=params)
+
+            if response.is_rate_limited:
                 logger.warning("Rate limit hit on /adv/v3/fullstats")
-                raise httpx.HTTPStatusError("Rate Limit", request=response.request, response=response)
-            
+                raise Exception("Rate Limit on /adv/v3/fullstats")
+
             if response.status_code == 400:
-                error_text = response.text
+                error_text = response.error or ""
                 logger.warning(f"WB API v3/fullstats 400: {error_text}")
-                # "no companies with correct intervals" means campaigns don't have data for this period
                 if "no companies" in error_text.lower() or "Invalid" in error_text:
                     return []
-                    
-            if response.status_code != 200:
-                logger.error(f"WB API v3/fullstats Error: {response.text}")
-                response.raise_for_status()
-                
-            return response.json()
+
+            if not response.is_success:
+                logger.error(f"WB API v3/fullstats Error: status={response.status_code}, error={response.error}")
+                return []
+
+            return response.data
 
     async def get_campaign_settings(self, campaign_ids: List[int]) -> List[Dict[str, Any]]:
         """
         Get campaign settings including CPM/CPC bids and item lists.
-        
+
         Method: POST /adv/v1/promotion/adverts (updated Oct 2025)
         Request body: array of campaign IDs (max 50)
-        
+
         Response includes:
         - advertId: campaign ID
         - type: campaign type (9 = unified, formerly 8)
         - status: campaign status
         - unitedParams: bid settings and item lists
-        
+
         This is used for:
         1. Bid change detection (comparing CPM with Redis state)
         2. Identifying associated items (items in fullstats but not in params)
         """
-        url = f"{self.BASE_URL}/adv/v1/promotion/adverts"
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # POST with JSON body of campaign IDs
-            response = await client.post(url, headers=self.headers, json=campaign_ids)
-            
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "60")
-                logger.warning(f"Rate limit on /adv/v1/promotion/adverts. Retry-After: {retry_after}s")
-                raise httpx.HTTPStatusError("Rate Limit", request=response.request, response=response)
-            
-            if response.status_code != 200:
-                logger.error(f"WB API v1/promotion/adverts Error: {response.text}")
-                response.raise_for_status()
-            
-            return response.json()
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.post(
+                "/adv/v1/promotion/adverts",
+                json=campaign_ids,
+            )
+
+            if response.is_rate_limited:
+                logger.warning("Rate limit on /adv/v1/promotion/adverts")
+                raise Exception("Rate Limit on /adv/v1/promotion/adverts")
+
+            if not response.is_success:
+                logger.error(f"WB API v1/promotion/adverts Error: status={response.status_code}, error={response.error}")
+                return []
+
+            return response.data
 
     async def get_balance(self) -> Dict[str, Any]:
-
         """
         Get current advertising balance.
-        
+
         Method: GET /adv/v1/balance
         """
-        url = f"{self.BASE_URL}/adv/v1/balance"
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.get("/adv/v1/balance")
+
+            if not response.is_success:
+                logger.error(f"WB API balance Error: status={response.status_code}, error={response.error}")
+                return {}
+
+            return response.data

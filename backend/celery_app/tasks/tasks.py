@@ -415,12 +415,16 @@ def sync_wb_advert_history(
     import asyncio
     import os
     from datetime import date, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
     from app.services.wb_advertising_report_service import WBAdvertisingReportService
     from app.services.wb_advertising_loader import WBAdvertisingLoader
     from app.services.event_detector import EventDetector
     import logging
     
     logger = logging.getLogger(__name__)
+    settings = get_settings()
     
     # Helper to split list into chunks
     def chunk_list(lst, n):
@@ -483,7 +487,9 @@ def sync_wb_advert_history(
             logger.error(f"Error saving events to DB: {e}")
 
     async def run_sync():
-        service = WBAdvertisingReportService(api_key=api_key)
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
         loader = WBAdvertisingLoader(
             host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
             port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
@@ -494,9 +500,11 @@ def sync_wb_advert_history(
         
         try:
             with loader:
-                # 1. Fetch Campaigns
-                self.update_state(state='PROGRESS', meta={'status': 'Fetching campaigns list...'})
-                campaigns = await service.get_campaigns()
+                # 1. Fetch Campaigns (via MarketplaceClient + proxy)
+                self.update_state(state='PROGRESS', meta={'status': 'Fetching campaigns list via proxy...'})
+                async with async_session() as db:
+                    service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                    campaigns = await service.get_campaigns()
                 
                 # Filter valid campaigns (status 7, 9, 11 only)
                 campaigns = [c for c in campaigns if c.get("advertId") and c.get("status") in [7, 9, 11]]
@@ -515,14 +523,16 @@ def sync_wb_advert_history(
                 events_detected = 0
                 
                 if accumulate_history:
-                    self.update_state(state='PROGRESS', meta={'status': 'Fetching campaign settings...'})
+                    self.update_state(state='PROGRESS', meta={'status': 'Fetching campaign settings via proxy...'})
                     
                     for batch in chunk_list(campaign_ids, 50):
                         try:
-                            settings = await service.get_campaign_settings(batch)
+                            async with async_session() as db:
+                                service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                                settings_data = await service.get_campaign_settings(batch)
                             
                             # Detect bid/status/item changes (with debouncing)
-                            events = event_detector.detect_changes(shop_id, settings)
+                            events = event_detector.detect_changes(shop_id, settings_data)
                             events_detected += len(events)
                             
                             # PERSIST EVENTS to PostgreSQL
@@ -530,7 +540,7 @@ def sync_wb_advert_history(
                                 save_events_to_db(events)
                             
                             # Extract items, CPM, and types for history parsing
-                            batch_items, batch_cpm, batch_types = event_detector.extract_all_campaign_data(settings)
+                            batch_items, batch_cpm, batch_types = event_detector.extract_all_campaign_data(settings_data)
                             campaign_items.update(batch_items)
                             cpm_values.update(batch_cpm)
                             campaign_types.update(batch_types)
@@ -573,12 +583,14 @@ def sync_wb_advert_history(
                         self.update_state(state='PROGRESS', meta={
                             'current': current_step,
                             'total': total_steps,
-                            'status': f'V3: Fetching {d_from} - {d_to} ({len(batch)} campaigns)'
+                            'status': f'V3: Fetching {d_from} - {d_to} ({len(batch)} campaigns) via proxy'
                         })
                         
                         try:
-                            # Fetch V3 stats
-                            full_stats = await service.get_full_stats_v3(batch, d_from, d_to)
+                            # Fetch V3 stats (via MarketplaceClient + proxy)
+                            async with async_session() as db:
+                                service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                                full_stats = await service.get_full_stats_v3(batch, d_from, d_to)
                             
                             # Parse & Insert into V3 table (legacy, for compatibility)
                             rows = loader.parse_full_stats_v3(full_stats, shop_id)
@@ -586,6 +598,7 @@ def sync_wb_advert_history(
                             stats_inserted += count
                             
                             # NEW: Insert into history table (accumulation)
+                            history_count = 0
                             if accumulate_history and full_stats:
                                 history_rows = loader.parse_stats_for_history(
                                     full_stats, shop_id,
@@ -605,6 +618,7 @@ def sync_wb_advert_history(
                             # Wait longer on error
                             await asyncio.sleep(70) 
                             
+            await engine.dispose()
             return {
                 "status": "completed",
                 "campaigns_loaded": total_campaigns,
@@ -616,6 +630,7 @@ def sync_wb_advert_history(
                 "accumulate_history": accumulate_history
             }
         except Exception as e:
+            await engine.dispose()
             logger.error(f"sync_wb_advert_history failed: {e}")
             raise e
             
@@ -1260,4 +1275,202 @@ def backfill_sales_funnel(
     try:
         return asyncio.run(run_backfill())
     except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+# ════════════════════════════════════════════════════════════
+# ORDERS MODULE — Operative orders & logistics
+# ════════════════════════════════════════════════════════════
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=550)
+def sync_orders(self, shop_id: int, api_key: str):
+    """
+    Every-10-min Sync: fetch recent orders from WB Statistics API.
+
+    Uses MarketplaceClient (proxy rotation, rate limiting, circuit breaker).
+    flag=0: returns orders where lastChangeDate >= dateFrom.
+    dateFrom = last max_date in ClickHouse (fallback 1h ago).
+
+    Routed to HEAVY queue.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_orders_service import (
+        WBOrdersService,
+        OrdersLoader,
+        _parse_order_row,
+    )
+
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        # Step 1: Determine dateFrom from ClickHouse
+        loader = OrdersLoader(
+            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+            username=os.getenv("CLICKHOUSE_USER", "default"),
+            password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        )
+        with loader:
+            stats = loader.get_stats(shop_id)
+            if stats and stats.get("max_date") and stats["max_date"] != "1970-01-02 00:00:00":
+                date_from = datetime.fromisoformat(str(stats["max_date"])) - timedelta(minutes=5)
+            else:
+                date_from = datetime.utcnow() - timedelta(hours=1)
+
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Fetching orders since {date_from.isoformat()} via proxy...",
+            "step": "1/3",
+        })
+
+        # Step 2: Fetch via MarketplaceClient (with proxy)
+        async with async_session() as db:
+            svc = WBOrdersService(db, shop_id, api_key)
+            raw_orders = await svc.fetch_all_orders(date_from, flag=0)
+
+        await engine.dispose()
+
+        if not raw_orders:
+            return {
+                "shop_id": shop_id,
+                "status": "no_new_orders",
+                "date_from": date_from.isoformat(),
+            }
+
+        # Step 3: Parse
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Parsing {len(raw_orders)} orders...",
+            "step": "2/3",
+        })
+        rows = [_parse_order_row(order, shop_id) for order in raw_orders]
+
+        # Step 4: INSERT
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Inserting {len(rows)} rows into ClickHouse...",
+            "step": "3/3",
+        })
+        with loader:
+            inserted = loader.insert_rows(rows)
+            stats = loader.get_stats(shop_id)
+
+        return {
+            "shop_id": shop_id,
+            "status": "completed",
+            "date_from": date_from.isoformat(),
+            "orders_fetched": len(raw_orders),
+            "rows_inserted": inserted,
+            "stats": stats,
+        }
+
+    try:
+        return asyncio.run(run_sync())
+    except Exception as exc:
+        logger.exception("sync_orders failed for shop_id=%s", shop_id)
+        self.retry(exc=exc, countdown=60, max_retries=3)
+
+
+@celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
+def backfill_orders(self, shop_id: int, api_key: str, days: int = 90):
+    """
+    One-time Backfill: load ALL orders for the past N days (default: 90).
+
+    Uses MarketplaceClient (proxy rotation, rate limiting, circuit breaker).
+    flag=0 with pagination: fetches up to 80K rows per page,
+    uses lastChangeDate from last row for next page.
+    Rate limit: 1 request per minute.
+
+    Routed to HEAVY queue. Can run up to 2 hours.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_orders_service import (
+        WBOrdersService,
+        OrdersLoader,
+        _parse_order_row,
+    )
+
+    settings = get_settings()
+
+    async def run_backfill():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        date_from = datetime.utcnow() - timedelta(days=days)
+
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Fetching orders for last {days} days via proxy (paginated)...",
+            "step": "1/3",
+            "date_from": date_from.isoformat(),
+        })
+
+        def on_progress(page, total):
+            self.update_state(state="PROGRESS", meta={
+                "status": f"Page {page}: {total} orders fetched so far...",
+                "step": "1/3",
+            })
+
+        async with async_session() as db:
+            svc = WBOrdersService(db, shop_id, api_key)
+            raw_orders = await svc.fetch_all_orders(
+                date_from, flag=0, on_progress=on_progress,
+            )
+
+        await engine.dispose()
+
+        if not raw_orders:
+            return {
+                "shop_id": shop_id,
+                "status": "no_orders",
+                "days": days,
+                "date_from": date_from.isoformat(),
+            }
+
+        # Step 2: Parse
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Parsing {len(raw_orders)} orders...",
+            "step": "2/3",
+        })
+        rows = [_parse_order_row(order, shop_id) for order in raw_orders]
+
+        # Step 3: INSERT
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Inserting {len(rows)} rows into ClickHouse...",
+            "step": "3/3",
+        })
+
+        loader = OrdersLoader(
+            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+            username=os.getenv("CLICKHOUSE_USER", "default"),
+            password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+        )
+        with loader:
+            inserted = loader.insert_rows(rows)
+            stats = loader.get_stats(shop_id)
+
+        return {
+            "shop_id": shop_id,
+            "status": "completed",
+            "days": days,
+            "date_from": date_from.isoformat(),
+            "orders_fetched": len(raw_orders),
+            "rows_inserted": inserted,
+            "stats": stats,
+        }
+
+    try:
+        return asyncio.run(run_backfill())
+    except Exception as exc:
+        logger.exception("backfill_orders failed for shop_id=%s", shop_id)
         self.retry(exc=exc, countdown=300, max_retries=2)

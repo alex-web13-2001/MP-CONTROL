@@ -531,3 +531,72 @@ SELECT
     max(fetched_at) as last_fetched_at
 FROM mms_analytics.fact_sales_funnel
 GROUP BY shop_id, nm_id, event_date;
+
+-- ═══════════════════════════════════════════════════
+-- Operative Orders (raw orders from Statistics API)
+-- ═══════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_orders_raw (
+    date               DateTime,
+    last_change_date   DateTime,
+    shop_id            UInt32,
+    nm_id              UInt64,
+    g_number           String,
+    srid               String DEFAULT '',
+
+    supplier_article   String DEFAULT '',
+    barcode            String DEFAULT '',
+    category           String DEFAULT '',
+    subject            String DEFAULT '',
+    brand              String DEFAULT '',
+    tech_size          String DEFAULT '0',
+
+    warehouse_name     String DEFAULT '',
+    warehouse_type     String DEFAULT '',
+    country_name       String DEFAULT '',
+    oblast_okrug_name  String DEFAULT '',
+    region_name        String DEFAULT '',
+
+    total_price        Decimal(18, 2) DEFAULT 0,
+    discount_percent   UInt8 DEFAULT 0,
+    spp                Float32 DEFAULT 0,
+    finished_price     Decimal(18, 2) DEFAULT 0,
+    price_with_disc    Decimal(18, 2) DEFAULT 0,
+
+    is_cancel          UInt8 DEFAULT 0,
+    cancel_date        DateTime DEFAULT '1970-01-01 00:00:00',
+    sticker            String DEFAULT '',
+    income_id          UInt32 DEFAULT 0,
+    is_supply          UInt8 DEFAULT 0,
+    is_realization     UInt8 DEFAULT 0,
+
+    synced_at          DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(synced_at)
+PARTITION BY toYYYYMM(date)
+ORDER BY (shop_id, g_number)
+TTL date + INTERVAL 2 YEAR;
+
+CREATE VIEW IF NOT EXISTS mms_analytics.fact_orders_raw_latest AS
+SELECT
+    shop_id,
+    g_number,
+    argMax(date, synced_at) as date,
+    argMax(last_change_date, synced_at) as last_change_date,
+    argMax(nm_id, synced_at) as nm_id,
+    argMax(srid, synced_at) as srid,
+    argMax(supplier_article, synced_at) as supplier_article,
+    argMax(warehouse_name, synced_at) as warehouse_name,
+    argMax(warehouse_type, synced_at) as warehouse_type,
+    argMax(country_name, synced_at) as country_name,
+    argMax(region_name, synced_at) as region_name,
+    argMax(price_with_disc, synced_at) as price_with_disc,
+    argMax(finished_price, synced_at) as finished_price,
+    argMax(total_price, synced_at) as total_price,
+    argMax(discount_percent, synced_at) as discount_percent,
+    argMax(spp, synced_at) as spp,
+    argMax(is_cancel, synced_at) as is_cancel,
+    argMax(cancel_date, synced_at) as cancel_date,
+    max(synced_at) as last_synced_at
+FROM mms_analytics.fact_orders_raw
+GROUP BY shop_id, g_number;
+
