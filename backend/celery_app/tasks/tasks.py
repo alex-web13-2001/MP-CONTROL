@@ -1494,7 +1494,8 @@ def sync_ozon_products(
     Pipeline:
         1. POST /v3/product/list — get all product_ids
         2. POST /v3/product/info/list — detailed info (batches of 100)
-        3. Upsert into dim_ozon_products
+        3. Upsert into dim_ozon_products (all fields incl. images, statuses, etc.)
+        4. Detect image hash changes → events
 
     Queue: HEAVY (moderate runtime ~1-2 min for 40 products).
     """
@@ -1533,7 +1534,7 @@ def sync_ozon_products(
                 service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
                 products_info = await service.fetch_product_info(product_ids)
 
-            # 3. Upsert into PostgreSQL
+            # 3. Upsert into PostgreSQL (returns count + image change events)
             self.update_state(state='PROGRESS', meta={'status': 'Upserting into dim_ozon_products...'})
             conn_params = {
                 "host": os.getenv("POSTGRES_HOST", "postgres"),
@@ -1542,7 +1543,10 @@ def sync_ozon_products(
                 "password": os.getenv("POSTGRES_PASSWORD", "mms"),
                 "database": os.getenv("POSTGRES_DB", "mms"),
             }
-            count = upsert_ozon_products(conn_params, shop_id, products_info)
+            count, events = upsert_ozon_products(conn_params, shop_id, products_info)
+
+            if events:
+                logger.info(f"Detected {len(events)} image change events")
 
             await engine.dispose()
             return {
@@ -1550,6 +1554,104 @@ def sync_ozon_products(
                 "shop_id": shop_id,
                 "products_found": len(product_list),
                 "products_upserted": count,
+                "image_events": len(events),
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_product_snapshots(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Daily snapshot of Ozon product data to ClickHouse.
+
+    One API call → 4 ClickHouse inserts:
+        1. Promotions → fact_ozon_promotions
+        2. Availability → fact_ozon_availability
+        3. Commissions → fact_ozon_commissions
+        4. Inventory (prices+stocks) → fact_ozon_inventory
+
+    Queue: HEAVY. Designed to run once daily.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService,
+        OzonPromotionsLoader, OzonAvailabilityLoader,
+        OzonCommissionsLoader, OzonInventoryLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+    ch_user = os.getenv("CLICKHOUSE_USER", "default")
+    ch_db = os.getenv("CLICKHOUSE_DB", "mms_analytics")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching product list...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+
+            # 2. Fetch product info (one call for all data)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching info for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            ch_kwargs = dict(host=ch_host, port=ch_port, username=ch_user, database=ch_db)
+            results = {}
+
+            # 3. Promotions
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting promotions...'})
+            with OzonPromotionsLoader(**ch_kwargs) as loader:
+                results["promotions"] = loader.insert_promotions(shop_id, products_info)
+                results["promo_stats"] = loader.get_stats(shop_id)
+
+            # 4. Availability
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting availability...'})
+            with OzonAvailabilityLoader(**ch_kwargs) as loader:
+                results["availability"] = loader.insert_availability(shop_id, products_info)
+                results["avail_stats"] = loader.get_stats(shop_id)
+
+            # 5. Commissions
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting commissions...'})
+            with OzonCommissionsLoader(**ch_kwargs) as loader:
+                results["commissions"] = loader.insert_commissions(shop_id, products_info)
+
+            # 6. Inventory
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting inventory...'})
+            with OzonInventoryLoader(**ch_kwargs) as loader:
+                results["inventory"] = loader.insert_inventory(shop_id, products_info)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "products_found": len(product_list),
+                **results,
             }
         except Exception as e:
             await engine.dispose()

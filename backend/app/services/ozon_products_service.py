@@ -325,22 +325,29 @@ def _extract_commissions(item: dict) -> dict:
 
 # ── PostgreSQL Upsert ──────────────────────────────────────
 
-def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]):
+def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) -> Tuple[int, List[dict]]:
     """
     Upsert products into dim_ozon_products.
+
+    Detects image hash changes and returns events.
 
     Args:
         conn_params: dict with host, port, user, password, database
         products: list of product info dicts from /v3/product/info/list
+
+    Returns:
+        (count, events_list)
     """
     import psycopg2
+    import json as _json
 
     if not products:
-        return 0
+        return 0, []
 
     conn = psycopg2.connect(**conn_params)
     cursor = conn.cursor()
     count = 0
+    events = []
 
     try:
         for item in products:
@@ -366,13 +373,73 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]):
             fbo, fbs = _extract_stocks(item)
             is_archived = item.get("is_archived", False)
 
+            # New fields
+            created_at_ozon = item.get("created_at")
+            updated_at_ozon = item.get("updated_at")
+            vat = _safe_decimal(item.get("vat"))
+            type_id = item.get("type_id")
+            model_info = item.get("model_info", {}) or {}
+            model_id = model_info.get("model_id")
+            model_count = model_info.get("count", 0)
+
+            # Price indexes
+            pi = item.get("price_indexes", {}) or {}
+            price_index_color = pi.get("color_index", "")
+            ext_data = pi.get("external_index_data", {}) or {}
+            price_index_value = _safe_decimal(ext_data.get("price_index_value", 0))
+            competitor_min_price = _safe_decimal(ext_data.get("minimal_price", 0))
+            is_kgt = item.get("is_kgt", False)
+
+            # Statuses
+            statuses = item.get("statuses", {}) or {}
+            status = statuses.get("status", "")
+            moderate_status = statuses.get("moderate_status", "")
+            status_name = statuses.get("status_name", "")
+
+            # Images hash
+            all_images_json = _json.dumps(images) if images else "[]"
+            images_hash = _md5("|".join(sorted(images))) if images else ""
+            primary_imgs = item.get("primary_image", [])
+            primary_image_url = primary_imgs[0] if primary_imgs else main_image
+
+            # Availability
+            avails = item.get("availabilities", [])
+            availability = ""
+            availability_source = ""
+            if avails:
+                availability = avails[0].get("availability", "")
+                availability_source = avails[0].get("source", "")
+
+            # Check for image hash change
+            cursor.execute(
+                "SELECT images_hash FROM dim_ozon_products WHERE shop_id = %s AND product_id = %s",
+                (shop_id, product_id),
+            )
+            existing = cursor.fetchone()
+            if existing and existing[0] and existing[0] != images_hash and images_hash:
+                events.append({
+                    "shop_id": shop_id,
+                    "product_id": product_id,
+                    "offer_id": offer_id,
+                    "event_type": "OZON_PHOTO_CHANGE",
+                    "field": "images",
+                    "old_value": existing[0],
+                    "new_value": images_hash,
+                })
+
             cursor.execute("""
                 INSERT INTO dim_ozon_products
                     (shop_id, product_id, offer_id, sku, name, main_image_url,
                      barcode, category_id, price, old_price, min_price,
                      marketing_price, volume_weight, stocks_fbo, stocks_fbs,
-                     is_archived, has_fbo_stocks, has_fbs_stocks)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     is_archived, has_fbo_stocks, has_fbs_stocks,
+                     created_at_ozon, updated_at_ozon, vat, type_id,
+                     model_id, model_count, price_index_color, price_index_value,
+                     competitor_min_price, is_kgt, status, moderate_status,
+                     status_name, all_images_json, images_hash,
+                     primary_image_url, availability, availability_source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (shop_id, product_id) DO UPDATE SET
                     offer_id = EXCLUDED.offer_id,
                     sku = EXCLUDED.sku,
@@ -390,12 +457,35 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]):
                     is_archived = EXCLUDED.is_archived,
                     has_fbo_stocks = EXCLUDED.has_fbo_stocks,
                     has_fbs_stocks = EXCLUDED.has_fbs_stocks,
+                    created_at_ozon = EXCLUDED.created_at_ozon,
+                    updated_at_ozon = EXCLUDED.updated_at_ozon,
+                    vat = EXCLUDED.vat,
+                    type_id = EXCLUDED.type_id,
+                    model_id = EXCLUDED.model_id,
+                    model_count = EXCLUDED.model_count,
+                    price_index_color = EXCLUDED.price_index_color,
+                    price_index_value = EXCLUDED.price_index_value,
+                    competitor_min_price = EXCLUDED.competitor_min_price,
+                    is_kgt = EXCLUDED.is_kgt,
+                    status = EXCLUDED.status,
+                    moderate_status = EXCLUDED.moderate_status,
+                    status_name = EXCLUDED.status_name,
+                    all_images_json = EXCLUDED.all_images_json,
+                    images_hash = EXCLUDED.images_hash,
+                    primary_image_url = EXCLUDED.primary_image_url,
+                    availability = EXCLUDED.availability,
+                    availability_source = EXCLUDED.availability_source,
                     updated_at = NOW()
             """, (
                 shop_id, product_id, offer_id, sku, name, main_image,
                 barcode, category_id, price, old_price, min_price,
                 marketing_price, volume_weight, fbo, fbs,
                 is_archived, fbo > 0, fbs > 0,
+                created_at_ozon, updated_at_ozon, vat, type_id,
+                model_id, model_count, price_index_color, price_index_value,
+                competitor_min_price, is_kgt, status, moderate_status,
+                status_name, all_images_json, images_hash,
+                primary_image_url, availability, availability_source,
             ))
             count += 1
 
@@ -404,8 +494,11 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]):
         cursor.close()
         conn.close()
 
-    logger.info("Upserted %d products into dim_ozon_products", count)
-    return count
+    logger.info(
+        "Upserted %d products into dim_ozon_products, detected %d image events",
+        count, len(events),
+    )
+    return count, events
 
 
 def upsert_ozon_content(
@@ -892,3 +985,235 @@ class OzonContentRatingLoader:
             }
         return {}
 
+
+# ── ClickHouse Promotions Loader ──────────────────────────
+
+CH_PROMO_TABLE = "mms_analytics.fact_ozon_promotions"
+CH_PROMO_COLUMNS = [
+    "dt", "updated_at", "shop_id", "product_id", "offer_id",
+    "promo_type", "is_enabled",
+]
+
+
+class OzonPromotionsLoader:
+    """Insert promotion snapshots into ClickHouse fact_ozon_promotions."""
+
+    def __init__(
+        self,
+        host: str = "clickhouse",
+        port: int = 8123,
+        username: str = "default",
+        password: str = "",
+        database: str = "mms_analytics",
+    ):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.database = database
+        self._client: Optional[ClickHouseClient] = None
+
+    def connect(self):
+        self._client = clickhouse_connect.get_client(
+            host=self.host, port=self.port,
+            username=self.username, password=self.password,
+            database=self.database,
+        )
+
+    def close(self):
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def insert_promotions(self, shop_id: int, products: List[dict]) -> int:
+        """
+        Extract promotions from product info and insert into ClickHouse.
+
+        Each product can have multiple promotions → one row per promo.
+        """
+        if not products or not self._client:
+            return 0
+
+        now = datetime.utcnow()
+        today = now.date()
+        rows = []
+
+        for item in products:
+            product_id = item.get("id")
+            if not product_id:
+                continue
+
+            offer_id = item.get("offer_id", "")
+            promotions = item.get("promotions", [])
+
+            for promo in promotions:
+                promo_type = promo.get("type", "UNKNOWN")
+                is_enabled = 1 if promo.get("is_enabled", False) else 0
+
+                rows.append([
+                    today, now, shop_id, product_id, offer_id,
+                    promo_type, is_enabled,
+                ])
+
+        if not rows:
+            logger.info("No promotions to insert")
+            return 0
+
+        total = 0
+        for i in range(0, len(rows), CH_BATCH_SIZE):
+            batch = rows[i:i + CH_BATCH_SIZE]
+            self._client.insert(CH_PROMO_TABLE, batch, column_names=CH_PROMO_COLUMNS)
+            total += len(batch)
+
+        logger.info("Inserted %d promotion snapshots into ClickHouse", total)
+        return total
+
+    def get_stats(self, shop_id: int) -> dict:
+        """Get promotion stats."""
+        if not self._client:
+            return {}
+        result = self._client.query("""
+            SELECT
+                count() as total_rows,
+                uniq(product_id) as unique_products,
+                countIf(is_enabled = 1) as enabled_count,
+                min(dt) as min_date,
+                max(dt) as max_date
+            FROM fact_ozon_promotions
+            WHERE shop_id = {shop_id:UInt32}
+        """, parameters={"shop_id": shop_id})
+        r = result.first_row
+        if r:
+            return {
+                "total_rows": r[0],
+                "unique_products": r[1],
+                "enabled_count": r[2],
+                "min_date": str(r[3]),
+                "max_date": str(r[4]),
+            }
+        return {}
+
+
+# ── ClickHouse Availability Loader ────────────────────────
+
+CH_AVAIL_TABLE = "mms_analytics.fact_ozon_availability"
+CH_AVAIL_COLUMNS = [
+    "dt", "updated_at", "shop_id", "product_id", "offer_id",
+    "sku", "source", "availability",
+]
+
+
+class OzonAvailabilityLoader:
+    """Insert availability snapshots into ClickHouse fact_ozon_availability."""
+
+    def __init__(
+        self,
+        host: str = "clickhouse",
+        port: int = 8123,
+        username: str = "default",
+        password: str = "",
+        database: str = "mms_analytics",
+    ):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.database = database
+        self._client: Optional[ClickHouseClient] = None
+
+    def connect(self):
+        self._client = clickhouse_connect.get_client(
+            host=self.host, port=self.port,
+            username=self.username, password=self.password,
+            database=self.database,
+        )
+
+    def close(self):
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def insert_availability(self, shop_id: int, products: List[dict]) -> int:
+        """
+        Extract availabilities from product info and insert into ClickHouse.
+
+        Each product can have multiple availability entries (per source).
+        """
+        if not products or not self._client:
+            return 0
+
+        now = datetime.utcnow()
+        today = now.date()
+        rows = []
+
+        for item in products:
+            product_id = item.get("id")
+            if not product_id:
+                continue
+
+            offer_id = item.get("offer_id", "")
+            availabilities = item.get("availabilities", [])
+
+            for avail in availabilities:
+                sku = avail.get("sku", 0)
+                source = avail.get("source", "")
+                availability = avail.get("availability", "")
+
+                rows.append([
+                    today, now, shop_id, product_id, offer_id,
+                    sku, source, availability,
+                ])
+
+        if not rows:
+            logger.info("No availability data to insert")
+            return 0
+
+        total = 0
+        for i in range(0, len(rows), CH_BATCH_SIZE):
+            batch = rows[i:i + CH_BATCH_SIZE]
+            self._client.insert(CH_AVAIL_TABLE, batch, column_names=CH_AVAIL_COLUMNS)
+            total += len(batch)
+
+        logger.info("Inserted %d availability snapshots into ClickHouse", total)
+        return total
+
+    def get_stats(self, shop_id: int) -> dict:
+        """Get availability stats."""
+        if not self._client:
+            return {}
+        result = self._client.query("""
+            SELECT
+                count() as total_rows,
+                uniq(product_id) as unique_products,
+                countIf(availability = 'AVAILABLE') as available_count,
+                countIf(availability != 'AVAILABLE') as unavailable_count,
+                min(dt) as min_date,
+                max(dt) as max_date
+            FROM fact_ozon_availability
+            WHERE shop_id = {shop_id:UInt32}
+        """, parameters={"shop_id": shop_id})
+        r = result.first_row
+        if r:
+            return {
+                "total_rows": r[0],
+                "unique_products": r[1],
+                "available_count": r[2],
+                "unavailable_count": r[3],
+                "min_date": str(r[4]),
+                "max_date": str(r[5]),
+            }
+        return {}

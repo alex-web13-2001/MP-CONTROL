@@ -30,6 +30,15 @@
 - **tasks.py:** Все 3 задачи обновлены — `AsyncSession` + `engine.dispose()` + `MarketplaceClient` (как WB)
 - **celery.py:** Task routes (fast/heavy) + beat schedule шаблон для Ozon Ads
 
+### Added — Расширение хранения данных товаров
+
+- **dim_ozon_products (PostgreSQL):** +18 колонок — `model_id`, `model_count`, `price_index_color`, `price_index_value`, `competitor_min_price`, `vat`, `type_id`, `status`, `moderate_status`, `status_name`, `all_images_json`, `images_hash`, `primary_image_url`, `availability`, `availability_source`, `created_at_ozon`, `updated_at_ozon`, `is_kgt`
+- **upsert_ozon_products:** 36 полей INSERT + images_hash change detection → `OZON_PHOTO_CHANGE` events
+- **fact_ozon_promotions (ClickHouse):** ежедневные снэпшоты акций (promo_type + is_enabled)
+- **fact_ozon_availability (ClickHouse):** ежедневные снэпшоты доступности (source + availability)
+- **OzonPromotionsLoader + OzonAvailabilityLoader:** ClickHouse loaders
+- **sync_ozon_product_snapshots:** единый Celery task → 1 API вызов → 4 ClickHouse insert (promotions, availability, commissions, inventory)
+
 ### Added — Комиссии + Контент-рейтинг (daily)
 
 - **ozon_products_service.py:** `_extract_commissions()` — парсинг commissions из `/v3/product/info/list` → flat dict (sales_percent, FBO/FBS logistics fees)
