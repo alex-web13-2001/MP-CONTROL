@@ -2,6 +2,46 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-14
+
+### Added — Модуль «Ozon Ads & Bids Tracking» (Performance API)
+
+- **ozon_performance_auth.py:** OAuth2 client_credentials авторизация для Ozon Performance API. Кэширование токена в памяти + Redis (TTL 25 мин из 30).
+- **ozon_ads_service.py:** Сервис для работы с Ozon Performance API:
+  - Получение кампаний (`GET /api/client/campaign`) — 64 кампании, 24 активных
+  - Real-time ставки (`GET /v2/products`) — bid в микрорублях, 35 активных продуктов
+  - Конкурентные ставки (`GET /products/bids/competitive`)
+  - Async CSV-отчёты (`POST /statistics → UUID → GET /report`) с батчированием по 10 кампаний
+  - Retry с exponential backoff (3 попытки) для устойчивости к timeout'ам
+  - CSV-парсер с BOM-фиксом для Ozon отчётов
+- **OzonBidsLoader:** ClickHouse loader для `log_ozon_bids` и `fact_ozon_ad_daily` с дедупликацией
+- **ClickHouse DDL:** `log_ozon_bids` (MergeTree), `fact_ozon_ad_daily` (ReplacingMergeTree)
+- **Celery Tasks:**
+  - `monitor_ozon_bids` (15 мин) — мониторинг ставок, delta-check через Redis, запись изменений
+  - `sync_ozon_ad_stats` (60 мин) — скользящее окно 3 дня для покрытия атрибуции Ozon
+  - `backfill_ozon_ads` (одноразовая) — загрузка истории неделя за неделей
+
+### E2E verified: OAuth2 → 35 bids → ClickHouse, CSV report → 4 rows → fact_ozon_ad_daily (spend=23.82₽, revenue=591₽)
+
+### Changed — Миграция Ozon Ads на MarketplaceClient (прокси)
+
+- **marketplace_client.py:** Добавлен `ozon_performance` в `MARKETPLACE_URLS` (`https://api-performance.ozon.ru`)
+- **ozon_ads_service.py:** `_request()` переписан: `httpx.AsyncClient` → `MarketplaceClient(marketplace="ozon_performance")` с proxy rotation, rate limiting, circuit breaker, JA3 spoofing. OAuth2 Bearer передаётся через `headers` kwarg.
+- **tasks.py:** Все 3 задачи обновлены — `AsyncSession` + `engine.dispose()` + `MarketplaceClient` (как WB)
+- **celery.py:** Task routes (fast/heavy) + beat schedule шаблон для Ozon Ads
+
+### Added — Event Tracking для Ozon Ads (как WB)
+
+- **ozon_ads_event_detector.py [NEW]:** `OzonAdsEventDetector` — детектит 5 типов событий: `OZON_BID_CHANGE`, `OZON_STATUS_CHANGE`, `OZON_BUDGET_CHANGE`, `OZON_ITEM_ADD`, `OZON_ITEM_REMOVE`. Использует `RedisStateManager` для сравнения с last state.
+- **redis_state.py:** Добавлены `get_ozon_campaign_state` / `set_ozon_campaign_state` — хранение last state кампаний (bids, status, budget, items).
+- **tasks.py → monitor_ozon_bids:** Интегрирован `OzonAdsEventDetector` — события сохраняются в PostgreSQL `event_log` (единая таблица с WB).
+
+### Fixed
+
+- **tasks.py → monitor_ozon_bids:** Исправлен `::jsonb` cast → `CAST(:event_metadata AS jsonb)` — asyncpg не поддерживает native PostgreSQL `::` cast syntax.
+- **ozon_ads_service.py → download_report:** Ozon возвращает ZIP-архив для batch-отчётов (10+ campaigns) — добавлена автоматическая распаковка через `zipfile`.
+- **ozon_ads_service.py → parse_csv_report:** `campaign_id` теперь обновляется при каждом CSV header `"№ XXXXX"` — критично для multi-campaign ZIP-отчётов.
+
 ## [Unreleased] - 2026-02-12
 
 ### Changed — Миграция рекламного модуля на MarketplaceClient
@@ -9,6 +49,18 @@
 - **wb_advertising_report_service.py:** 4 вызова `httpx.AsyncClient()` → `MarketplaceClient(wildberries_adv)` с proxy rotation, rate limiting, circuit breaker, JA3 spoofing.
 - **Celery:** `sync_wb_advert_history` обновлён — `create_async_engine` + `AsyncSession` для передачи `db` в `WBAdvertisingReportService(db, shop_id, api_key)`.
 - **Итого:** 0 модулей с прямыми httpx/requests вызовами. Все API запросы через MarketplaceClient.
+
+### Added — Модуль «Ozon Core — Товары, Контент и История»
+
+- **MarketplaceClient:** Расширен — добавлен `client_id` для Ozon API (Client-Id + Api-Key headers).
+- **Ozon Products Service:** `ozon_products_service.py` — async `OzonProductsService` через `MarketplaceClient(ozon)` с proxy rotation, rate limiting, circuit breaker.
+- **API Endpoints:** `POST /v3/product/list` (пагинация через last_id), `POST /v3/product/info/list` (batches of 100), `POST /v1/product/info/description`.
+- **PostgreSQL:** Таблица `dim_ozon_products` (40 товаров — offer_id, SKU, prices, stocks, images, barcodes, volume_weight).
+- **PostgreSQL:** Таблица `dim_ozon_product_content` (MD5 хеши title, description, images для детекции изменений).
+- **ClickHouse:** Таблица `fact_ozon_inventory` (MergeTree, TTL 1 год) — снимки цен и остатков каждые 30 мин.
+- **Event Detection:** `OZON_PHOTO_CHANGE`, `OZON_SEO_CHANGE` — сравнение MD5 хешей контента.
+- **Celery Tasks:** 3 задачи — `sync_ozon_products` (24h), `sync_ozon_content` (24h), `sync_ozon_inventory` (30 мин).
+- **Данные (E2E):** 40 товаров, avg_price 5,367₽, FBO 2,495 шт, FBS 15 шт.
 
 ### Added — Модуль «Коммерческий мониторинг»
 

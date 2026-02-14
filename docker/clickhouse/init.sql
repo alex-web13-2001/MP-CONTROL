@@ -600,3 +600,62 @@ SELECT
 FROM mms_analytics.fact_orders_raw
 GROUP BY shop_id, g_number;
 
+
+-- ===================
+-- Ozon: Inventory Snapshots (prices + stocks history)
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_inventory (
+    fetched_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    product_id UInt64,
+    offer_id String,
+    price Decimal(12, 2),
+    old_price Decimal(12, 2),
+    min_price Decimal(12, 2),
+    marketing_price Decimal(12, 2),
+    stocks_fbo UInt32,
+    stocks_fbs UInt32
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(fetched_at)
+ORDER BY (shop_id, product_id, fetched_at)
+TTL fetched_at + INTERVAL 1 YEAR;
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon Advertising: Bid Log
+-- Stores bid snapshots every 15 min for running campaigns.
+-- bid values in RUB (converted from microroubles).
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.log_ozon_bids (
+    timestamp DateTime,
+    shop_id UInt32,
+    campaign_id UInt64,
+    sku UInt64,
+    avg_cpc Decimal(18, 2),
+    price Decimal(18, 2)
+) ENGINE = MergeTree()
+ORDER BY (shop_id, campaign_id, sku, timestamp);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon Advertising: Daily Statistics
+-- ReplacingMergeTree auto-replaces old rows on FINAL query
+-- when Ozon attribution window updates orders retroactively.
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_ad_daily (
+    dt Date,
+    updated_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    campaign_id UInt64,
+    sku UInt64,
+    views UInt32,
+    clicks UInt32,
+    ctr Float32,
+    add_to_cart UInt32,
+    avg_cpc Decimal(18,2),
+    money_spent Decimal(18,2),
+    orders UInt32,
+    revenue Decimal(18,2),
+    model_orders UInt32,
+    model_revenue Decimal(18,2),
+    drr Float32
+) ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY (shop_id, campaign_id, sku, dt);

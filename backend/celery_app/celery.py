@@ -50,6 +50,11 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.sync_commercial_data": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_warehouses": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_product_content": {"queue": "heavy", "routing_key": "heavy"},
+    
+    # Ozon Ads tasks
+    "celery_app.tasks.tasks.monitor_ozon_bids": {"queue": "fast", "routing_key": "fast"},
+    "celery_app.tasks.tasks.sync_ozon_ad_stats": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.backfill_ozon_ads": {"queue": "heavy", "routing_key": "heavy"},
 }
 
 # ===================
@@ -153,6 +158,24 @@ celery_app.conf.beat_schedule = {
     #     "schedule": 600.0,  # Every 10 minutes
     #     "args": [1, "YOUR_API_KEY"],
     #     "options": {"queue": "heavy", "priority": 6},
+    # },
+
+    # === Ozon Ads & Bids ===
+
+    # Ozon bid monitoring - every 15 minutes on FAST queue
+    # "ozon-monitor-bids-15min": {
+    #     "task": "celery_app.tasks.tasks.monitor_ozon_bids",
+    #     "schedule": 900.0,  # Every 15 minutes
+    #     "args": [SHOP_ID, "PERF_CLIENT_ID", "PERF_CLIENT_SECRET"],
+    #     "options": {"queue": "fast", "priority": 7},
+    # },
+
+    # Ozon ad stats sync - every 60 minutes on HEAVY queue
+    # "ozon-ads-stats-60min": {
+    #     "task": "celery_app.tasks.tasks.sync_ozon_ad_stats",
+    #     "schedule": 3600.0,  # Every 60 minutes
+    #     "args": [SHOP_ID, "PERF_CLIENT_ID", "PERF_CLIENT_SECRET"],
+    #     "options": {"queue": "heavy", "priority": 5},
     # },
 }
 

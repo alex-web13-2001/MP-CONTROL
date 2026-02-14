@@ -295,3 +295,70 @@ CREATE INDEX IF NOT EXISTS idx_dim_product_content_nm ON dim_product_content(nm_
 
 CREATE TRIGGER update_dim_product_content_updated_at BEFORE UPDATE ON dim_product_content
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Ozon: Products Dictionary
+-- ===================
+CREATE TABLE IF NOT EXISTS dim_ozon_products (
+    id SERIAL PRIMARY KEY,
+    shop_id INTEGER NOT NULL,
+    product_id BIGINT NOT NULL,
+    offer_id VARCHAR(100) NOT NULL,
+    sku BIGINT,
+    name VARCHAR(500),
+    main_image_url TEXT,
+    barcode VARCHAR(100),
+    category_id BIGINT,
+
+    -- Pricing
+    price DECIMAL(12, 2),
+    old_price DECIMAL(12, 2),
+    min_price DECIMAL(12, 2),
+    marketing_price DECIMAL(12, 2),
+
+    -- Dimensions
+    volume_weight DECIMAL(8, 2),
+
+    -- Stocks
+    stocks_fbo INTEGER DEFAULT 0,
+    stocks_fbs INTEGER DEFAULT 0,
+
+    -- Flags
+    is_archived BOOLEAN DEFAULT FALSE,
+    has_fbo_stocks BOOLEAN DEFAULT FALSE,
+    has_fbs_stocks BOOLEAN DEFAULT FALSE,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(shop_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dim_ozon_products_shop ON dim_ozon_products(shop_id);
+CREATE INDEX IF NOT EXISTS idx_dim_ozon_products_product ON dim_ozon_products(product_id);
+CREATE INDEX IF NOT EXISTS idx_dim_ozon_products_offer ON dim_ozon_products(offer_id);
+
+CREATE TRIGGER update_dim_ozon_products_updated_at BEFORE UPDATE ON dim_ozon_products
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Ozon: Content Monitoring (MD5 hashes)
+-- ===================
+CREATE TABLE IF NOT EXISTS dim_ozon_product_content (
+    id SERIAL PRIMARY KEY,
+    shop_id INTEGER NOT NULL,
+    product_id BIGINT NOT NULL,
+    title_hash VARCHAR(32),
+    description_hash VARCHAR(32),
+    main_image_url TEXT,
+    images_hash VARCHAR(32),
+    images_count INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(shop_id, product_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dim_ozon_product_content_shop ON dim_ozon_product_content(shop_id);
+CREATE INDEX IF NOT EXISTS idx_dim_ozon_product_content_product ON dim_ozon_product_content(product_id);
+
+CREATE TRIGGER update_dim_ozon_product_content_updated_at BEFORE UPDATE ON dim_ozon_product_content
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

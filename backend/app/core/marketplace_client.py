@@ -49,6 +49,7 @@ MARKETPLACE_URLS = {
     "wildberries_marketplace": "https://marketplace-api.wildberries.ru",
     "wildberries_analytics": "https://seller-analytics-api.wildberries.ru",
     "ozon": "https://api-seller.ozon.ru",
+    "ozon_performance": "https://api-performance.ozon.ru",
 }
 
 
@@ -115,6 +116,7 @@ class MarketplaceClient:
         marketplace: str = "wildberries",
         api_key: Optional[str] = None,
         api_key_encrypted: Optional[bytes] = None,
+        client_id: Optional[str] = None,
         max_retries: int = 3,
         use_proxy: bool = True,
     ):
@@ -123,6 +125,7 @@ class MarketplaceClient:
         self.marketplace = marketplace
         self.max_retries = max_retries
         self.use_proxy = use_proxy
+        self._client_id = client_id
         
         # Decrypt API key if encrypted
         if api_key_encrypted:
@@ -179,6 +182,8 @@ class MarketplaceClient:
                 headers["Authorization"] = self._api_key
             elif "ozon" in self.marketplace:
                 headers["Api-Key"] = self._api_key
+                if self._client_id:
+                    headers["Client-Id"] = str(self._client_id)
         
         if extra_headers:
             headers.update(extra_headers)

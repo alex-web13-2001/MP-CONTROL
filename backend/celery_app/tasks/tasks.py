@@ -1474,3 +1474,727 @@ def backfill_orders(self, shop_id: int, api_key: str, days: int = 90):
     except Exception as exc:
         logger.exception("backfill_orders failed for shop_id=%s", shop_id)
         self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+# ===================
+# OZON CORE TASKS
+# Products, Content, Inventory
+# ===================
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_products(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Sync Ozon product catalog to dim_ozon_products (PostgreSQL).
+
+    Pipeline:
+        1. POST /v3/product/list — get all product_ids
+        2. POST /v3/product/info/list — detailed info (batches of 100)
+        3. Upsert into dim_ozon_products
+
+    Queue: HEAVY (moderate runtime ~1-2 min for 40 products).
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService, upsert_ozon_products,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list (paginated)
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon product list via proxy...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+            logger.info(f"Ozon: found {len(product_ids)} products for shop {shop_id}")
+
+            # 2. Fetch detailed product info (batches of 100)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching details for {len(product_ids)} products via proxy...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            # 3. Upsert into PostgreSQL
+            self.update_state(state='PROGRESS', meta={'status': 'Upserting into dim_ozon_products...'})
+            conn_params = {
+                "host": os.getenv("POSTGRES_HOST", "postgres"),
+                "port": int(os.getenv("POSTGRES_PORT", 5432)),
+                "user": os.getenv("POSTGRES_USER", "mms"),
+                "password": os.getenv("POSTGRES_PASSWORD", "mms"),
+                "database": os.getenv("POSTGRES_DB", "mms"),
+            }
+            count = upsert_ozon_products(conn_params, shop_id, products_info)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "products_found": len(product_list),
+                "products_upserted": count,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1700)
+def sync_ozon_content(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Sync Ozon content hashes (MD5) and detect changes.
+
+    Pipeline:
+        1. Fetch product list + info (images, names)
+        2. Fetch descriptions (sequential, rate limited)
+        3. Compute MD5 hashes of title, description, images
+        4. Compare with dim_ozon_product_content → detect events
+        5. Save events to event_log
+
+    Events detected:
+        - OZON_PHOTO_CHANGE (main_image or gallery)
+        - OZON_SEO_CHANGE (title or description)
+
+    Queue: HEAVY (descriptions fetched sequentially).
+    """
+    import asyncio
+    import os
+    import json
+    import psycopg2
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService, upsert_ozon_content,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    def save_ozon_events(events: list, conn_params: dict):
+        """Save Ozon content events to event_log."""
+        if not events:
+            return
+        conn = psycopg2.connect(**conn_params)
+        cursor = conn.cursor()
+        for event in events:
+            cursor.execute("""
+                INSERT INTO event_log (shop_id, advert_id, nm_id, event_type, old_value, new_value, event_metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                event.get("shop_id"),
+                None,
+                event.get("product_id"),
+                event.get("event_type"),
+                event.get("old_value"),
+                event.get("new_value"),
+                json.dumps({"field": event.get("field"), "platform": "ozon"}),
+            ))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(f"Saved {len(events)} Ozon content events")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching product list...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+
+            # 2. Fetch product info (images, names)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching info for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            # 3. Fetch all descriptions (sequential)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching descriptions for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                descriptions = await service.fetch_all_descriptions(product_ids)
+
+            # 4. Upsert content hashes and detect events
+            self.update_state(state='PROGRESS', meta={'status': 'Computing hashes and detecting events...'})
+            conn_params = {
+                "host": os.getenv("POSTGRES_HOST", "postgres"),
+                "port": int(os.getenv("POSTGRES_PORT", 5432)),
+                "user": os.getenv("POSTGRES_USER", "mms"),
+                "password": os.getenv("POSTGRES_PASSWORD", "mms"),
+                "database": os.getenv("POSTGRES_DB", "mms"),
+            }
+            count, events = upsert_ozon_content(conn_params, shop_id, products_info, descriptions)
+
+            # 5. Save events
+            if events:
+                save_ozon_events(events, conn_params)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "products_processed": count,
+                "events_detected": len(events),
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=270)
+def sync_ozon_inventory(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Snapshot Ozon inventory (prices + stocks) to ClickHouse.
+
+    Pipeline:
+        1. Fetch product list
+        2. Fetch product info (prices, stocks)
+        3. Insert snapshot into fact_ozon_inventory (ClickHouse)
+
+    Designed to run every 30 minutes for continuous monitoring.
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService, OzonInventoryLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon products...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+
+            # 2. Fetch product info
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching prices & stocks for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            # 3. Insert into ClickHouse
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting into ClickHouse...'})
+            with OzonInventoryLoader(
+                host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+            ) as loader:
+                inserted = loader.insert_inventory(shop_id, products_info)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "products_found": len(product_list),
+                "rows_inserted": inserted,
+                "stats": stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+# ===================
+# OZON ADS & BIDS TRACKING
+# monitor_ozon_bids (15 min), sync_ozon_ad_stats (60 min), backfill_ozon_ads (one-time)
+# Uses MarketplaceClient (proxy, rate limiting, circuit breaker) — same as WB.
+# ===================
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def monitor_ozon_bids(
+    self,
+    shop_id: int,
+    perf_client_id: str,
+    perf_client_secret: str,
+):
+    """
+    Monitor Ozon ad bids every 15 minutes + detect events.
+
+    Pipeline:
+        1. OAuth2 token (cached in Redis)
+        2. GET /api/client/campaign → list campaigns (via proxy)
+        3. GET /api/client/campaign/{id}/v2/products → current bids (via proxy)
+        4. OzonAdsEventDetector: compare with Redis → detect events
+        5. Insert events into PostgreSQL event_log
+        6. Insert changed bids into ClickHouse log_ozon_bids
+
+    Events detected (same as WB):
+        OZON_BID_CHANGE, OZON_STATUS_CHANGE, OZON_BUDGET_CHANGE,
+        OZON_ITEM_ADD, OZON_ITEM_REMOVE
+
+    Queue: FAST (real-time bid tracking).
+    """
+    import asyncio
+    import json
+    import os
+    import logging
+    from datetime import datetime
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import text
+    from app.config import get_settings
+    from app.services.ozon_ads_service import OzonAdsService, OzonBidsLoader
+    from app.services.ozon_ads_event_detector import OzonAdsEventDetector
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_monitor():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon ad bids via proxy...'})
+
+        # Redis for token caching + bid delta-check
+        import redis.asyncio as aioredis
+        redis_url = getattr(settings, 'redis_url', None) or os.environ.get(
+            'REDIS_URL', 'redis://redis:6379/0'
+        )
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
+
+        try:
+            async with async_session() as db:
+                service = OzonAdsService(
+                    db=db,
+                    shop_id=shop_id,
+                    perf_client_id=perf_client_id,
+                    perf_client_secret=perf_client_secret,
+                    redis_client=redis_client,
+                )
+
+                # 1. Get all campaigns (for status/budget tracking)
+                campaigns = await service.get_campaigns()
+                running_campaigns = [
+                    c for c in campaigns
+                    if c.get("state") == "CAMPAIGN_STATE_RUNNING"
+                ]
+
+                # 2. Get products per campaign (for bid/item tracking)
+                products_by_campaign = {}
+                all_bids = []
+
+                for camp in running_campaigns:
+                    campaign_id = camp.get("id")
+                    if not campaign_id:
+                        continue
+
+                    products = await service.get_campaign_products(campaign_id)
+                    products_by_campaign[int(campaign_id)] = products
+
+                    for p in products:
+                        all_bids.append({
+                            "campaign_id": int(campaign_id),
+                            "sku": int(p.get("sku", 0)),
+                            "bid_micro": int(p.get("bid", 0)),
+                            "bid_rub": int(p.get("bid", 0)) / 1_000_000,
+                            "title": p.get("title", ""),
+                        })
+
+                    await asyncio.sleep(0.3)
+
+                logger.info(
+                    "Ozon: fetched %d bids across %d campaigns for shop %d",
+                    len(all_bids), len(running_campaigns), shop_id,
+                )
+
+                # 3. Event Detection (BID_CHANGE, STATUS_CHANGE, BUDGET_CHANGE, ITEM_ADD/REMOVE)
+                detector = OzonAdsEventDetector(redis_url=str(redis_url))
+                events = detector.detect_all(
+                    shop_id=shop_id,
+                    campaigns=campaigns,
+                    products_by_campaign=products_by_campaign,
+                )
+
+                # 4. Save events to PostgreSQL event_log
+                events_saved = 0
+                if events:
+                    for event in events:
+                        metadata_json = json.dumps(event.get("event_metadata")) \
+                            if event.get("event_metadata") else None
+                        await db.execute(text("""
+                            INSERT INTO event_log
+                                (created_at, shop_id, advert_id, nm_id,
+                                 event_type, old_value, new_value, event_metadata)
+                            VALUES
+                                (:created_at, :shop_id, :advert_id, :nm_id,
+                                 :event_type, :old_value, :new_value, CAST(:event_metadata AS jsonb))
+                        """), {
+                            "created_at": datetime.utcnow(),
+                            "shop_id": event["shop_id"],
+                            "advert_id": event["advert_id"],
+                            "nm_id": event.get("nm_id"),
+                            "event_type": event["event_type"],
+                            "old_value": event.get("old_value"),
+                            "new_value": event.get("new_value"),
+                            "event_metadata": metadata_json,
+                        })
+                    await db.commit()
+                    events_saved = len(events)
+                    logger.info("Ozon: saved %d events to event_log", events_saved)
+
+            if not all_bids:
+                return {
+                    "shop_id": shop_id,
+                    "bids_fetched": 0, "bids_changed": 0,
+                    "events_detected": events_saved,
+                }
+
+            # 5. Delta-check for ClickHouse insertion (same as before)
+            cache_key = f"ozon_bids_cache:{shop_id}"
+            cached_raw = await redis_client.get(cache_key)
+            cached_bids = json.loads(cached_raw) if cached_raw else {}
+
+            changed_bids = []
+            new_cache = {}
+
+            for bid in all_bids:
+                key = f"{bid['campaign_id']}:{bid['sku']}"
+                current_bid = bid['bid_rub']
+                new_cache[key] = current_bid
+
+                old_bid = cached_bids.get(key)
+                if old_bid is None or abs(float(old_bid) - current_bid) > 0.01:
+                    changed_bids.append(bid)
+
+            force_key = f"ozon_bids_last_full:{shop_id}"
+            last_full = await redis_client.get(force_key)
+            force_write = not last_full
+
+            if force_write and not changed_bids:
+                changed_bids = all_bids
+                logger.info("Ozon: force-writing full bid snapshot")
+
+            # 6. Insert changed bids into ClickHouse
+            inserted = 0
+            if changed_bids:
+                ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
+                ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
+
+                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                    inserted = loader.insert_bids(shop_id, changed_bids)
+
+            # 7. Update Redis cache
+            await redis_client.setex(cache_key, 7200, json.dumps(new_cache))
+            if force_write or changed_bids:
+                await redis_client.setex(force_key, 3600, "1")
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Done: {inserted} bids, {events_saved} events',
+            })
+
+            return {
+                "shop_id": shop_id,
+                "bids_fetched": len(all_bids),
+                "bids_changed": len(changed_bids),
+                "bids_inserted": inserted,
+                "events_detected": events_saved,
+            }
+
+        finally:
+            await redis_client.close()
+            await engine.dispose()
+
+    return asyncio.run(run_monitor())
+
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_ad_stats(
+    self,
+    shop_id: int,
+    perf_client_id: str,
+    perf_client_secret: str,
+    lookback_days: int = 3,
+):
+    """
+    Sync Ozon ad statistics with sliding window (default: last 3 days).
+
+    Pipeline:
+        1. OAuth2 token
+        2. GET campaigns → get all campaign IDs (via proxy)
+        3. POST /api/client/statistics → UUID (async report, via proxy)
+        4. Poll UUID until ready
+        5. Download CSV → parse → insert ClickHouse fact_ozon_ad_daily
+
+    Why 3-day window? Ozon attribution: buyer adds to cart today,
+    pays tomorrow → order attributed to yesterday retroactively.
+    ReplacingMergeTree auto-replaces old rows on FINAL query.
+
+    Queue: HEAVY (60 min schedule).
+    """
+    import asyncio
+    import os
+    import logging
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_ads_service import OzonAdsService, OzonBidsLoader
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        self.update_state(state='PROGRESS', meta={'status': 'Preparing Ozon ad stats sync via proxy...'})
+
+        import redis.asyncio as aioredis
+        redis_url = getattr(settings, 'redis_url', None) or os.environ.get(
+            'REDIS_URL', 'redis://redis:6379/0'
+        )
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
+
+        try:
+            async with async_session() as db:
+                service = OzonAdsService(
+                    db=db,
+                    shop_id=shop_id,
+                    perf_client_id=perf_client_id,
+                    perf_client_secret=perf_client_secret,
+                    redis_client=redis_client,
+                )
+
+                # 1. Get all campaign IDs
+                campaigns = await service.get_campaigns()
+                campaign_ids = [c["id"] for c in campaigns if c.get("id")]
+                logger.info(f"Ozon: {len(campaign_ids)} campaigns for stats")
+
+                if not campaign_ids:
+                    return {"shop_id": shop_id, "campaigns": 0, "rows": 0}
+
+                # 2. Date range: [today - lookback_days, today]
+                today = datetime.utcnow().date()
+                date_from = (today - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+                date_to = today.strftime("%Y-%m-%d")
+
+                self.update_state(state='PROGRESS', meta={
+                    'status': f'Ordering report {date_from} → {date_to} for {len(campaign_ids)} campaigns via proxy...',
+                })
+
+                # 3. Full pipeline: order → wait → download → parse
+                all_rows = await service.fetch_statistics(
+                    shop_id=shop_id,
+                    campaign_ids=campaign_ids,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+
+            logger.info(f"Ozon: parsed {len(all_rows)} stats rows")
+
+            # 4. Insert into ClickHouse
+            inserted = 0
+            if all_rows:
+                ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
+                ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
+
+                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                    inserted = loader.insert_stats(all_rows)
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Done: {inserted} stats rows inserted',
+            })
+
+            return {
+                "shop_id": shop_id,
+                "campaigns": len(campaign_ids),
+                "date_from": date_from,
+                "date_to": date_to,
+                "rows_parsed": len(all_rows),
+                "rows_inserted": inserted,
+            }
+
+        finally:
+            await redis_client.close()
+            await engine.dispose()
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def backfill_ozon_ads(
+    self,
+    shop_id: int,
+    perf_client_id: str,
+    perf_client_secret: str,
+    days_back: int = 180,
+    chunk_days: int = 7,
+):
+    """
+    Backfill Ozon ad statistics history (same as WB: 6 months, then sync).
+
+    Loads data week-by-week to avoid overwhelming API.
+    Same table fact_ozon_ad_daily — ReplacingMergeTree handles duplicates.
+
+    Args:
+        days_back: How many days of history to load (default: 180 = 6 months).
+        chunk_days: How many days per API request (default: 7).
+
+    Queue: HEAVY (one-time or manual).
+    """
+    import asyncio
+    import os
+    import logging
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_ads_service import OzonAdsService, OzonBidsLoader
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_backfill():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        import redis.asyncio as aioredis
+        redis_url = getattr(settings, 'redis_url', None) or os.environ.get(
+            'REDIS_URL', 'redis://redis:6379/0'
+        )
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
+
+        try:
+            async with async_session() as db:
+                service = OzonAdsService(
+                    db=db,
+                    shop_id=shop_id,
+                    perf_client_id=perf_client_id,
+                    perf_client_secret=perf_client_secret,
+                    redis_client=redis_client,
+                )
+
+                # 1. Get all campaign IDs
+                campaigns = await service.get_campaigns()
+                campaign_ids = [c["id"] for c in campaigns if c.get("id")]
+
+                if not campaign_ids:
+                    return {"shop_id": shop_id, "error": "No campaigns found"}
+
+                # 2. Build date chunks (week by week, newest first)
+                today = datetime.utcnow().date()
+                start_date = today - timedelta(days=days_back)
+                chunks = []
+                chunk_start = start_date
+
+                while chunk_start < today:
+                    chunk_end = min(chunk_start + timedelta(days=chunk_days - 1), today)
+                    chunks.append((chunk_start, chunk_end))
+                    chunk_start = chunk_end + timedelta(days=1)
+
+                logger.info(
+                    f"Ozon backfill: {len(chunks)} chunks, "
+                    f"{start_date} → {today}, {len(campaign_ids)} campaigns"
+                )
+
+                # 3. Process each chunk
+                ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
+                ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
+                total_rows = 0
+
+                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                    for i, (cf, ct) in enumerate(chunks):
+                        self.update_state(state='PROGRESS', meta={
+                            'status': f'Chunk {i+1}/{len(chunks)}: {cf} → {ct} via proxy',
+                            'progress': f'{(i+1)*100//len(chunks)}%',
+                        })
+
+                        try:
+                            rows = await service.fetch_statistics(
+                                shop_id=shop_id,
+                                campaign_ids=campaign_ids,
+                                date_from=cf.strftime("%Y-%m-%d"),
+                                date_to=ct.strftime("%Y-%m-%d"),
+                            )
+
+                            if rows:
+                                inserted = loader.insert_stats(rows)
+                                total_rows += inserted
+                                logger.info(
+                                    f"Backfill chunk {cf}→{ct}: {inserted} rows"
+                                )
+
+                            # Rate limit: sleep between chunks
+                            await asyncio.sleep(2)
+
+                        except Exception as e:
+                            logger.warning(f"Backfill chunk {cf}→{ct} failed: {e}")
+                            await asyncio.sleep(5)
+                            continue
+
+            return {
+                "shop_id": shop_id,
+                "campaigns": len(campaign_ids),
+                "chunks": len(chunks),
+                "total_rows": total_rows,
+                "period": f"{start_date} → {today}",
+            }
+
+        finally:
+            await redis_client.close()
+            await engine.dispose()
+
+    return asyncio.run(run_backfill())
+

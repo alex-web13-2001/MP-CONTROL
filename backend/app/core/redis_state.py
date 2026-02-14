@@ -217,3 +217,75 @@ class RedisStateManager:
         if mapping:
             self.client.hset(key, mapping=mapping)
             self.client.expire(key, self.CONTENT_TTL)
+
+    # ============ Ozon Ads State ============
+
+    OZON_ADS_PREFIX = "ozon_ads:state"
+    OZON_ADS_TTL = 7 * 24 * 60 * 60  # 7 days
+
+    def _ozon_key(self, shop_id: int, campaign_id: int) -> str:
+        return f"{self.OZON_ADS_PREFIX}:{shop_id}:{campaign_id}"
+
+    def get_ozon_campaign_state(self, shop_id: int, campaign_id: int) -> Dict[str, Any]:
+        """
+        Get last state for an Ozon campaign.
+        Returns dict with bids (sku→bid_rub), status, budget, items.
+        """
+        key = self._ozon_key(shop_id, campaign_id)
+        raw = self.client.hgetall(key)
+
+        if not raw:
+            return {"bids": {}, "status": None, "budget": None, "items": []}
+
+        bids = {}
+        if raw.get("bids"):
+            try:
+                bids = json.loads(raw["bids"])
+            except json.JSONDecodeError:
+                bids = {}
+
+        status = raw.get("status")
+        budget = float(raw["budget"]) if raw.get("budget") else None
+
+        items = []
+        if raw.get("items"):
+            try:
+                items = json.loads(raw["items"])
+            except json.JSONDecodeError:
+                items = []
+
+        return {
+            "bids": bids,
+            "status": status,
+            "budget": budget,
+            "items": items,
+        }
+
+    def set_ozon_campaign_state(
+        self,
+        shop_id: int,
+        campaign_id: int,
+        bids: Optional[Dict[str, float]] = None,
+        status: Optional[str] = None,
+        budget: Optional[float] = None,
+        items: Optional[List[int]] = None,
+    ) -> None:
+        """
+        Update Ozon campaign state in Redis.
+        Only updates fields that are not None.
+        """
+        key = self._ozon_key(shop_id, campaign_id)
+
+        mapping = {}
+        if bids is not None:
+            mapping["bids"] = json.dumps(bids)
+        if status is not None:
+            mapping["status"] = str(status)
+        if budget is not None:
+            mapping["budget"] = str(budget)
+        if items is not None:
+            mapping["items"] = json.dumps(items)
+
+        if mapping:
+            self.client.hset(key, mapping=mapping)
+            self.client.expire(key, self.OZON_ADS_TTL)
