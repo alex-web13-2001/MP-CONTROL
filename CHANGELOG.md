@@ -37,7 +37,17 @@
 - **fact_ozon_promotions (ClickHouse):** ежедневные снэпшоты акций (promo_type + is_enabled)
 - **fact_ozon_availability (ClickHouse):** ежедневные снэпшоты доступности (source + availability)
 - **OzonPromotionsLoader + OzonAvailabilityLoader:** ClickHouse loaders
-- **sync_ozon_product_snapshots:** единый Celery task → 1 API вызов → 4 ClickHouse insert (promotions, availability, commissions, inventory)
+- **sync_ozon_product_snapshots:** единый Celery task → 1 API → 4 ClickHouse insert
+
+### Added — Ozon Orders Loader (FBO & FBS)
+
+- **ozon_orders_service.py:** `OzonOrdersService` — загрузка заказов FBO (`/v2/posting/fbo/list`) + FBS (`/v3/posting/fbs/list`) с пагинацией
+- **fact_ozon_orders (ClickHouse):** `ReplacingMergeTree` — 30 колонок (posting_number, order_id, status, sku, price, commission, payout, city, cluster, warehouse_mode и тд)
+- **OzonOrdersLoader:** ClickHouse загрузчик с batch insert + stats
+- **\_normalize_postings():** нормализация FBO/FBS → unified rows (1 row per product per posting), обработка различий форматов
+- **sync_ozon_orders:** Celery task — синхронизация за последние 14 дней (overlap window для отлова смен статусов)
+- **backfill_ozon_orders:** Celery task — историческая загрузка до 365 дней
+- **Live тест:** 657 FBO + 11 FBS = 668 rows, payout 711K₽, dedup ✅
 
 ### Added — Комиссии + Контент-рейтинг (daily)
 

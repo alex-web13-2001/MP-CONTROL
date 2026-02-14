@@ -1660,7 +1660,165 @@ def sync_ozon_product_snapshots(
     return asyncio.run(run_sync())
 
 
-@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1700)
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_orders(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    days_back: int = 14,
+):
+    """
+    Sync Ozon orders (FBO + FBS) to ClickHouse fact_ozon_orders.
+
+    Default: last 14 days (overlap window to catch status changes).
+    ReplacingMergeTree deduplicates by posting_number.
+
+    Pipeline:
+        1. Fetch FBO postings (paginated)
+        2. Fetch FBS postings (paginated)
+        3. Normalize → 1 row per product per posting
+        4. Insert into ClickHouse
+
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_orders_service import OzonOrdersService, OzonOrdersLoader
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    since = (now - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000Z")
+    to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching orders (last {days_back} days)...',
+            })
+
+            async with sf() as db:
+                service = OzonOrdersService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                orders = await service.fetch_all_orders(since, to)
+
+            logger.info(f"Ozon orders: {len(orders)} rows for shop {shop_id}")
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Inserting {len(orders)} orders into ClickHouse...',
+            })
+
+            with OzonOrdersLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_orders(shop_id, orders)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "days_back": days_back,
+                "rows_inserted": inserted,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def backfill_ozon_orders(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    days_back: int = 365,
+):
+    """
+    Backfill historical Ozon orders (FBO + FBS) into ClickHouse.
+
+    Downloads up to 1 year of order history.
+    Longer time limit (1 hour) since this may fetch thousands of orders.
+
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_orders_service import OzonOrdersService, OzonOrdersLoader
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    since = (now - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00.000Z")
+    to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Backfilling {days_back} days of orders...',
+            })
+
+            async with sf() as db:
+                service = OzonOrdersService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                orders = await service.fetch_all_orders(since, to)
+
+            logger.info(
+                "Backfill: %d order rows for shop %d (%d days)",
+                len(orders), shop_id, days_back,
+            )
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Inserting {len(orders)} historical orders...',
+            })
+
+            with OzonOrdersLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_orders(shop_id, orders)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "days_back": days_back,
+                "rows_inserted": inserted,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
 def sync_ozon_content(
     self,
     shop_id: int,
