@@ -1981,6 +1981,375 @@ def backfill_ozon_finance(
     return asyncio.run(run_sync())
 
 
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_funnel(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Daily sync of Ozon sales funnel analytics (views→cart→orders).
+
+    Fetches yesterday's data via POST /v1/analytics/data.
+    14 metrics per SKU per day.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_funnel_service import OzonFunnelService, OzonFunnelLoader
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    date_from = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonFunnelService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_all_funnel(date_from, date_to)
+
+            with OzonFunnelLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def backfill_ozon_funnel(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    days_back: int = 365,
+):
+    """
+    Backfill historical Ozon funnel analytics.
+
+    Chunks by 90-day quarters automatically.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_funnel_service import OzonFunnelService, OzonFunnelLoader
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    date_to = now.strftime("%Y-%m-%d")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Backfilling {days_back} days of funnel data...',
+            })
+            async with sf() as db:
+                service = OzonFunnelService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_all_funnel(date_from, date_to)
+
+            with OzonFunnelLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "days_back": days_back,
+                    "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_returns(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Sync recent Ozon returns/cancellations (last 30 days).
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_returns_service import (
+        OzonReturnsService, OzonReturnsLoader, normalize_returns,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    time_from = (now - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00Z")
+    time_to = now.strftime("%Y-%m-%dT23:59:59Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonReturnsService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                raw = await service.fetch_returns(time_from, time_to)
+
+            rows = normalize_returns(raw)
+
+            with OzonReturnsLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def backfill_ozon_returns(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    days_back: int = 180,
+):
+    """
+    Backfill historical Ozon returns (up to 6 months).
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_returns_service import (
+        OzonReturnsService, OzonReturnsLoader, normalize_returns,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    time_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%dT00:00:00Z")
+    time_to = now.strftime("%Y-%m-%dT23:59:59Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonReturnsService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                raw = await service.fetch_returns(time_from, time_to)
+
+            rows = normalize_returns(raw)
+
+            with OzonReturnsLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "days_back": days_back,
+                    "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_ozon_warehouse_stocks(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Snapshot Ozon warehouse stock levels (FBO + FBS).
+    Run twice daily for accurate stock tracking.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_warehouse_stocks_service import (
+        OzonWarehouseStocksService, OzonWarehouseStocksLoader,
+    )
+
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonWarehouseStocksService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_warehouse_stocks()
+
+            with OzonWarehouseStocksLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_ozon_prices(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Snapshot Ozon product prices and commissions.
+    Run daily or twice daily for price tracking.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_price_service import OzonPriceService, OzonPriceLoader
+
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonPriceService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_prices()
+
+            with OzonPriceLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=120, soft_time_limit=100)
+def sync_ozon_seller_rating(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Daily snapshot of Ozon seller rating metrics.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_seller_rating_service import (
+        OzonSellerRatingService, OzonSellerRatingLoader,
+    )
+
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonSellerRatingService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_rating()
+
+            with OzonSellerRatingLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
 def sync_ozon_content(
     self,
     shop_id: int,

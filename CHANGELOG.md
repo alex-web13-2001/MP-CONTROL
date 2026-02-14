@@ -2,6 +2,54 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-15
+
+### Documentation — Расширенная документация загрузчиков
+
+- **loaders.md** — Главный файл: архитектура, Celery (32 tasks, 3 очереди, beat schedule), ClickHouse (22+ таблиц), PostgreSQL модели, Event Detection (4 класса)
+- **loaders_wb.md** — 8 модулей Wildberries: API endpoints, маппинги полей, CH таблицы, Celery tasks, constants, bugs
+- **loaders_ozon.md** — 9 модулей Ozon: API endpoints, маппинги полей, CH таблицы, Celery tasks, workarounds (Returns API bug)
+
+### Fixed — Миграция MergeTree → ReplacingMergeTree (Audit Fix)
+
+- **fact_sales_funnel:** MergeTree → ReplacingMergeTree(fetched_at), ORDER BY (shop_id, nm_id, event_date)
+  - Устранено дублирование при повторных sync. 7,366 rows сохранены.
+- **fact_ozon_inventory:** MergeTree → ReplacingMergeTree(fetched_at), ORDER BY (shop_id, product_id)
+  - Дубли удалены: 120 → 40 rows.
+- **fact_inventory_snapshot:** MergeTree → ReplacingMergeTree(fetched_at), ORDER BY (shop_id, nm_id, warehouse_name)
+  - Дубли удалены: 856 → 428 rows.
+- DDL в `docker/clickhouse/init.sql` обновлён.
+
+### Added — 5 новых Ozon модулей (API Audit)
+
+- **ozon_funnel_service.py:** Sales analytics via `/v1/analytics/data`
+  - Метрики: ordered_units, revenue (13 метрик deprecated Ozon → Premium)
+  - Backfill 365 дней: 3,634 rows, 1,743 заказа, 3.25M₽
+  - ClickHouse: `fact_ozon_funnel` (ReplacingMergeTree)
+  - Tasks: `sync_ozon_funnel`, `backfill_ozon_funnel`
+
+- **ozon_returns_service.py:** Returns/cancellations via `/v1/returns/list`
+  - Workaround: API баг last_id=0 → cursor через max(id) + dedup
+  - Backfill: 229 returns (225 cancellations, 4 client), 427K₽
+  - Top причина: «Покупатель отменил заказ» (60 из 229)
+  - ClickHouse: `fact_ozon_returns`
+  - Tasks: `sync_ozon_returns`, `backfill_ozon_returns`
+
+- **ozon_warehouse_stocks_service.py:** Stock per warehouse via `/v2/analytics/stock_on_warehouses`
+  - Snapshot: 266 rows, 38 SKUs, 23 склада, 2,481 шт. free-to-sell
+  - ClickHouse: `fact_ozon_warehouse_stocks`
+  - Task: `sync_ozon_warehouse_stocks`
+
+- **ozon_price_service.py:** Prices + commissions via `/v5/product/info/prices`
+  - 40 товаров: FBO 34%, FBS 37%, эквайринг 4.38%, маркетинговые акции
+  - ClickHouse: `fact_ozon_prices`
+  - Task: `sync_ozon_prices`
+
+- **ozon_seller_rating_service.py:** Account health via `/v1/rating/summary`
+  - 10 метрик: Доставка, Жалобы, Индекс цен, Оценка 4.78
+  - ClickHouse: `fact_ozon_seller_rating`
+  - Task: `sync_ozon_seller_rating`
+
 ## [Unreleased] - 2026-02-14
 
 ### Added — Модуль «Ozon Ads & Bids Tracking» (Performance API)

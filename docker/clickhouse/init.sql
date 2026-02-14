@@ -469,16 +469,16 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_inventory_snapshot (
     quantity UInt32,
     price Decimal(18, 2),
     discount UInt8
-) ENGINE = MergeTree()
+) ENGINE = ReplacingMergeTree(fetched_at)
 PARTITION BY toYYYYMM(fetched_at)
-ORDER BY (shop_id, nm_id, fetched_at)
+ORDER BY (shop_id, nm_id, warehouse_name)
 TTL fetched_at + INTERVAL 1 YEAR;
 
 -- ===================
 -- Sales Funnel Analytics (WB Seller Analytics API)
 -- Daily funnel metrics per product: views, cart, orders, buyouts, conversions
--- MergeTree: every sync INSERTs new rows (append-only) to keep history
--- of how metrics change throughout the day (every 30 min)
+-- ReplacingMergeTree: deduplicates by (shop_id, nm_id, event_date),
+-- keeping the row with the latest fetched_at
 -- ===================
 CREATE TABLE IF NOT EXISTS mms_analytics.fact_sales_funnel (
     fetched_at      DateTime DEFAULT now(),  -- when this snapshot was taken
@@ -504,9 +504,9 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_sales_funnel (
     -- Additional
     avg_price        Decimal(18, 2) DEFAULT 0,
     add_to_wishlist  UInt32 DEFAULT 0
-) ENGINE = MergeTree()
+) ENGINE = ReplacingMergeTree(fetched_at)
 PARTITION BY toYYYYMM(event_date)
-ORDER BY (shop_id, nm_id, event_date, fetched_at)
+ORDER BY (shop_id, nm_id, event_date)
 TTL event_date + INTERVAL 2 YEAR;
 
 -- Latest sales funnel view (shows most recent snapshot per product+date)
@@ -615,9 +615,9 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_inventory (
     marketing_price Decimal(12, 2),
     stocks_fbo UInt32,
     stocks_fbs UInt32
-) ENGINE = MergeTree()
+) ENGINE = ReplacingMergeTree(fetched_at)
 PARTITION BY toYYYYMM(fetched_at)
-ORDER BY (shop_id, product_id, fetched_at)
+ORDER BY (shop_id, product_id)
 TTL fetched_at + INTERVAL 1 YEAR;
 
 -- ═══════════════════════════════════════════════════════════
