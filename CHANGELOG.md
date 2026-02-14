@@ -49,6 +49,16 @@
 - **backfill_ozon_orders:** Celery task — историческая загрузка до 365 дней
 - **Live тест:** 657 FBO + 11 FBS = 668 rows, payout 711K₽, dedup ✅
 
+### Added — Ozon Finance Service (Transaction Stream)
+
+- **ozon_finance_service.py:** `OzonFinanceService` — загрузка транзакций `POST /v3/finance/transaction/list` с пагинацией + auto-chunking по месяцам
+- **fact_ozon_transactions (ClickHouse):** `ReplacingMergeTree` — 16 колонок (operation_id, type, amount, accruals_for_sale, sale_commission, services_total, category и тд)
+- **OPERATION_CATEGORY_MAP:** маппинг 19 operation_type → 9 категорий (Revenue, Refund, Logistics, Marketing, Storage, Penalty, Acquiring, Compensation, Other)
+- **OzonTransactionsLoader:** ClickHouse загрузчик + stats + `get_pnl()` для P&L отчёта
+- **sync_ozon_finance:** Celery task — daily sync (2-дневное окно)
+- **backfill_ozon_finance:** Celery task — историческая загрузка до 12 месяцев (по месяцам)
+- **Live тест:** 13,384 операций за 10 месяцев, Revenue 4.4M₽, Net payout 2.75M₽
+
 ### Added — Комиссии + Контент-рейтинг (daily)
 
 - **ozon_products_service.py:** `_extract_commissions()` — парсинг commissions из `/v3/product/info/list` → flat dict (sales_percent, FBO/FBS logistics fees)

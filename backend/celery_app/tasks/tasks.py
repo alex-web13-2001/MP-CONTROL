@@ -1819,6 +1819,168 @@ def backfill_ozon_orders(
     return asyncio.run(run_sync())
 
 
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+def sync_ozon_finance(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Daily sync of Ozon financial transactions to ClickHouse.
+
+    Fetches yesterday + today (2-day window) to catch late-arriving transactions.
+    ReplacingMergeTree deduplicates by operation_id.
+
+    Pipeline:
+        1. POST /v3/finance/transaction/list (2 days, paginated)
+        2. Normalize → category mapping
+        3. Insert into ClickHouse fact_ozon_transactions
+
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_finance_service import (
+        OzonFinanceService, OzonTransactionsLoader, normalize_transactions,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    since = (now - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00.000Z")
+    to = now.strftime("%Y-%m-%dT23:59:59.000Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            self.update_state(state='PROGRESS', meta={
+                'status': 'Fetching financial transactions (last 2 days)...',
+            })
+
+            async with sf() as db:
+                service = OzonFinanceService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                raw_ops = await service.fetch_transactions(since, to)
+
+            normalized = normalize_transactions(raw_ops)
+            logger.info(f"Finance sync: {len(normalized)} transactions for shop {shop_id}")
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Inserting {len(normalized)} transactions into ClickHouse...',
+            })
+
+            with OzonTransactionsLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_transactions(shop_id, normalized)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "rows_inserted": inserted,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+def backfill_ozon_finance(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    months_back: int = 12,
+):
+    """
+    Backfill historical Ozon financial transactions into ClickHouse.
+
+    Iterates by calendar months (API limit: max 1 month per request).
+    Rate limit: 1.5s between pages.
+
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_finance_service import (
+        OzonFinanceService, OzonTransactionsLoader, normalize_transactions,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    since = (now - timedelta(days=months_back * 30)).strftime("%Y-%m-%dT00:00:00.000Z")
+    to = now.strftime("%Y-%m-%dT23:59:59.000Z")
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Backfilling {months_back} months of finance data...',
+            })
+
+            async with sf() as db:
+                service = OzonFinanceService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                raw_ops = await service.fetch_all_transactions(since, to)
+
+            normalized = normalize_transactions(raw_ops)
+            logger.info(
+                "Finance backfill: %d transactions for shop %d (%d months)",
+                len(normalized), shop_id, months_back,
+            )
+
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Inserting {len(normalized)} historical transactions...',
+            })
+
+            with OzonTransactionsLoader(host=ch_host, port=ch_port) as loader:
+                inserted = loader.insert_transactions(shop_id, normalized)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "months_back": months_back,
+                "rows_inserted": inserted,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
 def sync_ozon_content(
     self,
     shop_id: int,
