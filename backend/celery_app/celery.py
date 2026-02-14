@@ -177,6 +177,32 @@ celery_app.conf.beat_schedule = {
     #     "args": [SHOP_ID, "PERF_CLIENT_ID", "PERF_CLIENT_SECRET"],
     #     "options": {"queue": "heavy", "priority": 5},
     # },
+
+    # === Ozon Daily Tasks (Products) ===
+
+    # Ozon commissions snapshot - daily at 06:00
+    # "ozon-commissions-daily": {
+    #     "task": "celery_app.tasks.tasks.sync_ozon_commissions",
+    #     "schedule": crontab(hour=6, minute=0),
+    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
+    #     "options": {"queue": "heavy", "priority": 4},
+    # },
+
+    # Ozon content rating snapshot - daily at 06:30
+    # "ozon-content-rating-daily": {
+    #     "task": "celery_app.tasks.tasks.sync_ozon_content_rating",
+    #     "schedule": crontab(hour=6, minute=30),
+    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
+    #     "options": {"queue": "heavy", "priority": 4},
+    # },
+
+    # Ozon inventory snapshot - every 4 hours
+    # "ozon-inventory-4h": {
+    #     "task": "celery_app.tasks.tasks.sync_ozon_inventory",
+    #     "schedule": crontab(hour="*/4", minute=15),
+    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
+    #     "options": {"queue": "heavy", "priority": 5},
+    # },
 }
 
 

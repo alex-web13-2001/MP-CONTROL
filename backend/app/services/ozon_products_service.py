@@ -1,5 +1,6 @@
 """
-Ozon Products Service — Fetch products, content, and inventory from Ozon Seller API.
+Ozon Products Service — Fetch products, content, inventory, commissions,
+and content ratings from Ozon Seller API.
 
 All requests go through MarketplaceClient (proxy, rate limiting, circuit breaker).
 
@@ -7,11 +8,14 @@ API Endpoints (tested, working):
     POST /v3/product/list — list all product_id + offer_id (paginated via last_id)
     POST /v3/product/info/list — detailed info (name, images, prices, stocks, commissions)
     POST /v1/product/info/description — product description (HTML)
+    POST /v1/product/rating-by-sku — content rating (0-100) + group breakdown
 
 Data flow:
     1. sync_ozon_products: list → info → upsert dim_ozon_products (PostgreSQL)
     2. sync_ozon_content: info + description → MD5 hashes → dim_ozon_product_content
     3. sync_ozon_inventory: info → prices + stocks → fact_ozon_inventory (ClickHouse)
+    4. sync_ozon_commissions: info → commissions → fact_ozon_commissions (ClickHouse)
+    5. sync_ozon_content_rating: SKUs → rating-by-sku → fact_ozon_content_rating (ClickHouse)
 """
 
 import asyncio
@@ -226,6 +230,97 @@ class OzonProductsService:
             descriptions[pid] = desc
             await asyncio.sleep(0.2)  # rate limit safety
         return descriptions
+
+    async def fetch_content_ratings(self, skus: List[int]) -> List[dict]:
+        """
+        Fetch content ratings via POST /v1/product/rating-by-sku.
+
+        Returns list of {sku, rating, groups: [{key, name, rating, weight}]}
+        Batch: up to 100 SKUs per request.
+        """
+        all_ratings = []
+        BATCH = 100
+
+        for i in range(0, len(skus), BATCH):
+            batch = skus[i:i + BATCH]
+            async with self._make_client() as client:
+                response = await client.post(
+                    "/v1/product/rating-by-sku",
+                    json={"skus": batch},
+                )
+
+            if not response.is_success:
+                logger.warning(
+                    "Ozon /v1/product/rating-by-sku error: %s %s",
+                    response.status_code, response.error,
+                )
+                continue
+
+            products = response.data.get("products", [])
+            all_ratings.extend(products)
+            logger.info(
+                "Ozon content ratings: batch %d-%d → %d items",
+                i, i + len(batch), len(products),
+            )
+            await asyncio.sleep(0.3)
+
+        return all_ratings
+
+
+# ── Commission Extraction ─────────────────────────────────
+
+def _extract_commissions(item: dict) -> dict:
+    """
+    Extract commissions from /v3/product/info/list response item.
+
+    The 'commissions' field is a list of dicts with 'percent', 'min_value',
+    'value', 'sale_schema', 'delivery_amount', 'return_amount'.
+    We normalize into flat dict with sales_percent, fbo/fbs logistics.
+    """
+    commissions_list = item.get("commissions", [])
+    result = {
+        "sales_percent": 0.0,
+        "fbo_fulfillment_amount": 0.0,
+        "fbo_direct_flow_trans_min": 0.0,
+        "fbo_direct_flow_trans_max": 0.0,
+        "fbo_deliv_to_customer": 0.0,
+        "fbo_return_flow": 0.0,
+        "fbs_direct_flow_trans_min": 0.0,
+        "fbs_direct_flow_trans_max": 0.0,
+        "fbs_deliv_to_customer": 0.0,
+        "fbs_first_mile_min": 0.0,
+        "fbs_first_mile_max": 0.0,
+        "fbs_return_flow": 0.0,
+    }
+
+    for comm in commissions_list:
+        schema = comm.get("sale_schema", "")
+        percent = _safe_decimal(comm.get("percent"))
+        delivery = _safe_decimal(comm.get("delivery_amount"))
+        return_am = _safe_decimal(comm.get("return_amount"))
+        value = _safe_decimal(comm.get("value"))
+        min_val = _safe_decimal(comm.get("min_value"))
+
+        if schema in ("fbo", "FBO"):
+            result["sales_percent"] = max(result["sales_percent"], percent)
+            result["fbo_fulfillment_amount"] = value
+            result["fbo_direct_flow_trans_min"] = min_val
+            result["fbo_direct_flow_trans_max"] = value
+            result["fbo_deliv_to_customer"] = delivery
+            result["fbo_return_flow"] = return_am
+        elif schema in ("fbs", "FBS"):
+            result["fbs_direct_flow_trans_min"] = min_val
+            result["fbs_direct_flow_trans_max"] = value
+            result["fbs_deliv_to_customer"] = delivery
+            result["fbs_first_mile_min"] = min_val
+            result["fbs_first_mile_max"] = value
+            result["fbs_return_flow"] = return_am
+        elif schema in ("rfbs", "RFBS"):
+            # Use rfbs percent as sales_percent if higher
+            if percent > result["sales_percent"]:
+                result["sales_percent"] = percent
+
+    return result
 
 
 # ── PostgreSQL Upsert ──────────────────────────────────────
@@ -537,3 +632,263 @@ class OzonInventoryLoader:
                 "total_fbs": r[6],
             }
         return {}
+
+
+# ── ClickHouse Commissions Loader ─────────────────────────
+
+CH_COMM_TABLE = "mms_analytics.fact_ozon_commissions"
+CH_COMM_COLUMNS = [
+    "dt", "updated_at", "shop_id", "product_id", "offer_id", "sku",
+    "sales_percent",
+    "fbo_fulfillment_amount", "fbo_direct_flow_trans_min", "fbo_direct_flow_trans_max",
+    "fbo_deliv_to_customer", "fbo_return_flow",
+    "fbs_direct_flow_trans_min", "fbs_direct_flow_trans_max",
+    "fbs_deliv_to_customer", "fbs_first_mile_min", "fbs_first_mile_max",
+    "fbs_return_flow",
+]
+
+
+class OzonCommissionsLoader:
+    """Insert commission snapshots into ClickHouse fact_ozon_commissions."""
+
+    def __init__(
+        self,
+        host: str = "clickhouse",
+        port: int = 8123,
+        username: str = "default",
+        password: str = "",
+        database: str = "mms_analytics",
+    ):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.database = database
+        self._client: Optional[ClickHouseClient] = None
+
+    def connect(self):
+        self._client = clickhouse_connect.get_client(
+            host=self.host, port=self.port,
+            username=self.username, password=self.password,
+            database=self.database,
+        )
+
+    def close(self):
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def insert_commissions(self, shop_id: int, products: List[dict]) -> int:
+        """
+        Extract commissions from product info and insert into ClickHouse.
+
+        Args:
+            shop_id: shop identifier
+            products: product info dicts from /v3/product/info/list
+        """
+        if not products or not self._client:
+            return 0
+
+        now = datetime.utcnow()
+        today = now.date()
+        rows = []
+
+        for item in products:
+            product_id = item.get("id")
+            if not product_id:
+                continue
+
+            offer_id = item.get("offer_id", "")
+            sku = _extract_sku(item) or 0
+            comms = _extract_commissions(item)
+
+            rows.append([
+                today,
+                now,
+                shop_id,
+                product_id,
+                offer_id,
+                sku,
+                comms["sales_percent"],
+                comms["fbo_fulfillment_amount"],
+                comms["fbo_direct_flow_trans_min"],
+                comms["fbo_direct_flow_trans_max"],
+                comms["fbo_deliv_to_customer"],
+                comms["fbo_return_flow"],
+                comms["fbs_direct_flow_trans_min"],
+                comms["fbs_direct_flow_trans_max"],
+                comms["fbs_deliv_to_customer"],
+                comms["fbs_first_mile_min"],
+                comms["fbs_first_mile_max"],
+                comms["fbs_return_flow"],
+            ])
+
+        total = 0
+        for i in range(0, len(rows), CH_BATCH_SIZE):
+            batch = rows[i:i + CH_BATCH_SIZE]
+            self._client.insert(CH_COMM_TABLE, batch, column_names=CH_COMM_COLUMNS)
+            total += len(batch)
+
+        logger.info("Inserted %d commission snapshots into ClickHouse", total)
+        return total
+
+    def get_stats(self, shop_id: int) -> dict:
+        """Get commission stats."""
+        if not self._client:
+            return {}
+        result = self._client.query("""
+            SELECT
+                count() as total_rows,
+                uniq(product_id) as unique_products,
+                min(dt) as min_date,
+                max(dt) as max_date,
+                avg(sales_percent) as avg_sales_pct
+            FROM fact_ozon_commissions
+            WHERE shop_id = {shop_id:UInt32}
+        """, parameters={"shop_id": shop_id})
+        r = result.first_row
+        if r:
+            return {
+                "total_rows": r[0],
+                "unique_products": r[1],
+                "min_date": str(r[2]),
+                "max_date": str(r[3]),
+                "avg_sales_percent": float(r[4]),
+            }
+        return {}
+
+
+# ── ClickHouse Content Rating Loader ──────────────────────
+
+CH_RATING_TABLE = "mms_analytics.fact_ozon_content_rating"
+CH_RATING_COLUMNS = [
+    "dt", "updated_at", "shop_id", "sku", "product_id",
+    "rating", "media_rating", "description_rating",
+    "attributes_rating", "rich_content_rating",
+]
+
+
+class OzonContentRatingLoader:
+    """Insert content rating snapshots into ClickHouse fact_ozon_content_rating."""
+
+    def __init__(
+        self,
+        host: str = "clickhouse",
+        port: int = 8123,
+        username: str = "default",
+        password: str = "",
+        database: str = "mms_analytics",
+    ):
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.database = database
+        self._client: Optional[ClickHouseClient] = None
+
+    def connect(self):
+        self._client = clickhouse_connect.get_client(
+            host=self.host, port=self.port,
+            username=self.username, password=self.password,
+            database=self.database,
+        )
+
+    def close(self):
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def insert_ratings(
+        self, shop_id: int, ratings: List[dict],
+        sku_to_product_id: Optional[Dict[int, int]] = None,
+    ) -> int:
+        """
+        Insert content ratings from /v1/product/rating-by-sku into ClickHouse.
+
+        Args:
+            shop_id: shop identifier
+            ratings: list of rating dicts from API
+            sku_to_product_id: optional mapping sku → product_id
+        """
+        if not ratings or not self._client:
+            return 0
+
+        now = datetime.utcnow()
+        today = now.date()
+        rows = []
+        sku_map = sku_to_product_id or {}
+
+        for item in ratings:
+            sku = item.get("sku", 0)
+            overall_rating = _safe_decimal(item.get("rating"))
+            product_id = sku_map.get(sku, 0)
+
+            # Extract group ratings
+            groups = item.get("groups", [])
+            group_ratings = {}
+            for g in groups:
+                key = g.get("key", "")
+                rating_val = _safe_decimal(g.get("rating"))
+                group_ratings[key] = rating_val
+
+            rows.append([
+                today,
+                now,
+                shop_id,
+                sku,
+                product_id,
+                overall_rating,
+                group_ratings.get("media", 0.0),
+                group_ratings.get("text", group_ratings.get("description", 0.0)),
+                group_ratings.get("attributes", 0.0),
+                group_ratings.get("rich_content", 0.0),
+            ])
+
+        total = 0
+        for i in range(0, len(rows), CH_BATCH_SIZE):
+            batch = rows[i:i + CH_BATCH_SIZE]
+            self._client.insert(CH_RATING_TABLE, batch, column_names=CH_RATING_COLUMNS)
+            total += len(batch)
+
+        logger.info("Inserted %d content rating snapshots into ClickHouse", total)
+        return total
+
+    def get_stats(self, shop_id: int) -> dict:
+        """Get content rating stats."""
+        if not self._client:
+            return {}
+        result = self._client.query("""
+            SELECT
+                count() as total_rows,
+                uniq(sku) as unique_skus,
+                min(dt) as min_date,
+                max(dt) as max_date,
+                avg(rating) as avg_rating
+            FROM fact_ozon_content_rating
+            WHERE shop_id = {shop_id:UInt32}
+        """, parameters={"shop_id": shop_id})
+        r = result.first_row
+        if r:
+            return {
+                "total_rows": r[0],
+                "unique_skus": r[1],
+                "min_date": str(r[2]),
+                "max_date": str(r[3]),
+                "avg_rating": float(r[4]),
+            }
+        return {}
+

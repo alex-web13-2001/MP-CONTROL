@@ -1756,6 +1756,183 @@ def sync_ozon_inventory(
     return asyncio.run(run_sync())
 
 
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=270)
+def sync_ozon_commissions(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Snapshot Ozon product commissions to ClickHouse (daily).
+
+    Pipeline:
+        1. Fetch product list
+        2. Fetch product info (includes commissions)
+        3. Extract commissions and insert into fact_ozon_commissions
+
+    Queue: HEAVY. Designed to run once daily.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService, OzonCommissionsLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon products...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+
+            # 2. Fetch product info (commissions included)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching info + commissions for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            # 3. Insert commissions into ClickHouse
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting commissions into ClickHouse...'})
+            with OzonCommissionsLoader(
+                host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+            ) as loader:
+                inserted = loader.insert_commissions(shop_id, products_info)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "products_found": len(product_list),
+                "commissions_inserted": inserted,
+                "stats": stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=270)
+def sync_ozon_content_rating(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Snapshot Ozon content ratings to ClickHouse (daily).
+
+    Pipeline:
+        1. Fetch product list
+        2. Fetch product info to get SKUs
+        3. Fetch content ratings via /v1/product/rating-by-sku
+        4. Insert into fact_ozon_content_rating
+
+    Queue: HEAVY. Designed to run once daily.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_products_service import (
+        OzonProductsService, OzonContentRatingLoader, _extract_sku,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.postgres_url)
+        async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Fetch product list
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon products...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                product_list = await service.fetch_product_list()
+
+            product_ids = [p["product_id"] for p in product_list]
+
+            # 2. Fetch product info (to get SKUs)
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching info for {len(product_ids)} products...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                products_info = await service.fetch_product_info(product_ids)
+
+            # Build SKU list and SKU → product_id map
+            skus = []
+            sku_to_pid = {}
+            for item in products_info:
+                sku = _extract_sku(item)
+                pid = item.get("id")
+                if sku and pid:
+                    skus.append(sku)
+                    sku_to_pid[sku] = pid
+
+            logger.info("Found %d SKUs for content rating check", len(skus))
+
+            # 3. Fetch content ratings
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Fetching content ratings for {len(skus)} SKUs...',
+            })
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                ratings = await service.fetch_content_ratings(skus)
+
+            logger.info("Got %d content ratings from API", len(ratings))
+
+            # 4. Insert into ClickHouse
+            self.update_state(state='PROGRESS', meta={'status': 'Inserting ratings into ClickHouse...'})
+            with OzonContentRatingLoader(
+                host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+                port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+            ) as loader:
+                inserted = loader.insert_ratings(shop_id, ratings, sku_to_pid)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "skus_checked": len(skus),
+                "ratings_inserted": inserted,
+                "stats": stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
 # ===================
 # OZON ADS & BIDS TRACKING
 # monitor_ozon_bids (15 min), sync_ozon_ad_stats (60 min), backfill_ozon_ads (one-time)

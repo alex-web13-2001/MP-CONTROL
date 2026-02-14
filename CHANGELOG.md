@@ -30,6 +30,16 @@
 - **tasks.py:** Все 3 задачи обновлены — `AsyncSession` + `engine.dispose()` + `MarketplaceClient` (как WB)
 - **celery.py:** Task routes (fast/heavy) + beat schedule шаблон для Ozon Ads
 
+### Added — Комиссии + Контент-рейтинг (daily)
+
+- **ozon_products_service.py:** `_extract_commissions()` — парсинг commissions из `/v3/product/info/list` → flat dict (sales_percent, FBO/FBS logistics fees)
+- **ozon_products_service.py:** `OzonCommissionsLoader` → ClickHouse `fact_ozon_commissions` (ReplacingMergeTree, daily snapshots)
+- **ozon_products_service.py:** `fetch_content_ratings(skus)` — POST `/v1/product/rating-by-sku` (контент-рейтинг 0-100 + группы media/text/attributes)
+- **ozon_products_service.py:** `OzonContentRatingLoader` → ClickHouse `fact_ozon_content_rating` (ReplacingMergeTree, daily snapshots)
+- **tasks.py:** `sync_ozon_commissions` — Celery task, раз в сутки (06:00)
+- **tasks.py:** `sync_ozon_content_rating` — Celery task, раз в сутки (06:30)
+- **celery.py:** Beat schedule шаблоны для комиссий, рейтинга и inventory (каждые 4ч)
+
 ### Added — Event Tracking для Ozon Ads (как WB)
 
 - **ozon_ads_event_detector.py [NEW]:** `OzonAdsEventDetector` — детектит 5 типов событий: `OZON_BID_CHANGE`, `OZON_STATUS_CHANGE`, `OZON_BUDGET_CHANGE`, `OZON_ITEM_ADD`, `OZON_ITEM_REMOVE`. Использует `RedisStateManager` для сравнения с last state.
