@@ -4,6 +4,14 @@
 
 ## [Unreleased] - 2026-02-15
 
+### Fixed — UI Layout: KPI карточки обрезались справа (Tailwind v4 CSS Cascade)
+
+- **index.css:** `* { padding: 0; margin: 0 }` находился вне `@layer` — перезаписывал **все** Tailwind v4 padding/margin utilities (которые живут в `@layer utilities`). Перемещено в `@layer base` для корректного cascade.
+- **AppLayout.tsx:** `marginLeft` → `paddingLeft` для sidebar offset (box-model fix с `position: fixed` sidebar).
+- **DashboardPage.tsx:** KPI grid `lg:grid-cols-3` → `xl:grid-cols-3` + `min-w-0` для robust responsive layout.
+- **card.tsx:** Добавлены `shadow-md` и `ring-1` для визуальной глубины.
+- **Результат:** Все 6 KPI карточек полностью видны, `hasHorizontalOverflow: false`, padding 32px (lg:px-8).
+
 ### Documentation — Расширенная документация загрузчиков
 
 - **loaders.md** — Главный файл: архитектура, Celery (32 tasks, 3 очереди, beat schedule), ClickHouse (22+ таблиц), PostgreSQL модели, Event Detection (4 класса)

@@ -1,14 +1,36 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import Dashboard from './pages/Dashboard'
+import { AppLayout } from '@/components/layout/AppLayout'
+import { AuthGuard } from '@/components/auth/AuthGuard'
+import LoginPage from '@/pages/LoginPage'
+import DashboardPage from '@/pages/DashboardPage'
 
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        {/* ── Public Routes ── */}
+        <Route path="/login" element={<LoginPage />} />
+
+        {/* ── Protected Routes ── */}
+        <Route
+          element={
+            <AuthGuard>
+              <AppLayout />
+            </AuthGuard>
+          }
+        >
+          <Route path="/" element={<DashboardPage />} />
+          {/* Future routes will be added here:
+          <Route path="/sales" element={<SalesPage />} />
+          <Route path="/funnel" element={<FunnelPage />} />
+          <Route path="/warehouses" element={<WarehousesPage />} />
+          <Route path="/finances" element={<FinancesPage />} />
+          <Route path="/advertising" element={<AdvertisingPage />} />
+          <Route path="/events" element={<EventsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          */}
+        </Route>
       </Routes>
     </BrowserRouter>
   )
 }
-
-export default App
