@@ -1,8 +1,14 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { Shop } from './authStore'
 
 type Theme = 'dark' | 'light'
+
+export interface AppShop {
+  id: number
+  name: string
+  marketplace: 'wildberries' | 'ozon'
+  isActive: boolean
+}
 
 interface AppState {
   /* ── Theme ── */
@@ -16,10 +22,8 @@ interface AppState {
   setSidebarCollapsed: (collapsed: boolean) => void
 
   /* ── Current Shop ── */
-  currentShop: Shop | null
-  shops: Shop[]
-  setCurrentShop: (shop: Shop) => void
-  setShops: (shops: Shop[]) => void
+  currentShop: AppShop | null
+  setCurrentShop: (shop: AppShop) => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -44,9 +48,7 @@ export const useAppStore = create<AppState>()(
 
       /* ── Current Shop ── */
       currentShop: null,
-      shops: [],
       setCurrentShop: (shop) => set({ currentShop: shop }),
-      setShops: (shops) => set({ shops }),
     }),
     {
       name: 'mp-control-app',

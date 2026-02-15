@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import LoginPage from '@/pages/LoginPage'
+import RegisterPage from '@/pages/RegisterPage'
 import DashboardPage from '@/pages/DashboardPage'
 
 export default function App() {
@@ -10,6 +11,7 @@ export default function App() {
       <Routes>
         {/* ── Public Routes ── */}
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
 
         {/* ── Protected Routes ── */}
         <Route

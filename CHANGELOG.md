@@ -4,6 +4,25 @@
 
 ## [Unreleased] - 2026-02-15
 
+### Added — Реальная система авторизации и регистрации
+
+- **Backend:**
+  - `models/user.py`, `models/shop.py` — PostgreSQL таблицы `users`, `shops` (SQLAlchemy)
+  - `core/security.py` — JWT access/refresh tokens (python-jose), bcrypt пароли (passlib)
+  - `schemas/auth.py` — Pydantic schemas (Register, Login, Token, User, Shop)
+  - `api/v1/auth.py` — 4 endpoints: `/register` (201), `/login`, `/refresh`, `/me`
+  - `api/v1/shops.py` — CRUD: `GET /shops`, `POST /shops` (API key encrypted), `DELETE /shops/{id}`
+  - `main.py` — auto-create tables через `metadata.create_all` при старте
+- **Frontend:**
+  - `api/auth.ts` — API wrapper (register, login, refresh, getMe, shops CRUD)
+  - `api/client.ts` — baseURL /api/v1, auto-refresh token на 401, request queue
+  - `authStore.ts` — JWT tokens (access+refresh) в zustand persist, shops из API
+  - `RegisterPage.tsx` — страница регистрации (premium design)
+  - `LoginPage.tsx` — реальный API вызов (заменён mock)
+  - `App.tsx` — route `/register`
+  - `Header.tsx` — shops из authStore, кнопка выхода
+  - `vite.config.ts` — Vite proxy на localhost:8000
+
 ### Fixed — UI Layout: KPI карточки обрезались справа (Tailwind v4 CSS Cascade)
 
 - **index.css:** `* { padding: 0; margin: 0 }` находился вне `@layer` — перезаписывал **все** Tailwind v4 padding/margin utilities (которые живут в `@layer utilities`). Перемещено в `@layer base` для корректного cascade.

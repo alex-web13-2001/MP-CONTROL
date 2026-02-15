@@ -7,8 +7,9 @@ export function Header() {
   const theme = useAppStore((s) => s.theme)
   const toggleTheme = useAppStore((s) => s.toggleTheme)
   const currentShop = useAppStore((s) => s.currentShop)
-  const shops = useAppStore((s) => s.shops)
   const setCurrentShop = useAppStore((s) => s.setCurrentShop)
+
+  const shops = useAuthStore((s) => s.shops)
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
 
@@ -29,6 +30,7 @@ export function Header() {
               if (shop) setCurrentShop(shop)
             }}
           >
+            <option value="">Выберите магазин</option>
             {shops.map((shop) => (
               <option key={shop.id} value={shop.id}>
                 {shop.name}

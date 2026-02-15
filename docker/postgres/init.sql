@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS shops (
     marketplace VARCHAR(50) NOT NULL, -- 'wildberries', 'ozon', etc.
     api_key VARCHAR(500),
     api_key_encrypted BYTEA,
+    client_id VARCHAR(100),  -- Ozon Client-Id
     is_active BOOLEAN DEFAULT true,
     
     -- Circuit Breaker status

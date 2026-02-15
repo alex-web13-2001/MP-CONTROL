@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import type { UserResponse, ShopResponse } from '@/api/auth'
 
 export interface User {
-  id: number
+  id: string
   email: string
   name: string
 }
@@ -17,11 +18,23 @@ export interface Shop {
 interface AuthState {
   user: User | null
   token: string | null
+  refreshToken: string | null
   isAuthenticated: boolean
+  shops: Shop[]
 
-  login: (user: User, token: string) => void
+  loginFromApi: (data: { access_token: string; refresh_token: string; user: UserResponse }) => void
   logout: () => void
   setUser: (user: User) => void
+  setShops: (shops: ShopResponse[]) => void
+}
+
+function mapShops(apiShops: ShopResponse[]): Shop[] {
+  return apiShops.map((s) => ({
+    id: s.id,
+    name: s.name,
+    marketplace: s.marketplace as 'wildberries' | 'ozon',
+    isActive: s.is_active,
+  }))
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -29,23 +42,44 @@ export const useAuthStore = create<AuthState>()(
     (set) => ({
       user: null,
       token: null,
+      refreshToken: null,
       isAuthenticated: false,
+      shops: [],
 
-      login: (user, token) =>
-        set({ user, token, isAuthenticated: true }),
+      loginFromApi: (data) =>
+        set({
+          user: {
+            id: data.user.id,
+            email: data.user.email,
+            name: data.user.name,
+          },
+          token: data.access_token,
+          refreshToken: data.refresh_token,
+          isAuthenticated: true,
+          shops: mapShops(data.user.shops),
+        }),
 
       logout: () =>
-        set({ user: null, token: null, isAuthenticated: false }),
+        set({
+          user: null,
+          token: null,
+          refreshToken: null,
+          isAuthenticated: false,
+          shops: [],
+        }),
 
-      setUser: (user) =>
-        set({ user }),
+      setUser: (user) => set({ user }),
+
+      setShops: (apiShops) => set({ shops: mapShops(apiShops) }),
     }),
     {
       name: 'mp-control-auth',
       partialize: (state) => ({
         user: state.user,
         token: state.token,
+        refreshToken: state.refreshToken,
         isAuthenticated: state.isAuthenticated,
+        shops: state.shops,
       }),
     }
   )

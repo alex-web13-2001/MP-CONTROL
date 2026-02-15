@@ -1,37 +1,51 @@
 import { useState } from 'react'
-import { useNavigate, useLocation, Link } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { LogIn, Eye, EyeOff, ArrowRight } from 'lucide-react'
+import { UserPlus, Eye, EyeOff, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useAuthStore } from '@/stores/authStore'
-import { loginApi } from '@/api/auth'
+import { registerApi } from '@/api/auth'
 
-export default function LoginPage() {
+export default function RegisterPage() {
+  const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
   const loginFromApi = useAuthStore((s) => s.loginFromApi)
   const navigate = useNavigate()
-  const location = useLocation()
-
-  const from = (location.state as { from?: { pathname: string } })?.from?.pathname || '/'
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+
+    if (password !== confirmPassword) {
+      setError('Пароли не совпадают')
+      return
+    }
+
+    if (password.length < 6) {
+      setError('Пароль должен быть минимум 6 символов')
+      return
+    }
+
     setLoading(true)
 
     try {
-      const data = await loginApi({ email, password })
+      const data = await registerApi({ email, password, name })
       loginFromApi(data)
-      navigate(from, { replace: true })
+      navigate('/', { replace: true })
     } catch (err: any) {
       const detail = err.response?.data?.detail
-      setError(detail || 'Неверный email или пароль')
+      if (detail === 'Пользователь с таким email уже существует') {
+        setError('Этот email уже зарегистрирован')
+      } else {
+        setError(detail || 'Ошибка регистрации')
+      }
     } finally {
       setLoading(false)
     }
@@ -68,14 +82,25 @@ export default function LoginPage() {
         <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-8 shadow-xl">
           <div className="mb-6">
             <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">
-              Вход в систему
+              Создать аккаунт
             </h2>
             <p className="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-              Введите ваши данные для входа
+              Заполните данные для регистрации
             </p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            <Input
+              label="Имя"
+              type="text"
+              placeholder="Ваше имя"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              autoComplete="name"
+              icon={<UserPlus className="h-4 w-4" />}
+            />
+
             <Input
               label="Email"
               type="email"
@@ -84,19 +109,17 @@ export default function LoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               required
               autoComplete="email"
-              icon={<LogIn className="h-4 w-4" />}
             />
 
             <div className="relative">
               <Input
                 label="Пароль"
                 type={showPassword ? 'text' : 'password'}
-                placeholder="••••••••"
+                placeholder="Минимум 6 символов"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                autoComplete="current-password"
-                error={error}
+                autoComplete="new-password"
               />
               <button
                 type="button"
@@ -107,22 +130,33 @@ export default function LoginPage() {
               </button>
             </div>
 
+            <Input
+              label="Подтвердите пароль"
+              type={showPassword ? 'text' : 'password'}
+              placeholder="Повторите пароль"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              required
+              autoComplete="new-password"
+              error={error}
+            />
+
             <Button
               type="submit"
               className="w-full"
               size="lg"
               loading={loading}
             >
-              Войти
+              Зарегистрироваться
               <ArrowRight className="h-4 w-4" />
             </Button>
           </form>
 
           <div className="mt-6 text-center">
             <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Нет аккаунта?{' '}
-              <Link to="/register" className="font-medium text-[hsl(var(--primary))] hover:underline">
-                Зарегистрироваться
+              Уже есть аккаунт?{' '}
+              <Link to="/login" className="font-medium text-[hsl(var(--primary))] hover:underline">
+                Войти
               </Link>
             </p>
           </div>
