@@ -28,10 +28,23 @@ export default function LoginPage() {
     try {
       const data = await loginApi({ email, password })
       loginFromApi(data)
-      navigate(from, { replace: true })
+
+      // Smart redirect: if user has no shops or all are syncing → onboarding
+      const shops = data.user.shops
+      if (shops.length === 0 || shops.every((s) => s.status === 'syncing')) {
+        navigate('/onboarding', { replace: true })
+      } else {
+        navigate(from, { replace: true })
+      }
     } catch (err: any) {
       const detail = err.response?.data?.detail
-      setError(detail || 'Неверный email или пароль')
+      if (typeof detail === 'string') {
+        setError(detail)
+      } else if (Array.isArray(detail)) {
+        setError(detail.map((d: any) => d.msg || d.message || JSON.stringify(d)).join('; '))
+      } else {
+        setError('Неверный email или пароль')
+      }
     } finally {
       setLoading(false)
     }

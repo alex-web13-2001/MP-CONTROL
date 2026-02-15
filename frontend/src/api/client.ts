@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useAuthStore } from '@/stores/authStore'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api/v1'
 
@@ -13,17 +14,9 @@ export const apiClient = axios.create({
 // ── Request interceptor: attach access token ─────────────────────
 apiClient.interceptors.request.use(
   (config) => {
-    const stored = localStorage.getItem('mp-control-auth')
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored)
-        const token = parsed?.state?.token
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`
-        }
-      } catch {
-        // ignore parse errors
-      }
+    const token = useAuthStore.getState().token
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
     }
     return config
   },
@@ -75,8 +68,7 @@ apiClient.interceptors.response.use(
       isRefreshing = true
 
       try {
-        const stored = localStorage.getItem('mp-control-auth')
-        const refreshToken = stored ? JSON.parse(stored)?.state?.refreshToken : null
+        const refreshToken = useAuthStore.getState().refreshToken
 
         if (!refreshToken) {
           throw new Error('No refresh token')
@@ -88,14 +80,8 @@ apiClient.interceptors.response.use(
 
         const { access_token, refresh_token } = res.data
 
-        // Update store in localStorage
-        const current = JSON.parse(localStorage.getItem('mp-control-auth') || '{}')
-        current.state = {
-          ...current.state,
-          token: access_token,
-          refreshToken: refresh_token,
-        }
-        localStorage.setItem('mp-control-auth', JSON.stringify(current))
+        // Update tokens via Zustand (reactive, persisted automatically)
+        useAuthStore.getState().updateTokens(access_token, refresh_token)
 
         processQueue(null, access_token)
 
@@ -103,9 +89,8 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest)
       } catch (refreshError) {
         processQueue(refreshError, null)
-        // Clear auth state and redirect
-        localStorage.removeItem('mp-control-auth')
-        window.location.href = '/login'
+        // Soft logout via Zustand — AuthGuard will redirect to /login
+        useAuthStore.getState().logout()
         return Promise.reject(refreshError)
       } finally {
         isRefreshing = false
@@ -115,3 +100,4 @@ apiClient.interceptors.response.use(
     return Promise.reject(error)
   },
 )
+

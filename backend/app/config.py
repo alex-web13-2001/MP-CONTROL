@@ -65,7 +65,7 @@ class Settings(BaseSettings):
 
     # Security
     secret_key: str = "your-secret-key-change-in-production"
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 120
 
 
 @lru_cache

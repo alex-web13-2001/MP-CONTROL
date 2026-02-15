@@ -27,6 +27,7 @@ interface AuthState {
   logout: () => void
   setUser: (user: User) => void
   setShops: (shops: ShopResponse[]) => void
+  updateTokens: (accessToken: string, refreshToken: string) => void
 }
 
 function mapShops(apiShops: ShopResponse[]): Shop[] {
@@ -73,6 +74,9 @@ export const useAuthStore = create<AuthState>()(
       setUser: (user) => set({ user }),
 
       setShops: (apiShops) => set({ shops: mapShops(apiShops) }),
+
+      updateTokens: (accessToken, refreshToken) =>
+        set({ token: accessToken, refreshToken }),
     }),
     {
       name: 'mp-control-auth',

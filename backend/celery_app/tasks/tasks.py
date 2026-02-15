@@ -987,6 +987,8 @@ def sync_wb_advert_history(
                 
                 stats_inserted = 0
                 history_inserted = 0
+                empty_interval_streak = 0
+                MAX_EMPTY_INTERVALS = 2  # 2 × 30 days with no data → stop
                 
                 logger.info(f"Processing {len(intervals)} intervals x {len(batches)} batches = {total_steps} requests")
                 
@@ -994,6 +996,7 @@ def sync_wb_advert_history(
                 for interval in intervals:
                     d_from = interval[0].strftime("%Y-%m-%d")
                     d_to = interval[1].strftime("%Y-%m-%d")
+                    interval_rows = 0
                     
                     for batch in batches:
                         current_step += 1
@@ -1014,6 +1017,7 @@ def sync_wb_advert_history(
                             rows = loader.parse_full_stats_v3(full_stats, shop_id)
                             count = loader.insert_stats_v3(rows)
                             stats_inserted += count
+                            interval_rows += count
                             
                             # NEW: Insert into history table (accumulation)
                             history_count = 0
@@ -1025,6 +1029,7 @@ def sync_wb_advert_history(
                                 )
                                 history_count = loader.insert_history(history_rows)
                                 history_inserted += history_count
+                                interval_rows += history_count
                             
                             logger.info(f"Step {current_step}/{total_steps}: Inserted {count} rows (history: {history_count if accumulate_history else 'N/A'})")
                             
@@ -1035,6 +1040,23 @@ def sync_wb_advert_history(
                             logger.warning(f"Error fetching batch: {e}")
                             # Wait longer on error
                             await asyncio.sleep(70) 
+                    
+                    # Track empty intervals for early exit
+                    if interval_rows == 0:
+                        empty_interval_streak += 1
+                        logger.info(
+                            f"Interval {d_from}→{d_to}: 0 rows "
+                            f"(empty streak: {empty_interval_streak}/{MAX_EMPTY_INTERVALS})"
+                        )
+                        if empty_interval_streak >= MAX_EMPTY_INTERVALS:
+                            remaining = len(intervals) - intervals.index(interval) - 1
+                            logger.info(
+                                f"Early exit: {MAX_EMPTY_INTERVALS} consecutive "
+                                f"empty intervals — skipping remaining {remaining} intervals"
+                            )
+                            break
+                    else:
+                        empty_interval_streak = 0
                             
             await engine.dispose()
             return {
@@ -3537,9 +3559,13 @@ def backfill_ozon_ads(
                 )
 
                 # 3. Process each chunk
+                # Early exit: if N consecutive chunks return 0 rows,
+                # stop — campaigns likely didn't exist that far back.
+                MAX_EMPTY_STREAK = 3
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
                 total_rows = 0
+                empty_streak = 0
 
                 with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
                     for i, (cf, ct) in enumerate(chunks):
@@ -3559,15 +3585,30 @@ def backfill_ozon_ads(
                             if rows:
                                 inserted = loader.insert_stats(rows)
                                 total_rows += inserted
+                                empty_streak = 0  # reset on data found
                                 logger.info(
                                     f"Backfill chunk {cf}→{ct}: {inserted} rows"
                                 )
+                            else:
+                                empty_streak += 1
+                                logger.info(
+                                    f"Backfill chunk {cf}→{ct}: 0 rows "
+                                    f"(empty streak: {empty_streak}/{MAX_EMPTY_STREAK})"
+                                )
+                                if empty_streak >= MAX_EMPTY_STREAK:
+                                    logger.info(
+                                        f"Early exit: {MAX_EMPTY_STREAK} consecutive "
+                                        f"empty chunks — skipping remaining "
+                                        f"{len(chunks) - i - 1} chunks"
+                                    )
+                                    break
 
                             # Rate limit: sleep between chunks
                             await asyncio.sleep(2)
 
                         except Exception as e:
                             logger.warning(f"Backfill chunk {cf}→{ct} failed: {e}")
+                            empty_streak += 1  # treat errors as empty too
                             await asyncio.sleep(5)
                             continue
 

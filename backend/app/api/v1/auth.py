@@ -25,6 +25,7 @@ from app.schemas.auth import (
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
+    ShopResponse,
     TokenResponse,
     UserResponse,
 )
@@ -118,8 +119,18 @@ async def refresh_token(body: RefreshRequest, db: AsyncSession = Depends(get_db)
             detail="Невалидный токен",
         )
 
+    # User.id is UUID, parse accordingly
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(user_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Невалидный токен",
+        )
+
     result = await db.execute(
-        select(User).options(selectinload(User.shops)).where(User.id == int(user_id))
+        select(User).options(selectinload(User.shops)).where(User.id == uid)
     )
     user = result.scalar_one_or_none()
 
