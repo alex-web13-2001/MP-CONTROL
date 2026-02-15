@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from celery.result import AsyncResult
 
-from celery_app.tasks.tasks import download_wb_finance_reports, sync_wb_finance_history
+from celery_app.tasks.tasks import sync_wb_finance_history
 
 
 # ... (skipping unchanged parts)
@@ -26,14 +26,6 @@ router = APIRouter(prefix="/finance-reports", tags=["Finance Reports"])
 # Schemas
 # ===================
 
-class DownloadReportsRequest(BaseModel):
-    """Request to start downloading finance reports."""
-    shop_id: int = Field(..., description="Shop ID in our system")
-    date_from: str = Field(..., description="Start date (YYYY-MM-DD)")
-    date_to: str = Field(..., description="End date (YYYY-MM-DD)")
-    api_key: str = Field(..., description="WB API key")
-
-
 class SyncReportsRequest(BaseModel):
     """Request to sync finance reports for N months."""
     shop_id: int = Field(..., description="Shop ID in our system")
@@ -41,7 +33,7 @@ class SyncReportsRequest(BaseModel):
     months: int = Field(3, ge=1, le=12, description="Number of months to sync (default: 3)")
 
 
-class DownloadReportsResponse(BaseModel):
+class SyncReportsResponse(BaseModel):
     """Response with task ID for tracking."""
     task_id: str
     message: str
@@ -60,60 +52,17 @@ class TaskStatusResponse(BaseModel):
 # Endpoints
 # ===================
 
-@router.post("/download", response_model=DownloadReportsResponse)
-async def start_download_reports(request: DownloadReportsRequest):
-    """
-    Start downloading WB finance reports for a period.
-    
-    This endpoint queues a Celery task that will:
-    1. Get all unique report IDs for the period
-    2. Request file generation for each report
-    3. Poll until files are ready
-    4. Download all CSV files
-    
-    Use the returned task_id to check progress via GET /status/{task_id}
-    """
-    # Validate dates
-    try:
-        date.fromisoformat(request.date_from)
-        date.fromisoformat(request.date_to)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid date format. Use YYYY-MM-DD"
-        )
-    
-    # Queue the Celery task
-    task = download_wb_finance_reports.delay(
-        shop_id=request.shop_id,
-        date_from=request.date_from,
-        date_to=request.date_to,
-        api_key=request.api_key,
-    )
-    
-    return DownloadReportsResponse(
-        task_id=task.id,
-        message=f"Started downloading reports for period {request.date_from} to {request.date_to}",
-    )
 
-
-@router.post("/sync", response_model=DownloadReportsResponse)
+@router.post("/sync", response_model=SyncReportsResponse)
 async def start_sync_reports(request: SyncReportsRequest):
     """
-    Start FULL sync: download WB reports for N months and load into ClickHouse.
+    Start WB finance sync for N months via JSON API.
     
-    This is the main endpoint for initial data loading. It will:
-    1. Generate weekly date ranges for the specified months
-    2. Download each weekly report from WB API
-    3. Parse CSV data and insert into fact_finances table
-    4. Report progress throughout the process
-    
+    Downloads weekly finance data and inserts into fact_finances.
     **Typical duration**: 30-120 minutes for 6 months of data.
     
     Use the returned task_id to check progress via GET /status/{task_id}
     """
-    # Queue the Celery task
-    # Convert months to days_back
     days_back = request.months * 30
     
     task = sync_wb_finance_history.delay(
@@ -122,9 +71,9 @@ async def start_sync_reports(request: SyncReportsRequest):
         days_back=days_back,
     )
     
-    return DownloadReportsResponse(
+    return SyncReportsResponse(
         task_id=task.id,
-        message=f"Started full sync for {request.months} months (~{days_back} days). This may take 30-120 minutes.",
+        message=f"Started finance sync for {request.months} months (~{days_back} days).",
     )
 
 

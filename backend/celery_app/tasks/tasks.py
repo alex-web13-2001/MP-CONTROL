@@ -76,22 +76,249 @@ def check_all_positions(self):
 @celery_app.task(bind=True, time_limit=14400, soft_time_limit=14100)
 def load_historical_data(self, shop_id: int, months: int = 6):
     """
-    Load historical data for a new shop.
-    
-    This is a long-running task (can take hours for 6 months of data).
-    Routed to HEAVY queue to not block autobidder.
-    
-    Args:
-        shop_id: Shop ID to load data for
-        months: Number of months to load (default: 6)
+    Orchestrator: load historical data for a newly connected shop.
+
+    1. Read credentials from PostgreSQL (decrypt)
+    2. Determine marketplace (ozon / wb)
+    3. Run sub-tasks sequentially via .apply(), track progress in Redis
+    4. Update shop.status on completion / error
+
+    Progress is stored in Redis key ``sync_progress:{shop_id}``
+    so the frontend can poll ``GET /shops/{id}/sync-status``.
+
+    Routed to HEAVY queue (can take hours for 6 months of data).
     """
-    # TODO: Implement historical data loading
-    # 1. Get API key from PostgreSQL (decrypt!)
-    # 2. Loop through date ranges
-    # 3. Fetch orders from WB/Ozon API
-    # 4. Store in ClickHouse orders table
-    # 5. Update progress (store in Redis for UI)
-    return {"shop_id": shop_id, "months": months, "status": "loaded"}
+    import asyncio
+    import json
+    import logging
+    import os
+    import redis
+    import traceback
+
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select, update as sa_update
+
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+    r = redis.from_url(redis_url)
+    progress_key = f"sync_progress:{shop_id}"
+    errors_list: list[str] = []
+
+    # ── helpers ──────────────────────────────────────────────
+    def _set_progress(
+        current_step: int,
+        total_steps: int,
+        step_name: str,
+        status: str = "loading",
+        error: str | None = None,
+    ):
+        """Write progress to Redis for frontend polling."""
+        percent = int(current_step / total_steps * 100) if total_steps else 0
+        payload = {
+            "status": status,
+            "current_step": current_step,
+            "total_steps": total_steps,
+            "step_name": step_name,
+            "percent": percent,
+            "error": error,
+        }
+        r.setex(progress_key, 86400, json.dumps(payload, ensure_ascii=False))
+        self.update_state(state="PROGRESS", meta=payload)
+        logger.info("shop %s sync progress: step %s/%s — %s", shop_id, current_step, total_steps, step_name)
+
+    def _run_subtask(task_ref, **kwargs):
+        """
+        Run a Celery task synchronously with a proper task context.
+
+        Uses .apply() which creates a full Celery task execution context
+        (with task_id, request, etc.) so self.update_state() works inside subtasks.
+        This runs in the SAME process, NOT via broker.
+        """
+        result = task_ref.apply(kwargs=kwargs)
+        if result.failed():
+            raise result.result  # re-raise the exception
+        return result.result
+
+    # ── Read credentials ─────────────────────────────────────
+    async def _load():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            result = await db.execute(select(Shop).where(Shop.id == shop_id))
+            shop = result.scalar_one_or_none()
+
+        if not shop:
+            _set_progress(0, 0, "Магазин не найден", status="error", error="Shop not found")
+            await engine.dispose()
+            return None
+
+        marketplace = shop.marketplace
+        api_key = decrypt_api_key(shop.api_key_encrypted)
+        client_id = shop.client_id or ""
+
+        # Performance API credentials (Ozon ads)
+        perf_client_id = shop.perf_client_id or ""
+        perf_client_secret = ""
+        if shop.perf_client_secret_encrypted:
+            perf_client_secret = decrypt_api_key(shop.perf_client_secret_encrypted)
+
+        # Update status to syncing
+        async with async_session() as db:
+            await db.execute(
+                sa_update(Shop).where(Shop.id == shop_id).values(status="syncing")
+            )
+            await db.commit()
+
+        await engine.dispose()
+        return {
+            "marketplace": marketplace,
+            "api_key": api_key,
+            "client_id": client_id,
+            "perf_client_id": perf_client_id,
+            "perf_client_secret": perf_client_secret,
+        }
+
+    try:
+        creds = asyncio.run(_load())
+        if creds is None:
+            return {"shop_id": shop_id, "status": "error", "error": "Shop not found"}
+    except Exception as e:
+        _set_progress(0, 0, "Ошибка чтения credentials", status="error", error=str(e))
+        raise
+
+    marketplace = creds["marketplace"]
+    api_key = creds["api_key"]
+    client_id = creds["client_id"]
+    perf_client_id = creds["perf_client_id"]
+    perf_client_secret = creds["perf_client_secret"]
+
+    # ── Ozon pipeline (11 steps) ─────────────────────────────
+    if marketplace == "ozon":
+        from celery_app.tasks.tasks import (
+            sync_ozon_products,
+            sync_ozon_product_snapshots,
+            backfill_ozon_orders,
+            backfill_ozon_finance,
+            backfill_ozon_funnel,
+            backfill_ozon_returns,
+            sync_ozon_warehouse_stocks,
+            sync_ozon_prices,
+            sync_ozon_seller_rating,
+            sync_ozon_content_rating,
+            sync_ozon_content,
+            backfill_ozon_ads,
+        )
+
+        seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
+
+        steps = [
+            ("Загрузка каталога товаров",          sync_ozon_products,          seller_kwargs),
+            ("Снимок данных (inventory/commissions)", sync_ozon_product_snapshots, seller_kwargs),
+            ("Загрузка заказов (365 дней)",         backfill_ozon_orders,        {**seller_kwargs, "days_back": months * 30}),
+            ("Загрузка финансов (12 месяцев)",      backfill_ozon_finance,       seller_kwargs),
+            ("Загрузка воронки продаж (365 дней)",  backfill_ozon_funnel,        seller_kwargs),
+            ("Загрузка возвратов (180 дней)",       backfill_ozon_returns,       seller_kwargs),
+            ("Загрузка остатков на складах",        sync_ozon_warehouse_stocks,  seller_kwargs),
+            ("Загрузка цен и комиссий",            sync_ozon_prices,            seller_kwargs),
+            ("Загрузка рейтинга продавца",         sync_ozon_seller_rating,     seller_kwargs),
+            ("Загрузка рейтинга контента",         sync_ozon_content_rating,    seller_kwargs),
+            ("Синхронизация контента (хэши)",       sync_ozon_content,           seller_kwargs),
+        ]
+
+        # Add ads backfill only if Performance API credentials exist
+        if perf_client_id and perf_client_secret:
+            steps.append((
+                "Загрузка рекламной статистики (180 дней)",
+                backfill_ozon_ads,
+                dict(shop_id=shop_id, perf_client_id=perf_client_id, perf_client_secret=perf_client_secret),
+            ))
+
+        total = len(steps)
+
+        for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
+            _set_progress(idx, total, step_name)
+            try:
+                _run_subtask(task_ref, **kwargs)
+                logger.info("shop %s step '%s' completed OK", shop_id, step_name)
+            except Exception as e:
+                err_msg = f"{step_name}: {e}"
+                errors_list.append(err_msg)
+                logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
+                # Continue to next step — partial data is better than nothing
+                continue
+
+    # ── WB pipeline ──────────────────────────────────────────
+    elif marketplace == "wildberries":
+        from celery_app.tasks.tasks import (
+            sync_product_content,
+            backfill_orders,
+            backfill_sales_funnel,
+            sync_wb_finance_history,
+            sync_wb_advert_history,
+            sync_commercial_data,
+            sync_warehouses,
+        )
+
+        steps = [
+            ("Загрузка контента товаров", sync_product_content, dict(shop_id=shop_id, api_key=api_key)),
+            ("Загрузка заказов (90 дней)", backfill_orders, dict(shop_id=shop_id, api_key=api_key, days=months * 30)),
+            ("Загрузка воронки продаж (365 дней)", backfill_sales_funnel, dict(shop_id=shop_id, api_key=api_key, months=min(months, 12))),
+            ("Загрузка финансовых отчётов", sync_wb_finance_history, dict(shop_id=shop_id, api_key=api_key)),
+            ("Загрузка рекламной истории", sync_wb_advert_history, dict(shop_id=shop_id, api_key=api_key, days_back=months * 30)),
+            ("Загрузка цен и остатков", sync_commercial_data, dict(shop_id=shop_id, api_key=api_key)),
+            ("Загрузка складов", sync_warehouses, dict(shop_id=shop_id, api_key=api_key)),
+        ]
+        total = len(steps)
+
+        for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
+            _set_progress(idx, total, step_name)
+            try:
+                _run_subtask(task_ref, **kwargs)
+                logger.info("shop %s step '%s' completed OK", shop_id, step_name)
+            except Exception as e:
+                err_msg = f"{step_name}: {e}"
+                errors_list.append(err_msg)
+                logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
+                continue
+
+    # ── Finalize ─────────────────────────────────────────────
+    final_status = "active" if not errors_list else "active"  # still active, data is partial
+    status_message = "; ".join(errors_list) if errors_list else None
+
+    async def _finalize():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        from datetime import datetime, timezone
+        async with sf() as db:
+            await db.execute(
+                sa_update(Shop).where(Shop.id == shop_id).values(
+                    status=final_status,
+                    status_message=status_message,
+                    last_sync_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+        await engine.dispose()
+
+    asyncio.run(_finalize())
+
+    done_status = "done" if not errors_list else "done_with_errors"
+    error_summary = "; ".join(errors_list) if errors_list else None
+    _set_progress(total, total, "Готово!", status=done_status, error=error_summary)
+
+    logger.info(
+        "shop %s load_historical_data finished: %s (%d errors)",
+        shop_id, done_status, len(errors_list),
+    )
+    return {"shop_id": shop_id, "marketplace": marketplace, "status": done_status, "errors": errors_list}
 
 
 @celery_app.task(bind=True, time_limit=14400, soft_time_limit=14100)
@@ -105,6 +332,286 @@ def sync_full_history(self, shop_id: int, start_date: str, end_date: str):
     # TODO: Implement full history sync
     # Uses ReplacingMergeTree, so duplicates are handled automatically
     return {"shop_id": shop_id, "start_date": start_date, "end_date": end_date}
+
+
+# ===================
+# SYNC COORDINATORS
+# Multi-tenant: read all active shops, dispatch sync tasks with proper credentials
+# ===================
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_all_daily(self):
+    """
+    Daily coordinator: dispatch daily sync tasks for ALL active shops.
+
+    Runs at 3:00 UTC via Celery Beat.
+    Reads shops from PostgreSQL, decrypts credentials,
+    dispatches .delay() for each shop.
+
+    Ozon shops get: products, snapshots, finance, funnel, returns,
+                    seller_rating, content_rating, content hashes
+    WB shops get:   warehouses, product_content
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def _dispatch():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(Shop.status == "active")
+            )
+            shops = result.scalars().all()
+
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_dispatch())
+
+    if not shops:
+        logger.info("sync_all_daily: no active shops found, skipping")
+        return {"dispatched": 0}
+
+    dispatched = 0
+
+    for shop in shops:
+        try:
+            api_key = decrypt_api_key(shop.api_key_encrypted)
+            client_id = shop.client_id or ""
+        except Exception as e:
+            logger.error("sync_all_daily: shop %s decrypt failed: %s", shop.id, e)
+            continue
+
+        if shop.marketplace == "ozon":
+            from celery_app.tasks.tasks import (
+                sync_ozon_products,
+                sync_ozon_product_snapshots,
+                sync_ozon_finance,
+                sync_ozon_funnel,
+                sync_ozon_returns,
+                sync_ozon_seller_rating,
+                sync_ozon_content_rating,
+                sync_ozon_content,
+            )
+
+            kwargs = dict(shop_id=shop.id, api_key=api_key, client_id=client_id)
+
+            sync_ozon_products.delay(**kwargs)
+            sync_ozon_product_snapshots.delay(**kwargs)
+            sync_ozon_finance.delay(**kwargs)
+            sync_ozon_funnel.delay(**kwargs)
+            sync_ozon_returns.delay(**kwargs)
+            sync_ozon_seller_rating.delay(**kwargs)
+            sync_ozon_content_rating.delay(**kwargs)
+            sync_ozon_content.delay(**kwargs)
+
+            dispatched += 8
+            logger.info("sync_all_daily: dispatched 8 Ozon tasks for shop %s (%s)", shop.id, shop.name)
+
+        elif shop.marketplace == "wildberries":
+            from celery_app.tasks.tasks import (
+                sync_warehouses,
+                sync_product_content,
+            )
+
+            sync_warehouses.delay(shop_id=shop.id, api_key=api_key)
+            sync_product_content.delay(shop_id=shop.id, api_key=api_key)
+
+            dispatched += 2
+            logger.info("sync_all_daily: dispatched 2 WB tasks for shop %s (%s)", shop.id, shop.name)
+
+    logger.info("sync_all_daily: total dispatched %d tasks for %d shops", dispatched, len(shops))
+    return {"dispatched": dispatched, "shops": len(shops)}
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_all_frequent(self):
+    """
+    Frequent coordinator: dispatch high-frequency sync tasks for ALL active shops.
+
+    Runs every 30 minutes via Celery Beat.
+    Covers: orders, warehouse stocks, prices (Ozon)
+            orders, commercial data, sales funnel (WB)
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def _dispatch():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(Shop.status == "active")
+            )
+            shops = result.scalars().all()
+
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_dispatch())
+
+    if not shops:
+        logger.info("sync_all_frequent: no active shops found, skipping")
+        return {"dispatched": 0}
+
+    dispatched = 0
+
+    for shop in shops:
+        try:
+            api_key = decrypt_api_key(shop.api_key_encrypted)
+            client_id = shop.client_id or ""
+        except Exception as e:
+            logger.error("sync_all_frequent: shop %s decrypt failed: %s", shop.id, e)
+            continue
+
+        if shop.marketplace == "ozon":
+            from celery_app.tasks.tasks import (
+                sync_ozon_orders,
+                sync_ozon_warehouse_stocks,
+                sync_ozon_prices,
+            )
+
+            kwargs = dict(shop_id=shop.id, api_key=api_key, client_id=client_id)
+
+            sync_ozon_orders.delay(**kwargs)
+            sync_ozon_warehouse_stocks.delay(**kwargs)
+            sync_ozon_prices.delay(**kwargs)
+
+            dispatched += 3
+            logger.info("sync_all_frequent: dispatched 3 Ozon tasks for shop %s", shop.id)
+
+        elif shop.marketplace == "wildberries":
+            from celery_app.tasks.tasks import (
+                sync_orders,
+                sync_commercial_data,
+                sync_sales_funnel,
+            )
+
+            sync_orders.delay(shop_id=shop.id, api_key=api_key)
+            sync_commercial_data.delay(shop_id=shop.id, api_key=api_key)
+            sync_sales_funnel.delay(shop_id=shop.id, api_key=api_key)
+
+            dispatched += 3
+            logger.info("sync_all_frequent: dispatched 3 WB tasks for shop %s", shop.id)
+
+    logger.info("sync_all_frequent: total dispatched %d tasks for %d shops", dispatched, len(shops))
+    return {"dispatched": dispatched, "shops": len(shops)}
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_all_ads(self):
+    """
+    Ads coordinator: dispatch ad-related sync tasks for ALL active shops.
+
+    Runs every 60 minutes via Celery Beat.
+    Ozon: ad stats (perf API) + bid monitoring
+    WB:   ad history sync
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def _dispatch():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(Shop.status == "active")
+            )
+            shops = result.scalars().all()
+
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_dispatch())
+
+    if not shops:
+        logger.info("sync_all_ads: no active shops found, skipping")
+        return {"dispatched": 0}
+
+    dispatched = 0
+
+    for shop in shops:
+        if shop.marketplace == "ozon":
+            # Performance API credentials required
+            perf_client_id = shop.perf_client_id or ""
+            perf_client_secret = ""
+            if shop.perf_client_secret_encrypted:
+                try:
+                    perf_client_secret = decrypt_api_key(shop.perf_client_secret_encrypted)
+                except Exception as e:
+                    logger.error("sync_all_ads: shop %s perf decrypt failed: %s", shop.id, e)
+                    continue
+
+            if not perf_client_id or not perf_client_secret:
+                logger.info("sync_all_ads: shop %s has no perf credentials, skipping ads", shop.id)
+                continue
+
+            from celery_app.tasks.tasks import (
+                sync_ozon_ad_stats,
+                monitor_ozon_bids,
+            )
+
+            sync_ozon_ad_stats.delay(
+                shop_id=shop.id,
+                perf_client_id=perf_client_id,
+                perf_client_secret=perf_client_secret,
+            )
+            monitor_ozon_bids.delay(
+                shop_id=shop.id,
+                perf_client_id=perf_client_id,
+                perf_client_secret=perf_client_secret,
+            )
+
+            dispatched += 2
+            logger.info("sync_all_ads: dispatched 2 Ozon ad tasks for shop %s", shop.id)
+
+        elif shop.marketplace == "wildberries":
+            try:
+                api_key = decrypt_api_key(shop.api_key_encrypted)
+            except Exception as e:
+                logger.error("sync_all_ads: shop %s decrypt failed: %s", shop.id, e)
+                continue
+
+            from celery_app.tasks.tasks import sync_wb_advert_history
+
+            sync_wb_advert_history.delay(shop_id=shop.id, api_key=api_key)
+
+            dispatched += 1
+            logger.info("sync_all_ads: dispatched 1 WB ad task for shop %s", shop.id)
+
+    logger.info("sync_all_ads: total dispatched %d tasks for %d shops", dispatched, len(shops))
+    return {"dispatched": dispatched, "shops": len(shops)}
 
 
 @celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
@@ -141,95 +648,6 @@ def send_notification(self, user_id: int, message: str):
     # TODO: Implement notification sending
     return {"user_id": user_id, "sent": True}
 
-
-# ===================
-# WB FINANCE REPORTS
-# Download weekly realization reports
-# ===================
-
-@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
-def download_wb_finance_reports(
-    self,
-    shop_id: int,
-    date_from: str,
-    date_to: str,
-    api_key: str,
-):
-    """
-    Download WB weekly finance reports for a period.
-    
-    This task:
-    1. Gets all unique report IDs for the period
-    2. For each report: request generation, poll status, download CSV
-    3. Returns list of downloaded file paths
-    
-    Routed to HEAVY queue due to potential long duration.
-    
-    Args:
-        shop_id: Shop ID in our system
-        date_from: Start date (YYYY-MM-DD)
-        date_to: End date (YYYY-MM-DD)
-        api_key: WB API key (decrypted)
-    
-    Returns:
-        Dict with status and list of results
-    """
-    import asyncio
-    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-    from sqlalchemy.orm import sessionmaker
-    from app.config import settings
-    from app.services.wb_finance_report_service import WBFinanceReportService
-    
-    async def run_sync():
-        # Create async database session
-        engine = create_async_engine(settings.database_url)
-        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        
-        async with async_session() as db:
-            async with WBFinanceReportService(
-                db=db,
-                shop_id=shop_id,
-                api_key=api_key,
-            ) as service:
-                def progress_callback(current, total, report_id):
-                    # Update Celery task state for monitoring
-                    self.update_state(
-                        state='PROGRESS',
-                        meta={
-                            'current': current,
-                            'total': total,
-                            'report_id': report_id,
-                        }
-                    )
-                
-                results = await service.sync_reports_for_period(
-                    date_from=date_from,
-                    date_to=date_to,
-                    progress_callback=progress_callback,
-                )
-                
-                return results
-        
-        await engine.dispose()
-    
-    try:
-        results = asyncio.run(run_sync())
-        
-        success_count = sum(1 for r in results if r.get('status') == 'success')
-        error_count = sum(1 for r in results if r.get('status') == 'error')
-        
-        return {
-            "status": "completed",
-            "shop_id": shop_id,
-            "date_from": date_from,
-            "date_to": date_to,
-            "total_reports": len(results),
-            "success_count": success_count,
-            "error_count": error_count,
-            "results": results,
-        }
-    except Exception as exc:
-        self.retry(exc=exc, countdown=60, max_retries=3)
 
 
 @celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
@@ -2350,6 +2768,7 @@ def sync_ozon_seller_rating(
     return asyncio.run(run_sync())
 
 
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
 def sync_ozon_content(
     self,
     shop_id: int,
@@ -2446,7 +2865,7 @@ def sync_ozon_content(
                 "host": os.getenv("POSTGRES_HOST", "postgres"),
                 "port": int(os.getenv("POSTGRES_PORT", 5432)),
                 "user": os.getenv("POSTGRES_USER", "mms"),
-                "password": os.getenv("POSTGRES_PASSWORD", "mms"),
+                "password": os.getenv("POSTGRES_PASSWORD", "mms_secret"),
                 "database": os.getenv("POSTGRES_DB", "mms"),
             }
             count, events = upsert_ozon_content(conn_params, shop_id, products_info, descriptions)

@@ -72,6 +72,7 @@ class MarketplaceResponse:
     response_time_ms: int
     proxy_used: Optional[str] = None
     error: Optional[str] = None
+    response_bytes: Optional[bytes] = None  # raw response body for binary downloads
     
     @property
     def is_success(self) -> bool:
@@ -270,6 +271,7 @@ class MarketplaceClient:
                 data=data,
                 response_time_ms=response_time_ms,
                 proxy_used=proxy_used,
+                response_bytes=response.content,  # preserve raw bytes
             )
             
             # Handle rate limiting and proxy feedback

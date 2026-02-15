@@ -1,6 +1,6 @@
 """Pydantic schemas for authentication and shop management."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -33,6 +33,7 @@ class ShopResponse(BaseModel):
     name: str
     marketplace: str
     is_active: bool
+    status: Optional[str] = "active"
 
     model_config = {"from_attributes": True}
 
@@ -61,6 +62,31 @@ class TokenResponse(BaseModel):
 class ShopCreate(BaseModel):
     """Create a new shop connection."""
     name: str = Field(..., min_length=1, max_length=255)
-    marketplace: str = Field(..., pattern=r"^(wildberries|ozon)$")
+    marketplace: Literal["wildberries", "ozon"]
     api_key: str = Field(..., min_length=1)
-    client_id: Optional[str] = None  # Required for Ozon
+    client_id: Optional[str] = None           # Ozon Seller Client-Id
+    perf_client_id: Optional[str] = None      # Ozon Performance Client-Id
+    perf_client_secret: Optional[str] = None  # Ozon Performance Client-Secret
+
+
+# ── Key Validation ────────────────────────────────────────────────
+
+class ValidateKeyRequest(BaseModel):
+    """Validate marketplace API key with a test request."""
+    marketplace: Literal["wildberries", "ozon"]
+    api_key: str = Field(..., min_length=1)
+    client_id: Optional[str] = None
+    perf_client_id: Optional[str] = None
+    perf_client_secret: Optional[str] = None
+
+
+class ValidateKeyResponse(BaseModel):
+    """Result of API key validation."""
+    valid: bool
+    seller_valid: Optional[bool] = None    # Ozon seller check
+    perf_valid: Optional[bool] = None      # Ozon performance check
+    message: str
+    shop_name: Optional[str] = None        # Auto-detected shop name
+    warnings: Optional[list[str]] = None   # Permission warnings (WB /ping checks)
+
+

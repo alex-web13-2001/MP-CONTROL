@@ -15,6 +15,7 @@ export interface ShopResponse {
   name: string
   marketplace: string
   is_active: boolean
+  status?: string
 }
 
 export interface TokenResponse {
@@ -40,6 +41,24 @@ export interface ShopCreatePayload {
   marketplace: 'wildberries' | 'ozon'
   api_key: string
   client_id?: string
+  perf_client_id?: string
+  perf_client_secret?: string
+}
+
+export interface ValidateKeyPayload {
+  marketplace: 'wildberries' | 'ozon'
+  api_key: string
+  client_id?: string
+  perf_client_id?: string
+  perf_client_secret?: string
+}
+
+export interface ValidateKeyResponse {
+  valid: boolean
+  seller_valid?: boolean | null
+  perf_valid?: boolean | null
+  message: string
+  shop_name?: string | null
 }
 
 // ── Auth API ─────────────────────────────────────────────────────
@@ -80,4 +99,25 @@ export async function createShopApi(data: ShopCreatePayload): Promise<ShopRespon
 
 export async function deleteShopApi(shopId: number): Promise<void> {
   await apiClient.delete(`/shops/${shopId}`)
+}
+
+export async function validateKeyApi(data: ValidateKeyPayload): Promise<ValidateKeyResponse> {
+  const res = await apiClient.post<ValidateKeyResponse>('/shops/validate-key', data)
+  return res.data
+}
+
+// ── Sync Status API ──────────────────────────────────────────────
+
+export interface SyncStatusResponse {
+  status: 'loading' | 'done' | 'error' | string
+  current_step: number
+  total_steps: number
+  step_name: string
+  percent: number
+  error: string | null
+}
+
+export async function getSyncStatusApi(shopId: number): Promise<SyncStatusResponse> {
+  const res = await apiClient.get<SyncStatusResponse>(`/shops/${shopId}/sync-status`)
+  return res.data
 }

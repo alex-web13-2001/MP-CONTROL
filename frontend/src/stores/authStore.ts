@@ -13,6 +13,7 @@ export interface Shop {
   name: string
   marketplace: 'wildberries' | 'ozon'
   isActive: boolean
+  status?: string
 }
 
 interface AuthState {
@@ -34,6 +35,7 @@ function mapShops(apiShops: ShopResponse[]): Shop[] {
     name: s.name,
     marketplace: s.marketplace as 'wildberries' | 'ozon',
     isActive: s.is_active,
+    status: s.status,
   }))
 }
 

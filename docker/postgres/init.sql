@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS shops (
     api_key VARCHAR(500),
     api_key_encrypted BYTEA,
     client_id VARCHAR(100),  -- Ozon Client-Id
+    perf_client_id VARCHAR(100),  -- Ozon Performance Client-Id
+    perf_client_secret VARCHAR(500),  -- Ozon Performance Client Secret (plain, deprecated)
+    perf_client_secret_encrypted BYTEA,  -- Ozon Performance Client Secret (encrypted)
     is_active BOOLEAN DEFAULT true,
     
     -- Circuit Breaker status

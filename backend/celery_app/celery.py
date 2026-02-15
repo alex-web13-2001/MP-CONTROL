@@ -55,6 +55,11 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.monitor_ozon_bids": {"queue": "fast", "routing_key": "fast"},
     "celery_app.tasks.tasks.sync_ozon_ad_stats": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.backfill_ozon_ads": {"queue": "heavy", "routing_key": "heavy"},
+
+    # Sync coordinators
+    "celery_app.tasks.tasks.sync_all_daily": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_all_frequent": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_all_ads": {"queue": "heavy", "routing_key": "heavy"},
 }
 
 # ===================
@@ -105,104 +110,31 @@ celery_app.conf.beat_schedule = {
         "options": {"queue": "fast", "priority": 7},
     },
     
-    # Daily sync - runs at 3 AM on HEAVY queue
-    # "daily-sync": {
-    #     "task": "celery_app.tasks.tasks.sync_marketplace_data",
-    #     "schedule": crontab(hour=3, minute=0),
-    #     "options": {"queue": "heavy"},
-    # },
-    
-    # === Commercial Monitoring ===
-    
-    # Prices + Stocks sync - every 30 minutes on HEAVY queue
-    # NOTE: Requires shop_id and api_key — will be dispatched by a coordinator task
-    # Uncomment when ready to use with specific shop credentials
-    # "commercial-sync-30min": {
-    #     "task": "celery_app.tasks.tasks.sync_commercial_data",
-    #     "schedule": 1800.0,  # Every 30 minutes
-    #     "args": [1, "YOUR_API_KEY"],  # Replace with actual shop_id and api_key
-    #     "options": {"queue": "heavy", "priority": 6},
-    # },
-    
-    # Warehouse dictionary sync - daily at 4:00 AM
-    # "commercial-sync-warehouses": {
-    #     "task": "celery_app.tasks.tasks.sync_warehouses",
-    #     "schedule": crontab(hour=4, minute=0),
-    #     "args": [1, "YOUR_API_KEY"],
-    #     "options": {"queue": "heavy"},
-    # },
-    
-    # Product content sync - daily at 4:30 AM
-    # "commercial-sync-content": {
-    #     "task": "celery_app.tasks.tasks.sync_product_content",
-    #     "schedule": crontab(hour=4, minute=30),
-    #     "args": [1, "YOUR_API_KEY"],
-    #     "options": {"queue": "heavy"},
-    # },
+    # === SYNC COORDINATORS ===
+    # These tasks read ALL active shops from PostgreSQL,
+    # decrypt credentials, and dispatch .delay() for each shop.
+    # No hardcoded shop_id or api_key — fully multi-tenant.
 
-    # === Sales Funnel Analytics ===
+    # Daily sync: products, finance, funnel, returns, ratings, content
+    "sync-all-daily": {
+        "task": "celery_app.tasks.tasks.sync_all_daily",
+        "schedule": crontab(hour=3, minute=0),
+        "options": {"queue": "heavy", "priority": 4},
+    },
 
-    # Sales funnel sync - every 30 minutes on HEAVY queue (append-only)
-    # "sync-sales-funnel-30min": {
-    #     "task": "celery_app.tasks.tasks.sync_sales_funnel",
-    #     "schedule": 1800.0,  # Every 30 minutes
-    #     "args": [1, "YOUR_API_KEY"],
-    #     "options": {"queue": "heavy", "priority": 5},
-    # },
+    # Frequent sync (30 min): orders, stocks, prices
+    "sync-all-frequent": {
+        "task": "celery_app.tasks.tasks.sync_all_frequent",
+        "schedule": 1800.0,  # Every 30 minutes
+        "options": {"queue": "heavy", "priority": 6},
+    },
 
-    # === Operative Orders ===
-
-    # Orders sync - every 10 minutes on HEAVY queue
-    # "sync-orders-10min": {
-    #     "task": "celery_app.tasks.tasks.sync_orders",
-    #     "schedule": 600.0,  # Every 10 minutes
-    #     "args": [1, "YOUR_API_KEY"],
-    #     "options": {"queue": "heavy", "priority": 6},
-    # },
-
-    # === Ozon Ads & Bids ===
-
-    # Ozon bid monitoring - every 15 minutes on FAST queue
-    # "ozon-monitor-bids-15min": {
-    #     "task": "celery_app.tasks.tasks.monitor_ozon_bids",
-    #     "schedule": 900.0,  # Every 15 minutes
-    #     "args": [SHOP_ID, "PERF_CLIENT_ID", "PERF_CLIENT_SECRET"],
-    #     "options": {"queue": "fast", "priority": 7},
-    # },
-
-    # Ozon ad stats sync - every 60 minutes on HEAVY queue
-    # "ozon-ads-stats-60min": {
-    #     "task": "celery_app.tasks.tasks.sync_ozon_ad_stats",
-    #     "schedule": 3600.0,  # Every 60 minutes
-    #     "args": [SHOP_ID, "PERF_CLIENT_ID", "PERF_CLIENT_SECRET"],
-    #     "options": {"queue": "heavy", "priority": 5},
-    # },
-
-    # === Ozon Daily Tasks (Products) ===
-
-    # Ozon commissions snapshot - daily at 06:00
-    # "ozon-commissions-daily": {
-    #     "task": "celery_app.tasks.tasks.sync_ozon_commissions",
-    #     "schedule": crontab(hour=6, minute=0),
-    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
-    #     "options": {"queue": "heavy", "priority": 4},
-    # },
-
-    # Ozon content rating snapshot - daily at 06:30
-    # "ozon-content-rating-daily": {
-    #     "task": "celery_app.tasks.tasks.sync_ozon_content_rating",
-    #     "schedule": crontab(hour=6, minute=30),
-    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
-    #     "options": {"queue": "heavy", "priority": 4},
-    # },
-
-    # Ozon inventory snapshot - every 4 hours
-    # "ozon-inventory-4h": {
-    #     "task": "celery_app.tasks.tasks.sync_ozon_inventory",
-    #     "schedule": crontab(hour="*/4", minute=15),
-    #     "args": [SHOP_ID, "OZON_API_KEY", "OZON_CLIENT_ID"],
-    #     "options": {"queue": "heavy", "priority": 5},
-    # },
+    # Ads sync (60 min): ad stats, bid monitoring
+    "sync-all-ads": {
+        "task": "celery_app.tasks.tasks.sync_all_ads",
+        "schedule": 3600.0,  # Every 60 minutes
+        "options": {"queue": "heavy", "priority": 5},
+    },
 }
 
 

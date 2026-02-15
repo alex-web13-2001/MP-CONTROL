@@ -1,8 +1,10 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { AuthGuard } from '@/components/auth/AuthGuard'
+import OnboardingGuard from '@/components/OnboardingGuard'
 import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
+import OnboardingPage from '@/pages/OnboardingPage'
 import DashboardPage from '@/pages/DashboardPage'
 
 export default function App() {
@@ -13,11 +15,23 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
 
-        {/* ── Protected Routes ── */}
+        {/* ── Onboarding (auth required, no shop guard) ── */}
+        <Route
+          path="/onboarding"
+          element={
+            <AuthGuard>
+              <OnboardingPage />
+            </AuthGuard>
+          }
+        />
+
+        {/* ── Protected Routes (auth + shop required) ── */}
         <Route
           element={
             <AuthGuard>
-              <AppLayout />
+              <OnboardingGuard>
+                <AppLayout />
+              </OnboardingGuard>
             </AuthGuard>
           }
         >

@@ -4,6 +4,38 @@
 
 ## [Unreleased] - 2026-02-15
 
+### Fixed — CSV парсер воронки продаж (backfill_sales_funnel)
+
+- **Backend / MarketplaceClient:**
+  - `marketplace_client.py` — добавлено поле `response_bytes` в `MarketplaceResponse` для сохранения raw binary ответов (`response.content`). Ранее `curl_cffi response.text` необратимо повреждал бинарные данные (ZIP) при UTF-8 декодировании.
+  - `wb_sales_funnel_service.py` — `download_csv_report()` использует `resp.response_bytes` вместо `resp.data` (str). `parse_csv_report()` принимает оба типа (str/bytes) с автоконверсией.
+  - Добавлено логирование: ZIP файлов, количества распарсенных строк, полный traceback при ошибках.
+  - **Результат:** 7,414 строк воронки продаж загружены в ClickHouse (ранее 0 из-за бага).
+
+### Added — Загрузка данных после подключения магазина (Phase 2)
+
+- **Backend:**
+  - `celery_app/tasks/tasks.py` — `load_historical_data` оркестратор: читает credentials из PG, запускает 5 Ozon / 4 WB subtasks последовательно, пишет прогресс в Redis (`sync_progress:{shop_id}`)
+  - `api/v1/shops.py` — `GET /shops/{id}/sync-status` (polling прогресса из Redis); `create_shop` теперь ставит `status='syncing'` и вызывает `load_historical_data.delay()`
+- **Frontend:**
+  - `pages/OnboardingPage.tsx` — `StepSyncing` компонент: progress bar + polling каждые 3 сек + return-visit handling (если пользователь вернулся — видит прогресс)
+  - `components/OnboardingGuard.tsx` — блокирует Dashboard пока все магазины в `syncing`
+  - `stores/authStore.ts` — `status` field в `Shop` interface
+  - `api/auth.ts` — `SyncStatusResponse` type + `getSyncStatusApi()`
+
+### Added — Onboarding Wizard (подключение магазина)
+
+- **Backend:**
+  - `models/shop.py` — новые поля `perf_client_id`, `perf_client_secret_encrypted` для Ozon Performance API
+  - `schemas/auth.py` — расширен `ShopCreate` для perf credentials, добавлены `ValidateKeyRequest/Response`
+  - `api/v1/shops.py` — `POST /shops/validate-key` (live-проверка API ключей: WB, Ozon Seller, Ozon Performance OAuth2)
+  - `docker/postgres/init.sql` — новые колонки в таблице `shops`
+- **Frontend:**
+  - `pages/OnboardingPage.tsx` — 4-шаговый wizard (маркетплейс → API ключи с правами → валидация → готово)
+  - `components/OnboardingGuard.tsx` — redirect на `/onboarding` если нет магазинов
+  - `App.tsx` — route `/onboarding` + OnboardingGuard для protected routes
+  - `api/auth.ts` — `validateKeyApi()`, расширены типы для perf credentials
+
 ### Added — Реальная система авторизации и регистрации
 
 - **Backend:**

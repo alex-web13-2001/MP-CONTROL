@@ -431,39 +431,58 @@ class WBSalesFunnelService:
         return "TIMEOUT"
 
     async def download_csv_report(self, report_id: str) -> bytes:
-        """Download CSV report ZIP file."""
+        """Download CSV report ZIP file.
+        
+        Uses response_bytes from MarketplaceClient to get raw binary data,
+        since response.text mangles binary ZIP data during UTF-8 decode.
+        """
         resp = await self._client.get(
             f"/api/v2/nm-report/downloads/file/{report_id}",
         )
 
-        if resp.is_success and resp.data:
-            # Response is the ZIP file content
-            return resp.data
+        if resp.is_success and resp.response_bytes:
+            data = resp.response_bytes
+            logger.info("CSV report downloaded: %d bytes", len(data))
+            return data
+        elif resp.is_success and resp.data:
+            # Fallback: try converting text data to bytes
+            data = resp.data
+            if isinstance(data, str):
+                logger.warning("CSV download: got str instead of bytes, converting via latin-1")
+                data = data.encode("latin-1")
+            return data
         else:
             raise RuntimeError(
                 f"Failed to download CSV report: {resp.status_code} {resp.error}"
             )
 
-    def parse_csv_report(self, zip_data: bytes) -> List[dict]:
+    def parse_csv_report(self, zip_data) -> List[dict]:
         """
         Parse downloaded ZIP with CSV into rows for ClickHouse.
+        Accepts both bytes and str (auto-converts str to bytes).
         Returns list of dicts.
         """
         rows = []
         try:
+            # Ensure we have bytes for ZipFile
+            if isinstance(zip_data, str):
+                zip_data = zip_data.encode("latin-1")
+            
             with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-                for name in zf.namelist():
-                    if name.endswith(".csv"):
-                        with zf.open(name) as f:
-                            reader = csv.DictReader(
-                                io.TextIOWrapper(f, encoding="utf-8")
-                            )
-                            for row in reader:
-                                mapped = self._map_csv_row(row)
-                                if mapped:
-                                    rows.append(mapped)
+                csv_files = [n for n in zf.namelist() if n.endswith(".csv")]
+                logger.info("ZIP contains %d CSV files: %s", len(csv_files), csv_files)
+                for name in csv_files:
+                    with zf.open(name) as f:
+                        reader = csv.DictReader(
+                            io.TextIOWrapper(f, encoding="utf-8")
+                        )
+                        for row in reader:
+                            mapped = self._map_csv_row(row)
+                            if mapped:
+                                rows.append(mapped)
+                logger.info("CSV parsed: %d rows from %d files", len(rows), len(csv_files))
         except Exception as e:
-            logger.error("CSV parse error: %s", e)
+            logger.error("CSV parse error: %s", e, exc_info=True)
         return rows
 
     def _map_csv_row(self, row: dict) -> Optional[dict]:

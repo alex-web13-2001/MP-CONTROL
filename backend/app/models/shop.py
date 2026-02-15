@@ -37,6 +37,10 @@ class Shop(Base):
     api_key_encrypted: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     client_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # Ozon Client-Id
 
+    # Ozon Performance API credentials (separate OAuth2)
+    perf_client_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    perf_client_secret_encrypted: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
 
     # Circuit Breaker status
