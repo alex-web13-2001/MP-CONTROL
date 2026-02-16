@@ -4,6 +4,14 @@
 
 ## [Unreleased] - 2026-02-15
 
+### Added — Redis distributed lock для дедупликации задач
+
+- **Backend / `tasks.py` / `load_historical_data`:**
+  - Добавлен Redis lock (`SET lock:load_historical_data:{shop_id} NX EX 14400`) при старте задачи.
+  - Дубликаты мгновенно возвращают `{status: 'skipped', reason: 'already_running'}` вместо полного прогона.
+  - Lock автоматически освобождается в `finally` блоке (или по TTL=4ч при crash).
+  - Решает проблему дублей после `revoke(terminate=True)` и повторных dispatch'ей.
+
 ### Optimization — Early exit для рекламной статистики при пустых данных
 
 - **Ozon / `backfill_ozon_ads`:**

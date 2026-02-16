@@ -109,6 +109,18 @@ def load_historical_data(self, shop_id: int, months: int = 6):
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     r = redis.from_url(redis_url)
     progress_key = f"sync_progress:{shop_id}"
+
+    # ── Distributed lock: only ONE load_historical_data per shop ──
+    lock_key = f"lock:load_historical_data:{shop_id}"
+    lock_ttl = 14400  # 4 hours — matches task time_limit
+    if not r.set(lock_key, self.request.id or "1", nx=True, ex=lock_ttl):
+        existing = r.get(lock_key)
+        logger.info(
+            "shop %s load_historical_data SKIPPED — already running (lock holder: %s)",
+            shop_id, existing.decode() if existing else "unknown",
+        )
+        return {"shop_id": shop_id, "status": "skipped", "reason": "already_running"}
+
     errors_list: list[str] = []
 
     # ── helpers ──────────────────────────────────────────────
@@ -186,139 +198,147 @@ def load_historical_data(self, shop_id: int, months: int = 6):
             "perf_client_secret": perf_client_secret,
         }
 
-    try:
-        creds = asyncio.run(_load())
-        if creds is None:
-            return {"shop_id": shop_id, "status": "error", "error": "Shop not found"}
-    except Exception as e:
-        _set_progress(0, 0, "Ошибка чтения credentials", status="error", error=str(e))
-        raise
+    try:  # ── outer try/finally to ALWAYS release lock ──
 
-    marketplace = creds["marketplace"]
-    api_key = creds["api_key"]
-    client_id = creds["client_id"]
-    perf_client_id = creds["perf_client_id"]
-    perf_client_secret = creds["perf_client_secret"]
+        try:
+            creds = asyncio.run(_load())
+            if creds is None:
+                return {"shop_id": shop_id, "status": "error", "error": "Shop not found"}
+        except Exception as e:
+            _set_progress(0, 0, "Ошибка чтения credentials", status="error", error=str(e))
+            raise
 
-    # ── Ozon pipeline (11 steps) ─────────────────────────────
-    if marketplace == "ozon":
-        from celery_app.tasks.tasks import (
-            sync_ozon_products,
-            sync_ozon_product_snapshots,
-            backfill_ozon_orders,
-            backfill_ozon_finance,
-            backfill_ozon_funnel,
-            backfill_ozon_returns,
-            sync_ozon_warehouse_stocks,
-            sync_ozon_prices,
-            sync_ozon_seller_rating,
-            sync_ozon_content_rating,
-            sync_ozon_content,
-            backfill_ozon_ads,
-        )
+        marketplace = creds["marketplace"]
+        api_key = creds["api_key"]
+        client_id = creds["client_id"]
+        perf_client_id = creds["perf_client_id"]
+        perf_client_secret = creds["perf_client_secret"]
 
-        seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
-
-        steps = [
-            ("Загрузка каталога товаров",          sync_ozon_products,          seller_kwargs),
-            ("Снимок данных (inventory/commissions)", sync_ozon_product_snapshots, seller_kwargs),
-            ("Загрузка заказов (365 дней)",         backfill_ozon_orders,        {**seller_kwargs, "days_back": months * 30}),
-            ("Загрузка финансов (12 месяцев)",      backfill_ozon_finance,       seller_kwargs),
-            ("Загрузка воронки продаж (365 дней)",  backfill_ozon_funnel,        seller_kwargs),
-            ("Загрузка возвратов (180 дней)",       backfill_ozon_returns,       seller_kwargs),
-            ("Загрузка остатков на складах",        sync_ozon_warehouse_stocks,  seller_kwargs),
-            ("Загрузка цен и комиссий",            sync_ozon_prices,            seller_kwargs),
-            ("Загрузка рейтинга продавца",         sync_ozon_seller_rating,     seller_kwargs),
-            ("Загрузка рейтинга контента",         sync_ozon_content_rating,    seller_kwargs),
-            ("Синхронизация контента (хэши)",       sync_ozon_content,           seller_kwargs),
-        ]
-
-        # Add ads backfill only if Performance API credentials exist
-        if perf_client_id and perf_client_secret:
-            steps.append((
-                "Загрузка рекламной статистики (180 дней)",
+        # ── Ozon pipeline (11 steps) ─────────────────────────────
+        if marketplace == "ozon":
+            from celery_app.tasks.tasks import (
+                sync_ozon_products,
+                sync_ozon_product_snapshots,
+                backfill_ozon_orders,
+                backfill_ozon_finance,
+                backfill_ozon_funnel,
+                backfill_ozon_returns,
+                sync_ozon_warehouse_stocks,
+                sync_ozon_prices,
+                sync_ozon_seller_rating,
+                sync_ozon_content_rating,
+                sync_ozon_content,
                 backfill_ozon_ads,
-                dict(shop_id=shop_id, perf_client_id=perf_client_id, perf_client_secret=perf_client_secret),
-            ))
+            )
 
-        total = len(steps)
+            seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
 
-        for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
-            _set_progress(idx, total, step_name)
-            try:
-                _run_subtask(task_ref, **kwargs)
-                logger.info("shop %s step '%s' completed OK", shop_id, step_name)
-            except Exception as e:
-                err_msg = f"{step_name}: {e}"
-                errors_list.append(err_msg)
-                logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
-                # Continue to next step — partial data is better than nothing
-                continue
+            steps = [
+                ("Загрузка каталога товаров",          sync_ozon_products,          seller_kwargs),
+                ("Снимок данных (inventory/commissions)", sync_ozon_product_snapshots, seller_kwargs),
+                ("Загрузка заказов (365 дней)",         backfill_ozon_orders,        {**seller_kwargs, "days_back": months * 30}),
+                ("Загрузка финансов (12 месяцев)",      backfill_ozon_finance,       seller_kwargs),
+                ("Загрузка воронки продаж (365 дней)",  backfill_ozon_funnel,        seller_kwargs),
+                ("Загрузка возвратов (180 дней)",       backfill_ozon_returns,       seller_kwargs),
+                ("Загрузка остатков на складах",        sync_ozon_warehouse_stocks,  seller_kwargs),
+                ("Загрузка цен и комиссий",            sync_ozon_prices,            seller_kwargs),
+                ("Загрузка рейтинга продавца",         sync_ozon_seller_rating,     seller_kwargs),
+                ("Загрузка рейтинга контента",         sync_ozon_content_rating,    seller_kwargs),
+                ("Синхронизация контента (хэши)",       sync_ozon_content,           seller_kwargs),
+            ]
 
-    # ── WB pipeline ──────────────────────────────────────────
-    elif marketplace == "wildberries":
-        from celery_app.tasks.tasks import (
-            sync_product_content,
-            backfill_orders,
-            backfill_sales_funnel,
-            sync_wb_finance_history,
-            sync_wb_advert_history,
-            sync_commercial_data,
-            sync_warehouses,
+            # Add ads backfill only if Performance API credentials exist
+            if perf_client_id and perf_client_secret:
+                steps.append((
+                    "Загрузка рекламной статистики (180 дней)",
+                    backfill_ozon_ads,
+                    dict(shop_id=shop_id, perf_client_id=perf_client_id, perf_client_secret=perf_client_secret),
+                ))
+
+            total = len(steps)
+
+            for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
+                _set_progress(idx, total, step_name)
+                try:
+                    _run_subtask(task_ref, **kwargs)
+                    logger.info("shop %s step '%s' completed OK", shop_id, step_name)
+                except Exception as e:
+                    err_msg = f"{step_name}: {e}"
+                    errors_list.append(err_msg)
+                    logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
+                    # Continue to next step — partial data is better than nothing
+                    continue
+
+        # ── WB pipeline ──────────────────────────────────────────
+        elif marketplace == "wildberries":
+            from celery_app.tasks.tasks import (
+                sync_product_content,
+                backfill_orders,
+                backfill_sales_funnel,
+                sync_wb_finance_history,
+                sync_wb_advert_history,
+                sync_commercial_data,
+                sync_warehouses,
+            )
+
+            steps = [
+                ("Загрузка контента товаров", sync_product_content, dict(shop_id=shop_id, api_key=api_key)),
+                ("Загрузка заказов (90 дней)", backfill_orders, dict(shop_id=shop_id, api_key=api_key, days=months * 30)),
+                ("Загрузка воронки продаж (365 дней)", backfill_sales_funnel, dict(shop_id=shop_id, api_key=api_key, months=min(months, 12))),
+                ("Загрузка финансовых отчётов", sync_wb_finance_history, dict(shop_id=shop_id, api_key=api_key)),
+                ("Загрузка рекламной истории", sync_wb_advert_history, dict(shop_id=shop_id, api_key=api_key, days_back=months * 30)),
+                ("Загрузка цен и остатков", sync_commercial_data, dict(shop_id=shop_id, api_key=api_key)),
+                ("Загрузка складов", sync_warehouses, dict(shop_id=shop_id, api_key=api_key)),
+            ]
+            total = len(steps)
+
+            for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
+                _set_progress(idx, total, step_name)
+                try:
+                    _run_subtask(task_ref, **kwargs)
+                    logger.info("shop %s step '%s' completed OK", shop_id, step_name)
+                except Exception as e:
+                    err_msg = f"{step_name}: {e}"
+                    errors_list.append(err_msg)
+                    logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
+                    continue
+
+        # ── Finalize ─────────────────────────────────────────────
+        final_status = "active" if not errors_list else "active"  # still active, data is partial
+        status_message = "; ".join(errors_list) if errors_list else None
+
+        async def _finalize():
+            engine = create_async_engine(settings.postgres_url)
+            sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            from datetime import datetime, timezone
+            async with sf() as db:
+                await db.execute(
+                    sa_update(Shop).where(Shop.id == shop_id).values(
+                        status=final_status,
+                        status_message=status_message,
+                        last_sync_at=datetime.now(timezone.utc),
+                    )
+                )
+                await db.commit()
+            await engine.dispose()
+
+        asyncio.run(_finalize())
+
+        done_status = "done" if not errors_list else "done_with_errors"
+        error_summary = "; ".join(errors_list) if errors_list else None
+        _set_progress(total, total, "Готово!", status=done_status, error=error_summary)
+
+        logger.info(
+            "shop %s load_historical_data finished: %s (%d errors)",
+            shop_id, done_status, len(errors_list),
         )
 
-        steps = [
-            ("Загрузка контента товаров", sync_product_content, dict(shop_id=shop_id, api_key=api_key)),
-            ("Загрузка заказов (90 дней)", backfill_orders, dict(shop_id=shop_id, api_key=api_key, days=months * 30)),
-            ("Загрузка воронки продаж (365 дней)", backfill_sales_funnel, dict(shop_id=shop_id, api_key=api_key, months=min(months, 12))),
-            ("Загрузка финансовых отчётов", sync_wb_finance_history, dict(shop_id=shop_id, api_key=api_key)),
-            ("Загрузка рекламной истории", sync_wb_advert_history, dict(shop_id=shop_id, api_key=api_key, days_back=months * 30)),
-            ("Загрузка цен и остатков", sync_commercial_data, dict(shop_id=shop_id, api_key=api_key)),
-            ("Загрузка складов", sync_warehouses, dict(shop_id=shop_id, api_key=api_key)),
-        ]
-        total = len(steps)
+        return {"shop_id": shop_id, "marketplace": marketplace, "status": done_status, "errors": errors_list}
 
-        for idx, (step_name, task_ref, kwargs) in enumerate(steps, 1):
-            _set_progress(idx, total, step_name)
-            try:
-                _run_subtask(task_ref, **kwargs)
-                logger.info("shop %s step '%s' completed OK", shop_id, step_name)
-            except Exception as e:
-                err_msg = f"{step_name}: {e}"
-                errors_list.append(err_msg)
-                logger.error("shop %s step '%s' failed: %s", shop_id, step_name, traceback.format_exc())
-                continue
-
-    # ── Finalize ─────────────────────────────────────────────
-    final_status = "active" if not errors_list else "active"  # still active, data is partial
-    status_message = "; ".join(errors_list) if errors_list else None
-
-    async def _finalize():
-        engine = create_async_engine(settings.postgres_url)
-        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        from datetime import datetime, timezone
-        async with sf() as db:
-            await db.execute(
-                sa_update(Shop).where(Shop.id == shop_id).values(
-                    status=final_status,
-                    status_message=status_message,
-                    last_sync_at=datetime.now(timezone.utc),
-                )
-            )
-            await db.commit()
-        await engine.dispose()
-
-    asyncio.run(_finalize())
-
-    done_status = "done" if not errors_list else "done_with_errors"
-    error_summary = "; ".join(errors_list) if errors_list else None
-    _set_progress(total, total, "Готово!", status=done_status, error=error_summary)
-
-    logger.info(
-        "shop %s load_historical_data finished: %s (%d errors)",
-        shop_id, done_status, len(errors_list),
-    )
-    return {"shop_id": shop_id, "marketplace": marketplace, "status": done_status, "errors": errors_list}
+    finally:
+        # ── Always release lock, even on crash ──
+        r.delete(lock_key)
+        logger.info("shop %s lock released (key=%s)", shop_id, lock_key)
 
 
 @celery_app.task(bind=True, time_limit=14400, soft_time_limit=14100)
