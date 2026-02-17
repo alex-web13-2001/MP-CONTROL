@@ -57,7 +57,7 @@ REPORT_POLL_MAX_WAIT = 120  # max seconds to wait for report
 
 # Retry settings for 429 / transient errors
 RETRY_MAX_ATTEMPTS = 5     # max retries per batch
-RETRY_PAUSE_SECONDS = 60   # pause between retries (Ozon rate limit recovery)
+RETRY_PAUSE_SECONDS = 300  # pause between retries (Ozon Performance API has strict report limits)
 
 
 def _bid_to_rub(bid_micro: str) -> float:
@@ -144,6 +144,7 @@ class OzonAdsService:
             db=self.db,
             shop_id=self.shop_id,
             marketplace="ozon_performance",
+            max_retries=1,  # No retry inside client — 429 handled in fetch_statistics()
         ) as client:
             response = await client.request(
                 method,

@@ -248,6 +248,10 @@ def load_historical_data(self, shop_id: int, months: int = 6):
             ]
 
             # Add ads backfill only if Performance API credentials exist
+            # NOTE: backfill_ozon_ads runs via .apply() (sync) to guarantee
+            # data is loaded before shop is marked active.
+            # We set a Redis lock to prevent periodic sync_ozon_ad_stats
+            # from competing for the same Ozon API rate limit.
             if perf_client_id and perf_client_secret:
                 steps.append((
                     "Загрузка рекламной статистики (180 дней)",
@@ -3710,6 +3714,21 @@ def sync_ozon_ad_stats(
         redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
         try:
+            # Check if backfill is running for ANY shop with the same
+            # perf_client_id — skip to avoid competing for Ozon Performance
+            # API rate limit (429 errors). Multiple shops can share one
+            # Performance API account.
+            backfill_active = await redis_client.get(f'ozon_ads_backfill:{perf_client_id}')
+            if backfill_active:
+                logger.info(
+                    'shop %s: backfill_ozon_ads is running (perf_client=%s), '
+                    'skipping periodic sync_ozon_ad_stats',
+                    shop_id, perf_client_id[:20],
+                )
+                await redis_client.close()
+                await engine.dispose()
+                return {'status': 'skipped', 'reason': 'backfill in progress', 'shop_id': shop_id}
+
             async with async_session() as db:
                 service = OzonAdsService(
                     db=db,
@@ -3819,6 +3838,25 @@ def backfill_ozon_ads(
         redis_client = aioredis.from_url(redis_url, decode_responses=True)
 
         try:
+            # Set Redis lock keyed by perf_client_id to prevent periodic
+            # sync_ozon_ad_stats from competing for the SAME Ozon Performance
+            # API rate limit. Multiple shops may share one perf_client_id.
+            # TTL = 2h (matches task time_limit), auto-expires if task crashes.
+            await redis_client.set(
+                f'ozon_ads_backfill:{perf_client_id}', '1', ex=7200,
+            )
+            logger.info('shop %s: backfill lock SET for perf_client=%s (TTL 2h)', shop_id, perf_client_id[:20])
+
+            # Reset rate limiter backoff/429 counters for this shop's
+            # ozon_performance marketplace. Previous 429 errors may have pushed
+            # the backoff to maximum, creating a vicious cycle where retries
+            # keep failing because the rate limiter itself blocks requests.
+            backoff_key = f"mms:ratelimit:{shop_id}:ozon_performance:backoff"
+            count_key = f"mms:ratelimit:{shop_id}:ozon_performance:429_count"
+            deleted = await redis_client.delete(backoff_key, count_key)
+            if deleted:
+                logger.info('shop %s: reset %d rate-limiter keys for ozon_performance', shop_id, deleted)
+
             async with async_session() as db:
                 service = OzonAdsService(
                     db=db,
@@ -3914,6 +3952,12 @@ def backfill_ozon_ads(
             }
 
         finally:
+            # Release backfill lock so periodic sync_ozon_ad_stats can resume
+            try:
+                await redis_client.delete(f'ozon_ads_backfill:{perf_client_id}')
+                logger.info('shop %s: backfill lock RELEASED for perf_client=%s', shop_id, perf_client_id[:20])
+            except Exception:
+                pass
             await redis_client.close()
             await engine.dispose()
 
