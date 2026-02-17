@@ -3801,7 +3801,7 @@ def backfill_ozon_ads(
     perf_client_id: str,
     perf_client_secret: str,
     days_back: int = 180,
-    chunk_days: int = 7,
+    chunk_days: int = 30,
 ):
     """
     Backfill Ozon ad statistics history (same as WB: 6 months, then sync).
@@ -3873,7 +3873,8 @@ def backfill_ozon_ads(
                 if not campaign_ids:
                     return {"shop_id": shop_id, "error": "No campaigns found"}
 
-                # 2. Build date chunks (week by week, newest first)
+                # 2. Build date chunks (newest first — so we get recent data
+                #    before hitting old empty periods that trigger early exit)
                 today = datetime.utcnow().date()
                 start_date = today - timedelta(days=days_back)
                 chunks = []
@@ -3884,15 +3885,19 @@ def backfill_ozon_ads(
                     chunks.append((chunk_start, chunk_end))
                     chunk_start = chunk_end + timedelta(days=1)
 
+                # Reverse: newest first, so we load recent data before
+                # hitting old empty periods that trigger early exit
+                chunks.reverse()
+
                 logger.info(
-                    f"Ozon backfill: {len(chunks)} chunks, "
+                    f"Ozon backfill: {len(chunks)} chunks (newest first), "
                     f"{start_date} → {today}, {len(campaign_ids)} campaigns"
                 )
 
                 # 3. Process each chunk
                 # Early exit: if N consecutive chunks return 0 rows,
                 # stop — campaigns likely didn't exist that far back.
-                MAX_EMPTY_STREAK = 3
+                MAX_EMPTY_STREAK = 5
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
                 total_rows = 0
