@@ -6,6 +6,7 @@ import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
 import OnboardingPage from '@/pages/OnboardingPage'
 import DashboardPage from '@/pages/DashboardPage'
+import SettingsPage from '@/pages/SettingsPage'
 
 export default function App() {
   return (
@@ -36,6 +37,7 @@ export default function App() {
           }
         >
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/funnel" element={<FunnelPage />} />
@@ -43,7 +45,6 @@ export default function App() {
           <Route path="/finances" element={<FinancesPage />} />
           <Route path="/advertising" element={<AdvertisingPage />} />
           <Route path="/events" element={<EventsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
           */}
         </Route>
       </Routes>

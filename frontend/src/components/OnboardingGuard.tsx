@@ -1,12 +1,13 @@
+import { useEffect } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/authStore'
+import { useAppStore } from '@/stores/appStore'
 
 /**
  * OnboardingGuard — redirects to /onboarding if user has no shops
  * or all shops are still syncing.
  *
- * Wraps protected routes so that new users must add at least one shop
- * and wait for initial data load before accessing the dashboard.
+ * Also auto-selects the first active shop if none is currently selected.
  */
 export default function OnboardingGuard({
   children,
@@ -14,6 +15,21 @@ export default function OnboardingGuard({
   children: React.ReactNode
 }) {
   const { shops, isAuthenticated } = useAuthStore()
+  const currentShop = useAppStore((s) => s.currentShop)
+  const setCurrentShop = useAppStore((s) => s.setCurrentShop)
+
+  // Auto-select first active shop if none selected
+  useEffect(() => {
+    if (!currentShop && shops.length > 0) {
+      const activeShop = shops.find((s) => s.status === 'active') || shops[0]
+      setCurrentShop({
+        id: activeShop.id,
+        name: activeShop.name,
+        marketplace: activeShop.marketplace,
+        isActive: activeShop.isActive,
+      })
+    }
+  }, [currentShop, shops, setCurrentShop])
 
   // Not authenticated — AuthGuard handles redirect to /login
   if (!isAuthenticated) {

@@ -341,9 +341,14 @@ CREATE TABLE IF NOT EXISTS mms_analytics.dim_advert_campaigns (
     shop_id UInt32,
     advert_id UInt64,
     name String,
-    type Enum8('search' = 1, 'carousel' = 2, 'card' = 4, 'recommend' = 5, 'auto' = 7, 'search_plus_catalog' = 8, 'recommend_plus_carousel' = 9),
+    type UInt8 DEFAULT 0,  -- 1=search, 2=carousel, 4=card, 5=recommend, 7=auto, 8=search_plus_catalog, 9=unified
     status Int8,
-    updated_at DateTime
+    updated_at DateTime,
+    -- V2 API fields (added Feb 2026)
+    payment_type String DEFAULT '',   -- 'cpm' or 'cpc'
+    bid_type String DEFAULT '',       -- 'manual' or 'auto'
+    search_enabled UInt8 DEFAULT 0,
+    recommendations_enabled UInt8 DEFAULT 0
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (shop_id, advert_id);
 
@@ -364,6 +369,28 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_advert_stats (
 ) ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(date)
 ORDER BY (shop_id, nm_id, date, advert_id);
+
+-- ===================
+-- Advertising V3 Stats (full funnel: views→clicks→carts→orders)
+-- ReplacingMergeTree: deduplicates by (shop, nm, date, advert),
+-- keeping the row with the latest updated_at
+-- ===================
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_advert_stats_v3 (
+    date Date,
+    shop_id UInt32,
+    advert_id UInt64,
+    nm_id UInt64,
+    views UInt32 DEFAULT 0,
+    clicks UInt32 DEFAULT 0,
+    atbs UInt32 DEFAULT 0,       -- add to basket (carts)
+    orders UInt32 DEFAULT 0,
+    revenue Decimal(18, 2) DEFAULT 0,  -- sum_price from API
+    spend Decimal(18, 2) DEFAULT 0,    -- sum from API (ad cost)
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(date)
+ORDER BY (shop_id, nm_id, date, advert_id)
+TTL date + INTERVAL 2 YEAR;
 
 -- ===================
 -- Advertising RAW History (for accumulation, NOT replacement!)
@@ -619,6 +646,27 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_inventory (
 PARTITION BY toYYYYMM(fetched_at)
 ORDER BY (shop_id, product_id)
 TTL fetched_at + INTERVAL 1 YEAR;
+
+-- ═══════════════════════════════════════════════════════════
+-- WB Advertising: Bid History Log (V2 API)
+-- Stores per-nm_id bid snapshots every sync cycle (~30min).
+-- Bids in kopecks from /api/advert/v2/adverts
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.log_wb_bids (
+    timestamp            DateTime DEFAULT now(),
+    shop_id              UInt32,
+    advert_id            UInt64,
+    nm_id                UInt64,
+    bid_type             String,
+    payment_type         String,
+    bid_search           UInt32,
+    bid_recommendations  UInt32,
+    search_enabled       UInt8,
+    recommendations_enabled UInt8,
+    status               UInt8
+) ENGINE = MergeTree()
+ORDER BY (shop_id, advert_id, nm_id, timestamp)
+TTL timestamp + INTERVAL 1 YEAR;
 
 -- ═══════════════════════════════════════════════════════════
 -- Ozon Advertising: Bid Log

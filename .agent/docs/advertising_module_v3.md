@@ -1,5 +1,26 @@
 # История разработки MP-CONTROL
 
+## 2026-02-17: Миграция EventDetector на V2 API, обновление DDL
+
+### Исправлено:
+
+1. **DDL `dim_advert_campaigns`** — `type` с `Enum8` → `UInt8` (поддержка type=9+), добавлены `payment_type`, `bid_type`, `search_enabled`, `recommendations_enabled`
+2. **DDL `fact_advert_stats_v3`** — новая таблица ReplacingMergeTree (была только в коде, отсутствовала в `init.sql`)
+3. **EventDetector** — новые V2 методы: `detect_changes_v2()` (BID_CHANGE per nm_id в копейках), `extract_all_campaign_data_v2()`
+4. **RedisStateManager** — добавлены `get_bid()`/`set_bid()` для per-nm_id bid tracking
+5. **Celery task** — `sync_wb_advert_history` переключён на V2 pipeline: убран deprecated `get_campaign_settings()` (POST `/adv/v1/promotion/adverts`)
+6. **`get_campaign_settings()`** — помечен как `[DEPRECATED]`
+
+### Новый pipeline sync_wb_advert_history:
+
+```
+get_campaigns() → get_adverts_v2() → detect_changes_v2() + extract_all_campaign_data_v2()
+                                    → bid_snapshot + load_campaigns_v2
+                                    → vendor_code_cache → get_full_stats_v3() → parse → insert
+```
+
+---
+
 ## 2026-02-07: Исправления модуля WB Advertising V3
 
 ### Исправлено:

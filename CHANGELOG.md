@@ -2,6 +2,67 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-17
+
+### Added — Лёгкая задача сбора данных рекламных кампаний WB (каждые 30 мин)
+
+- **Backend / `tasks.py`:** Новая задача `sync_wb_campaign_snapshot` — использует только 2 API вызова (`/adv/v1/promotion/count` + `/api/advert/v2/adverts`), выполняется за ~4 сек. Сохраняет ставки (CPM/CPC в копейках), имена кампаний, payment_type, bid_type, placements.
+- **Backend / `tasks.py`:** Новый dispatcher `sync_all_campaign_snapshots` — запускает snapshot для всех активных WB магазинов.
+- **Backend / `wb_advertising_loader.py`:** Новый метод `load_campaigns_v2()` — обновляет `dim_advert_campaigns` с полными данными из V2 API (имена, payment_type, bid_type, search_enabled, recommendations_enabled).
+- **Backend / `celery.py`:** Routing + scheduler для новых задач (каждые 30 минут).
+
+### Fixed — Ставки WB кампаний не сохранялись в `log_wb_bids`
+
+- **Root cause:** В `sync_wb_advert_history` переменная `service` использовалась вне `async with async_session()` — сессия БД была закрыта, API вызов падал молча.
+- **Backend / `tasks.py` (line ~1220):** Каждый batch V2 API теперь создаёт свою сессию.
+- **ClickHouse:** `log_wb_bids.status` UInt8→Int8 (WB API возвращает -1 для удалённых кампаний).
+- **ClickHouse:** Добавлены колонки в `dim_advert_campaigns`: `payment_type`, `bid_type`, `search_enabled`, `recommendations_enabled`.
+
+### Fixed — Удаление магазинов: ошибки больше не глотаются молча
+
+- **Frontend / `SettingsPage.tsx`:** Ошибки удаления теперь показываются пользователю. При 404 (магазин не найден в БД) список автоматически обновляется — «призрачные» магазины исчезают.
+
+### Fixed — Воронка продаж WB: ошибка 400 "excess limit on days"
+
+- **Root cause:** WB Seller Analytics `/history` API принимает start date только за последние **7 дней**. `backfill_sales_funnel` запрашивал 365 дней → 51 из 52 weekly windows возвращали 400.
+- **Backend / `tasks.py` (`backfill_sales_funnel`):** При fallback на History API (когда CSV report недоступен) диапазон дат ограничен до 7 дней.
+- **Backend / `rate_limiter.py`:** Добавлен конфиг `wildberries_analytics` (21-сек окно, 1 req/window). Redis-ключи теперь scoped по marketplace — изоляция sliding windows между API-доменами. Добавлены `window_seconds`/`max_requests_in_window`.
+- **Backend / `wb_sales_funnel_service.py`:** Отключен прокси (`use_proxy=False`) для Analytics API. Улучшено логирование ошибок (включен `detail` из тела ответа).
+
+### Added — Предупреждения о недостающих правах WB API-ключа
+
+- **Frontend / `ShopWizard.tsx`:** При валидации ключа WB показываются предупреждения в amber-стиле, если часть сервисов (`statistics-api`, `advert-api` и т.д.) недоступна. Пользователь видит какие именно права отсутствуют и может продолжить подключение.
+- **Frontend / `auth.ts`:** Добавлен тип `warnings` в `ValidateKeyResponse`.
+- **Backend / `shops.py`:** Добавлен домен `finance-api` в список проверяемых WB-сервисов (всего теперь 6 доменов).
+
+## [Unreleased] - 2026-02-16
+
+### Fixed — Мерцание темы (dark ↔ light) при загрузке
+
+- **Frontend / `index.html`:** Добавлен синхронный инлайн-скрипт, который читает тему из `localStorage` **до** загрузки React и применяет/удаляет класс `.light` на `<html>`. Устраняет «вспышку» неправильной темы (FOIT).
+- **Frontend / `appStore.ts` / `onRehydrateStorage`:** Исправлена логика — теперь при dark теме `.light` класс **удаляется** (раньше только добавлялся для light, но никогда не удалялся).
+
+### Fixed — Невидимый текст кнопки «Войти»
+
+- **Frontend / `index.css`:** Добавлен `color: inherit` в глобальный button reset. Без этого текст кнопки мог стать невидимым (белый на белом в light theme).
+
+### Added — Авто-выбор магазина при входе
+
+- **Frontend / `OnboardingGuard.tsx`:** Если `currentShop === null` и есть active магазины — автоматически выбирает первый.
+- **Frontend / `LoginPage.tsx`:** После логина сразу ставит первый active магазин в appStore.
+- **Frontend / `Header.tsx`:** Убран placeholder «Выберите магазин» — если магазины есть, один всегда выбран.
+
+### Added — Страница «Настройки» с управлением магазинами
+
+- **Frontend / `SettingsPage.tsx` [NEW]:** Полноценная страница с двумя секциями:
+  - **Магазины** — список подключённых магазинов с бейджами маркетплейса/статуса, кнопки: «Добавить магазин», «Выбрать», «Удалить» (с подтверждением).
+  - **Профиль** — имя, email, кнопка «Выйти».
+- **Frontend / `ShopWizard.tsx` [NEW]:** Извлечённый из OnboardingPage wizard (marketplace → API keys → validation → sync progress). Переиспользуется в Onboarding и Settings.
+- **Frontend / `OnboardingPage.tsx` [REFACTORED]:** С 765 строк до ~150. Использует ShopWizard.
+- **Frontend / `App.tsx`:** Подключён route `/settings → SettingsPage`.
+
+---
+
 ## [Unreleased] - 2026-02-15
 
 ### Added — Redis distributed lock для дедупликации задач

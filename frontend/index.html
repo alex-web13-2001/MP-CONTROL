@@ -9,6 +9,23 @@
       content="Marketplace Management System - Автоматизация рекламы и аналитика для маркетплейсов"
     />
     <title>MMS - Marketplace Management System</title>
+    <!-- Sync theme BEFORE React loads to prevent flash -->
+    <script>
+      (function() {
+        try {
+          var raw = localStorage.getItem('mp-control-app');
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            var theme = parsed && parsed.state && parsed.state.theme;
+            if (theme === 'light') {
+              document.documentElement.classList.add('light');
+            } else {
+              document.documentElement.classList.remove('light');
+            }
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

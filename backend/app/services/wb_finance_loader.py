@@ -1,22 +1,20 @@
 """
-WB Finance Data Loader - Parse CSV and load into ClickHouse fact_finances.
+WB Finance Data Loader - Parse JSON API data and load into ClickHouse fact_finances.
 
 This service:
-1. Parses WB weekly finance report CSV files
-2. Maps CSV columns to fact_finances schema
+1. Parses WB V5 API JSON responses (reportDetailByPeriod)
+2. Maps API fields to fact_finances schema
 3. Batch inserts data into ClickHouse
-4. Supports full 3-month data loading by weeks
 """
 
-import csv
 import json
-import os
-from dataclasses import dataclass, asdict
+import logging
+from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from decimal import Decimal
-from io import StringIO
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Generator
+
+logger = logging.getLogger(__name__)
 
 import clickhouse_connect
 from clickhouse_connect.driver.client import Client as ClickHouseClient
@@ -67,24 +65,17 @@ class FactFinancesRow:
 
 class WBReportParser:
     """
-    Parser for WB weekly finance report CSV files.
+    Parser for WB V5 API JSON responses.
     
-    CSV Column Mapping to fact_finances:
-    - event_date        <- rr_dt or sale_dt
-    - order_id          <- srid (unique sale ID)
-    - external_id       <- nm_id
-    - vendor_code       <- sa_name
-    - operation_type    <- supplier_oper_name
-    - quantity          <- quantity
-    - retail_amount     <- retail_amount
-    - payout_amount     <- ppvz_for_pay
-    - commission_amount <- ppvz_sales_commission * -1
-    - logistics_total   <- delivery_rub + rebill_logistic_cost
-    - penalty_total     <- penalty
-    - wb_gi_id          <- gi_id
-    - wb_ppvz_for_pay   <- ppvz_for_pay
-    - wb_delivery_rub   <- delivery_rub
-    - wb_storage_amount <- storage_fee
+    Field Mapping (API → fact_finances):
+    - event_date        ← rr_dt or sale_dt
+    - order_id          ← srid (unique sale ID)
+    - external_id       ← nm_id
+    - vendor_code       ← sa_name
+    - operation_type    ← supplier_oper_name
+    - payout_amount     ← ppvz_for_pay
+    - commission_amount ← ppvz_sales_commission * -1
+    - logistics_total   ← delivery_rub + rebill_logistic_cost
     """
     
     def __init__(self, shop_id: int):
@@ -140,7 +131,7 @@ class WBReportParser:
         return None
     
     def parse_row(self, row: Dict[str, Any], source_filename: str) -> Optional[FactFinancesRow]:
-        """Parse a single CSV row into FactFinancesRow."""
+        """Parse a single API row (dict) into FactFinancesRow."""
         # Get event date - prefer rr_dt, fallback to sale_dt
         event_date = self._parse_date(row.get("rr_dt", "")) or self._parse_date(row.get("sale_dt", ""))
         if not event_date:
@@ -244,31 +235,10 @@ class WBReportParser:
             source_file_name=source_filename,
             raw_payload=json.dumps(row, ensure_ascii=False, default=str),
         )
-    
-    def parse_csv_file(self, filepath: str) -> Generator[FactFinancesRow, None, None]:
-        """Parse entire CSV file and yield FactFinancesRow objects."""
-        filename = os.path.basename(filepath)
-        
-        with open(filepath, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                parsed = self.parse_row(row, filename)
-                if parsed:
-                    yield parsed
-    
-    def parse_csv_content(self, content: str, source_name: str = "api") -> Generator[FactFinancesRow, None, None]:
-        """Parse CSV content string and yield FactFinancesRow objects."""
-        reader = csv.DictReader(StringIO(content))
-        for row in reader:
-            parsed = self.parse_row(row, source_name)
-            if parsed:
-                yield parsed
 
     def parse_json_rows(self, data: List[Dict[str, Any]], source_name: str = "api_json") -> Generator[FactFinancesRow, None, None]:
-        """Parse list of JSON dictionaries and yield FactFinancesRow objects."""
+        """Parse list of JSON dicts from V5 API and yield FactFinancesRow objects."""
         for row in data:
-            # JSON keys might differ slightly from CSV, need to ensure parse_row handles them.
-            # Based on standard WB API V5, keys are usually snake_case matching CSV headers.
             parsed = self.parse_row(row, source_name)
             if parsed:
                 yield parsed
@@ -431,16 +401,6 @@ class ClickHouseLoader:
         
         return total_inserted
     
-    def load_csv_file(
-        self,
-        filepath: str,
-        shop_id: int,
-        progress_callback: Optional[callable] = None,
-    ) -> int:
-        """Load a single CSV file into ClickHouse."""
-        parser = WBReportParser(shop_id)
-        rows = parser.parse_csv_file(filepath)
-        return self.load_from_generator(rows, progress_callback)
     
     def get_row_count(self, shop_id: int, date_from: date, date_to: date) -> int:
         """Get count of rows for a shop in date range."""

@@ -55,6 +55,10 @@ CH_STATS_TABLE = "mms_analytics.fact_ozon_ad_daily"
 REPORT_POLL_INTERVAL = 5   # seconds between status checks
 REPORT_POLL_MAX_WAIT = 120  # max seconds to wait for report
 
+# Retry settings for 429 / transient errors
+RETRY_MAX_ATTEMPTS = 5     # max retries per batch
+RETRY_PAUSE_SECONDS = 60   # pause between retries (Ozon rate limit recovery)
+
 
 def _bid_to_rub(bid_micro: str) -> float:
     """Convert microroubles bid to roubles."""
@@ -313,10 +317,12 @@ class OzonAdsService:
         )
 
         if not response.is_success:
+            status = getattr(response, 'status_code', 0)
             logger.error(
                 "Ozon statistics order error: %s %s",
-                response.status_code, response.error,
+                status, response.error,
             )
+            # Return status code so caller can distinguish 429 from other errors
             return None
 
         data = response.data if isinstance(response.data, dict) else {}
@@ -513,6 +519,9 @@ class OzonAdsService:
         Ozon API limit: max 10 campaigns per report.
         So we batch campaign_ids into groups of 10.
 
+        On 429 / transient errors, retries up to RETRY_MAX_ATTEMPTS times
+        with RETRY_PAUSE_SECONDS pause between attempts.
+
         Returns parsed rows ready for ClickHouse.
         """
         all_rows = []
@@ -531,24 +540,80 @@ class OzonAdsService:
         for batch_idx, batch in enumerate(batches):
             logger.info("Stats batch %d/%d: campaigns %s", batch_idx + 1, len(batches), batch)
 
-            uuid = await self.order_report(batch, date_from, date_to)
-            if not uuid:
-                continue
+            batch_success = False
+            for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+                # Step 1: Order report
+                uuid = await self.order_report(batch, date_from, date_to)
+                if not uuid:
+                    if attempt < RETRY_MAX_ATTEMPTS:
+                        logger.warning(
+                            "Batch %d/%d: order_report failed (attempt %d/%d), "
+                            "pausing %ds before retry...",
+                            batch_idx + 1, len(batches),
+                            attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
+                        )
+                        await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        continue
+                    else:
+                        logger.error(
+                            "Batch %d/%d: order_report failed after %d attempts, skipping",
+                            batch_idx + 1, len(batches), RETRY_MAX_ATTEMPTS,
+                        )
+                        break
 
-            link = await self.wait_for_report(uuid)
-            if not link:
-                continue
+                # Step 2: Wait for report
+                link = await self.wait_for_report(uuid)
+                if not link:
+                    if attempt < RETRY_MAX_ATTEMPTS:
+                        logger.warning(
+                            "Batch %d/%d: wait_for_report failed (attempt %d/%d), "
+                            "pausing %ds before retry...",
+                            batch_idx + 1, len(batches),
+                            attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
+                        )
+                        await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        continue
+                    else:
+                        logger.error(
+                            "Batch %d/%d: wait_for_report failed after %d attempts, skipping",
+                            batch_idx + 1, len(batches), RETRY_MAX_ATTEMPTS,
+                        )
+                        break
 
-            csv_text = await self.download_report(link)
-            if not csv_text:
-                continue
+                # Step 3: Download report
+                csv_text = await self.download_report(link)
+                if not csv_text:
+                    if attempt < RETRY_MAX_ATTEMPTS:
+                        logger.warning(
+                            "Batch %d/%d: download_report failed (attempt %d/%d), "
+                            "pausing %ds before retry...",
+                            batch_idx + 1, len(batches),
+                            attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
+                        )
+                        await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        continue
+                    else:
+                        logger.error(
+                            "Batch %d/%d: download_report failed after %d attempts, skipping",
+                            batch_idx + 1, len(batches), RETRY_MAX_ATTEMPTS,
+                        )
+                        break
 
-            rows = self.parse_csv_report(csv_text, shop_id)
-            all_rows.extend(rows)
+                # Step 4: Parse — success!
+                rows = self.parse_csv_report(csv_text, shop_id)
+                all_rows.extend(rows)
+                batch_success = True
+                if attempt > 1:
+                    logger.info(
+                        "Batch %d/%d: succeeded on attempt %d",
+                        batch_idx + 1, len(batches), attempt,
+                    )
+                break
 
             # Rate limit between batches
             if batch_idx < len(batches) - 1:
-                await asyncio.sleep(1)
+                pause = 5 if batch_success else RETRY_PAUSE_SECONDS
+                await asyncio.sleep(pause)
 
         logger.info("Total stats rows from all batches: %d", len(all_rows))
         return all_rows

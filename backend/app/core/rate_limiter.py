@@ -28,6 +28,10 @@ class RateLimitConfig:
     requests_per_minute: int = 100
     requests_per_hour: int = 3000
     
+    # Sliding window configuration
+    window_seconds: float = 1.0           # Sliding window size
+    max_requests_in_window: int = 3       # Max requests allowed in window
+    
     # Backoff configuration
     initial_backoff_seconds: float = 1.0
     max_backoff_seconds: float = 60.0
@@ -40,11 +44,27 @@ MARKETPLACE_LIMITS: Dict[str, RateLimitConfig] = {
         requests_per_second=3.0,
         requests_per_minute=100,
         requests_per_hour=3000,
+        window_seconds=1.0,
+        max_requests_in_window=3,
+    ),
+    "wildberries_analytics": RateLimitConfig(
+        # Seller Analytics API: max 3 req / 60 sec
+        # Use 1 req / 21 sec for even spacing (WB rejects bursts with 400)
+        requests_per_second=0.05,
+        requests_per_minute=3,
+        requests_per_hour=180,
+        window_seconds=21.0,          # 21-second sliding window
+        max_requests_in_window=1,     # 1 request per window (even pacing)
+        initial_backoff_seconds=25.0,
+        max_backoff_seconds=120.0,
+        backoff_multiplier=2.0,
     ),
     "ozon": RateLimitConfig(
         requests_per_second=10.0,
         requests_per_minute=300,
         requests_per_hour=10000,
+        window_seconds=1.0,
+        max_requests_in_window=10,
     ),
 }
 
@@ -97,8 +117,10 @@ class RedisRateLimiter:
             )
         return self._redis
     
-    def _get_key(self, shop_id: int, suffix: str) -> str:
-        """Generate Redis key."""
+    def _get_key(self, shop_id: int, suffix: str, marketplace: str = "") -> str:
+        """Generate Redis key, scoped by marketplace for window isolation."""
+        if marketplace:
+            return f"{self._key_prefix}:{shop_id}:{marketplace}:{suffix}"
         return f"{self._key_prefix}:{shop_id}:{suffix}"
     
     async def can_request(self, shop_id: int, marketplace: str = "wildberries") -> bool:
@@ -107,25 +129,25 @@ class RedisRateLimiter:
         config = MARKETPLACE_LIMITS.get(marketplace, MARKETPLACE_LIMITS["wildberries"])
         
         # Check backoff first
-        backoff_key = self._get_key(shop_id, "backoff")
+        backoff_key = self._get_key(shop_id, "backoff", marketplace)
         backoff_until = await redis.get(backoff_key)
         if backoff_until and float(backoff_until) > time.time():
             return False
         
         # Check sliding window
-        window_key = self._get_key(shop_id, "window")
+        window_key = self._get_key(shop_id, "window", marketplace)
         now = time.time()
-        window_start = now - 1.0  # 1 second window
+        window_start = now - config.window_seconds
         
         # Count requests in window
         count = await redis.zcount(window_key, window_start, now)
-        return count < config.requests_per_second
+        return count < config.max_requests_in_window
     
     async def acquire(
         self,
         shop_id: int,
         marketplace: str = "wildberries",
-        timeout: float = 30.0,
+        timeout: float = 120.0,
     ) -> bool:
         """
         Acquire permission to make a request (blocking).
@@ -137,8 +159,11 @@ class RedisRateLimiter:
         config = MARKETPLACE_LIMITS.get(marketplace, MARKETPLACE_LIMITS["wildberries"])
         start_time = time.time()
         
-        window_key = self._get_key(shop_id, "window")
-        backoff_key = self._get_key(shop_id, "backoff")
+        window_key = self._get_key(shop_id, "window", marketplace)
+        backoff_key = self._get_key(shop_id, "backoff", marketplace)
+        
+        # Poll interval adapts to window size (faster poll for short windows)
+        poll_interval = min(0.5, config.window_seconds / 10)
         
         while True:
             now = time.time()
@@ -150,12 +175,12 @@ class RedisRateLimiter:
             # Check backoff
             backoff_until = await redis.get(backoff_key)
             if backoff_until and float(backoff_until) > now:
-                wait_time = min(float(backoff_until) - now, 0.5)
+                wait_time = min(float(backoff_until) - now, 1.0)
                 await asyncio.sleep(wait_time)
                 continue
             
             # Clean old entries from sliding window
-            window_start = now - 1.0
+            window_start = now - config.window_seconds
             await redis.zremrangebyscore(window_key, 0, window_start)
             
             # Try to acquire slot atomically
@@ -167,11 +192,11 @@ class RedisRateLimiter:
                     # Count current requests
                     count = await redis.zcount(window_key, window_start, now)
                     
-                    if count < config.requests_per_second:
+                    if count < config.max_requests_in_window:
                         # Acquire slot
                         pipe.multi()
                         pipe.zadd(window_key, {str(now): now})
-                        pipe.expire(window_key, 60)  # TTL for cleanup
+                        pipe.expire(window_key, int(config.window_seconds) + 60)
                         await pipe.execute()
                         return True
                     else:
@@ -182,7 +207,7 @@ class RedisRateLimiter:
                     pass
             
             # Need to wait
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(poll_interval)
     
     async def report_rate_limit(self, shop_id: int, marketplace: str = "wildberries"):
         """
@@ -197,8 +222,8 @@ class RedisRateLimiter:
         redis = await self._get_redis()
         config = MARKETPLACE_LIMITS.get(marketplace, MARKETPLACE_LIMITS["wildberries"])
         
-        backoff_key = self._get_key(shop_id, "backoff")
-        count_key = self._get_key(shop_id, "429_count")
+        backoff_key = self._get_key(shop_id, "backoff", marketplace)
+        count_key = self._get_key(shop_id, "429_count", marketplace)
         
         # Increment 429 counter
         count = await redis.incr(count_key)
@@ -225,7 +250,7 @@ class RedisRateLimiter:
     async def report_success(self, shop_id: int, marketplace: str = "wildberries"):
         """Report successful request (resets 429 counter)."""
         redis = await self._get_redis()
-        count_key = self._get_key(shop_id, "429_count")
+        count_key = self._get_key(shop_id, "429_count", marketplace)
         await redis.delete(count_key)
     
     async def get_wait_time(self, shop_id: int, marketplace: str = "wildberries") -> float:
@@ -234,15 +259,15 @@ class RedisRateLimiter:
         config = MARKETPLACE_LIMITS.get(marketplace, MARKETPLACE_LIMITS["wildberries"])
         
         # Check backoff
-        backoff_key = self._get_key(shop_id, "backoff")
+        backoff_key = self._get_key(shop_id, "backoff", marketplace)
         backoff_until = await redis.get(backoff_key)
         if backoff_until and float(backoff_until) > time.time():
             return float(backoff_until) - time.time()
         
         # Check sliding window
-        window_key = self._get_key(shop_id, "window")
+        window_key = self._get_key(shop_id, "window", marketplace)
         now = time.time()
-        window_start = now - 1.0
+        window_start = now - config.window_seconds
         
         # Get oldest entry in window
         oldest = await redis.zrange(window_key, 0, 0, withscores=True)
@@ -250,21 +275,21 @@ class RedisRateLimiter:
             return 0.0
         
         count = await redis.zcount(window_key, window_start, now)
-        if count < config.requests_per_second:
+        if count < config.max_requests_in_window:
             return 0.0
         
-        # Wait until oldest entry expires
+        # Wait until oldest entry expires from window
         oldest_time = oldest[0][1]
-        return max(0.0, oldest_time + 1.0 - now)
+        return max(0.0, oldest_time + config.window_seconds - now)
     
     async def get_status(self, shop_id: int) -> dict:
         """Get rate limit status for monitoring."""
         redis = await self._get_redis()
         now = time.time()
         
-        window_key = self._get_key(shop_id, "window")
-        backoff_key = self._get_key(shop_id, "backoff")
-        count_key = self._get_key(shop_id, "429_count")
+        window_key = self._get_key(shop_id, "window", "wildberries")
+        backoff_key = self._get_key(shop_id, "backoff", "wildberries")
+        count_key = self._get_key(shop_id, "429_count", "wildberries")
         
         window_start = now - 1.0
         count = await redis.zcount(window_key, window_start, now)

@@ -510,6 +510,7 @@ def sync_all_frequent(self):
                 sync_ozon_orders,
                 sync_ozon_warehouse_stocks,
                 sync_ozon_prices,
+                sync_ozon_ad_stats,
             )
 
             kwargs = dict(shop_id=shop.id, api_key=api_key, client_id=client_id)
@@ -519,21 +520,45 @@ def sync_all_frequent(self):
             sync_ozon_prices.delay(**kwargs)
 
             dispatched += 3
-            logger.info("sync_all_frequent: dispatched 3 Ozon tasks for shop %s", shop.id)
+
+            # Ozon ad stats (requires perf credentials)
+            if shop.perf_client_id and shop.perf_client_secret_encrypted:
+                try:
+                    perf_secret = decrypt_api_key(shop.perf_client_secret_encrypted)
+                    sync_ozon_ad_stats.apply_async(
+                        kwargs=dict(
+                            shop_id=shop.id,
+                            perf_client_id=shop.perf_client_id,
+                            perf_client_secret=perf_secret,
+                            lookback_days=3,
+                        ),
+                        queue='heavy',
+                    )
+                    dispatched += 1
+                except Exception as e:
+                    logger.warning("sync_all_frequent: shop %s ozon ad decrypt failed: %s", shop.id, e)
+
+            logger.info("sync_all_frequent: dispatched %d Ozon tasks for shop %s", dispatched, shop.id)
 
         elif shop.marketplace == "wildberries":
             from celery_app.tasks.tasks import (
                 sync_orders,
                 sync_commercial_data,
                 sync_sales_funnel,
+                sync_wb_advert_history,
             )
 
             sync_orders.delay(shop_id=shop.id, api_key=api_key)
             sync_commercial_data.delay(shop_id=shop.id, api_key=api_key)
             sync_sales_funnel.delay(shop_id=shop.id, api_key=api_key)
+            # Ad stats: 3-day lookback for daily freshness, heavy queue
+            sync_wb_advert_history.apply_async(
+                kwargs=dict(shop_id=shop.id, api_key=api_key, days_back=3),
+                queue='heavy',
+            )
 
-            dispatched += 3
-            logger.info("sync_all_frequent: dispatched 3 WB tasks for shop %s", shop.id)
+            dispatched += 4
+            logger.info("sync_all_frequent: dispatched 4 WB tasks for shop %s", shop.id)
 
     logger.info("sync_all_frequent: total dispatched %d tasks for %d shops", dispatched, len(shops))
     return {"dispatched": dispatched, "shops": len(shops)}
@@ -699,10 +724,12 @@ def sync_wb_finance_history(
     import asyncio
     import os
     from datetime import date
+    import logging
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from app.config import get_settings
     from app.services.wb_finance_report_service import WBFinanceReportService
+    logger = logging.getLogger(__name__)
     from app.services.wb_finance_loader import (
         WBReportParser,
         ClickHouseLoader,
@@ -753,9 +780,15 @@ def sync_wb_finance_history(
                         date_from_str = date_from.strftime("%Y-%m-%d")
                         date_to_str = date_to.strftime("%Y-%m-%d")
                         
+                        logger.info(
+                            "Finance sync shop %s: week %d/%d [%s → %s]",
+                            shop_id, i + 1, total_weeks, date_from_str, date_to_str,
+                        )
+                        
                         # Optimization: Skip if data exists to save API budget
                         if loader.get_row_count(shop_id, date_from, date_to) > 0:
                             stats["processed_weeks"] += 1
+                            logger.info("Finance week %d/%d skipped (already loaded)", i + 1, total_weeks)
                             self.update_state(
                                 state='PROGRESS',
                                 meta={
@@ -781,16 +814,35 @@ def sync_wb_finance_history(
                         )
                         
                         try:
-                            # Step 1: Get report data directly (JSON)
-                            # This replaces the old flow of ID -> Generate -> Poll -> Download
-                            rows_data = await download_service.get_report_data(
-                                date_from_str, date_to_str
-                            )
+                            # Step 1: Get report data with retry for 429
+                            # WB statistics-api limits to ~1 req/min
+                            logger.info("Finance: requesting data %s → %s ...", date_from_str, date_to_str)
+                            rows_data = None
+                            max_retries = 3
+                            for attempt in range(max_retries):
+                                try:
+                                    rows_data = await asyncio.wait_for(
+                                        download_service.get_report_data(
+                                            date_from_str, date_to_str
+                                        ),
+                                        timeout=120.0,
+                                    )
+                                    break  # success
+                                except Exception as req_err:
+                                    if "429" in str(req_err) and attempt < max_retries - 1:
+                                        wait = 60 * (attempt + 1)
+                                        logger.warning(
+                                            "Finance week %d/%d: 429 rate limited, retry %d/%d in %ds",
+                                            i + 1, total_weeks, attempt + 1, max_retries, wait,
+                                        )
+                                        await asyncio.sleep(wait)
+                                    else:
+                                        raise
                             
                             if not rows_data:
                                 stats["processed_weeks"] += 1
-                                # Still wait to respect rate limits even if empty
-                                await asyncio.sleep(5)
+                                logger.info("Finance week %d/%d: empty response", i + 1, total_weeks)
+                                await asyncio.sleep(10)
                                 continue
                             
                             # Step 2: Parse JSON rows
@@ -799,13 +851,31 @@ def sync_wb_finance_history(
                             if rows:
                                 inserted = loader.insert_batch(rows)
                                 stats["total_rows_inserted"] += inserted
+                                logger.info(
+                                    "Finance week %d/%d: %d rows parsed, %d inserted",
+                                    i + 1, total_weeks, len(rows), inserted,
+                                )
                             
                             stats["processed_weeks"] += 1
                             
-                            # Small pause between weeks
-                            await asyncio.sleep(5)
+                            # Pause between weeks: WB stats API ~1 req/min
+                            await asyncio.sleep(30)
                             
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "Finance week %d/%d TIMEOUT (120s): %s → %s",
+                                i + 1, total_weeks, date_from_str, date_to_str,
+                            )
+                            stats["errors"].append({
+                                "week": f"{date_from_str} - {date_to_str}",
+                                "error": "Request timeout (120s)",
+                            })
+                            stats["processed_weeks"] += 1
                         except Exception as e:
+                            logger.error(
+                                "Finance week %d/%d error: %s (%s → %s)",
+                                i + 1, total_weeks, e, date_from_str, date_to_str,
+                            )
                             await db.rollback()
                             stats["errors"].append({
                                 "week": f"{date_from_str} - {date_to_str}",
@@ -824,6 +894,181 @@ def sync_wb_finance_history(
         stats["status"] = "failed"
         stats["fatal_error"] = str(exc)
         self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+# =============================================
+# CAMPAIGN SNAPSHOT (lightweight, every 30 min)
+# =============================================
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=270)
+def sync_wb_campaign_snapshot(self, shop_id: int, api_key: str):
+    """
+    Lightweight task: fetch campaign list + full details (bids, names, placements).
+    
+    Uses only 2 WB API calls:
+      1. GET /adv/v1/promotion/count → list of campaign IDs with types/statuses
+      2. GET /api/advert/v2/adverts → full info per campaign (bids_kopecks, name, etc.)
+    
+    Saves to:
+      - dim_advert_campaigns (ReplacingMergeTree — upsert with name, payment_type, bid_type)
+      - log_wb_bids (MergeTree — append bid snapshots for history)
+    
+    Runs every 30 minutes via scheduler.
+    Queue: HEAVY (uses WB API).
+    """
+    import asyncio
+    import os
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_advertising_report_service import WBAdvertisingReportService
+    from app.services.wb_advertising_loader import WBAdvertisingLoader
+    from app.services.event_detector import EventDetector
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    def chunk_list(lst, n):
+        for i in range(0, len(lst), n):
+            yield lst[i:i + n]
+
+    async def run_snapshot():
+        engine = create_async_engine(settings.postgres_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        loader = WBAdvertisingLoader(
+            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
+            username=os.getenv("CLICKHOUSE_USER", "default"),
+            database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
+        )
+        event_detector = EventDetector(redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"))
+
+        try:
+            with loader:
+                # Step 1: Get campaign list with IDs + types + statuses
+                self.update_state(state='PROGRESS', meta={'status': 'Fetching campaign list...'})
+                async with async_session() as db:
+                    service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                    campaigns = await service.get_campaigns()
+
+                # Build type map: advert_id -> type (from promotion/count)
+                campaign_type_map = {}
+                campaign_ids = []
+                for c in campaigns:
+                    advert_id = c.get("advertId")
+                    if advert_id:
+                        campaign_ids.append(advert_id)
+                        campaign_type_map[advert_id] = int(c.get("type", 9))
+
+                total = len(campaign_ids)
+                logger.info(f"[snapshot] shop={shop_id}: found {total} campaigns")
+
+                if not campaign_ids:
+                    await engine.dispose()
+                    return {"status": "completed", "campaigns": 0, "bids_saved": 0}
+
+                # Step 2: Get full V2 info (bids, names, placements) — batches of 50
+                self.update_state(state='PROGRESS', meta={'status': f'Fetching details for {total} campaigns...'})
+                all_v2_adverts = []
+                for batch in chunk_list(campaign_ids, 50):
+                    try:
+                        async with async_session() as db:
+                            service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                            v2_data = await service.get_adverts_v2(campaign_ids=batch)
+                        all_v2_adverts.extend(v2_data)
+                        if len(campaign_ids) > 50:
+                            await asyncio.sleep(1)  # rate limit between batches
+                    except Exception as e:
+                        logger.warning(f"[snapshot] Error fetching V2 adverts batch: {e}")
+
+                logger.info(f"[snapshot] shop={shop_id}: got {len(all_v2_adverts)} V2 adverts")
+
+                # Step 3: Update dim_advert_campaigns with full data
+                if all_v2_adverts:
+                    dim_count = loader.load_campaigns_v2(
+                        all_v2_adverts, shop_id, campaign_type_map
+                    )
+                    logger.info(f"[snapshot] Updated {dim_count} campaigns in dim_advert_campaigns")
+
+                # Step 4: Save bid snapshot to log_wb_bids
+                bids_count = 0
+                if all_v2_adverts:
+                    bid_rows = event_detector.extract_bid_snapshot_v2(shop_id, all_v2_adverts)
+                    if bid_rows:
+                        bids_count = loader.insert_bid_snapshot(bid_rows)
+                        logger.info(f"[snapshot] Saved {bids_count} bid rows to log_wb_bids")
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "campaigns": total,
+                "v2_adverts": len(all_v2_adverts),
+                "dim_updated": dim_count if all_v2_adverts else 0,
+                "bids_saved": bids_count,
+            }
+        except Exception as e:
+            await engine.dispose()
+            logger.error(f"[snapshot] sync_wb_campaign_snapshot failed for shop={shop_id}: {e}")
+            raise e
+
+    return asyncio.run(run_snapshot())
+
+
+@celery_app.task(bind=True, time_limit=120, soft_time_limit=110)
+def sync_all_campaign_snapshots(self):
+    """
+    Dispatcher: fetch campaign snapshots for ALL active WB shops.
+    Called by scheduler every 30 minutes.
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def _dispatch():
+        engine = create_async_engine(settings.postgres_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(Shop.status == "active")
+            )
+            shops = result.scalars().all()
+
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_dispatch())
+
+    if not shops:
+        logger.info("sync_all_campaign_snapshots: no active shops")
+        return {"dispatched": 0}
+
+    dispatched = 0
+    for shop in shops:
+        if shop.marketplace != "wildberries":
+            continue
+        try:
+            api_key = decrypt_api_key(shop.api_key_encrypted)
+        except Exception as e:
+            logger.error(f"sync_all_campaign_snapshots: shop {shop.id} decrypt failed: {e}")
+            continue
+
+        sync_wb_campaign_snapshot.delay(shop_id=shop.id, api_key=api_key)
+        dispatched += 1
+        logger.info(f"sync_all_campaign_snapshots: dispatched for shop {shop.id}")
+
+    logger.info(f"sync_all_campaign_snapshots: dispatched {dispatched} tasks")
+    return {"dispatched": dispatched}
 
 
 @celery_app.task(bind=True, time_limit=14400, soft_time_limit=14100)
@@ -954,43 +1199,67 @@ def sync_wb_advert_history(
                 
                 logger.info(f"Found {total_campaigns} campaigns for V3 stats sync")
                 
-                # 2. Fetch Campaign Settings (for bid detection & item lists)
+                # 2. Fetch V2 Adverts (for bids, event detection, campaign items)
+                # V2 replaces deprecated get_campaign_settings (V1)
                 campaign_items = {}
                 cpm_values = {}
-                campaign_types = {}  # NEW: for CPC vs CPM differentiation
+                campaign_types = {}  # for CPC vs CPM differentiation
                 events_detected = 0
+                all_v2_adverts = []
                 
-                if accumulate_history:
-                    self.update_state(state='PROGRESS', meta={'status': 'Fetching campaign settings via proxy...'})
+                # Build type map from count response
+                campaign_type_map = {c["advertId"]: c.get("type", 0) for c in campaigns}
+                
+                self.update_state(state='PROGRESS', meta={'status': 'Fetching V2 adverts for bids & events...'})
+                
+                for i in range(0, len(campaign_ids), 50):
+                    batch_ids = campaign_ids[i:i+50]
+                    try:
+                        async with async_session() as db:
+                            svc = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
+                            v2_data = await svc.get_adverts_v2(campaign_ids=batch_ids)
+                        all_v2_adverts.extend(v2_data)
+                        if i + 50 < len(campaign_ids):
+                            await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.warning(f"Error fetching V2 adverts batch: {e}")
+                
+                # Detect events using V2 format (per-nm_id bid tracking)
+                if accumulate_history and all_v2_adverts:
+                    events = event_detector.detect_changes_v2(
+                        shop_id, all_v2_adverts, campaign_type_map
+                    )
+                    events_detected = len(events)
                     
-                    for batch in chunk_list(campaign_ids, 50):
-                        try:
-                            async with async_session() as db:
-                                service = WBAdvertisingReportService(db=db, shop_id=shop_id, api_key=api_key)
-                                settings_data = await service.get_campaign_settings(batch)
-                            
-                            # Detect bid/status/item changes (with debouncing)
-                            events = event_detector.detect_changes(shop_id, settings_data)
-                            events_detected += len(events)
-                            
-                            # PERSIST EVENTS to PostgreSQL
-                            if events:
-                                save_events_to_db(events)
-                            
-                            # Extract items, CPM, and types for history parsing
-                            batch_items, batch_cpm, batch_types = event_detector.extract_all_campaign_data(settings_data)
-                            campaign_items.update(batch_items)
-                            cpm_values.update(batch_cpm)
-                            campaign_types.update(batch_types)
-                            
-                            await asyncio.sleep(1)  # Small delay between settings batches
-                        except Exception as e:
-                            logger.warning(f"Error fetching campaign settings: {e}")
+                    if events:
+                        save_events_to_db(events)
+                    
+                    # Extract campaign items, bids, types from V2
+                    campaign_items, cpm_values, campaign_types = \
+                        event_detector.extract_all_campaign_data_v2(
+                            all_v2_adverts, campaign_type_map
+                        )
+                
+                # Save bid snapshot to log_wb_bids
+                if all_v2_adverts:
+                    try:
+                        bid_rows = event_detector.extract_bid_snapshot_v2(shop_id, all_v2_adverts)
+                        if bid_rows:
+                            bids_inserted = loader.insert_bid_snapshot(bid_rows)
+                            logger.info(f"V2 bid snapshot: {bids_inserted} rows saved to log_wb_bids")
+                    except Exception as e:
+                        logger.warning(f"Error saving V2 bid snapshot: {e}")
+                
+                # Load V2 campaigns into dim (with richer fields)
+                if all_v2_adverts:
+                    try:
+                        loader.load_campaigns_v2(all_v2_adverts, shop_id, campaign_type_map)
+                    except Exception as e:
+                        logger.warning(f"Error loading V2 campaigns: {e}")
                 
                 # 3. Prepare vendor_code cache (for enrichment)
                 vendor_code_cache = {}
                 if accumulate_history:
-                    # Collect all nm_ids from campaign items
                     all_nm_ids = set()
                     for items in campaign_items.values():
                         all_nm_ids.update(items)
@@ -1699,8 +1968,12 @@ def backfill_sales_funnel(
                             "step": "3/4",
                         })
 
+                    # History API only supports last 7 days
+                    # (WB returns 400 "excess limit on days" for older dates)
+                    history_start = max(start, end - timedelta(days=6))
+
                     rows = await svc.fetch_history_by_days(
-                        nm_ids, start, end,
+                        nm_ids, history_start, end,
                         progress_callback=on_progress,
                     )
                     method_used = "history_api"
@@ -3502,7 +3775,7 @@ def sync_ozon_ad_stats(
     return asyncio.run(run_sync())
 
 
-@celery_app.task(bind=True, time_limit=3600, soft_time_limit=3500)
+@celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
 def backfill_ozon_ads(
     self,
     shop_id: int,

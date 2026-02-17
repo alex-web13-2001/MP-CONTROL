@@ -41,10 +41,11 @@ async def _validate_wb_key(api_key: str) -> tuple[bool, str, str | None, list[st
     # Services we need for data collection
     WB_SERVICES = {
         "content-api":          "Контент (карточки товаров)",
-        "statistics-api":       "Статистика (финансы, воронка)",
+        "statistics-api":       "Статистика (воронка продаж)",
         "marketplace-api":      "Маркетплейс (заказы, склады)",
         "advert-api":           "Реклама (кампании, ставки)",
         "discounts-prices-api": "Цены и скидки",
+        "finance-api":          "Финансы (отчёты)",
     }
 
     accessible = {}
@@ -52,7 +53,7 @@ async def _validate_wb_key(api_key: str) -> tuple[bool, str, str | None, list[st
     key_valid = False
 
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             for service, label in WB_SERVICES.items():
                 try:
                     resp = await client.get(
@@ -67,7 +68,8 @@ async def _validate_wb_key(api_key: str) -> tuple[bool, str, str | None, list[st
                     else:
                         accessible[service] = False
                         warnings.append(f"⚠️ {label}: код {resp.status_code}")
-                except Exception:
+                except Exception as e:
+                    logger.error("WB ping %s failed: %s: %s", service, type(e).__name__, e)
                     accessible[service] = None
                     warnings.append(f"⚠️ Ошибка проверки: {label}")
 

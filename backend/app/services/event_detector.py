@@ -42,7 +42,9 @@ class EventDetector:
         campaign_settings: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """
-        Detect changes for multiple campaigns with debouncing.
+        [LEGACY] Detect changes using V1 format (/adv/v1/promotion/adverts).
+        
+        DEPRECATED: Use detect_changes_v2() with /api/advert/v2/adverts data instead.
         
         Args:
             shop_id: Shop ID
@@ -254,12 +256,59 @@ class EventDetector:
         # Legacy format: top-level cpm
         return campaign.get("cpm")
     
+    def _extract_cpm_separate(self, campaign: Dict[str, Any]) -> Tuple[float, float]:
+        """Extract search_cpm and catalog_cpm separately."""
+        united_params = campaign.get("unitedParams", [])
+        if united_params and isinstance(united_params[0], dict):
+            up = united_params[0]
+            search_cpm = float(up.get("searchCPM", 0) or 0)
+            catalog_cpm = float(up.get("catalogCPM", 0) or 0)
+            return search_cpm, catalog_cpm
+        
+        # Legacy: single cpm value → treat as search
+        legacy_cpm = float(campaign.get("cpm", 0) or 0)
+        return legacy_cpm, 0.0
+    
+    def _extract_cpc_price(self, campaign: Dict[str, Any]) -> float:
+        """
+        Extract CPC bid (price) from campaign settings.
+        
+        WB stores CPC bid in unitedParams[].subject.price for CPC campaigns,
+        or in params[].price for legacy format.
+        """
+        united_params = campaign.get("unitedParams", [])
+        if united_params:
+            for up in united_params:
+                if isinstance(up, dict):
+                    # subject contains {id, name, price} for CPC
+                    subject = up.get("subject", {})
+                    if isinstance(subject, dict):
+                        price = subject.get("price", 0)
+                        if price:
+                            return float(price)
+                    # Also try direct price field
+                    price = up.get("price", 0)
+                    if price:
+                        return float(price)
+        
+        # Legacy format
+        params = campaign.get("params", [])
+        for param in params:
+            if isinstance(param, dict):
+                price = param.get("price", 0)
+                if price:
+                    return float(price)
+        
+        return 0.0
+    
     def extract_all_campaign_data(
         self,
         campaign_settings: List[Dict[str, Any]]
     ) -> Tuple[Dict[int, List[int]], Dict[int, Decimal], Dict[int, int]]:
         """
-        Extract campaign items, CPM values, and types for history parsing.
+        [LEGACY] Extract campaign data from V1 format (/adv/v1/promotion/adverts).
+        
+        DEPRECATED: Use extract_all_campaign_data_v2() with V2 API data instead.
         
         Returns:
             Tuple of (campaign_items, cpm_values, campaign_types)
@@ -279,6 +328,290 @@ class EventDetector:
                 campaign_types[advert_id] = int(campaign.get("type", 0))
             except Exception as e:
                 logger.warning(f"Error extracting campaign data: {e}")
+                continue
+        
+        return campaign_items, cpm_values, campaign_types
+    
+    def extract_bid_snapshot_v2(
+        self,
+        shop_id: int,
+        adverts_v2: List[Dict[str, Any]]
+    ) -> List[tuple]:
+        """
+        Extract bid snapshot rows from V2 API response for log_wb_bids.
+        
+        V2 format: each advert has nm_settings[] with bids_kopecks per nm_id.
+        All fields are None-safe (API may return None for any field).
+        
+        Returns list of tuples:
+            (shop_id, advert_id, nm_id, bid_type, payment_type,
+             bid_search, bid_recommendations, search_enabled,
+             recommendations_enabled, status)
+        """
+        rows = []
+        
+        for advert in adverts_v2:
+            try:
+                advert_id = int(advert.get("id") or 0)
+                if not advert_id:
+                    continue
+                
+                bid_type = str(advert.get("bid_type") or "")
+                status = int(advert.get("status") or 0)
+                
+                settings = advert.get("settings") or {}
+                payment_type = str(settings.get("payment_type") or "")
+                placements = settings.get("placements") or {}
+                search_enabled = 1 if placements.get("search") else 0
+                recommendations_enabled = 1 if placements.get("recommendations") else 0
+                
+                nm_settings = advert.get("nm_settings") or []
+                for nm_setting in nm_settings:
+                    if not isinstance(nm_setting, dict):
+                        continue
+                    nm_id = int(nm_setting.get("nm_id") or 0)
+                    if not nm_id:
+                        continue
+                    
+                    bids = nm_setting.get("bids_kopecks") or {}
+                    bid_search = int(bids.get("search") or 0)
+                    bid_recommendations = int(bids.get("recommendations") or 0)
+                    
+                    rows.append((
+                        shop_id,
+                        advert_id,
+                        nm_id,
+                        bid_type,
+                        payment_type,
+                        bid_search,
+                        bid_recommendations,
+                        search_enabled,
+                        recommendations_enabled,
+                        status,
+                    ))
+            except Exception as e:
+                logger.warning(f"Error extracting V2 bid snapshot for advert {advert.get('id')}: {e}")
+                continue
+        
+        return rows
+
+    def detect_changes_v2(
+        self,
+        shop_id: int,
+        adverts_v2: List[Dict[str, Any]],
+        campaign_type_map: Dict[int, int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect changes using V2 API format (/api/advert/v2/adverts).
+        
+        Improvements over V1:
+        - BID_CHANGE detected per nm_id (V1 was per campaign CPM)
+        - Uses bids_kopecks (search/recommendations) instead of CPM
+        - Direct access to payment_type, bid_type, placements
+        
+        Args:
+            shop_id: Shop ID
+            adverts_v2: Response from GET /api/advert/v2/adverts
+            campaign_type_map: advert_id -> type (from /adv/v1/promotion/count)
+            
+        Returns:
+            List of event dicts ready for PostgreSQL insertion
+        """
+        events = []
+        type_map = campaign_type_map or {}
+        
+        for advert in adverts_v2:
+            try:
+                advert_id = int(advert.get("id") or 0)
+                if not advert_id:
+                    continue
+                
+                # Parse current values
+                status = int(advert.get("status") or 0)
+                campaign_type = type_map.get(advert_id, 0)
+                
+                # ===== STATUS_CHANGE =====
+                old_state = self.state_manager.get_state(shop_id, advert_id)
+                old_status = old_state.get("status")
+                
+                if old_status is not None and status != old_status:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": None,
+                        "event_type": "STATUS_CHANGE",
+                        "old_value": str(old_status),
+                        "new_value": str(status),
+                        "event_metadata": None
+                    })
+                    logger.info(f"Detected STATUS_CHANGE: advert={advert_id} {old_status} -> {status}")
+                
+                # ===== BID_CHANGE per nm_id =====
+                nm_settings = advert.get("nm_settings") or []
+                current_items = []
+                
+                for nm_setting in nm_settings:
+                    if not isinstance(nm_setting, dict):
+                        continue
+                    nm_id = int(nm_setting.get("nm_id") or 0)
+                    if not nm_id:
+                        continue
+                    
+                    current_items.append(nm_id)
+                    
+                    bids = nm_setting.get("bids_kopecks") or {}
+                    bid_search = int(bids.get("search") or 0)
+                    bid_reco = int(bids.get("recommendations") or 0)
+                    
+                    # Compare with Redis: per-nm_id bids
+                    old_bid_search = self.state_manager.get_bid(shop_id, advert_id, nm_id, "search")
+                    old_bid_reco = self.state_manager.get_bid(shop_id, advert_id, nm_id, "recommendations")
+                    
+                    if old_bid_search is not None and bid_search != old_bid_search:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "BID_CHANGE",
+                            "old_value": str(old_bid_search),
+                            "new_value": str(bid_search),
+                            "event_metadata": {
+                                "bid_field": "search",
+                                "campaign_type": campaign_type,
+                                "unit": "kopecks",
+                            }
+                        })
+                        logger.info(
+                            f"Detected BID_CHANGE (search): advert={advert_id} "
+                            f"nm={nm_id} {old_bid_search} -> {bid_search} kopecks"
+                        )
+                    
+                    if old_bid_reco is not None and bid_reco != old_bid_reco:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "BID_CHANGE",
+                            "old_value": str(old_bid_reco),
+                            "new_value": str(bid_reco),
+                            "event_metadata": {
+                                "bid_field": "recommendations",
+                                "campaign_type": campaign_type,
+                                "unit": "kopecks",
+                            }
+                        })
+                        logger.info(
+                            f"Detected BID_CHANGE (recommendations): advert={advert_id} "
+                            f"nm={nm_id} {old_bid_reco} -> {bid_reco} kopecks"
+                        )
+                    
+                    # Update per-nm_id bid state in Redis
+                    self.state_manager.set_bid(shop_id, advert_id, nm_id, "search", bid_search)
+                    self.state_manager.set_bid(shop_id, advert_id, nm_id, "recommendations", bid_reco)
+                
+                # ===== ITEM_ADD / ITEM_REMOVE =====
+                old_items = set(old_state.get("items") or [])
+                current_items_set = set(current_items)
+                
+                for nm_id in current_items_set - old_items:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": nm_id,
+                        "event_type": "ITEM_ADD",
+                        "old_value": None,
+                        "new_value": str(nm_id),
+                        "event_metadata": None
+                    })
+                    logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
+                
+                for nm_id in old_items - current_items_set:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": nm_id,
+                        "event_type": "ITEM_REMOVE",
+                        "old_value": str(nm_id),
+                        "new_value": None,
+                        "event_metadata": None
+                    })
+                    logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
+                
+                # ===== Update Redis state =====
+                # Use max bid as CPM equivalent for backward compat
+                max_bid = Decimal(0)
+                for nm_s in nm_settings:
+                    if isinstance(nm_s, dict):
+                        b = nm_s.get("bids_kopecks") or {}
+                        max_bid = max(max_bid, Decimal(str(int(b.get("search") or 0))))
+                
+                self.state_manager.set_state(
+                    shop_id, advert_id,
+                    cpm=float(max_bid) if max_bid > 0 else None,
+                    status=status,
+                    items=current_items if current_items else None,
+                    campaign_type=campaign_type
+                )
+            
+            except Exception as e:
+                logger.warning(f"Error processing V2 advert {advert.get('id')}: {e}")
+                continue
+        
+        logger.info(f"Detected {len(events)} events total (V2)")
+        return events
+
+    def extract_all_campaign_data_v2(
+        self,
+        adverts_v2: List[Dict[str, Any]],
+        campaign_type_map: Dict[int, int] = None,
+    ) -> Tuple[Dict[int, List[int]], Dict[int, Decimal], Dict[int, int]]:
+        """
+        Extract campaign items, bid values, and types from V2 API response.
+        
+        Replaces extract_all_campaign_data() for V2 format.
+        
+        Args:
+            adverts_v2: Response from GET /api/advert/v2/adverts
+            campaign_type_map: advert_id -> type (from /adv/v1/promotion/count)
+        
+        Returns:
+            Tuple of (campaign_items, cpm_values, campaign_types)
+            cpm_values uses max(bid_search, bid_recommendations) in kopecks
+            as CPM equivalent for backward compat with history parser.
+        """
+        campaign_items = {}
+        cpm_values = {}
+        campaign_types = {}
+        type_map = campaign_type_map or {}
+        
+        for advert in adverts_v2:
+            try:
+                advert_id = int(advert.get("id") or 0)
+                if not advert_id:
+                    continue
+                
+                # Items from nm_settings
+                nm_settings = advert.get("nm_settings") or []
+                items = []
+                max_bid = 0
+                
+                for nm_s in nm_settings:
+                    if not isinstance(nm_s, dict):
+                        continue
+                    nm_id = int(nm_s.get("nm_id") or 0)
+                    if nm_id:
+                        items.append(nm_id)
+                    
+                    bids = nm_s.get("bids_kopecks") or {}
+                    bid_search = int(bids.get("search") or 0)
+                    bid_reco = int(bids.get("recommendations") or 0)
+                    max_bid = max(max_bid, bid_search, bid_reco)
+                
+                campaign_items[advert_id] = items
+                cpm_values[advert_id] = Decimal(str(max_bid))
+                campaign_types[advert_id] = type_map.get(advert_id, 0)
+            except Exception as e:
+                logger.warning(f"Error extracting V2 campaign data for {advert.get('id')}: {e}")
                 continue
         
         return campaign_items, cpm_values, campaign_types

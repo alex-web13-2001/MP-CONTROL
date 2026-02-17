@@ -146,7 +146,18 @@ class RedisStateManager:
         key = f"{self.PREFIX}:views:{shop_id}:{advert_id}:{nm_id}"
         self.client.setex(key, self.TTL_SECONDS, str(views))
 
-    # ============ Commercial Monitoring State ============
+    # ============ Per-NM Bid Tracking (V2 API) ============
+
+    def get_bid(self, shop_id: int, advert_id: int, nm_id: int, field: str) -> Optional[int]:
+        """Get last known bid in kopecks for specific nm_id and field (search/recommendations)."""
+        key = f"{self.PREFIX}:bid:{shop_id}:{advert_id}:{nm_id}:{field}"
+        val = self.client.get(key)
+        return int(val) if val else None
+
+    def set_bid(self, shop_id: int, advert_id: int, nm_id: int, field: str, value: int) -> None:
+        """Store bid in kopecks for specific nm_id and field (search/recommendations)."""
+        key = f"{self.PREFIX}:bid:{shop_id}:{advert_id}:{nm_id}:{field}"
+        self.client.setex(key, self.TTL_SECONDS, str(value))
 
     COMMERCIAL_TTL = 2 * 24 * 60 * 60  # 2 days (enough for 30-min intervals)
 

@@ -59,6 +59,7 @@ export interface ValidateKeyResponse {
   perf_valid?: boolean | null
   message: string
   shop_name?: string | null
+  warnings?: string[] | null
 }
 
 // ── Auth API ─────────────────────────────────────────────────────

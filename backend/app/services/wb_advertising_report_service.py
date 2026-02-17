@@ -130,10 +130,12 @@ class WBAdvertisingReportService:
 
     async def get_campaign_settings(self, campaign_ids: List[int]) -> List[Dict[str, Any]]:
         """
-        Get campaign settings including CPM/CPC bids and item lists.
+        [DEPRECATED] Get campaign settings including CPM/CPC bids and item lists.
 
         Method: POST /adv/v1/promotion/adverts (updated Oct 2025)
-        Request body: array of campaign IDs (max 50)
+        
+        WARNING: This endpoint is not in current WB API docs and may be removed.
+        Use get_adverts_v2() instead, which provides per-nm_id bids and placements.
 
         Response includes:
         - advertId: campaign ID
@@ -165,6 +167,64 @@ class WBAdvertisingReportService:
                 return []
 
             return response.data
+
+    async def get_adverts_v2(
+        self,
+        campaign_ids: List[int] = None,
+        statuses: List[int] = None,
+        payment_type: str = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get detailed campaign info including bids per nm_id.
+
+        Method: GET /api/advert/v2/adverts
+        
+        Returns bids_kopecks (search, recommendations) per nm_id,
+        bid_type (manual/auto), payment_type (cpm/cpc), placements.
+        
+        Query params:
+            - id: campaign IDs (max 50)
+            - status: campaign statuses (-1,4,7,8,9,11)
+            - payment_type: 'cpm' or 'cpc'
+        """
+        params = {}
+        if campaign_ids:
+            params["id"] = ",".join(str(cid) for cid in campaign_ids[:50])
+        if statuses:
+            params["status"] = ",".join(str(s) for s in statuses)
+        if payment_type:
+            params["payment_type"] = payment_type
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.get(
+                "/api/advert/v2/adverts",
+                params=params,
+            )
+
+            if response.is_rate_limited:
+                logger.warning("Rate limit on /api/advert/v2/adverts")
+                raise Exception("Rate Limit on /api/advert/v2/adverts")
+
+            if not response.is_success:
+                logger.error(
+                    f"WB API v2/adverts Error: status={response.status_code}, "
+                    f"error={response.error}"
+                )
+                return []
+
+            data = response.data
+            # Response wraps in {"adverts": [...]}
+            if isinstance(data, dict) and "adverts" in data:
+                return data["adverts"]
+            # Or could be a list directly
+            if isinstance(data, list):
+                return data
+            return []
 
     async def get_balance(self) -> Dict[str, Any]:
         """

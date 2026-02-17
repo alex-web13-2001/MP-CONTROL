@@ -126,6 +126,71 @@ class WBAdvertisingLoader:
             )
         return len(rows)
 
+    def load_campaigns_v2(
+        self,
+        adverts_v2: List[Dict[str, Any]],
+        shop_id: int,
+        campaign_type_map: Dict[int, int] = None,
+    ) -> int:
+        """
+        Load campaigns from /api/advert/v2/adverts response into dim_advert_campaigns.
+        
+        Includes name, payment_type, bid_type, placements — data not available 
+        from /adv/v1/promotion/count.
+        
+        campaign_type_map: advert_id -> type (from /adv/v1/promotion/count)
+        """
+        rows = []
+        type_map = campaign_type_map or {}
+        
+        for advert in adverts_v2:
+            try:
+                advert_id = int(advert.get("id") or 0)
+                if not advert_id:
+                    continue
+                
+                status = int(advert.get("status") or 0)
+                bid_type = str(advert.get("bid_type") or "")
+                
+                settings = advert.get("settings") or {}
+                name = str(settings.get("name") or "")
+                payment_type = str(settings.get("payment_type") or "")
+                placements = settings.get("placements") or {}
+                search_enabled = 1 if placements.get("search") else 0
+                recommendations_enabled = 1 if placements.get("recommendations") else 0
+                
+                # Type comes from /adv/v1/promotion/count, fallback to 9
+                campaign_type = type_map.get(advert_id, 9)
+                
+                rows.append((
+                    shop_id,
+                    advert_id,
+                    name,
+                    campaign_type,
+                    status,
+                    datetime.now(),
+                    payment_type,
+                    bid_type,
+                    search_enabled,
+                    recommendations_enabled,
+                ))
+            except Exception as e:
+                logger.warning(f"Error parsing V2 advert {advert.get('id')}: {e}")
+                continue
+        
+        if rows and self._client:
+            self._client.insert(
+                f"{self.DB_NAME}.{self.TABLE_DIM}",
+                rows,
+                column_names=[
+                    "shop_id", "advert_id", "name", "type", "status", "updated_at",
+                    "payment_type", "bid_type", "search_enabled", "recommendations_enabled",
+                ]
+            )
+        
+        logger.info(f"Loaded {len(rows)} campaigns into dim_advert_campaigns (V2)")
+        return len(rows)
+
     def parse_full_stats_v3(self, full_stats: List[Dict[str, Any]], shop_id: int) -> List[FactAdvertStatsV3Row]:
         """
         Parse /adv/v3/fullstats response.
@@ -348,6 +413,32 @@ class WBAdvertisingLoader:
         )
         logger.info(f"Inserted {len(data)} rows into ads_raw_history")
         return len(data)
+
+    def insert_bid_snapshot(self, rows: List[tuple]) -> int:
+        """
+        Insert bid snapshot rows into log_wb_bids (V2 format).
+        
+        Each row is a tuple:
+            (shop_id, advert_id, nm_id, bid_type, payment_type,
+             bid_search, bid_recommendations, search_enabled,
+             recommendations_enabled, status)
+        """
+        if not rows or not self._client:
+            return 0
+        
+        self._client.insert(
+            f"{self.DB_NAME}.log_wb_bids",
+            rows,
+            column_names=[
+                "shop_id", "advert_id", "nm_id",
+                "bid_type", "payment_type",
+                "bid_search", "bid_recommendations",
+                "search_enabled", "recommendations_enabled",
+                "status"
+            ]
+        )
+        logger.info(f"Inserted {len(rows)} rows into log_wb_bids")
+        return len(rows)
 
     def get_vendor_code_cache(self, nm_ids: List[int]) -> Dict[int, str]:
         """

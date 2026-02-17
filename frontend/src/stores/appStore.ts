@@ -60,6 +60,8 @@ export const useAppStore = create<AppState>()(
       onRehydrateStorage: () => (state) => {
         if (state?.theme === 'light') {
           document.documentElement.classList.add('light')
+        } else {
+          document.documentElement.classList.remove('light')
         }
       },
     }

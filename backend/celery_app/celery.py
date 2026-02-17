@@ -60,6 +60,8 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.sync_all_daily": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_all_frequent": {"queue": "heavy", "routing_key": "heavy"},
     "celery_app.tasks.tasks.sync_all_ads": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "heavy", "routing_key": "heavy"},
+    "celery_app.tasks.tasks.sync_wb_campaign_snapshot": {"queue": "heavy", "routing_key": "heavy"},
 }
 
 # ===================
@@ -134,6 +136,13 @@ celery_app.conf.beat_schedule = {
         "task": "celery_app.tasks.tasks.sync_all_ads",
         "schedule": 3600.0,  # Every 60 minutes
         "options": {"queue": "heavy", "priority": 5},
+    },
+
+    # Campaign snapshots (30 min): bids, names, statuses — lightweight
+    "sync-campaign-snapshots": {
+        "task": "celery_app.tasks.tasks.sync_all_campaign_snapshots",
+        "schedule": 1800.0,  # Every 30 minutes
+        "options": {"queue": "heavy", "priority": 6},
     },
 }
 

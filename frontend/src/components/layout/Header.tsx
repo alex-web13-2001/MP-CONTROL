@@ -30,7 +30,6 @@ export function Header() {
               if (shop) setCurrentShop(shop)
             }}
           >
-            <option value="">Выберите магазин</option>
             {shops.map((shop) => (
               <option key={shop.id} value={shop.id}>
                 {shop.name}

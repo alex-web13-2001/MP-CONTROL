@@ -5,6 +5,7 @@ import { LogIn, Eye, EyeOff, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useAuthStore } from '@/stores/authStore'
+import { useAppStore } from '@/stores/appStore'
 import { loginApi } from '@/api/auth'
 
 export default function LoginPage() {
@@ -29,8 +30,19 @@ export default function LoginPage() {
       const data = await loginApi({ email, password })
       loginFromApi(data)
 
-      // Smart redirect: if user has no shops or all are syncing → onboarding
+      // Auto-select first active shop
       const shops = data.user.shops
+      const activeShop = shops.find((s) => s.status === 'active') || shops[0]
+      if (activeShop) {
+        useAppStore.getState().setCurrentShop({
+          id: activeShop.id,
+          name: activeShop.name,
+          marketplace: activeShop.marketplace as 'wildberries' | 'ozon',
+          isActive: activeShop.is_active,
+        })
+      }
+
+      // Smart redirect: if user has no shops or all are syncing → onboarding
       if (shops.length === 0 || shops.every((s) => s.status === 'syncing')) {
         navigate('/onboarding', { replace: true })
       } else {

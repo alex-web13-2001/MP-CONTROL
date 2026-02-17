@@ -190,6 +190,7 @@ class WBSalesFunnelService:
             shop_id=self.shop_id,
             marketplace="wildberries_analytics",
             api_key=self.api_key,
+            use_proxy=False,  # Analytics API doesn't ban IPs; proxy causes 429/400
         )
         await self._client.__aenter__()
         return self
@@ -247,13 +248,16 @@ class WBSalesFunnelService:
                             for h in item.get("history", []):
                                 all_rows.append(self._map_history_row(nm_id, h))
                     elif resp.is_rate_limited:
-                        logger.warning("Rate limited, sleeping 60s")
+                        logger.warning("Rate limited (429), sleeping 60s")
                         await asyncio.sleep(60)
+                        done -= 1  # retry this request
                     else:
+                        detail = ""
+                        if isinstance(resp.data, dict):
+                            detail = resp.data.get("detail", "")
                         logger.error(
-                            "History API error: %s (status %s)",
-                            resp.error,
-                            resp.status_code,
+                            "History API error: %s (status %s, detail=%s)",
+                            resp.error, resp.status_code, detail,
                         )
 
                     if progress_callback:
