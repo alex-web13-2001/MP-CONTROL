@@ -68,14 +68,44 @@ services:
     networks:
       - mms-network
 
-  # Celery Heavy Worker (historical data sync - long-running)
-  celery-heavy:
+  # Celery Sync Worker (regular sync tasks - high concurrency for multi-shop parallelism)
+  celery-sync:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: mms-celery-heavy
+    container_name: mms-celery-sync
     restart: unless-stopped
-    command: celery -A celery_app.celery worker -Q heavy,default -c 2 --loglevel=info -n heavy@%h
+    command: celery -A celery_app.celery worker -Q sync,heavy,default -c 8 --loglevel=info -n sync@%h
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-mms}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-mms_secret}
+      - POSTGRES_DB=${POSTGRES_DB:-mms}
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER:-default}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB:-mms_analytics}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - mms-network
+
+  # Celery Backfill Worker (initial historical data loading - isolated so it doesn't block sync)
+  celery-backfill:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mms-celery-backfill
+    restart: unless-stopped
+    command: celery -A celery_app.celery worker -Q backfill -c 2 --loglevel=info -n backfill@%h
     environment:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -113,7 +143,8 @@ services:
       - ./backend:/app
     depends_on:
       - celery-fast
-      - celery-heavy
+      - celery-sync
+      - celery-backfill
     networks:
       - mms-network
 

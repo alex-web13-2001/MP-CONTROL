@@ -4,6 +4,12 @@
 
 ## [Unreleased] - 2026-02-18
 
+### Fixed — TypeError в координаторах sync_all_frequent / sync_all_ads
+
+- **Проблема:** `TypeError: _dedup_dispatch() got multiple values for argument 'shop_id'` — `shop_id` передавался и как позиционный аргумент `_dedup_dispatch`, и внутри `**kwargs`.
+- **Решение:** `_dedup_dispatch` теперь автоматически инжектит `shop_id` в task kwargs (`task_kwargs = {"shop_id": shop_id, **kwargs}`). Убраны дубликаты `shop_id` из 9 мест вызовов в координаторах.
+- **Файлы:** `tasks.py` (`_dedup_dispatch`, `sync_all_daily`, `sync_all_frequent`, `sync_all_ads`)
+
 ### Added — Обновление API-токенов магазинов
 
 - **Проблема:** Токены маркетплейсов имеют время жизни. При истечении/смене ключа приходилось удалять и заново создавать магазин, теряя историю.
@@ -12,6 +18,15 @@
   - WB: 1 поле (API-ключ)
   - Ozon: 4 поля (API-ключ, Client-Id, Perf Client-Id, Perf Secret)
 - **Файлы:** `auth.py` (схема `ShopUpdateKeys`), `shops.py` (endpoint), `SettingsPage.tsx` (UI)
+
+### Changed — Реструктуризация очередей Celery для масштабирования
+
+- **Проблема:** Все задачи синхронизации шли в одну очередь `heavy` с concurrency=2. При 50+ магазинах задачи разных магазинов блокировали друг друга, хотя API лимиты привязаны к ключу, а не IP.
+- **Решение:**
+  - Очередь `heavy` разделена на `sync` (c=8, регулярная синхронизация) и `backfill` (c=2, начальная загрузка)
+  - Добавлена Redis-based deduplication: координаторы не создают дубликаты задач если предыдущая ещё в очереди
+  - Signal handler `_cleanup_dedup_key` автоматически освобождает dedup-блокировку после завершения задачи
+- **Файлы:** `docker-compose.yml`, `celery.py` (38 routes, 5 очередей), `tasks.py` (3 координатора + helper)
 
 ### Fixed — Дублирование данных в ClickHouse (ReplacingMergeTree без FINAL)
 

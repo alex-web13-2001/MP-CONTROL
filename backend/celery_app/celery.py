@@ -18,15 +18,23 @@ celery_app = Celery(
 # ===================
 # Queue Configuration
 # ===================
-# Two separate queues to prevent heavy tasks from blocking fast ones:
-# - fast: For time-critical tasks (autobidder, every minute)
-# - heavy: For long-running tasks (6-month history sync)
+# Four queues for different workload types:
+# - fast:     Time-critical tasks (autobidder, every minute)
+# - sync:     Regular periodic sync (daily/frequent/ads) — high concurrency
+# - backfill: Initial historical data loading — isolated, low concurrency
+# - default:  General purpose tasks
+#
+# KEY INSIGHT: Marketplace API limits are per-API-key (not per-IP).
+# Tasks for different shops can run fully in parallel without conflicting.
+# The sync queue has high concurrency (8) to exploit this parallelism.
 
 default_exchange = Exchange("mms", type="direct")
 
 celery_app.conf.task_queues = (
     Queue("fast", default_exchange, routing_key="fast", queue_arguments={"x-max-priority": 10}),
-    Queue("heavy", default_exchange, routing_key="heavy"),
+    Queue("sync", default_exchange, routing_key="sync"),
+    Queue("backfill", default_exchange, routing_key="backfill"),
+    Queue("heavy", default_exchange, routing_key="heavy"),  # legacy compat
     Queue("default", default_exchange, routing_key="default"),
 )
 
@@ -40,28 +48,49 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.autobidder.*": {"queue": "fast", "routing_key": "fast"},
     "celery_app.tasks.tasks.update_bids": {"queue": "fast", "routing_key": "fast"},
     "celery_app.tasks.tasks.check_positions": {"queue": "fast", "routing_key": "fast"},
-    
-    # Heavy queue - data sync tasks (can take hours)
-    "celery_app.tasks.tasks.load_historical_data": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_full_history": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_marketplace_data": {"queue": "heavy", "routing_key": "heavy"},
-    
-    # Commercial monitoring tasks
-    "celery_app.tasks.tasks.sync_commercial_data": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_warehouses": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_product_content": {"queue": "heavy", "routing_key": "heavy"},
-    
-    # Ozon Ads tasks
     "celery_app.tasks.tasks.monitor_ozon_bids": {"queue": "fast", "routing_key": "fast"},
-    "celery_app.tasks.tasks.sync_ozon_ad_stats": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.backfill_ozon_ads": {"queue": "heavy", "routing_key": "heavy"},
+    
+    # Sync queue - regular periodic sync (high concurrency, multi-shop parallel)
+    "celery_app.tasks.tasks.sync_marketplace_data": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_commercial_data": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_warehouses": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_product_content": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_ad_stats": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_wb_campaign_snapshot": {"queue": "sync", "routing_key": "sync"},
+    # Ozon sync tasks
+    "celery_app.tasks.tasks.sync_ozon_products": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_product_snapshots": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_finance": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_funnel": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_returns": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_seller_rating": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_content_rating": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_content": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_orders": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_warehouse_stocks": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_ozon_prices": {"queue": "sync", "routing_key": "sync"},
+    # WB sync tasks
+    "celery_app.tasks.tasks.sync_orders": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_sales_funnel": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_wb_advert_history": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_wb_finance_history": {"queue": "sync", "routing_key": "sync"},
 
-    # Sync coordinators
-    "celery_app.tasks.tasks.sync_all_daily": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_all_frequent": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_all_ads": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "heavy", "routing_key": "heavy"},
-    "celery_app.tasks.tasks.sync_wb_campaign_snapshot": {"queue": "heavy", "routing_key": "heavy"},
+    # Backfill queue - initial historical data loading (isolated from regular sync)
+    "celery_app.tasks.tasks.load_historical_data": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.sync_full_history": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_ozon_ads": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_orders": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_ozon_orders": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_ozon_finance": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_ozon_funnel": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_ozon_returns": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.tasks.backfill_sales_funnel": {"queue": "backfill", "routing_key": "backfill"},
+
+    # Sync coordinators (lightweight dispatchers, run on sync queue)
+    "celery_app.tasks.tasks.sync_all_daily": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_all_frequent": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_all_ads": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "sync", "routing_key": "sync"},
 }
 
 # ===================
@@ -114,35 +143,35 @@ celery_app.conf.beat_schedule = {
     
     # === SYNC COORDINATORS ===
     # These tasks read ALL active shops from PostgreSQL,
-    # decrypt credentials, and dispatch .delay() for each shop.
-    # No hardcoded shop_id or api_key — fully multi-tenant.
+    # decrypt credentials, and dispatch per-shop tasks to SYNC queue.
+    # Redis deduplication prevents duplicate tasks in the queue.
 
     # Daily sync: products, finance, funnel, returns, ratings, content
     "sync-all-daily": {
         "task": "celery_app.tasks.tasks.sync_all_daily",
         "schedule": crontab(hour=3, minute=0),
-        "options": {"queue": "heavy", "priority": 4},
+        "options": {"queue": "sync", "priority": 4},
     },
 
     # Frequent sync (30 min): orders, stocks, prices
     "sync-all-frequent": {
         "task": "celery_app.tasks.tasks.sync_all_frequent",
         "schedule": 1800.0,  # Every 30 minutes
-        "options": {"queue": "heavy", "priority": 6},
+        "options": {"queue": "sync", "priority": 6},
     },
 
     # Ads sync (60 min): ad stats, bid monitoring
     "sync-all-ads": {
         "task": "celery_app.tasks.tasks.sync_all_ads",
         "schedule": 3600.0,  # Every 60 minutes
-        "options": {"queue": "heavy", "priority": 5},
+        "options": {"queue": "sync", "priority": 5},
     },
 
     # Campaign snapshots (30 min): bids, names, statuses — lightweight
     "sync-campaign-snapshots": {
         "task": "celery_app.tasks.tasks.sync_all_campaign_snapshots",
         "schedule": 1800.0,  # Every 30 minutes
-        "options": {"queue": "heavy", "priority": 6},
+        "options": {"queue": "sync", "priority": 6},
     },
 }
 
@@ -155,11 +184,11 @@ celery_app.conf.beat_schedule = {
 # Fast worker (autobidder, positions) - high concurrency, low timeout:
 #   celery -A celery_app.celery worker -Q fast -c 4 --loglevel=info -n fast@%h
 #
-# Heavy worker (history sync) - low concurrency, high timeout:
-#   celery -A celery_app.celery worker -Q heavy -c 2 --loglevel=info -n heavy@%h
+# Sync worker (regular sync) - HIGH concurrency for multi-shop parallelism:
+#   celery -A celery_app.celery worker -Q sync,heavy,default -c 8 --loglevel=info -n sync@%h
 #
-# Default worker:
-#   celery -A celery_app.celery worker -Q default -c 4 --loglevel=info -n default@%h
+# Backfill worker (initial historical data) - low concurrency, isolated:
+#   celery -A celery_app.celery worker -Q backfill -c 2 --loglevel=info -n backfill@%h
 #
 # Or all queues in one worker (development):
-#   celery -A celery_app.celery worker -Q fast,heavy,default --loglevel=info
+#   celery -A celery_app.celery worker -Q fast,sync,backfill,heavy,default --loglevel=info

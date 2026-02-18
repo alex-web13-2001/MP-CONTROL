@@ -1,6 +1,70 @@
-"""Celery tasks module with queue separation."""
+"""Celery tasks module with queue separation and deduplication."""
 
 from celery_app.celery import celery_app
+
+
+# ===================
+# DEDUPLICATION HELPER
+# ===================
+# Prevents duplicate tasks from accumulating in the queue.
+# Before dispatching a task, we set a Redis key with NX (only if not exists).
+# If the key already exists, the task is already queued/running — skip it.
+
+def _dedup_dispatch(task_ref, redis_client, shop_id: int, ttl: int = 1800, queue: str = "sync", **kwargs):
+    """
+    Dispatch a task with Redis-based deduplication.
+
+    Args:
+        task_ref: Celery task reference
+        redis_client: Redis client instance
+        shop_id: Shop ID for dedup scoping (auto-injected into task kwargs)
+        ttl: Lock TTL in seconds (default: 30 min — matches frequent sync interval)
+        queue: Target queue name
+        **kwargs: Task keyword arguments (shop_id will be added automatically)
+
+    Returns:
+        True if dispatched, False if deduplicated (skipped)
+    """
+    task_name = task_ref.name.rsplit(".", 1)[-1]  # e.g. "sync_ozon_products"
+    dedup_key = f"dedup:{queue}:{task_name}:{shop_id}"
+
+    # SET NX — only set if key doesn't exist
+    if not redis_client.set(dedup_key, "1", nx=True, ex=ttl):
+        return False  # Task already in queue/running
+
+    # Auto-inject shop_id into kwargs so callers don't need to duplicate it
+    task_kwargs = {"shop_id": shop_id, **kwargs}
+
+    # Dispatch with a callback to clear the dedup key on completion
+    task_ref.apply_async(
+        kwargs=task_kwargs,
+        queue=queue,
+        headers={"dedup_key": dedup_key},
+    )
+    return True
+
+
+# Signal handler: clean up dedup key after task completes
+from celery.signals import task_postrun
+
+@task_postrun.connect
+def _cleanup_dedup_key(sender=None, headers=None, request=None, **kwargs):
+    """Remove dedup key from Redis after task finishes (success or failure)."""
+    import os
+    try:
+        dedup_key = None
+        if request and hasattr(request, 'headers') and request.headers:
+            dedup_key = request.headers.get('dedup_key')
+        if not dedup_key and hasattr(sender, 'request') and hasattr(sender.request, 'headers'):
+            headers_dict = sender.request.headers or {}
+            dedup_key = headers_dict.get('dedup_key')
+        if dedup_key:
+            import redis
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+            r = redis.from_url(redis_url)
+            r.delete(dedup_key)
+    except Exception:
+        pass  # Best effort — don't break the task
 
 
 # ===================
@@ -370,14 +434,16 @@ def sync_all_daily(self):
 
     Runs at 3:00 UTC via Celery Beat.
     Reads shops from PostgreSQL, decrypts credentials,
-    dispatches .delay() for each shop.
+    dispatches tasks to SYNC queue with deduplication.
 
     Ozon shops get: products, snapshots, finance, funnel, returns,
                     seller_rating, content_rating, content hashes
     WB shops get:   warehouses, product_content
     """
     import asyncio
+    import os
     import logging
+    import redis
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy import select
@@ -387,6 +453,7 @@ def sync_all_daily(self):
 
     logger = logging.getLogger(__name__)
     settings = get_settings()
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
         engine = create_async_engine(settings.postgres_url)
@@ -405,9 +472,10 @@ def sync_all_daily(self):
 
     if not shops:
         logger.info("sync_all_daily: no active shops found, skipping")
-        return {"dispatched": 0}
+        return {"dispatched": 0, "skipped": 0}
 
     dispatched = 0
+    skipped = 0
 
     for shop in shops:
         try:
@@ -429,19 +497,19 @@ def sync_all_daily(self):
                 sync_ozon_content,
             )
 
-            kwargs = dict(shop_id=shop.id, api_key=api_key, client_id=client_id)
+            kwargs = dict(api_key=api_key, client_id=client_id)
 
-            sync_ozon_products.delay(**kwargs)
-            sync_ozon_product_snapshots.delay(**kwargs)
-            sync_ozon_finance.delay(**kwargs)
-            sync_ozon_funnel.delay(**kwargs)
-            sync_ozon_returns.delay(**kwargs)
-            sync_ozon_seller_rating.delay(**kwargs)
-            sync_ozon_content_rating.delay(**kwargs)
-            sync_ozon_content.delay(**kwargs)
+            for task_ref in [
+                sync_ozon_products, sync_ozon_product_snapshots,
+                sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns,
+                sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content,
+            ]:
+                if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, **kwargs):  # 23h TTL for daily
+                    dispatched += 1
+                else:
+                    skipped += 1
 
-            dispatched += 8
-            logger.info("sync_all_daily: dispatched 8 Ozon tasks for shop %s (%s)", shop.id, shop.name)
+            logger.info("sync_all_daily: Ozon shop %s (%s) — dispatched/skipped", shop.id, shop.name)
 
         elif shop.marketplace == "wildberries":
             from celery_app.tasks.tasks import (
@@ -449,14 +517,16 @@ def sync_all_daily(self):
                 sync_product_content,
             )
 
-            sync_warehouses.delay(shop_id=shop.id, api_key=api_key)
-            sync_product_content.delay(shop_id=shop.id, api_key=api_key)
+            for task_ref in [sync_warehouses, sync_product_content]:
+                if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, api_key=api_key):
+                    dispatched += 1
+                else:
+                    skipped += 1
 
-            dispatched += 2
-            logger.info("sync_all_daily: dispatched 2 WB tasks for shop %s (%s)", shop.id, shop.name)
+            logger.info("sync_all_daily: WB shop %s (%s) — dispatched/skipped", shop.id, shop.name)
 
-    logger.info("sync_all_daily: total dispatched %d tasks for %d shops", dispatched, len(shops))
-    return {"dispatched": dispatched, "shops": len(shops)}
+    logger.info("sync_all_daily: dispatched=%d skipped=%d shops=%d", dispatched, skipped, len(shops))
+    return {"dispatched": dispatched, "skipped": skipped, "shops": len(shops)}
 
 
 @celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
@@ -465,11 +535,14 @@ def sync_all_frequent(self):
     Frequent coordinator: dispatch high-frequency sync tasks for ALL active shops.
 
     Runs every 30 minutes via Celery Beat.
+    Uses Redis deduplication to prevent duplicate tasks.
     Covers: orders, warehouse stocks, prices (Ozon)
-            orders, commercial data, sales funnel (WB)
+            orders, commercial data, sales funnel, ads (WB)
     """
     import asyncio
+    import os
     import logging
+    import redis
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy import select
@@ -479,6 +552,7 @@ def sync_all_frequent(self):
 
     logger = logging.getLogger(__name__)
     settings = get_settings()
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
         engine = create_async_engine(settings.postgres_url)
@@ -497,9 +571,10 @@ def sync_all_frequent(self):
 
     if not shops:
         logger.info("sync_all_frequent: no active shops found, skipping")
-        return {"dispatched": 0}
+        return {"dispatched": 0, "skipped": 0}
 
     dispatched = 0
+    skipped = 0
 
     for shop in shops:
         try:
@@ -517,32 +592,31 @@ def sync_all_frequent(self):
                 sync_ozon_ad_stats,
             )
 
-            kwargs = dict(shop_id=shop.id, api_key=api_key, client_id=client_id)
+            kwargs = dict(api_key=api_key, client_id=client_id)
 
-            sync_ozon_orders.delay(**kwargs)
-            sync_ozon_warehouse_stocks.delay(**kwargs)
-            sync_ozon_prices.delay(**kwargs)
-
-            dispatched += 3
+            for task_ref in [sync_ozon_orders, sync_ozon_warehouse_stocks, sync_ozon_prices]:
+                if _dedup_dispatch(task_ref, r, shop.id, ttl=1800, **kwargs):  # 30min TTL
+                    dispatched += 1
+                else:
+                    skipped += 1
 
             # Ozon ad stats (requires perf credentials)
             if shop.perf_client_id and shop.perf_client_secret_encrypted:
                 try:
                     perf_secret = decrypt_api_key(shop.perf_client_secret_encrypted)
-                    sync_ozon_ad_stats.apply_async(
-                        kwargs=dict(
-                            shop_id=shop.id,
-                            perf_client_id=shop.perf_client_id,
-                            perf_client_secret=perf_secret,
-                            lookback_days=3,
-                        ),
-                        queue='heavy',
-                    )
-                    dispatched += 1
+                    if _dedup_dispatch(
+                        sync_ozon_ad_stats, r, shop.id, ttl=1800,
+                        perf_client_id=shop.perf_client_id,
+                        perf_client_secret=perf_secret,
+                        lookback_days=3,
+                    ):
+                        dispatched += 1
+                    else:
+                        skipped += 1
                 except Exception as e:
                     logger.warning("sync_all_frequent: shop %s ozon ad decrypt failed: %s", shop.id, e)
 
-            logger.info("sync_all_frequent: dispatched %d Ozon tasks for shop %s", dispatched, shop.id)
+            logger.info("sync_all_frequent: Ozon shop %s — dispatched/skipped", shop.id)
 
         elif shop.marketplace == "wildberries":
             from celery_app.tasks.tasks import (
@@ -552,20 +626,26 @@ def sync_all_frequent(self):
                 sync_wb_advert_history,
             )
 
-            sync_orders.delay(shop_id=shop.id, api_key=api_key)
-            sync_commercial_data.delay(shop_id=shop.id, api_key=api_key)
-            sync_sales_funnel.delay(shop_id=shop.id, api_key=api_key)
-            # Ad stats: 3-day lookback for daily freshness, heavy queue
-            sync_wb_advert_history.apply_async(
-                kwargs=dict(shop_id=shop.id, api_key=api_key, days_back=3),
-                queue='heavy',
-            )
+            wb_kwargs = dict(api_key=api_key)
+            for task_ref in [sync_orders, sync_commercial_data, sync_sales_funnel]:
+                if _dedup_dispatch(task_ref, r, shop.id, ttl=1800, **wb_kwargs):
+                    dispatched += 1
+                else:
+                    skipped += 1
 
-            dispatched += 4
-            logger.info("sync_all_frequent: dispatched 4 WB tasks for shop %s", shop.id)
+            # Ad stats: 3-day lookback
+            if _dedup_dispatch(
+                sync_wb_advert_history, r, shop.id, ttl=1800,
+                api_key=api_key, days_back=3,
+            ):
+                dispatched += 1
+            else:
+                skipped += 1
 
-    logger.info("sync_all_frequent: total dispatched %d tasks for %d shops", dispatched, len(shops))
-    return {"dispatched": dispatched, "shops": len(shops)}
+            logger.info("sync_all_frequent: WB shop %s — dispatched/skipped", shop.id)
+
+    logger.info("sync_all_frequent: dispatched=%d skipped=%d shops=%d", dispatched, skipped, len(shops))
+    return {"dispatched": dispatched, "skipped": skipped, "shops": len(shops)}
 
 
 @celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
@@ -574,11 +654,14 @@ def sync_all_ads(self):
     Ads coordinator: dispatch ad-related sync tasks for ALL active shops.
 
     Runs every 60 minutes via Celery Beat.
+    Uses Redis deduplication to prevent duplicate tasks.
     Ozon: ad stats (perf API) + bid monitoring
     WB:   ad history sync
     """
     import asyncio
+    import os
     import logging
+    import redis
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy import select
@@ -588,6 +671,7 @@ def sync_all_ads(self):
 
     logger = logging.getLogger(__name__)
     settings = get_settings()
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
         engine = create_async_engine(settings.postgres_url)
@@ -606,9 +690,10 @@ def sync_all_ads(self):
 
     if not shops:
         logger.info("sync_all_ads: no active shops found, skipping")
-        return {"dispatched": 0}
+        return {"dispatched": 0, "skipped": 0}
 
     dispatched = 0
+    skipped = 0
 
     for shop in shops:
         if shop.marketplace == "ozon":
@@ -631,19 +716,18 @@ def sync_all_ads(self):
                 monitor_ozon_bids,
             )
 
-            sync_ozon_ad_stats.delay(
-                shop_id=shop.id,
-                perf_client_id=perf_client_id,
-                perf_client_secret=perf_client_secret,
-            )
-            monitor_ozon_bids.delay(
-                shop_id=shop.id,
+            ozon_ad_kwargs = dict(
                 perf_client_id=perf_client_id,
                 perf_client_secret=perf_client_secret,
             )
 
-            dispatched += 2
-            logger.info("sync_all_ads: dispatched 2 Ozon ad tasks for shop %s", shop.id)
+            for task_ref in [sync_ozon_ad_stats, monitor_ozon_bids]:
+                if _dedup_dispatch(task_ref, r, shop.id, ttl=3600, **ozon_ad_kwargs):  # 1h TTL
+                    dispatched += 1
+                else:
+                    skipped += 1
+
+            logger.info("sync_all_ads: Ozon shop %s — dispatched/skipped", shop.id)
 
         elif shop.marketplace == "wildberries":
             try:
@@ -654,13 +738,18 @@ def sync_all_ads(self):
 
             from celery_app.tasks.tasks import sync_wb_advert_history
 
-            sync_wb_advert_history.delay(shop_id=shop.id, api_key=api_key)
+            if _dedup_dispatch(
+                sync_wb_advert_history, r, shop.id, ttl=3600,
+                api_key=api_key,
+            ):
+                dispatched += 1
+            else:
+                skipped += 1
 
-            dispatched += 1
-            logger.info("sync_all_ads: dispatched 1 WB ad task for shop %s", shop.id)
+            logger.info("sync_all_ads: WB shop %s — dispatched/skipped", shop.id)
 
-    logger.info("sync_all_ads: total dispatched %d tasks for %d shops", dispatched, len(shops))
-    return {"dispatched": dispatched, "shops": len(shops)}
+    logger.info("sync_all_ads: dispatched=%d skipped=%d shops=%d", dispatched, skipped, len(shops))
+    return {"dispatched": dispatched, "skipped": skipped, "shops": len(shops)}
 
 
 @celery_app.task(bind=True, time_limit=7200, soft_time_limit=7000)
