@@ -9,6 +9,12 @@
 - **`docs/architecture/01_OVERVIEW.md`** — полный архитектурный обзор: стек технологий, 12 Docker-сервисов, Celery очереди/расписание, Anti-Ban система (Rate Limiter, Proxy Provider, Circuit Breaker), аутентификация (JWT + bcrypt), шифрование API-ключей (Fernet), роли Redis, frontend структура, API домены WB/Ozon. 6 Mermaid-диаграмм.
 - **`docs/architecture/02_DATA_MODEL.md`** — полная модель данных: 12 PostgreSQL таблиц (users, shops, autobidder, proxies, rate_limits, event_log, dim_products, dim_warehouses, dim_product_content и Ozon аналоги), 16 ClickHouse таблиц (orders, fact_finances, fact_sales_funnel, fact_orders_raw, fact_advert_stats, ads_raw_history, inventory, bids), 3 Materialized Views, 6 Views. ER-диаграмма, описание каждого поля.
 
+- **`docs/architecture/03_CELERY_PIPELINE.md`** — полный разбор 106 функций tasks.py (4134 строки): координаторы (sync_all_daily, sync_all_frequent, sync_all_ads, sync_all_campaign_snapshots), FAST задачи (autobidder, positions, monitoring), WB/Ozon sync и backfill задачи, event detection (10+ типов), load_historical_data orchestrator, progress tracking.
+- **`docs/architecture/04_BACKEND_API.md`** — REST API: 5 роутеров, 20 endpoints, Pydantic schemas, auth flow, async task pattern.
+- **`docs/architecture/05_SERVICES.md`** — 21 сервис: API endpoints маркетплейсов, data transformation, target storage, сводная таблица.
+- **`docs/architecture/06_FRONTEND.md`** — React SPA: routing, guards, Zustand stores, API layer (axios + interceptors), 5 страниц, 11 компонентов, dark/light тема.
+- **`docs/architecture/07_INFRASTRUCTURE.md`** — Docker Compose (12 контейнеров), env vars, Nginx reverse proxy, инициализация БД, Celery config, порты, локальная разработка.
+
 ## [Unreleased] - 2026-02-19
 
 ### Improved — Единая система UI компонентов
