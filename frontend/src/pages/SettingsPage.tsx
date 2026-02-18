@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Store, Plus, Trash2, User, RefreshCw, X, KeyRound, Save, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
 import { useAuthStore } from '@/stores/authStore'
 import { useAppStore } from '@/stores/appStore'
 import { apiClient } from '@/api/client'
@@ -301,13 +302,9 @@ export default function SettingsPage() {
             transition={{ duration: 0.3 }}
           >
             <Card className="relative border-[hsl(var(--primary))/30] shadow-xl shadow-[hsl(var(--primary))/5]">
-              <button
-                onClick={() => setShowWizard(false)}
-                className="absolute right-4 top-4 rounded-lg p-1.5 text-[hsl(var(--muted-foreground))]
-                  transition-colors hover:bg-[hsl(var(--muted))] hover:text-[hsl(var(--foreground))]"
-              >
+              <Button variant="ghost" size="icon-sm" onClick={() => setShowWizard(false)} className="absolute right-4 top-4">
                 <X className="h-5 w-5" />
-              </button>
+              </Button>
               <CardContent className="pt-6">
                 <ShopWizard
                   subtitle="Подключите дополнительный магазин"
@@ -341,24 +338,14 @@ export default function SettingsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={handleRefreshShops}
-                  disabled={refreshing}
-                  className="flex h-9 items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 text-sm
-                    text-[hsl(var(--muted-foreground))] transition-all hover:bg-[hsl(var(--muted))]
-                    hover:text-[hsl(var(--foreground))] disabled:opacity-50"
-                >
+                <Button variant="outline" size="sm" onClick={handleRefreshShops} disabled={refreshing}>
                   <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
                   <span className="hidden sm:inline">Обновить</span>
-                </button>
-                <button
-                  onClick={() => setShowWizard(true)}
-                  className="flex h-9 items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-4 text-sm
-                    font-semibold text-white transition-all hover:opacity-90 shadow-sm"
-                >
+                </Button>
+                <Button onClick={() => setShowWizard(true)} size="sm">
                   <Plus className="h-4 w-4" />
-                  <span>Добавить магазин</span>
-                </button>
+                  Добавить магазин
+                </Button>
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -384,14 +371,10 @@ export default function SettingsPage() {
                       Добавьте ваш первый магазин для начала работы
                     </p>
                   </div>
-                  <button
-                    onClick={() => setShowWizard(true)}
-                    className="flex items-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-6 py-2.5 text-sm
-                      font-semibold text-white transition-all hover:opacity-90"
-                  >
+                  <Button onClick={() => setShowWizard(true)}>
                     <Plus className="h-4 w-4" />
                     Добавить магазин
-                  </button>
+                  </Button>
                 </div>
               ) : (
                 shops.map((shop) => (
@@ -439,7 +422,9 @@ export default function SettingsPage() {
 
                     <div className="flex items-center gap-2">
                       {currentShop?.id !== shop.id && shop.status === 'active' && (
-                        <button
+                        <Button
+                          variant="outline"
+                          size="xs"
                           onClick={() =>
                             setCurrentShop({
                               id: shop.id,
@@ -448,49 +433,29 @@ export default function SettingsPage() {
                               isActive: shop.isActive,
                             })
                           }
-                          className="rounded-lg border border-[hsl(var(--border))] px-3 py-1.5 text-xs font-medium
-                            text-[hsl(var(--muted-foreground))] transition-all hover:bg-[hsl(var(--muted))]
-                            hover:text-[hsl(var(--foreground))]"
                         >
                           Выбрать
-                        </button>
+                        </Button>
                       )}
                       {confirmDeleteId === shop.id ? (
                         <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => handleDeleteShop(shop.id)}
-                            disabled={deletingId === shop.id}
-                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white
-                              transition-all hover:bg-red-500 disabled:opacity-50"
-                          >
+                          <Button variant="destructive" size="xs" onClick={() => handleDeleteShop(shop.id)} disabled={deletingId === shop.id}>
                             {deletingId === shop.id ? '...' : 'Да, удалить'}
-                          </button>
-                          <button
-                            onClick={() => setConfirmDeleteId(null)}
-                            className="rounded-lg border border-[hsl(var(--border))] px-3 py-1.5 text-xs
-                              text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--muted))]"
-                          >
+                          </Button>
+                          <Button variant="outline" size="xs" onClick={() => setConfirmDeleteId(null)}>
                             Отмена
-                          </button>
+                          </Button>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => startEditKeys(shop)}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]
-                              transition-all hover:bg-amber-500/10 hover:text-amber-400"
-                            title="Обновить API-ключ"
-                          >
+                          <Button variant="ghost" size="icon-sm" onClick={() => startEditKeys(shop)} title="Обновить API-ключ"
+                            className="hover:bg-amber-500/10 hover:text-amber-400">
                             <KeyRound className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmDeleteId(shop.id)}
-                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]
-                              transition-all hover:bg-red-500/10 hover:text-red-400"
-                            title="Удалить магазин"
-                          >
+                          </Button>
+                          <Button variant="ghost" size="icon-sm" onClick={() => setConfirmDeleteId(shop.id)} title="Удалить магазин"
+                            className="hover:bg-red-500/10 hover:text-red-400">
                             <Trash2 className="h-4 w-4" />
-                          </button>
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -518,12 +483,9 @@ export default function SettingsPage() {
                             <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
                               🔑 Обновить API-ключ — {shop.name}
                             </p>
-                            <button
-                              onClick={() => setEditingShopId(null)}
-                              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
-                            >
+                            <Button variant="ghost" size="icon-sm" onClick={() => setEditingShopId(null)}>
                               <X className="h-4 w-4" />
-                            </button>
+                            </Button>
                           </div>
 
                           <div className="space-y-2">
@@ -596,25 +558,17 @@ export default function SettingsPage() {
                           )}
 
                           <div className="flex items-center gap-2 pt-1">
-                            <button
-                              onClick={() => handleUpdateKeys(shop.id, shop.marketplace)}
-                              disabled={savingKeys}
-                              className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white
-                                transition-all hover:bg-amber-500 disabled:opacity-50"
-                            >
+                            <Button size="sm" onClick={() => handleUpdateKeys(shop.id, shop.marketplace)} disabled={savingKeys}
+                              className="bg-amber-600 hover:bg-amber-500">
                               {savingKeys ? (
                                 <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Проверяем...</>
                               ) : (
                                 <><Save className="h-3.5 w-3.5" /> Сохранить</>
                               )}
-                            </button>
-                            <button
-                              onClick={() => setEditingShopId(null)}
-                              className="rounded-lg border border-[hsl(var(--border))] px-4 py-2 text-xs
-                                text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--muted))]"
-                            >
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => setEditingShopId(null)}>
                               Отмена
-                            </button>
+                            </Button>
                           </div>
                         </div>
                       </motion.div>
@@ -665,13 +619,9 @@ export default function SettingsPage() {
               </div>
 
               <div className="pt-2 border-t border-[hsl(var(--border))]">
-                <button
-                  onClick={logout}
-                  className="rounded-lg border border-red-500/30 px-4 py-2 text-sm font-medium
-                    text-red-400 transition-all hover:bg-red-500/10 hover:border-red-500/50"
-                >
+                <Button variant="danger-ghost" size="sm" onClick={logout}>
                   Выйти из аккаунта
-                </button>
+                </Button>
               </div>
             </CardContent>
           </Card>

@@ -2,6 +2,18 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-19
+
+### Improved — Единая система UI компонентов
+
+- **Проблема:** Кнопки на страницах сливались с фоном (inline стили без иерархии). Shop selector в шапке — нативный `<select>` ОС. Нет консистентности между компонентами.
+- **Решение:**
+  - `button.tsx`: добавлены варианты `danger-ghost`, `outline` с улучшенным контрастом, размеры `icon-sm`, `xs`
+  - Новый `ShopSelector.tsx`: кастомный dropdown с иконками маркетплейсов, анимацией, click-outside
+  - `Header.tsx`: нативный `<select>` → ShopSelector, inline кнопки → Button компоненты
+  - `SettingsPage.tsx`: 10+ inline `<button>` заменены на `<Button>` с правильной иерархией (primary/outline/destructive/ghost/danger-ghost)
+- **Файлы:** `button.tsx`, `ShopSelector.tsx` (NEW), `Header.tsx`, `SettingsPage.tsx`
+
 ## [Unreleased] - 2026-02-18
 
 ### Fixed — TypeError в координаторах sync_all_frequent / sync_all_ads

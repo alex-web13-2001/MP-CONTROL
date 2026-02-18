@@ -5,6 +5,7 @@ import ShopWizard from '@/components/shops/ShopWizard'
 import { getSyncStatusApi, SyncStatusResponse } from '@/api/auth'
 import { motion } from 'framer-motion'
 import { useRef } from 'react'
+import { Button } from '@/components/ui/button'
 
 /* ────────────────── Helper: format elapsed time ────────────────── */
 function formatElapsed(sec: number | null | undefined): string | null {
@@ -119,14 +120,15 @@ function ReturnSyncView({
         </div>
       )}
       {(isDone || isError) && (
-        <motion.button
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          onClick={onDashboard}
-          className={`w-full rounded-lg py-3 text-sm font-semibold text-white transition-all hover:opacity-90 ${isDone ? 'bg-green-600 hover:bg-green-500' : 'bg-[hsl(var(--primary))]'}`}
-        >
-          Перейти в Dashboard →
-        </motion.button>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <Button
+            onClick={onDashboard}
+            className={`w-full py-3 ${isDone ? 'bg-green-600 hover:bg-green-500' : ''}`}
+            size="lg"
+          >
+            Перейти в Dashboard →
+          </Button>
+        </motion.div>
       )}
     </div>
   )

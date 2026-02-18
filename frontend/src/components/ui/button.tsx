@@ -3,28 +3,32 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98]',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-medium transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))] focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 active:scale-[0.98] cursor-pointer',
   {
     variants: {
       variant: {
         default:
-          'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-md hover:brightness-110',
+          'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-md hover:shadow-lg hover:brightness-110',
         destructive:
           'bg-[hsl(var(--destructive))] text-[hsl(var(--destructive-foreground))] shadow-md hover:brightness-110',
         outline:
-          'border border-[hsl(var(--border))] bg-transparent text-[hsl(var(--foreground))] hover:bg-[hsl(var(--secondary))]',
+          'border border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm hover:bg-[hsl(var(--secondary))] hover:border-[hsl(var(--muted-foreground)/0.3)]',
         secondary:
-          'bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] hover:brightness-110',
+          'bg-[hsl(var(--secondary))] text-[hsl(var(--secondary-foreground))] shadow-sm hover:brightness-110',
         ghost:
-          'text-[hsl(var(--foreground))] hover:bg-[hsl(var(--secondary))]',
+          'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--secondary))] hover:text-[hsl(var(--foreground))]',
+        'danger-ghost':
+          'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--destructive)/0.1)] hover:text-[hsl(var(--destructive))]',
         link:
           'text-[hsl(var(--primary))] underline-offset-4 hover:underline',
       },
       size: {
+        xs: 'h-7 px-2.5 text-xs rounded-md',
         sm: 'h-8 px-3 text-xs',
         default: 'h-10 px-4',
         lg: 'h-12 px-6 text-base',
-        icon: 'h-10 w-10',
+        icon: 'h-9 w-9 rounded-lg',
+        'icon-sm': 'h-8 w-8 rounded-lg',
       },
     },
     defaultVariants: {

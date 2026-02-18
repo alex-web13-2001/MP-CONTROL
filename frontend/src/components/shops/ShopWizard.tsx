@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { apiClient } from '@/api/client'
+import { Button } from '@/components/ui/button'
 import { getSyncStatusApi, SyncStatusResponse } from '@/api/auth'
 import { useAuthStore } from '@/stores/authStore'
 import { useAppStore } from '@/stores/appStore'
@@ -204,13 +205,9 @@ function StepApiKeys({
   return (
     <form onSubmit={handleSubmit} className="space-y-6 max-w-lg mx-auto">
       <div className="flex items-center gap-3 mb-2">
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-[hsl(var(--muted-foreground))] hover:text-white transition-colors"
-        >
+        <Button variant="ghost" size="sm" type="button" onClick={onBack}>
           ← Назад
-        </button>
+        </Button>
         <h2 className="text-2xl font-bold">
           {isWb ? 'Wildberries API' : 'Ozon API'}
         </h2>
@@ -345,14 +342,13 @@ function StepApiKeys({
         </>
       )}
 
-      <button
+      <Button
         type="submit"
         disabled={!canSubmit}
-        className="w-full rounded-lg bg-[hsl(var(--primary))] py-3 text-sm font-semibold
-          text-white transition-all hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="w-full py-3"
       >
         Проверить ключ →
-      </button>
+      </Button>
     </form>
   )
 }
@@ -440,29 +436,17 @@ function StepValidation({
           </div>
 
           <div className="flex gap-3">
-            <button
-              onClick={onBack}
-              className="flex-1 rounded-lg border border-[hsl(var(--border))] py-2.5 text-sm
-                font-medium transition-all hover:bg-[hsl(var(--muted))]"
-            >
+            <Button variant="outline" onClick={onBack} className="flex-1">
               ← Изменить ключи
-            </button>
+            </Button>
             {result.valid ? (
-              <button
-                onClick={onContinue}
-                className="flex-1 rounded-lg bg-green-600 py-2.5 text-sm font-semibold
-                  text-white transition-all hover:bg-green-500"
-              >
+              <Button onClick={onContinue} className="flex-1 bg-green-600 hover:bg-green-500">
                 Подключить магазин →
-              </button>
+              </Button>
             ) : (
-              <button
-                onClick={onRetry}
-                className="flex-1 rounded-lg bg-[hsl(var(--primary))] py-2.5 text-sm font-semibold
-                  text-white transition-all hover:opacity-90"
-              >
+              <Button onClick={onRetry} className="flex-1">
                 Попробовать снова
-              </button>
+              </Button>
             )}
           </div>
         </div>
