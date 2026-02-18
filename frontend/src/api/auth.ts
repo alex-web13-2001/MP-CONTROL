@@ -110,12 +110,15 @@ export async function validateKeyApi(data: ValidateKeyPayload): Promise<Validate
 // ── Sync Status API ──────────────────────────────────────────────
 
 export interface SyncStatusResponse {
-  status: 'loading' | 'done' | 'error' | string
+  status: 'loading' | 'done' | 'done_with_errors' | 'error' | string
   current_step: number
   total_steps: number
   step_name: string
   percent: number
   error: string | null
+  sub_progress?: string | null
+  elapsed_sec?: number | null
+  eta_message?: string | null
 }
 
 export async function getSyncStatusApi(shopId: number): Promise<SyncStatusResponse> {

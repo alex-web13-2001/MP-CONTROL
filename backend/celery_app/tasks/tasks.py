@@ -156,6 +156,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
     import json
     import logging
     import os
+    import time
     import redis
     import traceback
 
@@ -186,6 +187,38 @@ def load_historical_data(self, shop_id: int, months: int = 6):
         return {"shop_id": shop_id, "status": "skipped", "reason": "already_running"}
 
     errors_list: list[str] = []
+    start_time = time.time()
+    _state = {"marketplace": ""}  # mutable dict to avoid nonlocal with annotations
+
+    # ── ETA estimates per marketplace (seconds) ──────────────
+    # Based on real measurements: WB ~32 min, Ozon ~15 min
+    _ETA_MAP = {
+        "wildberries": {
+            # step_idx → estimated remaining seconds at START of that step
+            1: 1800, 2: 1700, 3: 1650, 4: 1600,  # finance is step 4, ~15 min
+            5: 300, 6: 120, 7: 30,
+        },
+        "ozon": {
+            1: 900, 2: 850, 3: 800, 4: 650, 5: 600, 6: 550,
+            7: 500, 8: 450, 9: 400, 10: 350, 11: 300, 12: 200,  # ads backfill ~10 min
+        },
+    }
+
+    def _format_eta(seconds: int) -> str:
+        """Human-readable ETA string."""
+        if seconds <= 60:
+            return "меньше минуты"
+        minutes = seconds // 60
+        if minutes == 1:
+            return "≈ 1 минута"
+        elif minutes < 5:
+            return f"≈ {minutes} минуты"
+        elif minutes < 21 or minutes % 10 >= 5 or minutes % 10 == 0:
+            return f"≈ {minutes} минут"
+        elif minutes % 10 == 1:
+            return f"≈ {minutes} минута"
+        else:
+            return f"≈ {minutes} минуты"
 
     # ── helpers ──────────────────────────────────────────────
     def _set_progress(
@@ -196,7 +229,32 @@ def load_historical_data(self, shop_id: int, months: int = 6):
         error: str | None = None,
     ):
         """Write progress to Redis for frontend polling."""
-        percent = int(current_step / total_steps * 100) if total_steps else 0
+        # Percent: (step-1)/total — so step 7/7 shows 85%, 100% only on "done"
+        if status in ("done", "done_with_errors"):
+            percent = 100
+        elif total_steps:
+            percent = int((current_step - 1) / total_steps * 100)
+        else:
+            percent = 0
+
+        elapsed = int(time.time() - start_time)
+
+        # ETA based on marketplace-specific estimates
+        eta_msg = None
+        if status == "loading" and _state["marketplace"]:
+            eta_map = _ETA_MAP.get(_state["marketplace"], {})
+            remaining = eta_map.get(current_step)
+            if remaining:
+                eta_msg = _format_eta(remaining)
+
+        # Read sub-progress from subtask (if any) then clear it.
+        # Each _set_progress call marks the START of a new step,
+        # so any leftover sub-progress from the previous step must be wiped.
+        sub_key = f"sync_sub_progress:{shop_id}"
+        sub_raw = r.get(sub_key)
+        sub_progress = sub_raw.decode() if sub_raw else None
+        r.delete(sub_key)  # always clear — subtask will re-set if needed
+
         payload = {
             "status": status,
             "current_step": current_step,
@@ -204,6 +262,10 @@ def load_historical_data(self, shop_id: int, months: int = 6):
             "step_name": step_name,
             "percent": percent,
             "error": error,
+            "elapsed_sec": elapsed,
+            "started_at": start_time,  # epoch timestamp for real-time elapsed calc
+            "eta_message": eta_msg,
+            "sub_progress": sub_progress,
         }
         r.setex(progress_key, 86400, json.dumps(payload, ensure_ascii=False))
         self.update_state(state="PROGRESS", meta=payload)
@@ -277,6 +339,8 @@ def load_historical_data(self, shop_id: int, months: int = 6):
         client_id = creds["client_id"]
         perf_client_id = creds["perf_client_id"]
         perf_client_secret = creds["perf_client_secret"]
+
+        _state["marketplace"] = marketplace
 
         # ── Ozon pipeline (11 steps) ─────────────────────────────
         if marketplace == "ozon":
@@ -818,6 +882,7 @@ def sync_wb_finance_history(
     import os
     from datetime import date
     import logging
+    import redis as redis_lib
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from app.config import get_settings
@@ -830,6 +895,8 @@ def sync_wb_finance_history(
     )
     
     settings = get_settings()
+    _r = redis_lib.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+    _sub_key = f"sync_sub_progress:{shop_id}"
     
     # Generate week ranges based on days_back
     months = max(1, days_back // 30)
@@ -877,6 +944,8 @@ def sync_wb_finance_history(
                             "Finance sync shop %s: week %d/%d [%s → %s]",
                             shop_id, i + 1, total_weeks, date_from_str, date_to_str,
                         )
+                        # Sub-progress for frontend (shown during load_historical_data)
+                        _r.setex(_sub_key, 3600, f"Неделя {i + 1} из {total_weeks}")
                         
                         # Optimization: Skip if data exists to save API budget
                         if loader.get_row_count(shop_id, date_from, date_to) > 0:
@@ -3993,11 +4062,16 @@ def backfill_ozon_ads(
                 empty_streak = 0
 
                 with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                    # Sub-progress for frontend
+                    _sub_key = f"sync_sub_progress:{shop_id}"
+
                     for i, (cf, ct) in enumerate(chunks):
                         self.update_state(state='PROGRESS', meta={
                             'status': f'Chunk {i+1}/{len(chunks)}: {cf} → {ct} via proxy',
                             'progress': f'{(i+1)*100//len(chunks)}%',
                         })
+                        # Write sub-progress to Redis for parent task progress bar
+                        await redis_client.set(_sub_key, f"Период {i + 1} из {len(chunks)}", ex=3600)
 
                         try:
                             rows = await service.fetch_statistics(

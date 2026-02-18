@@ -271,7 +271,19 @@ async def get_sync_status(
     raw = r.get(progress_key)
 
     if raw:
-        return json.loads(raw)
+        import time as _time
+        data = json.loads(raw)
+        # Always overwrite sub_progress from live Redis key (may be None)
+        sub_key = f"sync_sub_progress:{shop_id}"
+        sub_raw = r.get(sub_key)
+        data["sub_progress"] = sub_raw.decode() if sub_raw else None
+        # Recalculate elapsed_sec in real-time from started_at
+        started_at = data.get("started_at")
+        if started_at and data.get("status") == "loading":
+            data["elapsed_sec"] = int(_time.time() - started_at)
+        # Don't expose started_at to frontend
+        data.pop("started_at", None)
+        return data
 
     # Fallback to DB status
     if shop.status == "active":
@@ -282,6 +294,9 @@ async def get_sync_status(
             "step_name": "Готово!",
             "percent": 100,
             "error": None,
+            "elapsed_sec": None,
+            "eta_message": None,
+            "sub_progress": None,
         }
     elif shop.status == "syncing":
         return {
@@ -291,6 +306,9 @@ async def get_sync_status(
             "step_name": "Ожидание начала загрузки...",
             "percent": 0,
             "error": None,
+            "elapsed_sec": None,
+            "eta_message": "≈ 15–30 минут",
+            "sub_progress": None,
         }
     else:
         return {
@@ -300,6 +318,9 @@ async def get_sync_status(
             "step_name": shop.status_message or "",
             "percent": 0,
             "error": shop.status_message,
+            "elapsed_sec": None,
+            "eta_message": None,
+            "sub_progress": None,
         }
 
 

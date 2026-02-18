@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Store, Plus, Trash2, User, RefreshCw, X, KeyRound, Save, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -6,6 +6,98 @@ import { useAuthStore } from '@/stores/authStore'
 import { useAppStore } from '@/stores/appStore'
 import { apiClient } from '@/api/client'
 import ShopWizard from '@/components/shops/ShopWizard'
+import { getSyncStatusApi, type SyncStatusResponse } from '@/api/auth'
+
+/* ── Helper: format elapsed ────────────────────────────── */
+function formatElapsed(sec: number | null | undefined): string | null {
+  if (!sec || sec < 5) return null
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  if (m === 0) return `${s} сек`
+  return `${m} мин ${s.toString().padStart(2, '0')} сек`
+}
+
+/* ── Inline sync progress for shop card ────────────────── */
+function SyncProgressInline({ shopId }: { shopId: number }) {
+  const [sync, setSync] = useState<SyncStatusResponse | null>(null)
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const s = await getSyncStatusApi(shopId)
+        setSync(s)
+        if (s.status === 'done' || s.status === 'done_with_errors' || s.status === 'error') {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current)
+            intervalRef.current = null
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    poll()
+    intervalRef.current = setInterval(poll, 3000)
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
+  }, [shopId])
+
+  if (!sync || sync.status === 'done' || sync.status === 'done_with_errors') return null
+
+  const rawPercent = sync.percent ?? 0
+  const percent = Math.min(rawPercent, 99)
+  const elapsed = formatElapsed(sync.elapsed_sec)
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: 'auto' }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.25 }}
+      className="overflow-hidden"
+    >
+      <div className="rounded-xl border border-blue-500/20 bg-blue-500/5 p-3 space-y-2">
+        {/* Step name + percent */}
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-[hsl(var(--muted-foreground))] truncate pr-2">
+            {sync.step_name || 'Загрузка...'}
+          </span>
+          <span className="font-mono font-semibold text-[hsl(var(--foreground))] shrink-0">
+            {percent}%
+          </span>
+        </div>
+        {/* Progress bar */}
+        <div className="h-1.5 w-full rounded-full bg-[hsl(var(--muted))] overflow-hidden">
+          <motion.div
+            className="h-full rounded-full bg-blue-500"
+            initial={{ width: 0 }}
+            animate={{ width: `${percent}%` }}
+            transition={{ duration: 0.5, ease: 'easeOut' }}
+          />
+        </div>
+        {/* Details row */}
+        <div className="flex items-center gap-2 text-[10px] text-[hsl(var(--muted-foreground))]">
+          {sync.sub_progress && (
+            <span className="italic">{sync.sub_progress}</span>
+          )}
+          {sync.total_steps > 0 && (
+            <span>Шаг {sync.current_step}/{sync.total_steps}</span>
+          )}
+          {sync.eta_message && (
+            <>
+              <span className="text-[hsl(var(--border))]">·</span>
+              <span>Осталось {sync.eta_message}</span>
+            </>
+          )}
+          {elapsed && (
+            <>
+              <span className="text-[hsl(var(--border))]">·</span>
+              <span>Прошло: {elapsed}</span>
+            </>
+          )}
+        </div>
+      </div>
+    </motion.div>
+  )
+}
 
 export default function SettingsPage() {
   const { shops, setShops, user, logout } = useAuthStore()
@@ -403,6 +495,13 @@ export default function SettingsPage() {
                       )}
                     </div>
                   </motion.div>
+
+                  {/* ── Inline Sync Progress (for syncing shops) ── */}
+                  <AnimatePresence>
+                    {shop.status === 'syncing' && (
+                      <SyncProgressInline shopId={shop.id} />
+                    )}
+                  </AnimatePresence>
 
                   {/* ── Inline Key Edit Form ── */}
                   <AnimatePresence>

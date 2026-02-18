@@ -471,6 +471,15 @@ function StepValidation({
   )
 }
 
+/* ────────────────── Helper: format elapsed time ────────────────── */
+function formatElapsed(sec: number | null | undefined): string | null {
+  if (!sec || sec < 5) return null
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  if (m === 0) return `${s} сек`
+  return `${m} мин ${s.toString().padStart(2, '0')} сек`
+}
+
 /* ────────────────── Step 4: Syncing with progress ────────────────── */
 function StepSyncing({
   shopId,
@@ -493,7 +502,7 @@ function StepSyncing({
       try {
         const status = await getSyncStatusApi(shopId)
         setSyncStatus(status)
-        if (status.status === 'done' || status.status === 'error') {
+        if (status.status === 'done' || status.status === 'done_with_errors' || status.status === 'error') {
           if (intervalRef.current) {
             clearInterval(intervalRef.current)
             intervalRef.current = null
@@ -514,7 +523,10 @@ function StepSyncing({
 
   const isDone = syncStatus?.status === 'done' || syncStatus?.status === 'done_with_errors'
   const isError = syncStatus?.status === 'error'
-  const percent = syncStatus?.percent ?? 0
+  // Cap at 99% unless truly done — prevents confusing "100% but still loading"
+  const rawPercent = syncStatus?.percent ?? 0
+  const percent = isDone ? 100 : Math.min(rawPercent, 99)
+  const elapsed = formatElapsed(syncStatus?.elapsed_sec)
 
   return (
     <div className="max-w-lg mx-auto space-y-6 text-center py-8">
@@ -565,6 +577,13 @@ function StepSyncing({
           </span>
         </div>
 
+        {/* Sub-progress (e.g. "Неделя 14 из 27") */}
+        {syncStatus?.sub_progress && !isDone && !isError && (
+          <p className="text-xs text-[hsl(var(--muted-foreground))] italic">
+            {syncStatus.sub_progress}
+          </p>
+        )}
+
         {syncStatus && syncStatus.total_steps > 0 && (
           <p className="text-xs text-[hsl(var(--muted-foreground))]">
             Шаг {syncStatus.current_step} из {syncStatus.total_steps}
@@ -579,11 +598,21 @@ function StepSyncing({
         </div>
       )}
 
-      {/* Loading animation */}
+      {/* ETA and elapsed time */}
       {!isDone && !isError && (
-        <div className="flex items-center justify-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
-          <div className="h-2 w-2 rounded-full bg-[hsl(var(--primary))] animate-pulse" />
-          Это может занять несколько минут
+        <div className="flex items-center justify-center gap-3 text-xs text-[hsl(var(--muted-foreground))]">
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-[hsl(var(--primary))] animate-pulse" />
+            {syncStatus?.eta_message
+              ? `Осталось ${syncStatus.eta_message}`
+              : 'Загрузка может занять 15–30 минут'}
+          </div>
+          {elapsed && (
+            <>
+              <span className="text-[hsl(var(--border))]">·</span>
+              <span>Прошло: {elapsed}</span>
+            </>
+          )}
         </div>
       )}
 
