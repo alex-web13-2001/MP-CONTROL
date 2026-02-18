@@ -4,6 +4,13 @@
 
 ## [Unreleased] - 2026-02-19
 
+### Added — Техническая документация архитектуры (Этап 1)
+
+- **`docs/architecture/01_OVERVIEW.md`** — полный архитектурный обзор: стек технологий, 12 Docker-сервисов, Celery очереди/расписание, Anti-Ban система (Rate Limiter, Proxy Provider, Circuit Breaker), аутентификация (JWT + bcrypt), шифрование API-ключей (Fernet), роли Redis, frontend структура, API домены WB/Ozon. 6 Mermaid-диаграмм.
+- **`docs/architecture/02_DATA_MODEL.md`** — полная модель данных: 12 PostgreSQL таблиц (users, shops, autobidder, proxies, rate_limits, event_log, dim_products, dim_warehouses, dim_product_content и Ozon аналоги), 16 ClickHouse таблиц (orders, fact_finances, fact_sales_funnel, fact_orders_raw, fact_advert_stats, ads_raw_history, inventory, bids), 3 Materialized Views, 6 Views. ER-диаграмма, описание каждого поля.
+
+## [Unreleased] - 2026-02-19
+
 ### Improved — Единая система UI компонентов
 
 - **Проблема:** Кнопки на страницах сливались с фоном (inline стили без иерархии). Shop selector в шапке — нативный `<select>` ОС. Нет консистентности между компонентами.
