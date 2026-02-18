@@ -69,6 +69,14 @@ class ShopCreate(BaseModel):
     perf_client_secret: Optional[str] = None  # Ozon Performance Client-Secret
 
 
+class ShopUpdateKeys(BaseModel):
+    """Update API keys for an existing shop."""
+    api_key: str = Field(..., min_length=1)
+    client_id: Optional[str] = None           # Ozon Seller Client-Id
+    perf_client_id: Optional[str] = None      # Ozon Performance Client-Id
+    perf_client_secret: Optional[str] = None  # Ozon Performance Client-Secret
+
+
 # ── Key Validation ────────────────────────────────────────────────
 
 class ValidateKeyRequest(BaseModel):

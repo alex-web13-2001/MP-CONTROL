@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Store, Plus, Trash2, User, RefreshCw, X } from 'lucide-react'
+import { Store, Plus, Trash2, User, RefreshCw, X, KeyRound, Save, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useAuthStore } from '@/stores/authStore'
 import { useAppStore } from '@/stores/appStore'
@@ -15,6 +15,52 @@ export default function SettingsPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+
+  // Key editing state
+  const [editingShopId, setEditingShopId] = useState<number | null>(null)
+  const [keyForm, setKeyForm] = useState({ apiKey: '', clientId: '', perfClientId: '', perfClientSecret: '' })
+  const [keyError, setKeyError] = useState<string | null>(null)
+  const [keySuccess, setKeySuccess] = useState<string | null>(null)
+  const [savingKeys, setSavingKeys] = useState(false)
+
+  const startEditKeys = (shop: typeof shops[0]) => {
+    setEditingShopId(shop.id)
+    setKeyForm({ apiKey: '', clientId: '', perfClientId: '', perfClientSecret: '' })
+    setKeyError(null)
+    setKeySuccess(null)
+  }
+
+  const handleUpdateKeys = async (shopId: number, marketplace: string) => {
+    if (!keyForm.apiKey.trim()) {
+      setKeyError('Введите API-ключ')
+      return
+    }
+    setSavingKeys(true)
+    setKeyError(null)
+    setKeySuccess(null)
+    try {
+      const payload: Record<string, string> = { api_key: keyForm.apiKey }
+      if (marketplace === 'ozon') {
+        if (keyForm.clientId) payload.client_id = keyForm.clientId
+        if (keyForm.perfClientId) payload.perf_client_id = keyForm.perfClientId
+        if (keyForm.perfClientSecret) payload.perf_client_secret = keyForm.perfClientSecret
+      }
+      await apiClient.patch(`/shops/${shopId}/keys`, payload)
+      setKeySuccess('Ключ успешно обновлён')
+      // Refresh shops list
+      const resp = await apiClient.get('/shops')
+      setShops(resp.data)
+      setTimeout(() => {
+        setEditingShopId(null)
+        setKeySuccess(null)
+      }, 1500)
+    } catch (err: any) {
+      const detail = err.response?.data?.detail || 'Ошибка обновления ключа'
+      setKeyError(detail)
+    } finally {
+      setSavingKeys(false)
+    }
+  }
 
   // Refresh shops from API on mount
   useEffect(() => {
@@ -257,8 +303,8 @@ export default function SettingsPage() {
                 </div>
               ) : (
                 shops.map((shop) => (
+                  <div key={shop.id} className="space-y-2">
                   <motion.div
-                    key={shop.id}
                     layout
                     className={`
                       flex items-center justify-between rounded-xl border p-4 transition-all duration-200
@@ -336,17 +382,146 @@ export default function SettingsPage() {
                           </button>
                         </div>
                       ) : (
-                        <button
-                          onClick={() => setConfirmDeleteId(shop.id)}
-                          className="flex h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]
-                            transition-all hover:bg-red-500/10 hover:text-red-400"
-                          title="Удалить магазин"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => startEditKeys(shop)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]
+                              transition-all hover:bg-amber-500/10 hover:text-amber-400"
+                            title="Обновить API-ключ"
+                          >
+                            <KeyRound className="h-4 w-4" />
+                          </button>
+                          <button
+                            onClick={() => setConfirmDeleteId(shop.id)}
+                            className="flex h-8 w-8 items-center justify-center rounded-lg text-[hsl(var(--muted-foreground))]
+                              transition-all hover:bg-red-500/10 hover:text-red-400"
+                            title="Удалить магазин"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   </motion.div>
+
+                  {/* ── Inline Key Edit Form ── */}
+                  <AnimatePresence>
+                    {editingShopId === shop.id && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
+                              🔑 Обновить API-ключ — {shop.name}
+                            </p>
+                            <button
+                              onClick={() => setEditingShopId(null)}
+                              className="text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+
+                          <div className="space-y-2">
+                            <div>
+                              <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1 block">API-ключ *</label>
+                              <input
+                                type="password"
+                                value={keyForm.apiKey}
+                                onChange={(e) => setKeyForm({ ...keyForm, apiKey: e.target.value })}
+                                placeholder="Вставьте новый API-ключ"
+                                className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm
+                                  text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]/50
+                                  focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 focus:border-[hsl(var(--primary))]/50"
+                              />
+                            </div>
+
+                            {shop.marketplace === 'ozon' && (
+                              <>
+                                <div>
+                                  <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1 block">Client-Id</label>
+                                  <input
+                                    type="text"
+                                    value={keyForm.clientId}
+                                    onChange={(e) => setKeyForm({ ...keyForm, clientId: e.target.value })}
+                                    placeholder="Оставьте пустым если не изменился"
+                                    className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm
+                                      text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]/50
+                                      focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 focus:border-[hsl(var(--primary))]/50"
+                                  />
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1 block">Perf Client-Id</label>
+                                    <input
+                                      type="text"
+                                      value={keyForm.perfClientId}
+                                      onChange={(e) => setKeyForm({ ...keyForm, perfClientId: e.target.value })}
+                                      placeholder="Опционально"
+                                      className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm
+                                        text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]/50
+                                        focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 focus:border-[hsl(var(--primary))]/50"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] mb-1 block">Perf Secret</label>
+                                    <input
+                                      type="password"
+                                      value={keyForm.perfClientSecret}
+                                      onChange={(e) => setKeyForm({ ...keyForm, perfClientSecret: e.target.value })}
+                                      placeholder="Опционально"
+                                      className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm
+                                        text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))]/50
+                                        focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary))]/30 focus:border-[hsl(var(--primary))]/50"
+                                    />
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {keyError && (
+                            <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-400">
+                              {keyError}
+                            </div>
+                          )}
+                          {keySuccess && (
+                            <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-2.5 text-xs text-green-400">
+                              ✓ {keySuccess}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2 pt-1">
+                            <button
+                              onClick={() => handleUpdateKeys(shop.id, shop.marketplace)}
+                              disabled={savingKeys}
+                              className="flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-xs font-semibold text-white
+                                transition-all hover:bg-amber-500 disabled:opacity-50"
+                            >
+                              {savingKeys ? (
+                                <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Проверяем...</>
+                              ) : (
+                                <><Save className="h-3.5 w-3.5" /> Сохранить</>
+                              )}
+                            </button>
+                            <button
+                              onClick={() => setEditingShopId(null)}
+                              className="rounded-lg border border-[hsl(var(--border))] px-4 py-2 text-xs
+                                text-[hsl(var(--muted-foreground))] transition-colors hover:bg-[hsl(var(--muted))]"
+                            >
+                              Отмена
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                  </div>
                 ))
               )}
             </CardContent>

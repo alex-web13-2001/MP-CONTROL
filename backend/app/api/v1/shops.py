@@ -22,7 +22,7 @@ from app.core.encryption import encrypt_api_key
 from app.core.security import get_current_user
 from app.models.shop import Shop
 from app.models.user import User
-from app.schemas.auth import ShopCreate, ShopResponse, ValidateKeyRequest, ValidateKeyResponse
+from app.schemas.auth import ShopCreate, ShopResponse, ShopUpdateKeys, ValidateKeyRequest, ValidateKeyResponse
 
 logger = logging.getLogger(__name__)
 
@@ -303,13 +303,14 @@ async def get_sync_status(
         }
 
 
-@router.delete("/{shop_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_shop(
+@router.patch("/{shop_id}/keys", response_model=ShopResponse)
+async def update_shop_keys(
     shop_id: int,
+    body: ShopUpdateKeys,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Remove a shop connection."""
+    """Update API keys for an existing shop."""
     result = await db.execute(
         select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
     )
@@ -321,4 +322,173 @@ async def delete_shop(
             detail="Магазин не найден",
         )
 
+    # ── Validate the new key ─────────────────────────────
+    if shop.marketplace == "wildberries":
+        valid, message, _, warnings = await _validate_wb_key(body.api_key)
+        if not valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Невалидный API-ключ WB: {message}",
+            )
+    elif shop.marketplace == "ozon":
+        client_id = body.client_id or shop.client_id
+        if not client_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Для Ozon необходим Client-Id",
+            )
+        valid, message = await _validate_ozon_seller(client_id, body.api_key)
+        if not valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Невалидный API-ключ Ozon: {message}",
+            )
+
+    # ── Encrypt and save ─────────────────────────────────
+    shop.api_key_encrypted = encrypt_api_key(body.api_key)
+
+    if body.client_id is not None:
+        shop.client_id = body.client_id
+    if body.perf_client_id is not None:
+        shop.perf_client_id = body.perf_client_id
+    if body.perf_client_secret:
+        shop.perf_client_secret_encrypted = encrypt_api_key(body.perf_client_secret)
+
+    # Reset error status if key was updated
+    if shop.status in ("error", "suspended"):
+        shop.status = "active"
+        shop.status_message = None
+
+    from sqlalchemy import text as sa_text
+    shop.updated_at = (await db.execute(sa_text("SELECT NOW()"))).scalar()
+
+    logger.info("API keys updated for shop %d (%s) by user %s", shop_id, shop.name, current_user.id)
+    return ShopResponse.model_validate(shop)
+
+
+@router.delete("/{shop_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_shop(
+    shop_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a shop connection and all associated data."""
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = result.scalar_one_or_none()
+
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Магазин не найден",
+        )
+
+    # ── 1. Clean up ClickHouse analytics data ────────────────────
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        ch = get_clickhouse_client()
+
+        ch_tables = [
+            # Ozon tables
+            "fact_ozon_ad_daily",
+            "fact_ozon_orders",
+            "fact_ozon_transactions",
+            "fact_ozon_funnel",
+            "fact_ozon_returns",
+            "fact_ozon_prices",
+            "fact_ozon_commissions",
+            "fact_ozon_seller_rating",
+            "fact_ozon_warehouse_stocks",
+            "fact_ozon_content_rating",
+            "fact_ozon_promotions",
+            "fact_ozon_availability",
+            "fact_ozon_inventory",
+            "log_ozon_bids",
+            # WB tables
+            "fact_orders_raw",
+            "fact_sales_funnel",
+            "fact_inventory_snapshot",
+            "fact_finances",
+            "fact_advert_stats",
+            "fact_advert_stats_v3",
+            "ad_stats",
+            "dim_advert_campaigns",
+            "log_wb_bids",
+            "ads_raw_history",
+            "orders",
+            "positions",
+            "sales_daily",
+        ]
+
+        for table in ch_tables:
+            try:
+                ch.command(
+                    f"ALTER TABLE {table} DELETE WHERE shop_id = {{shop_id:UInt32}}",
+                    parameters={"shop_id": shop_id},
+                )
+            except Exception:
+                pass  # Table may not exist or have no data
+
+        ch.close()
+        logger.info("ClickHouse cleanup done for shop %d (%d tables)", shop_id, len(ch_tables))
+
+    except Exception as e:
+        logger.warning("ClickHouse cleanup failed for shop %d: %s", shop_id, e)
+
+    # ── 2. Clean up PostgreSQL related tables ────────────────────
+    from sqlalchemy import text
+    pg_tables = [
+        "event_log",
+        "dim_ozon_product_content",
+        "dim_ozon_products",
+        "dim_product_content",
+        "dim_products",
+        "autobidder_settings",
+    ]
+    for table in pg_tables:
+        try:
+            await db.execute(text(f"DELETE FROM {table} WHERE shop_id = :sid"), {"sid": shop_id})
+        except Exception as e:
+            logger.warning("PG cleanup skip %s for shop %d: %s", table, shop_id, e)
+            await db.rollback()
+    logger.info("PostgreSQL related data cleaned for shop %d", shop_id)
+
+    # ── 3. Clean up Redis state/cache keys ───────────────────────
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        r = redis.from_url(redis_url)
+
+        patterns = [
+            f"ads:state:{shop_id}:*",
+            f"ads:state:views:{shop_id}:*",
+            f"ads:state:bid:{shop_id}:*",
+            f"state:price:{shop_id}:*",
+            f"state:stock:{shop_id}:*",
+            f"state:image:{shop_id}:*",
+            f"state:content:{shop_id}:*",
+            f"ozon_ads:state:{shop_id}:*",
+        ]
+        deleted_keys = 0
+        for pattern in patterns:
+            for key in r.scan_iter(match=pattern, count=500):
+                r.delete(key)
+                deleted_keys += 1
+
+        # Delete specific keys
+        for key in [
+            f"sync_progress:{shop_id}",
+            f"lock:load_historical_data:{shop_id}",
+        ]:
+            r.delete(key)
+            deleted_keys += 1
+
+        r.close()
+        logger.info("Redis cleanup done for shop %d (%d keys)", shop_id, deleted_keys)
+
+    except Exception as e:
+        logger.warning("Redis cleanup failed for shop %d: %s", shop_id, e)
+
+    # ── 4. Delete the shop record itself ─────────────────────────
     await db.delete(shop)
+    logger.info("Shop %d (%s) fully deleted by user %s", shop_id, shop.name, current_user.id)
