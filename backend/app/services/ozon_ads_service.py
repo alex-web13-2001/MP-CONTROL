@@ -726,6 +726,15 @@ class OzonBidsLoader:
             "model_revenue", "drr",
         ]
         self._client.insert(CH_STATS_TABLE, ch_rows, column_names=columns)
+
+        # Force merge to collapse duplicates immediately
+        # (ReplacingMergeTree only deduplicates on background merges or FINAL queries)
+        try:
+            self._client.command(f"OPTIMIZE TABLE {CH_STATS_TABLE} FINAL")
+            logger.info("OPTIMIZE TABLE %s FINAL completed", CH_STATS_TABLE)
+        except Exception as e:
+            logger.warning("OPTIMIZE TABLE failed (non-critical): %s", e)
+
         logger.info(
             "Inserted %d stats rows into ClickHouse (deduplicated from %d)",
             len(ch_rows), len(rows),

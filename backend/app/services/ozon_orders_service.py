@@ -488,7 +488,7 @@ class OzonOrdersLoader:
                 sum(commission_amount) as total_commission,
                 min(order_date) as min_date,
                 max(order_date) as max_date
-            FROM fact_ozon_orders
+            FROM fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row

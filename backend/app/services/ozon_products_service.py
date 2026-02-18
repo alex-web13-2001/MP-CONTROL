@@ -710,7 +710,7 @@ class OzonInventoryLoader:
                 avg(price) as avg_price,
                 sum(stocks_fbo) as total_fbo,
                 sum(stocks_fbs) as total_fbs
-            FROM fact_ozon_inventory
+            FROM fact_ozon_inventory FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row
@@ -843,7 +843,7 @@ class OzonCommissionsLoader:
                 min(dt) as min_date,
                 max(dt) as max_date,
                 avg(sales_percent) as avg_sales_pct
-            FROM fact_ozon_commissions
+            FROM fact_ozon_commissions FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row
@@ -971,7 +971,7 @@ class OzonContentRatingLoader:
                 min(dt) as min_date,
                 max(dt) as max_date,
                 avg(rating) as avg_rating
-            FROM fact_ozon_content_rating
+            FROM fact_ozon_content_rating FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row
@@ -1086,7 +1086,7 @@ class OzonPromotionsLoader:
                 countIf(is_enabled = 1) as enabled_count,
                 min(dt) as min_date,
                 max(dt) as max_date
-            FROM fact_ozon_promotions
+            FROM fact_ozon_promotions FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row
@@ -1203,7 +1203,7 @@ class OzonAvailabilityLoader:
                 countIf(availability != 'AVAILABLE') as unavailable_count,
                 min(dt) as min_date,
                 max(dt) as max_date
-            FROM fact_ozon_availability
+            FROM fact_ozon_availability FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row

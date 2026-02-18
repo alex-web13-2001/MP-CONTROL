@@ -281,7 +281,7 @@ class OzonFunnelLoader:
                 max(dt) as max_date,
                 sum(ordered_units) as total_orders,
                 sum(revenue) as total_revenue
-            FROM fact_ozon_funnel
+            FROM fact_ozon_funnel FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         row = r.first_row

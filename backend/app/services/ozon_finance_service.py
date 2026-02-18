@@ -415,7 +415,7 @@ class OzonTransactionsLoader:
                 sum(accruals_for_sale) as total_sales,
                 sum(sale_commission) as total_commission,
                 sum(services_total) as total_services
-            FROM fact_ozon_transactions
+            FROM fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row
@@ -474,7 +474,7 @@ class OzonTransactionsLoader:
                 sumIf(amount, category = 'Acquiring') as acquiring,
                 sumIf(amount, category = 'Compensation') as compensation,
                 sum(amount) as net_payout
-            FROM fact_ozon_transactions
+            FROM fact_ozon_transactions FINAL
             WHERE {where}
         """, parameters=params)
         r = result.first_row

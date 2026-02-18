@@ -218,7 +218,7 @@ class OzonWarehouseStocksLoader:
         r = self._client.query("""
             SELECT count(), uniq(sku), uniq(warehouse_name),
                    sum(free_to_sell), sum(reserved)
-            FROM fact_ozon_warehouse_stocks
+            FROM fact_ozon_warehouse_stocks FINAL
             WHERE shop_id = {shop_id:UInt32} AND dt = today()
         """, parameters={"shop_id": shop_id})
         row = r.first_row

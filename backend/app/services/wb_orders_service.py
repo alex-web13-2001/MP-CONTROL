@@ -176,7 +176,7 @@ class OrdersLoader:
                 max(date) as max_date,
                 sum(price_with_disc) as total_revenue,
                 countIf(is_cancel = 1) as cancel_count
-            FROM fact_orders_raw
+            FROM fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         r = result.first_row

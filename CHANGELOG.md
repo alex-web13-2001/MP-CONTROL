@@ -2,6 +2,24 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-18
+
+### Fixed — Дублирование данных в ClickHouse (ReplacingMergeTree без FINAL)
+
+- **Root cause:** Все SELECT-запросы к `ReplacingMergeTree` таблицам выполнялись без модификатора `FINAL`, из-за чего ClickHouse возвращал несхлопнутые дубли. Расхождение с Ozon Performance: **25 468₽ (Ozon) vs 35 607₽ (наша БД)** — завышение на 40%.
+- **10 файлов, 15 запросов исправлены:**
+  - `ozon_finance_service.py` — `get_stats()`, `get_pnl()` (fact_ozon_transactions)
+  - `ozon_orders_service.py` — `get_stats()` (fact_ozon_orders)
+  - `ozon_products_service.py` — 5 Loader'ов: inventory, commissions, content_rating, promotions, availability
+  - `ozon_seller_rating_service.py` — `get_stats()` (fact_ozon_seller_rating)
+  - `ozon_price_service.py` — `get_stats()` (fact_ozon_prices)
+  - `ozon_funnel_service.py` — `get_stats()` (fact_ozon_funnel)
+  - `ozon_returns_service.py` — `get_stats()` (fact_ozon_returns)
+  - `ozon_warehouse_stocks_service.py` — `get_stats()` (fact_ozon_warehouse_stocks)
+  - `wb_orders_service.py` — `get_stats()` (fact_orders_raw)
+- **`ozon_ads_service.py`:** Добавлен `OPTIMIZE TABLE FINAL` после INSERT в `insert_stats()` — дубли схлопываются сразу, не дожидаясь фонового мержа.
+- **Верификация:** После `OPTIMIZE TABLE FINAL` запросы с/без `FINAL` возвращают идентичные данные: **25 546.73₽** (расхождение с Ozon < 0.3%).
+
 ## [Unreleased] - 2026-02-17
 
 ### Added — Лёгкая задача сбора данных рекламных кампаний WB (каждые 30 мин)

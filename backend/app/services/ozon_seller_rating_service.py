@@ -143,7 +143,7 @@ class OzonSellerRatingLoader:
             return {}
         r = self._client.query("""
             SELECT count(), uniq(rating_name), uniq(group_name)
-            FROM fact_ozon_seller_rating
+            FROM fact_ozon_seller_rating FINAL
             WHERE shop_id = {shop_id:UInt32} AND dt = today()
         """, parameters={"shop_id": shop_id})
         row = r.first_row

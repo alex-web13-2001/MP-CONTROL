@@ -214,7 +214,7 @@ class OzonPriceLoader:
             SELECT count(), uniq(sku),
                    avg(price), avg(sales_percent),
                    avg(fbo_commission_percent), avg(acquiring_percent)
-            FROM fact_ozon_prices
+            FROM fact_ozon_prices FINAL
             WHERE shop_id = {shop_id:UInt32} AND dt = today()
         """, parameters={"shop_id": shop_id})
         row = r.first_row

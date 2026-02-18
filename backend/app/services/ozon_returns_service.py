@@ -292,7 +292,7 @@ class OzonReturnsLoader:
                 countIf(return_type = 'Return') as returns,
                 uniq(sku) as unique_skus,
                 sum(price * quantity) as total_value
-            FROM fact_ozon_returns
+            FROM fact_ozon_returns FINAL
             WHERE shop_id = {shop_id:UInt32}
         """, parameters={"shop_id": shop_id})
         row = r.first_row
