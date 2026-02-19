@@ -25,10 +25,17 @@ class Settings(BaseSettings):
     postgres_user: str = "mms"
     postgres_password: str = "mms_secret"
     postgres_db: str = "mms"
+    postgres_url: str = ""  # Full URL override (for external managed PG with SSL)
 
     @property
-    def postgres_url(self) -> str:
-        """Get PostgreSQL connection URL."""
+    def database_url(self) -> str:
+        """Get PostgreSQL connection URL.
+        
+        If POSTGRES_URL is set, use it directly (e.g. managed DB with SSL).
+        Otherwise, construct from individual POSTGRES_* parts.
+        """
+        if self.postgres_url:
+            return self.postgres_url
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"

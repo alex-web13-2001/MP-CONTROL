@@ -286,7 +286,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
 
     # ── Read credentials ─────────────────────────────────────
     async def _load():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
@@ -440,7 +440,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
         status_message = "; ".join(errors_list) if errors_list else None
 
         async def _finalize():
-            engine = create_async_engine(settings.postgres_url)
+            engine = create_async_engine(settings.database_url)
             sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
             from datetime import datetime, timezone
             async with sf() as db:
@@ -520,7 +520,7 @@ def sync_all_daily(self):
     r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with sf() as db:
@@ -619,7 +619,7 @@ def sync_all_frequent(self):
     r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with sf() as db:
@@ -738,7 +738,7 @@ def sync_all_ads(self):
     r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
 
     async def _dispatch():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with sf() as db:
@@ -914,7 +914,7 @@ def sync_wb_finance_history(
     
     async def download_and_process():
         # Create database session for downloading
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         
         async with async_session() as db:
@@ -1096,7 +1096,7 @@ def sync_wb_campaign_snapshot(self, shop_id: int, api_key: str):
             yield lst[i:i + n]
 
     async def run_snapshot():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         loader = WBAdvertisingLoader(
@@ -1197,7 +1197,7 @@ def sync_all_campaign_snapshots(self):
     settings = get_settings()
 
     async def _dispatch():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with sf() as db:
@@ -1332,7 +1332,7 @@ def sync_wb_advert_history(
             logger.error(f"Error saving events to DB: {e}")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         loader = WBAdvertisingLoader(
@@ -1611,7 +1611,7 @@ def sync_commercial_data(
             logger.error(f"Error saving commercial events to DB: {e}")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         fetched_at = datetime.utcnow()
 
@@ -1748,7 +1748,7 @@ def sync_warehouses(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
@@ -1830,7 +1830,7 @@ def sync_product_content(
             logger.error(f"Error saving content events to DB: {e}")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
@@ -1962,7 +1962,7 @@ def sync_sales_funnel(self, shop_id: int, api_key: str):
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
@@ -2064,7 +2064,7 @@ def backfill_sales_funnel(
     settings = get_settings()
 
     async def run_backfill():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         end = date.today()
@@ -2203,7 +2203,7 @@ def sync_orders(self, shop_id: int, api_key: str):
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         # Step 1: Determine dateFrom from ClickHouse
@@ -2298,7 +2298,7 @@ def backfill_orders(self, shop_id: int, api_key: str, days: int = 90):
     settings = get_settings()
 
     async def run_backfill():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         date_from = datetime.utcnow() - timedelta(days=days)
@@ -2408,7 +2408,7 @@ def sync_ozon_products(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2496,7 +2496,7 @@ def sync_ozon_product_snapshots(
     ch_db = os.getenv("CLICKHOUSE_DB", "mms_analytics")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2596,7 +2596,7 @@ def sync_ozon_orders(
     to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2671,7 +2671,7 @@ def backfill_ozon_orders(
     to = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2755,7 +2755,7 @@ def sync_ozon_finance(
     to = now.strftime("%Y-%m-%dT23:59:59.000Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2832,7 +2832,7 @@ def backfill_ozon_finance(
     to = now.strftime("%Y-%m-%dT23:59:59.000Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -2908,7 +2908,7 @@ def sync_ozon_funnel(
     date_to = now.strftime("%Y-%m-%d")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -2963,7 +2963,7 @@ def backfill_ozon_funnel(
     date_to = now.strftime("%Y-%m-%d")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             self.update_state(state='PROGRESS', meta={
@@ -3021,7 +3021,7 @@ def sync_ozon_returns(
     time_to = now.strftime("%Y-%m-%dT23:59:59Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -3078,7 +3078,7 @@ def backfill_ozon_returns(
     time_to = now.strftime("%Y-%m-%dT23:59:59Z")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -3129,7 +3129,7 @@ def sync_ozon_warehouse_stocks(
     ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -3175,7 +3175,7 @@ def sync_ozon_prices(
     ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -3222,7 +3222,7 @@ def sync_ozon_seller_rating(
     ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         try:
             async with sf() as db:
@@ -3308,7 +3308,7 @@ def sync_ozon_content(
         logger.info(f"Saved {len(events)} Ozon content events")
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -3397,7 +3397,7 @@ def sync_ozon_inventory(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -3474,7 +3474,7 @@ def sync_ozon_commissions(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -3552,7 +3552,7 @@ def sync_ozon_content_rating(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         try:
@@ -3666,7 +3666,7 @@ def monitor_ozon_bids(
     settings = get_settings()
 
     async def run_monitor():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         self.update_state(state='PROGRESS', meta={'status': 'Fetching Ozon ad bids via proxy...'})
@@ -3860,7 +3860,7 @@ def sync_ozon_ad_stats(
     settings = get_settings()
 
     async def run_sync():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         self.update_state(state='PROGRESS', meta={'status': 'Preparing Ozon ad stats sync via proxy...'})
@@ -3986,7 +3986,7 @@ def backfill_ozon_ads(
     settings = get_settings()
 
     async def run_backfill():
-        engine = create_async_engine(settings.postgres_url)
+        engine = create_async_engine(settings.database_url)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         import redis.asyncio as aioredis
