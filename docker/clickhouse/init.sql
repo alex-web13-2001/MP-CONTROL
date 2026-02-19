@@ -707,3 +707,243 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_ad_daily (
     drr Float32
 ) ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (shop_id, campaign_id, sku, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Orders (FBO + FBS postings, 1 row per product per posting)
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_orders (
+    posting_number String,
+    order_id UInt64,
+    order_number String,
+    order_date DateTime,
+    in_process_at DateTime,
+    status String,
+    substatus String,
+    sku UInt64,
+    product_id UInt64,
+    offer_id String,
+    product_name String,
+    quantity UInt32,
+    warehouse_mode String,
+    price Decimal(18, 2),
+    old_price Decimal(18, 2),
+    commission_amount Decimal(18, 2),
+    commission_percent Decimal(5, 2),
+    payout Decimal(18, 2),
+    total_discount_percent Decimal(5, 2),
+    total_discount_value Decimal(18, 2),
+    city String,
+    region String,
+    cluster_from String,
+    cluster_to String,
+    delivery_type String,
+    warehouse_name String,
+    cancel_reason String,
+    shipment_date DateTime,
+    shop_id UInt32,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(order_date)
+ORDER BY (shop_id, sku, order_date, posting_number);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Financial Transactions
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_transactions (
+    operation_id UInt64,
+    operation_date DateTime,
+    operation_type String,
+    operation_type_name String,
+    category String,
+    posting_number String,
+    delivery_schema String,
+    sku UInt64,
+    item_name String,
+    amount Decimal(18, 2),
+    accruals_for_sale Decimal(18, 2),
+    sale_commission Decimal(18, 2),
+    services_total Decimal(18, 2),
+    type String,
+    shop_id UInt32,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(operation_date)
+ORDER BY (shop_id, operation_date, operation_id);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Sales Funnel (ordered_units, revenue per SKU per day)
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_funnel (
+    dt Date,
+    shop_id UInt32,
+    sku UInt64,
+    sku_name String,
+    ordered_units UInt32,
+    revenue Decimal(18, 2),
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, sku, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Returns
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_returns (
+    dt Date,
+    shop_id UInt32,
+    return_id UInt64,
+    order_id UInt64,
+    order_number String,
+    posting_number String,
+    return_type String,
+    return_schema String,
+    return_reason String,
+    sku UInt64,
+    offer_id String,
+    product_name String,
+    quantity UInt32,
+    price Decimal(18, 2),
+    place_name String,
+    target_place String,
+    compensation_status String,
+    accepted_at DateTime,
+    returned_at DateTime,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, return_id);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Price History
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_prices (
+    dt Date,
+    shop_id UInt32,
+    sku UInt64,
+    product_id UInt64,
+    offer_id String,
+    product_name String,
+    price Decimal(18, 2),
+    old_price Decimal(18, 2),
+    min_price Decimal(18, 2),
+    marketing_price Decimal(18, 2),
+    sales_percent Float32,
+    fbo_commission_percent Float32,
+    fbs_commission_percent Float32,
+    fbo_commission_value Decimal(18, 2),
+    fbs_commission_value Decimal(18, 2),
+    acquiring_percent Float32,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, sku, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Commissions per product
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_commissions (
+    dt Date,
+    updated_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    product_id UInt64,
+    offer_id String,
+    sku UInt64,
+    sales_percent Float32,
+    fbo_fulfillment_amount Decimal(18, 2),
+    fbo_direct_flow_trans_min Decimal(18, 2),
+    fbo_direct_flow_trans_max Decimal(18, 2),
+    fbo_deliv_to_customer Decimal(18, 2),
+    fbo_return_flow Decimal(18, 2),
+    fbs_direct_flow_trans_min Decimal(18, 2),
+    fbs_direct_flow_trans_max Decimal(18, 2),
+    fbs_deliv_to_customer Decimal(18, 2),
+    fbs_first_mile_min Decimal(18, 2),
+    fbs_first_mile_max Decimal(18, 2),
+    fbs_return_flow Decimal(18, 2)
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, product_id, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Seller Rating
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_seller_rating (
+    dt Date,
+    shop_id UInt32,
+    group_name String,
+    rating_name String,
+    rating_value Float64,
+    rating_status String,
+    penalty_score Float64,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, rating_name, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Warehouse Stocks
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_warehouse_stocks (
+    dt Date,
+    shop_id UInt32,
+    sku UInt64,
+    product_name String,
+    offer_id String,
+    warehouse_name String,
+    warehouse_type String,
+    free_to_sell UInt32,
+    promised UInt32,
+    reserved UInt32,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, sku, warehouse_name, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Content Rating per SKU
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_content_rating (
+    dt Date,
+    updated_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    sku UInt64,
+    product_id UInt64,
+    rating Float32,
+    media_rating Float32,
+    description_rating Float32,
+    attributes_rating Float32,
+    rich_content_rating Float32
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, sku, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Promotions
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_promotions (
+    dt Date,
+    updated_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    product_id UInt64,
+    offer_id String,
+    promo_type String,
+    is_enabled UInt8
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, product_id, promo_type, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Product Availability
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_availability (
+    dt Date,
+    updated_at DateTime DEFAULT now(),
+    shop_id UInt32,
+    product_id UInt64,
+    offer_id String,
+    sku UInt64,
+    source String,
+    availability String
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, product_id, source, dt);
