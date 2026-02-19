@@ -4,6 +4,44 @@
 
 ## [Unreleased] - 2026-02-19
 
+### Docs — Обновление архитектурной документации
+
+- **`04_BACKEND_API.md`:** Добавлена секция `Дашборд Ozon — /api/v1/dashboard` (endpoint, response schema, логика). Обновлён роутинг (6 роутеров).
+- **`06_FRONTEND.md`:** Обновлена секция `DashboardPage` — живые данные из API, 6 KPI-карточек, компоненты, API клиент.
+
+### Changed — Дашборд Ozon v2 (Рефакторинг по фидбеку)
+
+- **Backend / `dashboard.py` [REWRITE]:** Упрощён до 4 SQL-запросов (было 11). Добавлены `views` и `clicks` из `fact_ozon_ad_daily`. Убраны запросы остатков, рейтинга продавца, возвратов и событий.
+- **Frontend / `dashboard.ts` [MODIFY]:** Упрощены TypeScript типы — убраны `StocksSummary`, `PnlSummary`, `SellerRating`, `RecentReturn`, `RecentEvent`, `ExpensesDailyPoint`. Добавлены `views`/`views_delta`/`clicks`/`clicks_delta` в `DashboardKpi`.
+- **Frontend / `DashboardPage.tsx` [REWRITE]:** ~480 строк (было ~1050):
+  - ❌ Убраны карточки **Возвраты** и **К выплате**
+  - ✅ Добавлены карточки **Показы** и **Клики** с дельтой к предыдущему периоду
+  - ✅ DRR рассчитывается динамически (дельта в п.п.)
+  - ✅ Числа без сокращений — полная сумма (`36 304 ₽` вместо `36К ₽`)
+  - ❌ Убраны секции: Остатки, Структура расходов (P&L), Последние события, Здоровье аккаунта
+  - Оставлены: KPI-карточки (6 шт.), График продаж, Таблица ТОП товаров
+
+## [Unreleased] - 2026-02-19
+
+### Added — Дашборд Ozon (аналитика одной страницей)
+
+- **Backend / `dashboard.py` [NEW]:** Endpoint `GET /api/v1/dashboard/ozon?shop_id=X&period=7d|30d|today` — 11 SQL-запросов к ClickHouse + PostgreSQL, возвращает KPI, графики, ТОП товаров, P&L, остатки, рейтинг продавца, возвраты и события одним вызовом. Авторизация через JWT, проверка ownership магазина.
+- **Frontend / `dashboard.ts` [NEW]:** API клиент с полной TypeScript типизацией (DashboardKpi, SalesDailyPoint, ExpensesDailyPoint, TopProduct, StocksSummary, PnlSummary, SellerRating, RecentReturn, RecentEvent).
+- **Frontend / `DashboardPage.tsx` [REWRITE]:** ~700 строк — 8 компонентов:
+  - **6 KPI-карточек** — Заказы, Выручка, К выплате, Возвраты, Рекл. расход, DRR (с % delta и инверсией для «чем меньше — тем лучше»)
+  - **SalesChart** — ComposedChart (bars заказов + line выручки, 2 оси Y)
+  - **ExpensesChart** — AreaChart stacked (доход, комиссия, логистика, реклама, штрафы)
+  - **TopProductsTable** — 3 режима (Лидеры/Падающие/Проблемные), фото, артикул, заказы, выручка, Δ%, FBO/FBS остатки, цена, рекл. расход, DRR
+  - **StocksCard** — PieChart donut FBO/FBS + zero-stock alert
+  - **PnlCard** — Stacked bar + breakdown комиссия/логистика/реклама/штрафы → к выплате
+  - **SellerRatingCard** — Группировка по категориям, статус-бейджи (Норма/Внимание/Критично)
+  - **EventsFeed** — Объединённая лента возвратов и событий
+  - Period selector (Сегодня/7д/30д), auto-refresh каждые 2 мин, Skeleton-loading, error-handling
+- **Backend / `router.py`:** Подключён `dashboard_router`.
+- **Файлы:** `dashboard.py` (NEW), `dashboard.ts` (NEW), `DashboardPage.tsx` (REWRITE), `router.py` (MODIFY)
+
+## [Unreleased] - 2026-02-19
+
 ### Added — Техническая документация архитектуры (Этап 1)
 
 - **`docs/architecture/01_OVERVIEW.md`** — полный архитектурный обзор: стек технологий, 12 Docker-сервисов, Celery очереди/расписание, Anti-Ban система (Rate Limiter, Proxy Provider, Circuit Breaker), аутентификация (JWT + bcrypt), шифрование API-ключей (Fernet), роли Redis, frontend структура, API домены WB/Ozon. 6 Mermaid-диаграмм.

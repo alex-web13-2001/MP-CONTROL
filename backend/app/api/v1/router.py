@@ -7,6 +7,7 @@ from app.api.v1.shops import router as shops_router
 from app.api.v1.finance_reports import router as finance_reports_router
 from app.api.v1.advertising import router as advertising_router
 from app.api.v1.commercial import router as commercial_router
+from app.api.v1.dashboard import router as dashboard_router
 
 api_router = APIRouter()
 
@@ -18,6 +19,7 @@ api_router.include_router(shops_router)
 api_router.include_router(finance_reports_router)
 api_router.include_router(advertising_router)
 api_router.include_router(commercial_router)
+api_router.include_router(dashboard_router)
 
 
 @api_router.get("/")

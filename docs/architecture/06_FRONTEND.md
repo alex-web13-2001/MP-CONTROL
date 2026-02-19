@@ -163,19 +163,31 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Шаги: выбор маркетплейса → ввод ключа → валидация → создание
 - По завершении: redirect → `/`
 
-### `DashboardPage` (204 строки)
+### `DashboardPage` (~480 строк)
 
-6 KPI-карточек с анимацией (Framer Motion):
+Подключён к `GET /api/v1/dashboard/ozon`. Auto-refresh каждые 2 мин.
 
-- Заказы сегодня
-- Выручка
-- Просмотры
-- Конверсия
-- Остатки FBO
-- Расход рекламы
+**6 KPI-карточек** (Framer Motion анимация, delta к предыдущему периоду):
 
-2 placeholder-графика: «Динамика продаж» и «Воронка продаж».
-Таблица «Топ товары» (skeleton). Данные пока не подключены — placeholder.
+- Заказы (orders_count)
+- Выручка (revenue + avg_check)
+- Показы рекламы (views)
+- Клики рекламы (clicks)
+- Расход рекламы (ad_spend, invertDelta)
+- DRR = ad_spend / revenue × 100 (invertDelta)
+
+**Компоненты:**
+
+| Компонент           | Описание                                                      |
+| ------------------- | ------------------------------------------------------------- |
+| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent      |
+| `PeriodSelector`    | Сегодня / 7д / 30д                                            |
+| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y)            |
+| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото, артикул, DRR |
+| `DashboardSkeleton` | Skeleton loader                                               |
+
+**API клиент:** `src/api/dashboard.ts` — TypeScript типы + `getOzonDashboardApi()`.  
+**Числа:** полные, без сокращений (например `180 671 ₽`, не `180К ₽`).
 
 ### `SettingsPage` (633 строки — самая большая страница)
 
@@ -240,3 +252,9 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 // <Route path="/advertising" element={<AdvertisingPage />} />
 // <Route path="/events" element={<EventsPage />} />
 ```
+
+---
+
+### 2026-02-19
+
+- Обновлена секция `DashboardPage`: живые данные из API вместо placeholder, 6 KPI-карточек (Показы/Клики вместо Остатки FBO/Конверсия), компоненты, API клиент
