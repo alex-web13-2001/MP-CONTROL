@@ -18,9 +18,13 @@ export default function OnboardingGuard({
   const currentShop = useAppStore((s) => s.currentShop)
   const setCurrentShop = useAppStore((s) => s.setCurrentShop)
 
-  // Auto-select first active shop if none selected
+  // Auto-select first active shop if none selected,
+  // or if persisted shop no longer exists in API response (stale localStorage)
   useEffect(() => {
-    if (!currentShop && shops.length > 0) {
+    if (shops.length === 0) return
+
+    const shopStillExists = currentShop && shops.some((s) => s.id === currentShop.id)
+    if (!shopStillExists) {
       const activeShop = shops.find((s) => s.status === 'active') || shops[0]
       setCurrentShop({
         id: activeShop.id,
