@@ -2516,7 +2516,7 @@ def sync_ozon_product_snapshots(
                 service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
                 products_info = await service.fetch_product_info(product_ids)
 
-            ch_kwargs = dict(host=ch_host, port=ch_port, username=ch_user, database=ch_db)
+            ch_kwargs = dict(host=ch_host, port=ch_port, username=ch_user, password=os.getenv("CLICKHOUSE_PASSWORD", ""), database=ch_db)
             results = {}
 
             # 3. Promotions
@@ -2617,7 +2617,7 @@ def sync_ozon_orders(
                 'status': f'Inserting {len(orders)} orders into ClickHouse...',
             })
 
-            with OzonOrdersLoader(host=ch_host, port=ch_port) as loader:
+            with OzonOrdersLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_orders(shop_id, orders)
                 stats = loader.get_stats(shop_id)
 
@@ -2695,7 +2695,7 @@ def backfill_ozon_orders(
                 'status': f'Inserting {len(orders)} historical orders...',
             })
 
-            with OzonOrdersLoader(host=ch_host, port=ch_port) as loader:
+            with OzonOrdersLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_orders(shop_id, orders)
                 stats = loader.get_stats(shop_id)
 
@@ -2777,7 +2777,7 @@ def sync_ozon_finance(
                 'status': f'Inserting {len(normalized)} transactions into ClickHouse...',
             })
 
-            with OzonTransactionsLoader(host=ch_host, port=ch_port) as loader:
+            with OzonTransactionsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_transactions(shop_id, normalized)
                 stats = loader.get_stats(shop_id)
 
@@ -2857,7 +2857,7 @@ def backfill_ozon_finance(
                 'status': f'Inserting {len(normalized)} historical transactions...',
             })
 
-            with OzonTransactionsLoader(host=ch_host, port=ch_port) as loader:
+            with OzonTransactionsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_transactions(shop_id, normalized)
                 stats = loader.get_stats(shop_id)
 
@@ -2918,7 +2918,7 @@ def sync_ozon_funnel(
                 )
                 rows = await service.fetch_all_funnel(date_from, date_to)
 
-            with OzonFunnelLoader(host=ch_host, port=ch_port) as loader:
+            with OzonFunnelLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -2976,7 +2976,7 @@ def backfill_ozon_funnel(
                 )
                 rows = await service.fetch_all_funnel(date_from, date_to)
 
-            with OzonFunnelLoader(host=ch_host, port=ch_port) as loader:
+            with OzonFunnelLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3033,7 +3033,7 @@ def sync_ozon_returns(
 
             rows = normalize_returns(raw)
 
-            with OzonReturnsLoader(host=ch_host, port=ch_port) as loader:
+            with OzonReturnsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3090,7 +3090,7 @@ def backfill_ozon_returns(
 
             rows = normalize_returns(raw)
 
-            with OzonReturnsLoader(host=ch_host, port=ch_port) as loader:
+            with OzonReturnsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3139,7 +3139,7 @@ def sync_ozon_warehouse_stocks(
                 )
                 rows = await service.fetch_warehouse_stocks()
 
-            with OzonWarehouseStocksLoader(host=ch_host, port=ch_port) as loader:
+            with OzonWarehouseStocksLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3185,7 +3185,7 @@ def sync_ozon_prices(
                 )
                 rows = await service.fetch_prices()
 
-            with OzonPriceLoader(host=ch_host, port=ch_port) as loader:
+            with OzonPriceLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3232,7 +3232,7 @@ def sync_ozon_seller_rating(
                 )
                 rows = await service.fetch_rating()
 
-            with OzonSellerRatingLoader(host=ch_host, port=ch_port) as loader:
+            with OzonSellerRatingLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
@@ -3796,7 +3796,7 @@ def monitor_ozon_bids(
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
 
-                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                with OzonBidsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                     inserted = loader.insert_bids(shop_id, changed_bids)
 
             # 7. Update Redis cache
@@ -3929,7 +3929,7 @@ def sync_ozon_ad_stats(
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
 
-                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                with OzonBidsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                     inserted = loader.insert_stats(all_rows)
 
             self.update_state(state='PROGRESS', meta={
@@ -4061,7 +4061,7 @@ def backfill_ozon_ads(
                 total_rows = 0
                 empty_streak = 0
 
-                with OzonBidsLoader(host=ch_host, port=ch_port) as loader:
+                with OzonBidsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                     # Sub-progress for frontend
                     _sub_key = f"sync_sub_progress:{shop_id}"
 
