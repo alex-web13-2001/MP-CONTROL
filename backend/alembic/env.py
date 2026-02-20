@@ -22,7 +22,8 @@ target_metadata = Base.metadata
 # Set URL from app config (supports both local Docker and managed PG)
 settings = get_settings()
 db_url = settings.database_url
-config.set_main_option("sqlalchemy.url", db_url)
+# Escape % for ConfigParser (prod passwords may contain URL-encoded chars)
+config.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:
