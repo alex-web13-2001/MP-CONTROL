@@ -1,6 +1,7 @@
 """Application configuration."""
 
 from functools import lru_cache
+from urllib.parse import urlparse, unquote
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,6 +41,41 @@ class Settings(BaseSettings):
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def psycopg2_conn_params(self) -> dict:
+        """Get connection params dict for psycopg2 (sync driver).
+
+        Parses POSTGRES_URL if set (managed PG on prod),
+        otherwise falls back to individual POSTGRES_* env vars (local Docker).
+        Works on both environments without code changes.
+        """
+        if self.postgres_url:
+            # Parse asyncpg URL → psycopg2 params
+            # Input:  postgresql+asyncpg://user:pass@host:port/db?ssl=require
+            url = self.postgres_url
+            parsed = urlparse(url)
+            params = {
+                "host": parsed.hostname or "localhost",
+                "port": parsed.port or 5432,
+                "user": unquote(parsed.username or ""),
+                "password": unquote(parsed.password or ""),
+                "database": (parsed.path or "/").lstrip("/"),
+            }
+            # Handle sslmode from query params
+            if parsed.query:
+                from urllib.parse import parse_qs
+                qs = parse_qs(parsed.query)
+                if "ssl" in qs or "sslmode" in qs:
+                    params["sslmode"] = "require"
+            return params
+        return {
+            "host": self.postgres_host,
+            "port": self.postgres_port,
+            "user": self.postgres_user,
+            "password": self.postgres_password,
+            "database": self.postgres_db,
+        }
 
     # ClickHouse
     clickhouse_host: str = "clickhouse"

@@ -1301,13 +1301,8 @@ def sync_wb_advert_history(
             return
         
         try:
-            conn = psycopg2.connect(
-                host=os.getenv("POSTGRES_HOST", "postgres"),
-                port=os.getenv("POSTGRES_PORT", 5432),
-                user=os.getenv("POSTGRES_USER", "mms"),
-                password=os.getenv("POSTGRES_PASSWORD", "mms"),
-                database=os.getenv("POSTGRES_DB", "mms")
-            )
+            from app.config import get_settings
+            conn = psycopg2.connect(**get_settings().psycopg2_conn_params)
             cursor = conn.cursor()
             
             for event in events:
@@ -1582,13 +1577,8 @@ def sync_commercial_data(
         if not events:
             return
         try:
-            conn = psycopg2.connect(
-                host=os.getenv("POSTGRES_HOST", "postgres"),
-                port=os.getenv("POSTGRES_PORT", 5432),
-                user=os.getenv("POSTGRES_USER", "mms"),
-                password=os.getenv("POSTGRES_PASSWORD", "mms"),
-                database=os.getenv("POSTGRES_DB", "mms"),
-            )
+            from app.config import get_settings
+            conn = psycopg2.connect(**get_settings().psycopg2_conn_params)
             cursor = conn.cursor()
             for event in events:
                 cursor.execute("""
@@ -1801,13 +1791,8 @@ def sync_product_content(
         if not events:
             return
         try:
-            conn = psycopg2.connect(
-                host=os.getenv("POSTGRES_HOST", "postgres"),
-                port=os.getenv("POSTGRES_PORT", 5432),
-                user=os.getenv("POSTGRES_USER", "mms"),
-                password=os.getenv("POSTGRES_PASSWORD", "mms"),
-                database=os.getenv("POSTGRES_DB", "mms"),
-            )
+            from app.config import get_settings
+            conn = psycopg2.connect(**get_settings().psycopg2_conn_params)
             cursor = conn.cursor()
             for event in events:
                 cursor.execute("""
@@ -2431,13 +2416,8 @@ def sync_ozon_products(
 
             # 3. Upsert into PostgreSQL (returns count + image change events)
             self.update_state(state='PROGRESS', meta={'status': 'Upserting into dim_ozon_products...'})
-            conn_params = {
-                "host": os.getenv("POSTGRES_HOST", "postgres"),
-                "port": int(os.getenv("POSTGRES_PORT", 5432)),
-                "user": os.getenv("POSTGRES_USER", "mms"),
-                "password": os.getenv("POSTGRES_PASSWORD", "mms"),
-                "database": os.getenv("POSTGRES_DB", "mms"),
-            }
+            from app.config import get_settings
+            conn_params = get_settings().psycopg2_conn_params
             count, events = upsert_ozon_products(conn_params, shop_id, products_info)
 
             if events:
@@ -3338,13 +3318,8 @@ def sync_ozon_content(
 
             # 4. Upsert content hashes and detect events
             self.update_state(state='PROGRESS', meta={'status': 'Computing hashes and detecting events...'})
-            conn_params = {
-                "host": os.getenv("POSTGRES_HOST", "postgres"),
-                "port": int(os.getenv("POSTGRES_PORT", 5432)),
-                "user": os.getenv("POSTGRES_USER", "mms"),
-                "password": os.getenv("POSTGRES_PASSWORD", "mms_secret"),
-                "database": os.getenv("POSTGRES_DB", "mms"),
-            }
+            from app.config import get_settings
+            conn_params = get_settings().psycopg2_conn_params
             count, events = upsert_ozon_content(conn_params, shop_id, products_info, descriptions)
 
             # 5. Save events
