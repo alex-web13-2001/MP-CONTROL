@@ -6,8 +6,7 @@
         <ip>::/0</ip>
         <ip>0.0.0.0/0</ip>
       </networks>
-      <!-- Empty password (as per original setup) -->
-      <password></password>
+      <password>d06927bfe3c2a3287abf089cedd4e1ef</password>
     </default>
   </users>
 </clickhouse>
