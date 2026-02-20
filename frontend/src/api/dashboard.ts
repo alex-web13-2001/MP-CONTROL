@@ -24,6 +24,17 @@ export interface SalesDailyPoint {
   revenue: number
 }
 
+export interface AdsDailyPoint {
+  date: string
+  spend: number
+  views: number
+  clicks: number
+  cart: number
+  orders: number
+  drr_ad: number
+  drr_total: number
+}
+
 export interface TopProduct {
   offer_id: string
   name: string
@@ -44,6 +55,7 @@ export interface DashboardResponse {
   kpi: DashboardKpi
   charts: {
     sales_daily: SalesDailyPoint[]
+    ads_daily: AdsDailyPoint[]
   }
   top_products: TopProduct[]
 }

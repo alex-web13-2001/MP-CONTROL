@@ -18,6 +18,7 @@ import {
   ComposedChart,
   Bar,
   Line,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -30,6 +31,7 @@ import { useAppStore } from '@/stores/appStore'
 import {
   getOzonDashboardApi,
   type DashboardResponse,
+  type AdsDailyPoint,
 } from '@/api/dashboard'
 
 /* ═══════════════════════════════════════════════════════════
@@ -248,6 +250,266 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
         />
       </ComposedChart>
     </ResponsiveContainer>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Charts: Ads Daily (Advertising Analytics)
+   ═══════════════════════════════════════════════════════════ */
+
+const ADS_METRICS = [
+  { key: 'spend', label: 'Расход ₽', color: '#f97316', yAxis: 'left' },
+  { key: 'views', label: 'Показы', color: '#3b82f6', yAxis: 'right' },
+  { key: 'clicks', label: 'Клики', color: '#06b6d4', yAxis: 'right' },
+  { key: 'cart', label: 'Корзины', color: '#8b5cf6', yAxis: 'right' },
+  { key: 'orders', label: 'Заказы', color: '#10b981', yAxis: 'left' },
+  { key: 'drr_ad', label: 'ДРР рекламы', color: '#ef4444', yAxis: 'percent' },
+  { key: 'drr_total', label: 'Общий ДРР', color: '#ec4899', yAxis: 'percent' },
+] as const
+
+type AdsMetricKey = typeof ADS_METRICS[number]['key']
+
+const ADS_METRIC_LABELS: Record<string, string> = {
+  spend: 'Расход',
+  views: 'Показы',
+  clicks: 'Клики',
+  cart: 'Корзины',
+  orders: 'Заказы',
+  drr_ad: 'ДРР рекламы',
+  drr_total: 'Общий ДРР',
+}
+
+function AdsChart({ data }: { data: AdsDailyPoint[] }) {
+  const [activeMetrics, setActiveMetrics] = useState<Set<AdsMetricKey>>(
+    new Set(['spend', 'clicks'])
+  )
+
+  const toggleMetric = (key: AdsMetricKey) => {
+    setActiveMetrics(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        if (next.size > 1) next.delete(key) // Keep at least 1 metric
+      } else {
+        next.add(key)
+      }
+      return next
+    })
+  }
+
+  // Check which axes are needed
+  const hasRightAxis = ADS_METRICS.some(
+    m => activeMetrics.has(m.key) && m.yAxis === 'right'
+  )
+  const hasLeftAxis = ADS_METRICS.some(
+    m => activeMetrics.has(m.key) && m.yAxis === 'left'
+  )
+  const hasPercentAxis = ADS_METRICS.some(
+    m => activeMetrics.has(m.key) && m.yAxis === 'percent'
+  )
+
+  if (!data.length) {
+    return (
+      <div className="flex h-[300px] items-center justify-center rounded-xl border border-dashed border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.15)]">
+        <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">Нет рекламных данных</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Metric toggle chips */}
+      <div className="flex flex-wrap gap-2">
+        {ADS_METRICS.map(m => {
+          const isActive = activeMetrics.has(m.key)
+          return (
+            <button
+              key={m.key}
+              onClick={() => toggleMetric(m.key)}
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200"
+              style={{
+                background: isActive ? m.color + '20' : 'transparent',
+                border: `1.5px solid ${isActive ? m.color : 'hsl(var(--border))'}`,
+                color: isActive ? m.color : 'hsl(var(--muted-foreground))',
+              }}
+            >
+              <span
+                className="h-2 w-2 rounded-full transition-all"
+                style={{ background: isActive ? m.color : 'hsl(var(--muted-foreground)/0.3)' }}
+              />
+              {m.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Chart */}
+      <ResponsiveContainer width="100%" height={320}>
+        <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+          <defs>
+            <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
+              <stop offset="100%" stopColor="#f97316" stopOpacity={0.05} />
+            </linearGradient>
+            <linearGradient id="ordersGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity={0.7} />
+              <stop offset="100%" stopColor="#10b981" stopOpacity={0.2} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
+          <XAxis
+            dataKey="date"
+            tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+            tickFormatter={(v: string) => v.slice(5)}
+            axisLine={false}
+            tickLine={false}
+          />
+          {hasLeftAxis && (
+            <YAxis
+              yAxisId="left"
+              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              tickFormatter={(v: number) =>
+                v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()
+              }
+              axisLine={false}
+              tickLine={false}
+              width={50}
+            />
+          )}
+          {hasRightAxis && (
+            <YAxis
+              yAxisId="right"
+              orientation="right"
+              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              tickFormatter={(v: number) =>
+                v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()
+              }
+              axisLine={false}
+              tickLine={false}
+              width={50}
+            />
+          )}
+          {hasPercentAxis && (
+            <YAxis
+              yAxisId="percent"
+              orientation={hasRightAxis ? 'left' : 'right'}
+              tick={{ fontSize: 11, fill: '#ef4444' }}
+              tickFormatter={(v: number) => `${v}%`}
+              axisLine={false}
+              tickLine={false}
+              width={45}
+              domain={[0, 'auto']}
+            />
+          )}
+          <Tooltip
+            contentStyle={{
+              background: 'hsl(var(--card))',
+              border: '1px solid hsl(var(--border))',
+              borderRadius: '8px',
+              fontSize: '13px',
+            }}
+            formatter={(value: number, name: string) => [
+              name === 'spend' ? formatMoney(value)
+                : (name === 'drr_ad' || name === 'drr_total') ? `${value.toFixed(1)}%`
+                : formatNumber(value),
+              ADS_METRIC_LABELS[name] || name,
+            ]}
+            labelFormatter={(label: string) => `📅 ${label}`}
+          />
+
+          {/* Spend — area chart */}
+          {activeMetrics.has('spend') && (
+            <Area
+              yAxisId="left"
+              type="monotone"
+              dataKey="spend"
+              fill="url(#spendGrad)"
+              stroke="#f97316"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#f97316' }}
+            />
+          )}
+
+          {/* Orders — bar chart */}
+          {activeMetrics.has('orders') && (
+            <Bar
+              yAxisId="left"
+              dataKey="orders"
+              fill="url(#ordersGrad)"
+              radius={[3, 3, 0, 0]}
+              barSize={16}
+            />
+          )}
+
+          {/* Views — line */}
+          {activeMetrics.has('views') && (
+            <Line
+              yAxisId="right"
+              type="monotone"
+              dataKey="views"
+              stroke="#3b82f6"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#3b82f6' }}
+            />
+          )}
+
+          {/* Clicks — line */}
+          {activeMetrics.has('clicks') && (
+            <Line
+              yAxisId="right"
+              type="monotone"
+              dataKey="clicks"
+              stroke="#06b6d4"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#06b6d4' }}
+            />
+          )}
+
+          {/* Cart — line */}
+          {activeMetrics.has('cart') && (
+            <Line
+              yAxisId="right"
+              type="monotone"
+              dataKey="cart"
+              stroke="#8b5cf6"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#8b5cf6' }}
+            />
+          )}
+
+          {/* DRR рекламы — dashed line */}
+          {activeMetrics.has('drr_ad') && (
+            <Line
+              yAxisId="percent"
+              type="monotone"
+              dataKey="drr_ad"
+              stroke="#ef4444"
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              dot={false}
+              activeDot={{ r: 4, fill: '#ef4444' }}
+            />
+          )}
+
+          {/* Общий ДРР — dashed line */}
+          {activeMetrics.has('drr_total') && (
+            <Line
+              yAxisId="percent"
+              type="monotone"
+              dataKey="drr_total"
+              stroke="#ec4899"
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              dot={false}
+              activeDot={{ r: 4, fill: '#ec4899' }}
+            />
+          )}
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   )
 }
 
@@ -610,6 +872,22 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent>
             <SalesChart data={data.charts.sales_daily} />
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* ── Ads Chart ── */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.30 }}
+      >
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Рекламная аналитика</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <AdsChart data={data.charts.ads_daily} />
           </CardContent>
         </Card>
       </motion.div>

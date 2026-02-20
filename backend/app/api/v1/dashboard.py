@@ -331,6 +331,72 @@ async def get_ozon_dashboard(
                     p["ad_spend"] = ad["spend"]
                     p["drr"] = round(ad["spend"] / p["revenue"] * 100, 1) if p["revenue"] > 0 else 0
 
+        # ══════════════════════════════════════════════
+        # 5. Charts — Ads daily (fact_ozon_ad_daily)
+        # ══════════════════════════════════════════════
+        ads_daily = ch.query("""
+            WITH ads AS (
+                SELECT
+                    dt AS day,
+                    sum(money_spent) AS spend,
+                    sum(views) AS total_views,
+                    sum(clicks) AS total_clicks,
+                    sum(add_to_cart) AS cart,
+                    sum(orders) AS total_orders,
+                    sum(revenue) AS ad_revenue
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= {start:Date}
+                  AND dt <= {end:Date}
+                GROUP BY day
+            ),
+            daily_orders AS (
+                SELECT
+                    toDate(in_process_at) AS day,
+                    sum(price * quantity) AS total_revenue
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(in_process_at) >= {start:Date}
+                  AND toDate(in_process_at) <= {end:Date}
+                  AND status NOT IN ('cancelled')
+                GROUP BY day
+            )
+            SELECT
+                a.day,
+                a.spend,
+                a.total_views,
+                a.total_clicks,
+                a.cart,
+                a.total_orders,
+                CASE WHEN a.ad_revenue > 0
+                    THEN round(a.spend / a.ad_revenue * 100, 1) ELSE 0
+                END AS drr_ad,
+                CASE WHEN o.total_revenue > 0
+                    THEN round(a.spend / o.total_revenue * 100, 1) ELSE 0
+                END AS drr_total
+            FROM ads a
+            LEFT JOIN daily_orders o ON a.day = o.day
+            ORDER BY a.day
+        """, parameters={
+            "shop_id": shop_id,
+            "start": chart_start,
+            "end": cur_end,
+        }).result_rows
+
+        charts_ads = [
+            {
+                "date": str(row[0]),
+                "spend": round(float(row[1]), 2),
+                "views": int(row[2]),
+                "clicks": int(row[3]),
+                "cart": int(row[4]),
+                "orders": int(row[5]),
+                "drr_ad": float(row[6]),
+                "drr_total": float(row[7]),
+            }
+            for row in ads_daily
+        ]
+
         ch.close()
 
         # ══════════════════════════════════════════════
@@ -356,6 +422,7 @@ async def get_ozon_dashboard(
             },
             "charts": {
                 "sales_daily": charts_sales,
+                "ads_daily": charts_ads,
             },
             "top_products": top_products,
         }
