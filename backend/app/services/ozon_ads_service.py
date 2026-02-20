@@ -52,12 +52,13 @@ CH_BIDS_TABLE = "mms_analytics.log_ozon_bids"
 CH_STATS_TABLE = "mms_analytics.fact_ozon_ad_daily"
 
 # Report poll settings
-REPORT_POLL_INTERVAL = 5   # seconds between status checks
-REPORT_POLL_MAX_WAIT = 120  # max seconds to wait for report
+REPORT_POLL_INTERVAL = 10   # seconds between status checks (reduced API load)
+REPORT_POLL_MAX_WAIT = 300  # max seconds to wait for report (Ozon generates slowly)
 
 # Retry settings for 429 / transient errors
-RETRY_MAX_ATTEMPTS = 5     # max retries per batch
-RETRY_PAUSE_SECONDS = 300  # pause between retries (Ozon Performance API has strict report limits)
+RETRY_MAX_ATTEMPTS = 3     # max retries per batch
+RETRY_PAUSE_SECONDS = 60   # pause between retries
+BATCH_PAUSE_SECONDS = 15   # pause between successful batches
 
 
 def _bid_to_rub(bid_micro: str) -> float:
@@ -337,37 +338,50 @@ class OzonAdsService:
 
         GET /api/client/statistics/{UUID}
 
+        Uses raw httpx (not MarketplaceClient) to avoid rate limiter overhead
+        during polling. Polling is lightweight GET, doesn't need proxy/JA3.
+
         Returns download link when state=OK, None on timeout/error.
         """
         start = time.time()
+        token = await self.auth.get_token()
+        url = f"https://api-performance.ozon.ru/api/client/statistics/{uuid}"
 
         while time.time() - start < REPORT_POLL_MAX_WAIT:
-            response = await self._request(
-                "GET",
-                f"/api/client/statistics/{uuid}",
-            )
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    resp = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
 
-            if not response.is_success:
-                logger.warning("Ozon report status error: %s", response.status_code)
-                await asyncio.sleep(REPORT_POLL_INTERVAL)
-                continue
+                if resp.status_code != 200:
+                    logger.warning("Ozon report status error: %s", resp.status_code)
+                    # Refresh token on 401
+                    if resp.status_code == 401:
+                        token = await self.auth.get_token()
+                    await asyncio.sleep(REPORT_POLL_INTERVAL)
+                    continue
 
-            data = response.data if isinstance(response.data, dict) else {}
-            state = data.get("state")
+                data = resp.json()
+                state = data.get("state")
 
-            if state == "OK":
-                link = data.get("link", f"/api/client/statistics/report?UUID={uuid}")
-                logger.info("Ozon report ready: UUID=%s", uuid)
-                return link
+                if state == "OK":
+                    link = data.get("link", f"/api/client/statistics/report?UUID={uuid}")
+                    logger.info("Ozon report ready: UUID=%s", uuid)
+                    return link
 
-            if state in ("ERROR", "FAILED"):
-                logger.error("Ozon report failed: UUID=%s state=%s", uuid, state)
-                return None
+                if state in ("ERROR", "FAILED"):
+                    logger.error("Ozon report failed: UUID=%s state=%s", uuid, state)
+                    return None
 
-            logger.debug("Ozon report pending: UUID=%s state=%s", uuid, state)
+                logger.debug("Ozon report pending: UUID=%s state=%s", uuid, state)
+            except Exception as e:
+                logger.warning("Ozon report poll error: %s", e)
+
             await asyncio.sleep(REPORT_POLL_INTERVAL)
 
-        logger.error("Ozon report timeout: UUID=%s", uuid)
+        logger.error("Ozon report timeout: UUID=%s (waited %ds)", uuid, REPORT_POLL_MAX_WAIT)
         return None
 
     async def download_report(self, link: str) -> str:
@@ -512,7 +526,7 @@ class OzonAdsService:
         campaign_ids: List[int],
         date_from: str,
         date_to: str,
-        batch_size: int = 10,
+        batch_size: int = 5,
     ) -> List[dict]:
         """
         Full pipeline: order → wait → download → parse.
@@ -611,9 +625,10 @@ class OzonAdsService:
                     )
                 break
 
-            # Rate limit between batches
+            # Rate limit between batches (Ozon: 1 concurrent report per account)
             if batch_idx < len(batches) - 1:
-                pause = 5 if batch_success else RETRY_PAUSE_SECONDS
+                pause = BATCH_PAUSE_SECONDS if batch_success else RETRY_PAUSE_SECONDS
+                logger.info("Pausing %ds before next batch...", pause)
                 await asyncio.sleep(pause)
 
         logger.info("Total stats rows from all batches: %d", len(all_rows))

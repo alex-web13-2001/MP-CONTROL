@@ -66,6 +66,20 @@ MARKETPLACE_LIMITS: Dict[str, RateLimitConfig] = {
         window_seconds=1.0,
         max_requests_in_window=10,
     ),
+    "ozon_performance": RateLimitConfig(
+        # Ozon Performance API (statistics reports) has strict limits:
+        # - 1 concurrent report per account
+        # - 1 campaign = 1 выгрузка
+        # - max 2000 выгрузок/сутки
+        requests_per_second=1.0,
+        requests_per_minute=10,
+        requests_per_hour=100,
+        window_seconds=5.0,           # 1 request per 5 seconds
+        max_requests_in_window=1,
+        initial_backoff_seconds=30.0,  # 429 → minimum 30 sec wait
+        max_backoff_seconds=300.0,     # max 5 min backoff
+        backoff_multiplier=2.0,
+    ),
 }
 
 
