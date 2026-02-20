@@ -58,7 +58,7 @@ REPORT_POLL_MAX_WAIT = 300  # max seconds to wait for report (Ozon generates slo
 # Retry settings for 429 / transient errors
 RETRY_MAX_ATTEMPTS = 3     # max retries per batch
 RETRY_PAUSE_SECONDS = 60   # pause between retries
-BATCH_PAUSE_SECONDS = 15   # pause between successful batches
+BATCH_PAUSE_SECONDS = 30   # pause between successful batches (Ozon: 1 concurrent download/account)
 
 
 def _bid_to_rub(bid_micro: str) -> float:
@@ -526,7 +526,7 @@ class OzonAdsService:
         campaign_ids: List[int],
         date_from: str,
         date_to: str,
-        batch_size: int = 5,
+        batch_size: int = 10,
     ) -> List[dict]:
         """
         Full pipeline: order → wait → download → parse.

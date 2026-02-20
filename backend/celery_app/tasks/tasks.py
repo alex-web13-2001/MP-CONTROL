@@ -3934,7 +3934,7 @@ def backfill_ozon_ads(
     perf_client_id: str,
     perf_client_secret: str,
     days_back: int = 180,
-    chunk_days: int = 30,
+    chunk_days: int = 60,  # API max: 62 days per report
 ):
     """
     Backfill Ozon ad statistics history (same as WB: 6 months, then sync).
