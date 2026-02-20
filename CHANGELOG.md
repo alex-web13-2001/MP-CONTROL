@@ -2,6 +2,48 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-20
+
+### Added — Alembic Database Migrations
+
+- **SQLAlchemy модели:** `DimOzonProduct` (39 колонок), `DimOzonProductContent` → `app/models/ozon_product.py`
+- **Alembic конфигурация:** `alembic.ini`, async `alembic/env.py` (URL из `app.config`, `%` escaping для prod URL), `script.py.mako`
+- **Миграции:**
+  - `001_initial_stamp` — baseline (метка текущей схемы)
+  - `002_add_ozon_product_columns` — 18 расширенных колонок dim_ozon_products (`IF NOT EXISTS`)
+- **`entrypoint.sh`:** `alembic upgrade head` при старте backend (пропускает celery workers)
+- **`Dockerfile` + `Dockerfile.prod`:** ENTRYPOINT → entrypoint.sh с авто-миграцией
+
+### Fixed — ClickHouse Authentication
+
+- **ClickHouse пароль:** `docker/clickhouse/users.d/default-user.xml` + `.env` → `CLICKHOUSE_PASSWORD` обязателен
+- **CH password в Ozon Loaders:** 15 мест в `tasks.py` — добавлен `os.getenv("CLICKHOUSE_PASSWORD", "")`
+- **Celery workers:** рестарт всех 4 celery контейнеров после смены CH пароля
+
+### Fixed — Ozon Ads Rate Limits
+
+- **`sync_ozon_ad_stats`:** time_limit 600→1800, batch_size 10→5, RETRY 5/300→3/60, добавлен BATCH_PAUSE_SECONDS=15
+- **`backfill_ozon_ads`:** chunk_days 7→30, POLL_MAX_WAIT 120→300, POLL_INTERVAL 5→10
+- **Поллинг отчёта:** переведён на raw `httpx` (вместо MarketplaceClient) — избегает rate limiter overhead
+- **Backfill lock:** Redis key `ozon_ads_backfill:{perf_client_id}` — предотвращает конфликт с periodic sync
+
+### Changed — PostgreSQL Connections
+
+- **`psycopg2_conn_params`:** централизованное свойство в `app/config.py` — парсит `POSTGRES_URL` (prod) или отдельные env vars (local)
+- **Tasks:** все 15+ мест ручного парсинга PostgreSQL URL заменены на `get_settings().psycopg2_conn_params`
+
+### Infrastructure
+
+- **`deploy.sh`:** скрипт деплоя (git pull → npm build → docker build → restart)
+- **Git:** настроен на продакшн-сервере (`/opt/mp-control`)
+- **SSL:** Let's Encrypt для mp-control.ru
+
+### Docs
+
+- **`02_DATA_MODEL.md`:** расширена dim_ozon_products (39 колонок), Alembic секция, dim_ozon_product_content
+- **`03_CELERY_PIPELINE.md`:** rate limits sync_ozon_ad_stats, backfill_ozon_ads, psycopg2_conn_params
+- **`07_INFRASTRUCTURE.md`:** entrypoint.sh, deploy.sh, POSTGRES_URL, CH password, prod deployment
+
 ## [Unreleased] - 2026-02-19
 
 ### Docs — Обновление архитектурной документации

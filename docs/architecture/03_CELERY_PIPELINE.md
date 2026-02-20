@@ -241,13 +241,28 @@ Per-request timeout: 120 сек. Rate limit: пауза между неделя�
 
 ### `sync_ozon_ad_stats` (60 мин)
 
+| Параметр             | Значение | Описание                               |
+| -------------------- | -------- | -------------------------------------- |
+| `time_limit`         | 1800 сек | 30 мин (магазины с 40+ кампаниями)     |
+| `soft_time_limit`    | 1740 сек | Мягкий лимит                           |
+| `batch_size`         | 5        | Campaign IDs per report (Ozon: max 10) |
+| `BATCH_PAUSE`        | 15 сек   | Пауза между успешными batch'ами        |
+| `RETRY_MAX_ATTEMPTS` | 3        | Макс. ретраев при 429/ошибке           |
+| `RETRY_PAUSE`        | 60 сек   | Пауза перед ретраем                    |
+| `POLL_MAX_WAIT`      | 300 сек  | Макс. ожидание готовности отчёта       |
+| `POLL_INTERVAL`      | 10 сек   | Интервал поллинга UUID                 |
+
 ```
 1. OAuth2 token → GET campaigns
-2. Order CSV report (batch 10 campaign_ids)
-3. Poll → Download → Parse CSV/ZIP
-4. INSERT → fact_ozon_ad_daily (ReplacingMergeTree)
-Retry: 5 attempts, 300 сек пауза (strict Ozon limits)
+2. Order CSV report (batch 5 campaign_ids)
+3. Poll UUID → raw httpx (не MarketplaceClient) → Download CSV/ZIP
+4. Parse → INSERT → fact_ozon_ad_daily (ReplacingMergeTree)
+Retry: 3 attempts, 60 сек пауза
 ```
+
+> [!NOTE]
+> Поллинг отчёта использует `httpx` напрямую (не MarketplaceClient), чтобы избежать rate limiter overhead на лёгкие GET запросы.
+> Backfill lock: при работе `backfill_ozon_ads` периодический sync пропускается (Redis key `ozon_ads_backfill:{perf_client_id}`).
 
 ### `sync_ozon_content` (ежедневно)
 
@@ -370,14 +385,39 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 
 ## Backfill стратегии
 
-| Задача                    | Глубина  | Стратегия                                         | Rate limit         |
-| ------------------------- | -------- | ------------------------------------------------- | ------------------ |
-| `backfill_sales_funnel`   | 6 мес    | CSV report (async) → fallback: History API weekly | 3 req/мин          |
-| `sync_wb_advert_history`  | 6 мес    | 30-day intervals, batch 50 campaigns              | 1 req/мин          |
-| `sync_wb_finance_history` | 6 мес    | Weekly intervals, JSON v5 API                     | 120с timeout/req   |
-| `backfill_orders`         | 90 дней  | Pagination 80K rows, flag=0                       | 1 req/мин          |
-| `backfill_ozon_orders`    | 365 дней | FBO + FBS, posting/list                           | standard           |
-| `backfill_ozon_finance`   | 12 мес   | Calendar months (API limit: 1 month/req)          | 1.5с between pages |
-| `backfill_ozon_funnel`    | 365 дней | 90-day quarters                                   | standard           |
-| `backfill_ozon_returns`   | 180 дней | Standard                                          | standard           |
-| `backfill_ozon_ads`       | 180 дней | weekly chunks, CSV report                         | 300с retry pause   |
+| Задача                    | Глубина  | Стратегия                                                                 | Rate limit                 |
+| ------------------------- | -------- | ------------------------------------------------------------------------- | -------------------------- |
+| `backfill_sales_funnel`   | 6 мес    | CSV report (async) → fallback: History API weekly                         | 3 req/мин                  |
+| `sync_wb_advert_history`  | 6 мес    | 30-day intervals, batch 50 campaigns                                      | 1 req/мин                  |
+| `sync_wb_finance_history` | 6 мес    | Weekly intervals, JSON v5 API                                             | 120с timeout/req           |
+| `backfill_orders`         | 90 дней  | Pagination 80K rows, flag=0                                               | 1 req/мин                  |
+| `backfill_ozon_orders`    | 365 дней | FBO + FBS, posting/list                                                   | standard                   |
+| `backfill_ozon_finance`   | 12 мес   | Calendar months (API limit: 1 month/req)                                  | 1.5с between pages         |
+| `backfill_ozon_funnel`    | 365 дней | 90-day quarters                                                           | standard                   |
+| `backfill_ozon_returns`   | 180 дней | Standard                                                                  | standard                   |
+| `backfill_ozon_ads`       | 180 дней | 30-day chunks (newest first), CSV report, early exit after 5 empty chunks | 60с retry, 15с batch pause |
+
+---
+
+## PostgreSQL подключение (Celery)
+
+Все задачи, которым нужен прямой доступ к PostgreSQL (через `psycopg2`), используют
+свойство `Settings.psycopg2_conn_params` из `app/config.py`.
+
+Подробнее:
+
+- **Prod:** парсит `POSTGRES_URL` (URL-encoded пароль, SSL=require)
+- **Local:** собирает из отдельных `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
+
+> [!WARNING]
+> **Не использовать** manual parsing `POSTGRES_URL` в задачах. Всегда `get_settings().psycopg2_conn_params`.
+
+---
+
+## Changelog
+
+### 2026-02-20
+
+- Обновлены параметры `sync_ozon_ad_stats`: time_limit 600→1800, retry 5/300→3/60, batch_size 10→5, добавлен BATCH_PAUSE
+- Обновлён `backfill_ozon_ads`: chunk_days 7→30, описание early exit
+- Добавлена секция PostgreSQL подключение (psycopg2_conn_params)

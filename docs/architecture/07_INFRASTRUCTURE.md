@@ -77,8 +77,10 @@ tabix       → clickhouse
 | `CLICKHOUSE_HOST`       | `clickhouse`           | Hostname                                          |
 | `CLICKHOUSE_PORT`       | `8123`                 | HTTP порт                                         |
 | `CLICKHOUSE_USER`       | `default`              | Пользователь                                      |
-| `CLICKHOUSE_PASSWORD`   | —                      | Пароль (пустой по умолчанию)                      |
+| `CLICKHOUSE_PASSWORD`   | —                      | Пароль (**обязателен, см. заметку ниже**)         |
 | `CLICKHOUSE_DB`         | `mms_analytics`        | БД                                                |
+| **PostgreSQL (prod)**   |                        |                                                   |
+| `POSTGRES_URL`          | —                      | Полный URL для managed PG (Timeweb Cloud)         |
 | **Redis**               |                        |                                                   |
 | `REDIS_HOST`            | `redis`                | Hostname                                          |
 | `REDIS_PORT`            | `6379`                 | Порт                                              |
@@ -98,6 +100,12 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 > [!CAUTION]
 > `SECRET_KEY` используется для JWT подписи и Fernet шифрования API-ключей маркетплейсов. При смене ключа — все сессии и зашифрованные ключи станут невалидными.
+
+> [!WARNING]
+> **ClickHouse пароль:** задаётся в `docker/clickhouse/users.d/default-user.xml` (не в `.env`!). `CLICKHOUSE_PASSWORD` в `.env` должен совпадать с XML-конфигом. Пустой пароль → 401 Auth Failed в celery workers.
+
+> [!NOTE]
+> **На проде** вместо `POSTGRES_HOST`/`PORT`/`USER`/`PASSWORD`/`DB` используется единый `POSTGRES_URL` (формат: `postgresql+asyncpg://user:pass@host:port/db`). Пароль URL-encoded.
 
 ---
 
@@ -210,14 +218,44 @@ celery_app.conf.update(
 
 ## Backend Dockerfile
 
+### Dev (`Dockerfile`)
+
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+RUN chmod +x entrypoint.sh
+EXPOSE 8000
+ENTRYPOINT ["./entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 ```
+
+### Prod (`Dockerfile.prod`)
+
+```dockerfile
+# То же самое, но без --reload, с 2 workers:
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+```
+
+### `entrypoint.sh` — авто-миграции
+
+```bash
+#!/bin/bash
+set -e
+# Только для uvicorn (не celery workers)
+if [[ "$1" == "uvicorn" ]]; then
+    echo "=== Running Alembic migrations ==="
+    alembic upgrade head 2>&1 || echo "WARNING: migration failed"
+    echo "=== Migrations complete ==="
+fi
+exec "$@"
+```
+
+> [!IMPORTANT]
+> При каждом `docker compose up` backend автоматически применяет Alembic миграции.
+> Celery workers пропускают миграции (проверка `$1 == uvicorn`).
 
 ### Ключевые зависимости (requirements.txt)
 
@@ -225,6 +263,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 | --------------------------------- | ---------------------------------------- |
 | `fastapi` + `uvicorn`             | Web framework + ASGI server              |
 | `sqlalchemy[asyncio]` + `asyncpg` | ORM + async PostgreSQL                   |
+| `alembic`                         | Database migrations                      |
 | `celery[redis]`                   | Task queue                               |
 | `redis`                           | Python Redis client                      |
 | `clickhouse-connect`              | ClickHouse client                        |
@@ -233,6 +272,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 | `bcrypt`                          | Password hashing                         |
 | `pyjwt`                           | JWT tokens                               |
 | `httpx`                           | Async HTTP client (Ozon Performance API) |
+| `psycopg2-binary`                 | Sync PostgreSQL (Celery tasks)           |
 
 ---
 
@@ -241,7 +281,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 ```bash
 # 1. Создать .env из примера
 cp .env.example .env
-# Заполнить SECRET_KEY!
+# Заполнить SECRET_KEY и CLICKHOUSE_PASSWORD!
 
 # 2. Поднять всю инфраструктуру
 docker-compose up -d
@@ -266,6 +306,43 @@ docker-compose restart frontend
 docker-compose up -d --build
 ```
 
+> [!WARNING]
+> При изменении `.env` нужно рестартить **ВСЕ** контейнеры (backend + все celery), не только backend!
+
+---
+
+## Production деплой
+
+Сервер: Timeweb Cloud VPS (Ubuntu 24.04, 5.42.98.106)
+
+### Файлы
+
+| Файл                      | Описание                                  |
+| ------------------------- | ----------------------------------------- |
+| `docker-compose.prod.yml` | Prod compose (нет frontend/pgadmin/tabix) |
+| `backend/Dockerfile.prod` | 2 workers, нет --reload, с entrypoint.sh  |
+| `nginx/nginx.prod.conf`   | SSL (Let's Encrypt), mp-control.ru        |
+| `deploy.sh`               | Скрипт деплоя                             |
+
+### Процесс деплоя
+
+```bash
+ssh root@5.42.98.106
+cd /opt/mp-control
+./deploy.sh
+# или вручную:
+git pull
+npm run build        # frontend
+docker compose -f docker-compose.prod.yml build backend
+docker compose -f docker-compose.prod.yml up -d
+```
+
+### Переменные окружения (прод)
+
+- `POSTGRES_URL` — managed PostgreSQL (Timeweb Cloud, не локальный Docker)
+- `CLICKHOUSE_HOST=clickhouse` — локальный Docker контейнер (порт не открыт наружу)
+- `SECRET_KEY` — уникальный для прода
+
 ---
 
 ## Gitignore
@@ -277,3 +354,16 @@ docker-compose up -d --build
 - `node_modules/` — npm зависимости
 - `celerybeat-schedule` — Celery Beat state
 - `*.pyc`, `*.xlsx`, `*.csv` — временные файлы
+
+---
+
+## Changelog
+
+### 2026-02-20
+
+- Обновлён Dockerfile: добавлен `entrypoint.sh` с авто-миграцией Alembic
+- Добавлена секция Production деплой (deploy.sh, сервер, процесс)
+- Добавлена `POSTGRES_URL` в таблицу env vars
+- Добавлено предупреждение о ClickHouse пароле (XML конфиг vs .env)
+- Добавлен `alembic` и `psycopg2-binary` в таблицу зависимостей
+- Добавлено предупреждение: при изменении .env рестартить ВСЕ контейнеры

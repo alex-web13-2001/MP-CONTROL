@@ -239,19 +239,39 @@ erDiagram
 | `main_photo_id`                   | TEXT        | File-ID из CDN URL           |
 | `photos_hash`                     | VARCHAR(32) | MD5( sorted photo IDs JSON ) |
 
-#### `dim_ozon_products` — справочник Ozon товаров
+#### `dim_ozon_products` — справочник Ozon товаров (39 колонок)
 
-| Поле                        | Тип          | Описание                |
-| --------------------------- | ------------ | ----------------------- |
-| `product_id` + `shop_id`    | UK           | Уникальный товар        |
-| `offer_id`                  | VARCHAR(100) | Артикул продавца (Ozon) |
-| `sku`                       | BIGINT       | SKU на площадке         |
-| `stocks_fbo` / `stocks_fbs` | INTEGER      | Остатки FBO/FBS         |
-| `is_archived`               | BOOLEAN      | Архивный товар          |
+SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProduct`
+
+| Группа             | Поля                                                                                    | Описание                                  |
+| ------------------ | --------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Core**           | `product_id` (UK + shop_id), `offer_id`, `sku`, `fbo_sku`, `fbs_sku`, `barcode`, `name` | Идентификация товара                      |
+| **Pricing**        | `marketing_price`, `old_price`, `price`, `min_price`, `vat`                             | Текущие цены + НДС                        |
+| **Price Index**    | `price_index_color`, `price_index_value`, `competitor_min_price`                        | Ценовой индекс и конкуренты               |
+| **Stocks**         | `stocks_fbo`, `stocks_fbs`                                                              | Остатки по моделям (FBO/FBS)              |
+| **Status**         | `status`, `moderate_status`, `status_name`, `is_archived`                               | Модерация и видимость                     |
+| **Availability**   | `availability`, `availability_source`                                                   | Доступность и источник                    |
+| **Images**         | `primary_image_url`, `all_images_json`, `images_hash`                                   | Главное фото, JSON всех фото, MD5 хеш     |
+| **Classification** | `type_id`, `model_id`, `model_count`, `is_kgt`                                          | Тип, модель, КГТ                          |
+| **Dimensions**     | `length`, `width`, `height`, `weight`, `depth`                                          | Габариты + вес                            |
+| **Timestamps**     | `created_at_ozon`, `updated_at_ozon`, `created_at`, `updated_at`                        | Даты Ozon + системные                     |
+| **Content**        | `description_category_id`, `color_image_url`                                            | Категория описания + цветовое изображение |
+
+> [!NOTE]
+> Из 39 колонок 21 базовых (в init.sql) + 18 расширенных (добавлены миграцией `002_add_ozon_product_columns`).
 
 #### `dim_ozon_product_content` — хеши контента Ozon
 
-Аналогично WB: `title_hash`, `description_hash`, `images_hash`, `images_count`.
+SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
+
+| Поле               | Тип         | Описание                            |
+| ------------------ | ----------- | ----------------------------------- |
+| `product_id`       | INT FK      | → dim_ozon_products                 |
+| `shop_id`          | INT FK UK   | Уникальность: (product_id, shop_id) |
+| `title_hash`       | VARCHAR(32) | MD5 заголовка                       |
+| `description_hash` | VARCHAR(32) | MD5 описания                        |
+| `images_hash`      | VARCHAR(32) | MD5(sorted image URLs JSON)         |
+| `images_count`     | INTEGER     | Количество фото                     |
 
 ---
 
@@ -425,3 +445,49 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 | `fact_finances_latest`     | fact_finances     | Дедупликация              |
 | `fact_sales_funnel_latest` | fact_sales_funnel | Дедупликация              |
 | `fact_orders_raw_latest`   | fact_orders_raw   | Дедупликация              |
+
+---
+
+## Миграции (Alembic)
+
+Схема PostgreSQL управляется через **Alembic** (async-совместимый, `alembic/env.py` использует `app.config.get_settings()`).
+
+### Файлы конфигурации
+
+| Файл                             | Описание                                                |
+| -------------------------------- | ------------------------------------------------------- |
+| `backend/alembic.ini`            | Конфиг (URL инжектится из env.py динамически)           |
+| `backend/alembic/env.py`         | Async env, импортирует все модели, `%` escaping для URL |
+| `backend/alembic/script.py.mako` | Шаблон генерации миграций                               |
+
+### Текущие миграции
+
+| Revision                       | Описание                                                 |
+| ------------------------------ | -------------------------------------------------------- |
+| `001_initial_stamp`            | Baseline — помечает существующую схему                   |
+| `002_add_ozon_product_columns` | 18 расширенных колонок dim_ozon_products (IF NOT EXISTS) |
+
+### Workflow создания миграций
+
+```bash
+cd backend
+# 1. Изменил модель в app/models/
+# 2. Генерация миграции:
+alembic revision --autogenerate -m "описание"
+# 3. Проверить сгенерированный файл в alembic/versions/
+# 4. git commit + push → на проде при рестарте всё применится автоматически
+```
+
+> [!IMPORTANT]
+> Миграции применяются автоматически при старте backend контейнера (`entrypoint.sh → alembic upgrade head`).
+> Для celery workers миграции НЕ запускаются (проверка `$1 == uvicorn`).
+
+---
+
+## Changelog
+
+### 2026-02-20
+
+- Расширена документация `dim_ozon_products` до 39 колонок (сгруппированы по категориям)
+- Добавлена секция Alembic миграций (конфигурация, текущие миграции, workflow)
+- Добавлена таблица `dim_ozon_product_content` с описанием полей

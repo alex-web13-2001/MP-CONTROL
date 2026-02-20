@@ -3798,7 +3798,7 @@ def monitor_ozon_bids(
     return asyncio.run(run_monitor())
 
 
-@celery_app.task(bind=True, time_limit=600, soft_time_limit=560)
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1740)
 def sync_ozon_ad_stats(
     self,
     shop_id: int,
