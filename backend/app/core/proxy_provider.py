@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import decrypt_api_key
@@ -331,11 +331,11 @@ class ProxyProvider:
         
         # Log to proxy_usage_log
         await self.db.execute(
-            """
+            text("""
             INSERT INTO proxy_usage_log 
             (proxy_id, shop_id, endpoint, method, status_code, response_time_ms, is_success, error_message)
             VALUES (:proxy_id, :shop_id, :endpoint, :method, :status_code, :response_time_ms, :is_success, :error_message)
-            """,
+            """),
             {
                 "proxy_id": proxy_id,
                 "shop_id": shop_id,
