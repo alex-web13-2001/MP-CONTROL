@@ -19,6 +19,72 @@ from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
+
+def _wb_basket_host(vol: int) -> str:
+    """Determine WB CDN basket host number from vol. Based on known WB CDN mapping."""
+    if vol <= 143:
+        return "01"
+    elif vol <= 287:
+        return "02"
+    elif vol <= 431:
+        return "03"
+    elif vol <= 719:
+        return "04"
+    elif vol <= 1007:
+        return "05"
+    elif vol <= 1061:
+        return "06"
+    elif vol <= 1115:
+        return "07"
+    elif vol <= 1169:
+        return "08"
+    elif vol <= 1313:
+        return "09"
+    elif vol <= 1601:
+        return "10"
+    elif vol <= 1655:
+        return "11"
+    elif vol <= 1919:
+        return "12"
+    elif vol <= 2045:
+        return "13"
+    elif vol <= 2189:
+        return "14"
+    elif vol <= 2405:
+        return "15"
+    elif vol <= 2621:
+        return "16"
+    elif vol <= 2837:
+        return "17"
+    elif vol <= 3053:
+        return "18"
+    elif vol <= 3269:
+        return "19"
+    elif vol <= 3485:
+        return "20"
+    elif vol <= 3701:
+        return "21"
+    elif vol <= 3917:
+        return "22"
+    elif vol <= 4133:
+        return "23"
+    elif vol <= 4349:
+        return "24"
+    elif vol <= 4565:
+        return "25"
+    elif vol <= 4781:
+        return "26"
+    else:
+        return "27"
+
+
+def wb_image_url(nm_id: int) -> str:
+    """Generate correct WB CDN image URL from nm_id using basket algorithm."""
+    vol = nm_id // 100000
+    part = nm_id // 1000
+    basket = _wb_basket_host(vol)
+    return f"https://basket-{basket}.wbbasket.ru/vol{vol}/part{part}/{nm_id}/images/big/1.webp"
+
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 
 PERIOD_DAYS = {
@@ -776,7 +842,7 @@ async def get_wb_dashboard(
                 if not pg_name:
                     pg_name = info.get("vendor_code") or p.get("supplier_article") or p["offer_id"]
                 p["name"] = pg_name
-                p["image_url"] = info.get("image_url", "")
+                p["image_url"] = wb_image_url(nm_id)
                 p["price"] = info.get("price", 0.0)
                 # Use PG vendor_code as canonical supplier_article if available
                 if info.get("vendor_code"):
