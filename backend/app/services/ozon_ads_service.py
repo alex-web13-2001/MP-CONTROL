@@ -116,11 +116,30 @@ class OzonAdsService:
         self.shop_id = shop_id
         self.perf_client_id = perf_client_id
         self.perf_client_secret = perf_client_secret
+        self.redis_client = redis_client
         self.auth = OzonPerformanceAuth(
             client_id=perf_client_id,
             client_secret=perf_client_secret,
             redis_client=redis_client,
         )
+
+    async def _reset_rate_limiter_backoff(self):
+        """Reset internal rate limiter backoff to break the vicious cycle.
+
+        Without this, a single 429 from Ozon causes our MarketplaceClient
+        rate limiter to set exponential backoff. Subsequent retry attempts
+        get blocked by our OWN backoff (not Ozon's), which counts as
+        another 429, increasing backoff further — a death spiral.
+
+        We reset before each retry so the request actually reaches Ozon.
+        """
+        if not self.redis_client:
+            return
+        backoff_key = f"mms:ratelimit:{self.shop_id}:ozon_performance:backoff"
+        count_key = f"mms:ratelimit:{self.shop_id}:ozon_performance:429_count"
+        deleted = await self.redis_client.delete(backoff_key, count_key)
+        if deleted:
+            logger.info("Reset %d rate-limiter keys before retry", deleted)
 
     async def _request(
         self,
@@ -568,6 +587,8 @@ class OzonAdsService:
                             attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
                         )
                         await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        # Reset internal backoff so retry actually reaches Ozon
+                        await self._reset_rate_limiter_backoff()
                         continue
                     else:
                         logger.error(
@@ -587,6 +608,7 @@ class OzonAdsService:
                             attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
                         )
                         await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        await self._reset_rate_limiter_backoff()
                         continue
                     else:
                         logger.error(
@@ -606,6 +628,7 @@ class OzonAdsService:
                             attempt, RETRY_MAX_ATTEMPTS, RETRY_PAUSE_SECONDS,
                         )
                         await asyncio.sleep(RETRY_PAUSE_SECONDS)
+                        await self._reset_rate_limiter_backoff()
                         continue
                     else:
                         logger.error(
