@@ -731,6 +731,7 @@ async def get_wb_dashboard(
         for row in top_products_rows:
             top_products.append({
                 "offer_id": str(int(row[0])),  # nm_id as offer_id for unified format
+                "supplier_article": str(row[1] or ""),
                 "name": "",
                 "image_url": "",
                 "orders": int(row[2]),
@@ -770,9 +771,16 @@ async def get_wb_dashboard(
             for p in top_products:
                 nm_id = int(p["offer_id"])
                 info = pg_map.get(nm_id, {})
-                p["name"] = info.get("name", p["offer_id"])
+                pg_name = info.get("name") or ""
+                # Fallback: use vendor_code or supplier_article if name is empty
+                if not pg_name:
+                    pg_name = info.get("vendor_code") or p.get("supplier_article") or p["offer_id"]
+                p["name"] = pg_name
                 p["image_url"] = info.get("image_url", "")
                 p["price"] = info.get("price", 0.0)
+                # Use PG vendor_code as canonical supplier_article if available
+                if info.get("vendor_code"):
+                    p["supplier_article"] = info["vendor_code"]
 
         ch.close()
 

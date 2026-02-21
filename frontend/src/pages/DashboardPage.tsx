@@ -635,7 +635,9 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
                           )}
                           <div className="min-w-0">
                             <p className="text-sm font-medium truncate max-w-[200px]">{p.name || p.offer_id}</p>
-                            <p className="text-xs text-[hsl(var(--muted-foreground)/0.6)]">{p.offer_id}</p>
+                            <p className="text-xs text-[hsl(var(--muted-foreground)/0.6)]">
+                              {p.supplier_article ? `${p.offer_id} · ${p.supplier_article}` : p.offer_id}
+                            </p>
                           </div>
                         </div>
                       </td>

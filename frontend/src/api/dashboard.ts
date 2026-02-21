@@ -37,6 +37,7 @@ export interface AdsDailyPoint {
 
 export interface TopProduct {
   offer_id: string
+  supplier_article?: string
   name: string
   image_url: string
   orders: number
