@@ -3575,6 +3575,7 @@ def sync_ozon_content_rating(
                 host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
                 port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
                 username=os.getenv("CLICKHOUSE_USER", "default"),
+                password=os.getenv("CLICKHOUSE_PASSWORD", ""),
                 database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
             ) as loader:
                 inserted = loader.insert_ratings(shop_id, ratings, sku_to_pid)
