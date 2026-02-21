@@ -102,7 +102,7 @@ class OzonWarehouseStocksService:
         last_id = ""
 
         while True:
-            body = {"limit": API_LIMIT}
+            body = {"filter": {"visibility": "ALL"}, "limit": API_LIMIT}
             if last_id:
                 body["last_id"] = last_id
 
