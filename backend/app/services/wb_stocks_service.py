@@ -88,8 +88,8 @@ class WBStocksService:
         """
         all_stocks = []
 
-        # dateFrom = 1 day ago to get recent data
-        date_from = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+        # dateFrom filters by lastChangeDate — use far-past date to get ALL stocks
+        date_from = "2019-06-20T00:00:00"
 
         async with MarketplaceClient(
             db=self.db,
