@@ -2,6 +2,19 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-22
+
+### Added — Раздел «Ваши товары» (Ozon)
+
+- **Backend / `products.py` [NEW]:** `GET /products/ozon` — агрегация 8 источников (PG каталог + product_costs, CH заказы/реклама/возвраты/комиссии/контент-рейтинг/промоакции/цены, PG events). Серверные фильтры, поиск, сортировка, пагинация.
+- **Backend / `products.py` [NEW]:** `PATCH /products/ozon/cost` — upsert себестоимости товара
+- **Backend / `product_cost.py` [NEW]:** SQLAlchemy модель `ProductCost`
+- **DB / `init.sql` [MODIFY]:** Таблица `product_costs` (cost_price, packaging_cost, notes)
+- **Frontend / `products.ts` [NEW]:** API клиент с TypeScript типами
+- **Frontend / `ProductsPage.tsx` [NEW]:** 750 строк — 9 колонок (фото + hover preview, товар + рейтинг контента, 4 цены + индекс + скидка, остатки FBO/FBS, продажи 7д + Δ, себестоимость inline-edit + маржа, реклама + DRR, возвраты 30д, 8 типов event-иконок + tooltip). Warning banner «У N товаров не указана себестоимость».
+- **Frontend / `Sidebar.tsx` [MODIFY]:** Пункт «Товары» с иконкой Package
+- **Frontend / `App.tsx` [MODIFY]:** Route `/products`
+
 ## [Unreleased] - 2026-02-21
 
 ### Improved — Dashboard UI/UX
