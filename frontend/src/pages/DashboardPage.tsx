@@ -3,7 +3,6 @@ import { motion } from 'framer-motion'
 import {
   ShoppingCart,
   DollarSign,
-  TrendingDown,
   Megaphone,
   Percent,
   ArrowUpRight,
@@ -30,6 +29,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import {
   getOzonDashboardApi,
+  getWbDashboardApi,
   type DashboardResponse,
   type AdsDailyPoint,
 } from '@/api/dashboard'
@@ -683,12 +683,14 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null)
 
   const fetchDashboard = useCallback(async () => {
-    if (!currentShop || currentShop.marketplace !== 'ozon') return
+    if (!currentShop) return
 
     setLoading(true)
     setError(null)
     try {
-      const result = await getOzonDashboardApi(currentShop.id, period)
+      const result = currentShop.marketplace === 'ozon'
+        ? await getOzonDashboardApi(currentShop.id, period)
+        : await getWbDashboardApi(currentShop.id, period)
       setData(result)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Неизвестная ошибка'
@@ -704,7 +706,7 @@ export default function DashboardPage() {
 
   // Auto-refresh every 2 minutes
   useEffect(() => {
-    if (!currentShop || currentShop.marketplace !== 'ozon') return
+    if (!currentShop) return
     const interval = setInterval(fetchDashboard, 120_000)
     return () => clearInterval(interval)
   }, [currentShop, fetchDashboard])
@@ -719,29 +721,15 @@ export default function DashboardPage() {
             Выберите магазин
           </p>
           <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">
-            Для просмотра аналитики выберите Ozon магазин в шапке
+            Для просмотра аналитики выберите магазин в шапке
           </p>
         </div>
       </div>
     )
   }
 
-  // ── Non-Ozon shop ──────────────────────────────────
-  if (currentShop.marketplace !== 'ozon') {
-    return (
-      <div className="flex h-[60vh] items-center justify-center">
-        <div className="text-center space-y-3">
-          <TrendingDown className="h-12 w-12 mx-auto text-[hsl(var(--muted-foreground)/0.3)]" />
-          <p className="text-lg font-medium text-[hsl(var(--muted-foreground))]">
-            Дашборд доступен для Ozon
-          </p>
-          <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">
-            Текущий магазин: {currentShop.name} ({currentShop.marketplace})
-          </p>
-        </div>
-      </div>
-    )
-  }
+  // Marketplace label for header
+  const marketplaceLabel = currentShop.marketplace === 'ozon' ? 'Ozon' : 'Wildberries'
 
   // ── Loading state ──────────────────────────────────
   if (loading && !data) {
@@ -842,7 +830,7 @@ export default function DashboardPage() {
             Обзор
           </h1>
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            {currentShop.name} • Ozon
+            {currentShop.name} • {marketplaceLabel}
             {loading && (
               <span className="ml-2 inline-flex items-center gap-1 text-[hsl(var(--primary))]">
                 <RefreshCw className="h-3 w-3 animate-spin" /> Обновление…

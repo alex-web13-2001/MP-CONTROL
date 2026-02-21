@@ -71,3 +71,13 @@ export async function getOzonDashboardApi(
   })
   return res.data
 }
+
+export async function getWbDashboardApi(
+  shopId: number,
+  period: string = '7d',
+): Promise<DashboardResponse> {
+  const res = await apiClient.get<DashboardResponse>('/dashboard/wb', {
+    params: { shop_id: shopId, period },
+  })
+  return res.data
+}

@@ -2,6 +2,7 @@
 Dashboard API endpoints.
 
 GET /dashboard/ozon?shop_id=X&period=7d  — Aggregated Ozon dashboard data
+GET /dashboard/wb?shop_id=X&period=7d    — Aggregated Wildberries dashboard data
 """
 import logging
 from datetime import date, timedelta
@@ -434,4 +435,386 @@ async def get_ozon_dashboard(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки дашборда: {str(e)}",
+        )
+
+
+# ══════════════════════════════════════════════════════════════════
+# Wildberries Dashboard
+# ══════════════════════════════════════════════════════════════════
+
+@router.get("/wb")
+async def get_wb_dashboard(
+    shop_id: int = Query(..., description="Shop ID"),
+    period: str = Query("7d", description="Period: today, 7d, 30d"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get aggregated Wildberries dashboard data.
+
+    Returns KPIs (orders, revenue, ad spend, views, clicks, DRR),
+    sales chart, ads chart, top products — all in one call.
+
+    Uses the same response format as /dashboard/ozon for frontend reuse.
+    """
+    # ── Verify shop ownership ─────────────────────────
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "wildberries",
+        )
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wildberries магазин не найден",
+        )
+
+    # ── Dates ─────────────────────────────────────────
+    cur_start, cur_end, prev_start, prev_end = _parse_period(period)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+
+        # ══════════════════════════════════════════════
+        # 1. KPI — Orders (fact_orders_raw)
+        # ══════════════════════════════════════════════
+        orders_kpi = ch.query("""
+            SELECT
+                period,
+                count() AS orders_count,
+                sum(price_with_disc) AS revenue,
+                sum(price_with_disc) / nullIf(count(), 0) AS avg_check
+            FROM (
+                SELECT
+                    CASE
+                        WHEN toDate(date) >= {cur_start:Date} AND toDate(date) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(date) >= {prev_start:Date} AND toDate(date) <= {prev_end:Date} THEN 'previous'
+                    END AS period,
+                    price_with_disc
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) >= {prev_start:Date}
+                  AND toDate(date) <= {cur_end:Date}
+                  AND is_cancel = 0
+            )
+            WHERE period != ''
+            GROUP BY period
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start,
+            "cur_end": cur_end,
+            "prev_start": prev_start,
+            "prev_end": prev_end,
+        }).result_rows
+
+        orders_map = {
+            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0)}
+            for row in orders_kpi
+        }
+        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0})
+        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0})
+
+        # ══════════════════════════════════════════════
+        # 2. KPI — Advertising (fact_advert_stats_v3)
+        # ══════════════════════════════════════════════
+        ads_kpi = ch.query("""
+            SELECT
+                period,
+                sum(spend) AS total_spend,
+                sum(views) AS total_views,
+                sum(clicks) AS total_clicks
+            FROM (
+                SELECT
+                    CASE
+                        WHEN date >= {cur_start:Date} AND date <= {cur_end:Date} THEN 'current'
+                        WHEN date >= {prev_start:Date} AND date <= {prev_end:Date} THEN 'previous'
+                    END AS period,
+                    spend, views, clicks
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND date >= {prev_start:Date}
+                  AND date <= {cur_end:Date}
+            )
+            WHERE period != ''
+            GROUP BY period
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start, "cur_end": cur_end,
+            "prev_start": prev_start, "prev_end": prev_end,
+        }).result_rows
+
+        ads_map = {}
+        for row in ads_kpi:
+            ads_map[row[0]] = {
+                "spend": float(row[1]),
+                "views": int(row[2]),
+                "clicks": int(row[3]),
+            }
+        cur_ads = ads_map.get("current", {"spend": 0, "views": 0, "clicks": 0})
+        prev_ads = ads_map.get("previous", {"spend": 0, "views": 0, "clicks": 0})
+
+        # DRR = ad_spend / orders_revenue * 100
+        cur_drr = round(cur_ads["spend"] / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
+        prev_drr = round(prev_ads["spend"] / prev_orders["revenue"] * 100, 1) if prev_orders["revenue"] > 0 else 0
+
+        # ══════════════════════════════════════════════
+        # 3. Charts — Sales daily (fact_orders_raw)
+        # ══════════════════════════════════════════════
+        chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
+        sales_daily = ch.query("""
+            SELECT
+                toDate(date) AS day,
+                count() AS orders_count,
+                sum(price_with_disc) AS revenue
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {start:Date}
+              AND toDate(date) <= {end:Date}
+              AND is_cancel = 0
+            GROUP BY day
+            ORDER BY day
+        """, parameters={
+            "shop_id": shop_id,
+            "start": chart_start,
+            "end": cur_end,
+        }).result_rows
+
+        charts_sales = [
+            {"date": str(row[0]), "orders": int(row[1]), "revenue": float(row[2])}
+            for row in sales_daily
+        ]
+
+        # ══════════════════════════════════════════════
+        # 4. Charts — Ads daily (fact_advert_stats_v3 + fact_orders_raw)
+        # ══════════════════════════════════════════════
+        ads_daily = ch.query("""
+            WITH ads AS (
+                SELECT
+                    date AS day,
+                    sum(spend) AS spend,
+                    sum(views) AS total_views,
+                    sum(clicks) AS total_clicks,
+                    sum(atbs) AS cart,
+                    sum(orders) AS total_orders,
+                    sum(revenue) AS ad_revenue
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND date >= {start:Date}
+                  AND date <= {end:Date}
+                GROUP BY day
+            ),
+            daily_orders AS (
+                SELECT
+                    toDate(date) AS day,
+                    sum(price_with_disc) AS total_revenue
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) >= {start:Date}
+                  AND toDate(date) <= {end:Date}
+                  AND is_cancel = 0
+                GROUP BY day
+            )
+            SELECT
+                a.day,
+                a.spend,
+                a.total_views,
+                a.total_clicks,
+                a.cart,
+                a.total_orders,
+                CASE WHEN a.ad_revenue > 0
+                    THEN round(a.spend / a.ad_revenue * 100, 1) ELSE 0
+                END AS drr_ad,
+                CASE WHEN o.total_revenue > 0
+                    THEN round(a.spend / o.total_revenue * 100, 1) ELSE 0
+                END AS drr_total
+            FROM ads a
+            LEFT JOIN daily_orders o ON a.day = o.day
+            ORDER BY a.day
+        """, parameters={
+            "shop_id": shop_id,
+            "start": chart_start,
+            "end": cur_end,
+        }).result_rows
+
+        charts_ads = [
+            {
+                "date": str(row[0]),
+                "spend": round(float(row[1]), 2),
+                "views": int(row[2]),
+                "clicks": int(row[3]),
+                "cart": int(row[4]),
+                "orders": int(row[5]),
+                "drr_ad": float(row[6]),
+                "drr_total": float(row[7]),
+            }
+            for row in ads_daily
+        ]
+
+        # ══════════════════════════════════════════════
+        # 5. Top products
+        # ══════════════════════════════════════════════
+        top_products_rows = ch.query("""
+            WITH
+                orders_cur AS (
+                    SELECT
+                        nm_id,
+                        supplier_article,
+                        count() AS orders_count,
+                        sum(price_with_disc) AS revenue
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(date) >= {cur_start:Date}
+                      AND toDate(date) <= {cur_end:Date}
+                      AND is_cancel = 0
+                    GROUP BY nm_id, supplier_article
+                ),
+                orders_prev AS (
+                    SELECT
+                        nm_id,
+                        count() AS orders_count
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(date) >= {prev_start:Date}
+                      AND toDate(date) <= {prev_end:Date}
+                      AND is_cancel = 0
+                    GROUP BY nm_id
+                ),
+                latest_stocks AS (
+                    SELECT
+                        nm_id,
+                        sum(quantity) AS total_stock
+                    FROM mms_analytics.fact_inventory_snapshot FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                    GROUP BY nm_id
+                )
+            SELECT
+                oc.nm_id,
+                oc.supplier_article,
+                oc.orders_count,
+                oc.revenue,
+                CASE WHEN op.orders_count > 0
+                    THEN round((oc.orders_count - op.orders_count) / op.orders_count * 100, 1)
+                    ELSE 0
+                END AS delta_pct,
+                coalesce(ls.total_stock, 0) AS stock_total
+            FROM orders_cur oc
+            LEFT JOIN orders_prev op ON oc.nm_id = op.nm_id
+            LEFT JOIN latest_stocks ls ON oc.nm_id = ls.nm_id
+            ORDER BY oc.revenue DESC
+            LIMIT 10
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start, "cur_end": cur_end,
+            "prev_start": prev_start, "prev_end": prev_end,
+        }).result_rows
+
+        # Ad spend per nm_id
+        ad_spend_rows = ch.query("""
+            SELECT
+                nm_id,
+                sum(spend) AS ad_spend,
+                sum(revenue) AS ad_revenue
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {cur_start:Date}
+              AND date <= {cur_end:Date}
+            GROUP BY nm_id
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start, "cur_end": cur_end,
+        }).result_rows
+        ad_spend_map = {int(row[0]): {"spend": float(row[1]), "revenue": float(row[2])} for row in ad_spend_rows}
+
+        top_products = []
+        for row in top_products_rows:
+            nm_id = int(row[0])
+            revenue = float(row[3])
+            ad = ad_spend_map.get(nm_id, {"spend": 0, "revenue": 0})
+            top_products.append({
+                "offer_id": str(nm_id),  # nm_id as offer_id for unified format
+                "name": "",
+                "image_url": "",
+                "orders": int(row[2]),
+                "revenue": revenue,
+                "delta_pct": float(row[4]),
+                "stock_fbo": int(row[5]),  # total stock in fbo field
+                "stock_fbs": 0,            # WB doesn't separate FBO/FBS in same way
+                "price": 0.0,
+                "ad_spend": ad["spend"],
+                "drr": round(ad["spend"] / revenue * 100, 1) if revenue > 0 else 0,
+            })
+
+        # Enrich with product names, images & prices from PostgreSQL
+        if top_products:
+            nm_ids = [int(p["offer_id"]) for p in top_products]
+            pg_result = await db.execute(
+                text("""
+                    SELECT nm_id, name,
+                           COALESCE(main_image_url, '') AS image_url,
+                           COALESCE(current_price, 0) AS price,
+                           COALESCE(vendor_code, '') AS vendor_code
+                    FROM dim_products
+                    WHERE shop_id = :shop_id
+                      AND nm_id = ANY(:nm_ids)
+                """),
+                {"shop_id": shop_id, "nm_ids": nm_ids},
+            )
+            pg_map = {}
+            for row in pg_result:
+                pg_map[int(row[0])] = {
+                    "name": row[1] or "",
+                    "image_url": row[2],
+                    "price": float(row[3]),
+                    "vendor_code": row[4],
+                }
+
+            for p in top_products:
+                nm_id = int(p["offer_id"])
+                info = pg_map.get(nm_id, {})
+                p["name"] = info.get("name", p["offer_id"])
+                p["image_url"] = info.get("image_url", "")
+                p["price"] = info.get("price", 0.0)
+
+        ch.close()
+
+        # ══════════════════════════════════════════════
+        # Build response (same format as Ozon)
+        # ══════════════════════════════════════════════
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "kpi": {
+                "orders_count": cur_orders["count"],
+                "orders_delta": _safe_delta(cur_orders["count"], prev_orders["count"]),
+                "revenue": cur_orders["revenue"],
+                "revenue_delta": _safe_delta(cur_orders["revenue"], prev_orders["revenue"]),
+                "avg_check": round(cur_orders["avg_check"], 0),
+                "ad_spend": cur_ads["spend"],
+                "ad_spend_delta": _safe_delta(cur_ads["spend"], prev_ads["spend"]),
+                "views": cur_ads["views"],
+                "views_delta": _safe_delta(cur_ads["views"], prev_ads["views"]),
+                "clicks": cur_ads["clicks"],
+                "clicks_delta": _safe_delta(cur_ads["clicks"], prev_ads["clicks"]),
+                "drr": cur_drr,
+                "drr_delta": round(cur_drr - prev_drr, 1),
+            },
+            "charts": {
+                "sales_daily": charts_sales,
+                "ads_daily": charts_ads,
+            },
+            "top_products": top_products,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("WB Dashboard query failed for shop %s: %s", shop_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки дашборда WB: {str(e)}",
         )

@@ -2,6 +2,18 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-21
+
+### Added — Дашборд Wildberries (по аналогии с Ozon)
+
+- **Backend / `dashboard.py` [MODIFY]:** Добавлен endpoint `GET /dashboard/wb?shop_id=X&period=7d` — 5 SQL-запросов к ClickHouse (`fact_orders_raw` для заказов, `fact_advert_stats_v3` для рекламы, `fact_inventory_snapshot` для остатков) + PostgreSQL enrichment (`dim_products` для имён, фото, цен). Формат ответа **идентичен** Ozon Dashboard для переиспользования frontend компонентов.
+- **Frontend / `dashboard.ts` [MODIFY]:** Добавлена функция `getWbDashboardApi()` — API клиент для нового WB endpoint. Тип `DashboardResponse` не изменён.
+- **Frontend / `DashboardPage.tsx` [MODIFY]:** Универсальная страница для обоих маркетплейсов:
+  - ❌ Убрана заглушка «Дашборд доступен для Ozon»
+  - ✅ Автоматический роутинг API вызовов по `marketplace` (Ozon → `getOzonDashboardApi`, WB → `getWbDashboardApi`)
+  - ✅ Динамический label маркетплейса в шапке (Ozon / Wildberries)
+  - ✅ Все компоненты переиспользуются: 6 KPI карточек, SalesChart, AdsChart, TopProductsTable
+
 ## [Unreleased] - 2026-02-20
 
 ### Added — Alembic Database Migrations
