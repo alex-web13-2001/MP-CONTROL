@@ -106,7 +106,7 @@ class WBStocksService:
                 self.ENDPOINT_FBO,
                 params={"dateFrom": date_from},
             )
-            data = response.json()
+            data = response.data
 
             if not isinstance(data, list):
                 logger.warning(
