@@ -6,6 +6,7 @@ import LoginPage from '@/pages/LoginPage'
 import RegisterPage from '@/pages/RegisterPage'
 import OnboardingPage from '@/pages/OnboardingPage'
 import DashboardPage from '@/pages/DashboardPage'
+import ProductsPage from '@/pages/ProductsPage'
 import SettingsPage from '@/pages/SettingsPage'
 
 export default function App() {
@@ -37,6 +38,7 @@ export default function App() {
           }
         >
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/products" element={<ProductsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
           <Route path="/sales" element={<SalesPage />} />

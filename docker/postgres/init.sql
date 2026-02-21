@@ -366,3 +366,24 @@ CREATE INDEX IF NOT EXISTS idx_dim_ozon_product_content_product ON dim_ozon_prod
 
 CREATE TRIGGER update_dim_ozon_product_content_updated_at BEFORE UPDATE ON dim_ozon_product_content
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===================
+-- Product Costs (user-defined cost price for margin calculation)
+-- ===================
+CREATE TABLE IF NOT EXISTS product_costs (
+    id SERIAL PRIMARY KEY,
+    shop_id INTEGER NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+    offer_id VARCHAR(100) NOT NULL,
+    cost_price DECIMAL(12, 2) NOT NULL DEFAULT 0,
+    packaging_cost DECIMAL(12, 2) DEFAULT 0,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(shop_id, offer_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_costs_shop ON product_costs(shop_id);
+CREATE INDEX IF NOT EXISTS idx_product_costs_offer ON product_costs(offer_id);
+
+CREATE TRIGGER update_product_costs_updated_at BEFORE UPDATE ON product_costs
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   BarChart3,
+  Package,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
@@ -20,6 +21,7 @@ const navSections = [
     title: 'Аналитика',
     items: [
       { path: '/', label: 'Обзор', icon: LayoutDashboard },
+      { path: '/products', label: 'Товары', icon: Package },
       { path: '/sales', label: 'Продажи', icon: ShoppingCart },
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse },
