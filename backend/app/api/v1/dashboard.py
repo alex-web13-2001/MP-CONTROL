@@ -378,7 +378,7 @@ async def get_ozon_dashboard(
             pg_result = await db.execute(
                 text("""
                     SELECT offer_id, name,
-                           COALESCE(main_image_url, '') AS image_url
+                           COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
                       AND offer_id = ANY(:offer_ids)

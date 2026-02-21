@@ -359,7 +359,15 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
             sku = _extract_sku(item)
             name = item.get("name", "")
             images = item.get("images", [])
-            main_image = images[0] if images else None
+            # Prefer primary_image (seller-set main photo) over images[0]
+            primary_img = item.get("primary_image")
+            if isinstance(primary_img, list):
+                primary_img = primary_img[0] if primary_img else None
+            elif isinstance(primary_img, str) and primary_img:
+                pass  # already a string URL
+            else:
+                primary_img = None
+            main_image = primary_img or (images[0] if images else None)
             barcodes = item.get("barcodes", [])
             barcode = barcodes[0] if barcodes else None
             category_id = item.get("description_category_id")

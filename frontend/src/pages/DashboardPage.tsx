@@ -61,6 +61,18 @@ function formatDelta(value: number, invert = false): { text: string; positive: b
   }
 }
 
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+
+function formatChartDate(dateStr: string): string {
+  const parts = dateStr.split('-')
+  if (parts.length >= 3) {
+    const day = parseInt(parts[2], 10)
+    const month = parseInt(parts[1], 10) - 1
+    return `${day} ${MONTHS_SHORT[month] || parts[1]}`
+  }
+  return dateStr.slice(5)
+}
+
 /* ═══════════════════════════════════════════════════════════
    KPI Card Component
    ═══════════════════════════════════════════════════════════ */
@@ -102,7 +114,7 @@ function KpiCard({
         <CardContent className="p-5">
           <div className="flex items-start justify-between">
             <div className="space-y-2 min-w-0">
-              <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))] truncate">
+              <p className="text-sm font-medium text-[hsl(var(--muted-foreground))] truncate">
                 {title}
               </p>
               <p className="text-2xl font-bold tracking-tight text-[hsl(var(--foreground))]">
@@ -167,7 +179,7 @@ function PeriodSelector({
         <button
           key={p.key}
           onClick={() => onChange(p.key)}
-          className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all duration-200 ${
+          className={`rounded-md px-5 py-2 text-sm font-medium transition-all duration-200 ${
             current === p.key
               ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
               : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
@@ -205,14 +217,14 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
         <XAxis
           dataKey="date"
-          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-          tickFormatter={(v: string) => v.slice(5)}
+          tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
+          tickFormatter={formatChartDate}
           axisLine={false}
           tickLine={false}
         />
         <YAxis
           yAxisId="left"
-          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+          tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
           axisLine={false}
           tickLine={false}
           width={40}
@@ -325,7 +337,7 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
             <button
               key={m.key}
               onClick={() => toggleMetric(m.key)}
-              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium transition-all duration-200"
+              className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-all duration-200"
               style={{
                 background: isActive ? m.color + '20' : 'transparent',
                 border: `1.5px solid ${isActive ? m.color : 'hsl(var(--border))'}`,
@@ -358,15 +370,15 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-            tickFormatter={(v: string) => v.slice(5)}
+            tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
+            tickFormatter={formatChartDate}
             axisLine={false}
             tickLine={false}
           />
           {hasLeftAxis && (
             <YAxis
               yAxisId="left"
-              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
               tickFormatter={(v: number) =>
                 v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()
               }
@@ -392,7 +404,7 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
             <YAxis
               yAxisId="percent"
               orientation={hasRightAxis ? 'left' : 'right'}
-              tick={{ fontSize: 11, fill: '#ef4444' }}
+              tick={{ fontSize: 12, fill: '#ef4444' }}
               tickFormatter={(v: number) => `${v}%`}
               axisLine={false}
               tickLine={false}
@@ -521,6 +533,7 @@ type ProductTab = 'leaders' | 'falling' | 'problems'
 
 function TopProductsTable({ products }: { products: DashboardResponse['top_products'] }) {
   const [tab, setTab] = useState<ProductTab>('leaders')
+  const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
 
   // Filter + sort based on active tab
   const filtered = (() => {
@@ -575,12 +588,12 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-lg">Товары</CardTitle>
-          <div className="inline-flex rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.3)] p-0.5">
+          <div className="inline-flex rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--secondary)/0.3)] p-1">
             {tabs.map((t) => (
               <button
                 key={t.key}
                 onClick={() => setTab(t.key)}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
+                className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${
                   tab === t.key
                     ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
                     : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
@@ -602,15 +615,15 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-[hsl(var(--border)/0.5)]">
-                  <th className="px-5 py-2.5 text-left text-xs font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">Выручка</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">Δ</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">FBO</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">FBS</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">Цена</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">Рекл. ₽</th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium text-[hsl(var(--muted-foreground))]">DRR</th>
+                  <th className="px-5 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Выручка</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Δ</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">FBO</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">FBS</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Цена</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Рекл. ₽</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">DRR</th>
                 </tr>
               </thead>
               <tbody>
@@ -623,19 +636,24 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
                     >
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-3">
-                          <span className="text-xs text-[hsl(var(--muted-foreground)/0.5)] w-4">{i + 1}</span>
+                          <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] w-5 text-center">{i + 1}</span>
                           {p.image_url ? (
                             <img
                               src={p.image_url}
                               alt={p.name}
-                              className="h-9 w-9 rounded-lg object-cover shrink-0"
+                              className="h-12 w-10 rounded-lg object-cover shrink-0 cursor-pointer"
+                              onMouseEnter={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect()
+                                setHoverImg({ url: p.image_url!, x: rect.right + 8, y: rect.top })
+                              }}
+                              onMouseLeave={() => setHoverImg(null)}
                             />
                           ) : (
-                            <div className="h-9 w-9 rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0" />
+                            <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0" />
                           )}
                           <div className="min-w-0">
-                            <p className="text-sm font-medium truncate max-w-[200px]">{p.name || p.offer_id}</p>
-                            <p className="text-xs text-[hsl(var(--muted-foreground)/0.6)]">
+                            <p className="text-sm font-medium truncate max-w-[240px]">{p.name || p.offer_id}</p>
+                            <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)]">
                               {p.supplier_article ? `${p.offer_id} · ${p.supplier_article}` : p.offer_id}
                             </p>
                           </div>
@@ -645,7 +663,7 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
                       <td className="px-3 py-3 text-right font-medium">{formatMoney(p.revenue)}</td>
                       <td className="px-3 py-3 text-right">
                         <span
-                          className={`text-xs font-semibold ${
+                          className={`text-[13px] font-semibold ${
                             deltaFmt.positive ? 'text-emerald-400' : 'text-red-400'
                           }`}
                         >
@@ -669,6 +687,22 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
           </div>
         )}
       </CardContent>
+
+      {/* Fixed-position hover preview — rendered outside table overflow */}
+      {hoverImg && (
+        <div
+          className="fixed z-[100] pointer-events-none animate-in fade-in-0 duration-150"
+          style={{ left: hoverImg.x, top: hoverImg.y }}
+        >
+          <div className="rounded-xl shadow-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5">
+            <img
+              src={hoverImg.url}
+              alt="Preview"
+              className="h-52 w-40 rounded-lg object-cover"
+            />
+          </div>
+        </div>
+      )}
     </Card>
   )
 }
