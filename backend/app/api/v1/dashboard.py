@@ -203,7 +203,8 @@ async def get_ozon_dashboard(
             WITH
                 orders_cur AS (
                     SELECT
-                        offer_id,
+                        sku,
+                        anyLast(offer_id) AS offer_id,
                         count() AS orders_count,
                         sum(price * quantity) AS revenue
                     FROM mms_analytics.fact_ozon_orders FINAL
@@ -211,18 +212,20 @@ async def get_ozon_dashboard(
                       AND toDate(in_process_at) >= {cur_start:Date}
                       AND toDate(in_process_at) <= {cur_end:Date}
                       AND status NOT IN ('cancelled')
-                    GROUP BY offer_id
+                      AND sku > 0
+                    GROUP BY sku
                 ),
                 orders_prev AS (
                     SELECT
-                        offer_id,
+                        sku,
                         count() AS orders_count
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(in_process_at) >= {prev_start:Date}
                       AND toDate(in_process_at) <= {prev_end:Date}
                       AND status NOT IN ('cancelled')
-                    GROUP BY offer_id
+                      AND sku > 0
+                    GROUP BY sku
                 ),
                 latest_stocks AS (
                     SELECT
@@ -248,15 +251,6 @@ async def get_ozon_dashboard(
                           WHERE shop_id = {shop_id:UInt32}
                       )
                 ),
-                -- Map offer_id → sku from orders table
-                offer_sku_map AS (
-                    SELECT offer_id, any(sku) AS product_sku
-                    FROM mms_analytics.fact_ozon_orders FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND sku > 0
-                    GROUP BY offer_id
-                ),
-                -- Ad spend aggregated per SKU
                 ad_per_sku AS (
                     SELECT
                         sku,
@@ -284,11 +278,10 @@ async def get_ozon_dashboard(
                     ELSE 0
                 END AS drr
             FROM orders_cur oc
-            LEFT JOIN orders_prev op ON oc.offer_id = op.offer_id
+            LEFT JOIN orders_prev op ON oc.sku = op.sku
             LEFT JOIN latest_stocks ls ON oc.offer_id = ls.offer_id
             LEFT JOIN latest_prices lp ON oc.offer_id = lp.offer_id
-            LEFT JOIN offer_sku_map osm ON oc.offer_id = osm.offer_id
-            LEFT JOIN ad_per_sku aps ON osm.product_sku = aps.sku
+            LEFT JOIN ad_per_sku aps ON oc.sku = aps.sku
             ORDER BY oc.revenue DESC
             LIMIT 50
         """, parameters={
