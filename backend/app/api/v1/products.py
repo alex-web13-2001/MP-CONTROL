@@ -3,13 +3,15 @@ Products API endpoints.
 
 GET  /products/ozon?shop_id=X&page=1&per_page=25&sort=revenue_7d&order=desc&filter=all&search=
 PATCH /products/ozon/cost  — update cost price for a product
+POST /products/ozon/cost/bulk — bulk upload cost prices via Excel
 """
+import io
 import logging
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,6 +52,7 @@ async def get_ozon_products(
     order: str = Query("desc"),
     filter: str = Query("all"),
     search: str = Query(""),
+    period: int = Query(7, ge=7, le=30),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -72,9 +75,10 @@ async def get_ozon_products(
         raise HTTPException(status_code=500, detail="Analytics unavailable")
 
     today = date.today()
-    d7_start = today - timedelta(days=6)
-    d7_prev_start = d7_start - timedelta(days=7)
-    d7_prev_end = d7_start - timedelta(days=1)
+    # Dynamic period for main queries
+    d_start = today - timedelta(days=period - 1)
+    d_prev_start = d_start - timedelta(days=period)
+    d_prev_end = d_start - timedelta(days=1)
     d30_start = today - timedelta(days=29)
 
     # ────────────────────────────────────────────────────
@@ -155,6 +159,7 @@ async def get_ozon_products(
             "revenue_7d": 0.0,
             "orders_prev_7d": 0,
             "revenue_delta": 0.0,
+            "orders_30d": 0,
             "ad_spend_7d": 0.0,
             "drr": 0.0,
             "returns_30d": 0,
@@ -163,6 +168,13 @@ async def get_ozon_products(
             "fbo_logistics": 0.0,
             "margin": None,
             "margin_percent": None,
+            "payout_period": 0.0,
+            "payout_prev": 0.0,
+            "gross_profit": None,
+            "gross_profit_percent": None,
+            "gross_profit_prev": None,
+            "gross_profit_delta": None,
+            "period": period,
             "events": [],
             "promotions": [],
         }
@@ -172,25 +184,25 @@ async def get_ozon_products(
         all_product_ids.append(r[0])
 
     # ────────────────────────────────────────────────────
-    # 2. Orders 7d + prev 7d from ClickHouse
+    # 2. Orders (period) + prev period from ClickHouse
     # ────────────────────────────────────────────────────
     try:
         orders_result = ch.query("""
             SELECT offer_id,
-                   sumIf(quantity, order_date >= {d7_start:Date} AND order_date <= {today:Date}) AS orders_7d,
-                   sumIf(price * quantity, order_date >= {d7_start:Date} AND order_date <= {today:Date}) AS revenue_7d,
-                   sumIf(quantity, order_date >= {d7_prev_start:Date} AND order_date <= {d7_prev_end:Date}) AS orders_prev
+                   sumIf(quantity, order_date >= {d_start:Date} AND order_date <= {today:Date}) AS orders_period,
+                   sumIf(price * quantity, order_date >= {d_start:Date} AND order_date <= {today:Date}) AS revenue_period,
+                   sumIf(quantity, order_date >= {d_prev_start:Date} AND order_date <= {d_prev_end:Date}) AS orders_prev
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND order_date >= {d7_prev_start:Date}
+              AND order_date >= {d_prev_start:Date}
               AND status NOT IN ('cancelled', 'canceled')
             GROUP BY offer_id
         """, parameters={
             "shop_id": shop_id,
-            "d7_start": d7_start,
+            "d_start": d_start,
             "today": today,
-            "d7_prev_start": d7_prev_start,
-            "d7_prev_end": d7_prev_end,
+            "d_prev_start": d_prev_start,
+            "d_prev_end": d_prev_end,
         })
         for r in orders_result.result_rows:
             oid = r[0]
@@ -208,20 +220,30 @@ async def get_ozon_products(
         logger.warning("CH orders query failed: %s", e)
 
     # ────────────────────────────────────────────────────
-    # 3. Ads 7d from ClickHouse
+    # 3. Ads 7d from ClickHouse (keyed by SKU, not offer_id)
     # ────────────────────────────────────────────────────
+    # Build sku → offer_id mapping for ads lookup
+    sku_to_offer = {}
+    for oid, p in products_map.items():
+        if p["sku"]:
+            sku_to_offer[p["sku"]] = oid
+
     try:
         ads_result = ch.query("""
-            SELECT offer_id,
-                   sum(spend) AS ad_spend
+            SELECT sku,
+                   sum(money_spent) AS ad_spend,
+                   sum(views) AS views,
+                   sum(clicks) AS clicks,
+                   sum(orders) AS ad_orders,
+                   sum(revenue) AS ad_revenue
             FROM mms_analytics.fact_ozon_ad_daily FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {d7_start:Date}
-            GROUP BY offer_id
-        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
+              AND dt >= {d_start:Date}
+            GROUP BY sku
+        """, parameters={"shop_id": shop_id, "d_start": d_start})
         for r in ads_result.result_rows:
-            oid = r[0]
-            if oid in products_map:
+            oid = sku_to_offer.get(r[0])
+            if oid and oid in products_map:
                 products_map[oid]["ad_spend_7d"] = float(r[1])
                 rev = products_map[oid]["revenue_7d"]
                 if rev > 0:
@@ -246,6 +268,23 @@ async def get_ozon_products(
                 products_map[r[0]]["returns_30d"] = r[1]
     except Exception as e:
         logger.warning("CH returns query failed: %s", e)
+
+    # Also get 30d orders for return rate calculation
+    try:
+        orders30_result = ch.query("""
+            SELECT offer_id,
+                   sum(quantity) AS orders_30d
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d30_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+            GROUP BY offer_id
+        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        for r in orders30_result.result_rows:
+            if r[0] in products_map:
+                products_map[r[0]]["orders_30d"] = r[1]
+    except Exception as e:
+        logger.warning("CH orders_30d query failed: %s", e)
 
     # ────────────────────────────────────────────────────
     # 5. Commissions (latest) from ClickHouse
@@ -277,11 +316,7 @@ async def get_ozon_products(
             WHERE shop_id = {shop_id:UInt32}
             GROUP BY sku
         """, parameters={"shop_id": shop_id})
-        # Map sku → product
-        sku_to_offer = {}
-        for oid, p in products_map.items():
-            if p["sku"]:
-                sku_to_offer[p["sku"]] = oid
+        # Map sku → product (already built above for ads)
         for r in rating_result.result_rows:
             oid = sku_to_offer.get(r[0])
             if oid:
@@ -373,7 +408,29 @@ async def get_ozon_products(
         logger.warning("CH price changes query failed: %s", e)
 
     # ────────────────────────────────────────────────────
-    # Calculate margin for products with cost_price
+    # 10. Payout from fact_ozon_transactions (current + prev period)
+    # ────────────────────────────────────────────────────
+    try:
+        txn_result = ch.query("""
+            SELECT sku,
+                   sum(CASE WHEN operation_date >= {d_start:Date} THEN amount ELSE 0 END) AS payout_cur,
+                   sum(CASE WHEN operation_date >= {d_prev_start:Date} AND operation_date < {d_start:Date} THEN amount ELSE 0 END) AS payout_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND operation_date >= {d_prev_start:Date}
+              AND sku > 0
+            GROUP BY sku
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_prev_start": d_prev_start})
+        for r in txn_result.result_rows:
+            oid = sku_to_offer.get(r[0])
+            if oid and oid in products_map:
+                products_map[oid]["payout_period"] = float(r[1])
+                products_map[oid]["payout_prev"] = float(r[2])
+    except Exception as e:
+        logger.warning("CH transactions query failed: %s", e)
+
+    # ────────────────────────────────────────────────────
+    # Calculate margin & gross profit
     # ────────────────────────────────────────────────────
     for p in products_map.values():
         cost = p["cost_price"] + p["packaging_cost"]
@@ -383,6 +440,26 @@ async def get_ozon_products(
             margin = p["price"] - cost - commission - logistics
             p["margin"] = round(margin, 2)
             p["margin_percent"] = round(margin / p["price"] * 100, 1)
+
+        # Gross profit = payout - COGS - ad_spend (net of advertising)
+        if cost > 0 and p["orders_7d"] > 0:
+            cogs = cost * p["orders_7d"]
+            gp = p["payout_period"] - cogs - p["ad_spend_7d"]
+            p["gross_profit"] = round(gp, 2)
+            if p["revenue_7d"] > 0:
+                p["gross_profit_percent"] = round(gp / p["revenue_7d"] * 100, 1)
+            # Prev-period gross profit for delta
+            if p["payout_prev"] != 0 and p["orders_prev_7d"] > 0:
+                cogs_prev = cost * p["orders_prev_7d"]
+                gp_prev = p["payout_prev"] - cogs_prev - p.get("ad_spend_prev", 0)
+                p["gross_profit_prev"] = round(gp_prev, 2)
+                if gp_prev != 0:
+                    p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
+                elif gp > 0:
+                    p["gross_profit_delta"] = 100.0
+        elif cost > 0 and p["payout_period"] != 0:
+            # Has cost but no orders — payout is likely returns/refunds
+            p["gross_profit"] = round(p["payout_period"] - p["ad_spend_7d"], 2)
 
     # ────────────────────────────────────────────────────
     # Apply filter
@@ -422,6 +499,7 @@ async def get_ozon_products(
         "stocks": lambda p: p["stocks_fbo"] + p["stocks_fbs"],
         "price": lambda p: p["price"],
         "margin": lambda p: p["margin"] if p["margin"] is not None else -999999,
+        "gross_profit": lambda p: p["gross_profit"] if p["gross_profit"] is not None else -999999,
         "drr": lambda p: p["drr"],
         "returns": lambda p: p["returns_30d"],
         "name": lambda p: (p["name"] or "").lower(),
@@ -449,6 +527,7 @@ async def get_ozon_products(
         "page": page,
         "per_page": per_page,
         "cost_missing_count": cost_missing,
+        "period": period,
     }
 
 
@@ -493,4 +572,144 @@ async def update_ozon_cost(
         ok=True,
         offer_id=body.offer_id,
         cost_price=body.cost_price,
+    )
+
+
+# ── Bulk Upload Cost Prices via Excel ─────────────────────
+
+@router.post("/ozon/cost/bulk")
+async def upload_cost_excel(
+    shop_id: int = Query(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Bulk upload cost prices from Excel.
+    Expected format: column A = offer_id (артикул), column B = cost_price.
+    No headers required.
+    """
+    # Verify shop ownership
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # Validate file type
+    if not file.filename or not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Файл должен быть в формате .xlsx")
+
+    try:
+        import openpyxl
+        content = await file.read()
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        if ws is None:
+            raise HTTPException(status_code=400, detail="Пустой Excel файл")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка чтения Excel: {e}")
+
+    updated = 0
+    errors = []
+
+    for row_idx, row in enumerate(ws.iter_rows(min_col=1, max_col=2, values_only=True), start=1):
+        offer_id_raw, cost_raw = row
+        if offer_id_raw is None or cost_raw is None:
+            continue
+
+        offer_id = str(offer_id_raw).strip()
+        if not offer_id:
+            continue
+
+        try:
+            cost_price = float(cost_raw)
+            if cost_price < 0:
+                errors.append(f"Строка {row_idx}: отрицательная цена ({cost_price})")
+                continue
+        except (ValueError, TypeError):
+            errors.append(f"Строка {row_idx}: невалидная цена '{cost_raw}'")
+            continue
+
+        await db.execute(
+            text("""
+                INSERT INTO product_costs (shop_id, offer_id, cost_price)
+                VALUES (:shop_id, :offer_id, :cost_price)
+                ON CONFLICT (shop_id, offer_id) DO UPDATE SET
+                    cost_price = EXCLUDED.cost_price,
+                    updated_at = NOW()
+            """),
+            {"shop_id": shop_id, "offer_id": offer_id, "cost_price": cost_price},
+        )
+        updated += 1
+
+    await db.commit()
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "errors": errors[:20],  # Limit error messages
+    }
+
+
+# ── Download Cost Template Excel ──────────────────────────
+
+@router.get("/ozon/cost/template")
+async def download_cost_template(
+    shop_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download Excel template with all offer_ids for cost price entry."""
+    from fastapi.responses import StreamingResponse
+
+    # Verify shop ownership
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # Get all products with current cost
+    result = await db.execute(
+        text("""
+            SELECT p.offer_id,
+                   COALESCE(cost.cost_price, 0) AS cost_price,
+                   p.name
+            FROM dim_ozon_products p
+            LEFT JOIN product_costs cost
+                ON cost.shop_id = p.shop_id AND cost.offer_id = p.offer_id
+            WHERE p.shop_id = :shop_id
+              AND NOT COALESCE(p.is_archived, false)
+            ORDER BY p.name
+        """),
+        {"shop_id": shop_id},
+    )
+    rows = result.fetchall()
+
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Себестоимость"
+
+    # Headers
+    ws.append(["Артикул", "Себестоимость", "Название (справочно)"])
+    ws.column_dimensions['A'].width = 25
+    ws.column_dimensions['B'].width = 18
+    ws.column_dimensions['C'].width = 50
+
+    for r in rows:
+        ws.append([r[0], float(r[1]), r[2] or ""])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=cost_template_{shop_id}.xlsx"},
     )

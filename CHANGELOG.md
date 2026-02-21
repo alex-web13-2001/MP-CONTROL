@@ -4,6 +4,26 @@
 
 ## [Unreleased] - 2026-02-22
 
+### Added — Excel-импорт себестоимости
+
+- **Backend / `products.py` [NEW]:** `POST /products/ozon/cost/bulk` — массовая загрузка себестоимости через Excel (2 колонки: артикул, цена)
+- **Backend / `products.py` [NEW]:** `GET /products/ozon/cost/template` — скачать шаблон .xlsx со всеми артикулами
+- **Backend / `requirements.txt` [MODIFY]:** +openpyxl для парсинга Excel
+- **Frontend / `products.ts` [NEW]:** `uploadCostExcelApi()`, `getCostTemplateUrl()` — API клиент
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Кнопки «Загрузить Excel» и «Шаблон» в предупреждении о с/с
+
+### Added — Дельта валовой прибыли
+
+- **Backend / `products.py` [MODIFY]:** Запрос payout за текущий + предыдущий период в одном ClickHouse запросе, расчёт `gross_profit_delta` (% изменения)
+- **Frontend / `products.ts` [MODIFY]:** Поля `gross_profit_prev`, `gross_profit_delta` в `OzonProduct`
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Стрелка ↑/↓ с процентом дельты в колонке «Вал»
+
+### Changed — Редизайн страницы товаров
+
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Удалён SortDropdown бар (сортировка только через заголовки таблицы)
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Переключатель периода укрупнён по стилю дашборда (`px-5 py-2 text-sm`, solid primary bg, `text-white`)
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Стили заголовков таблицы: `text-[13px] font-medium` вместо `text-[11px] uppercase tracking-wider` (как дашборд)
+
 ### Added — Раздел «Ваши товары» (Ozon)
 
 - **Backend / `products.py` [NEW]:** `GET /products/ozon` — агрегация 8 источников (PG каталог + product_costs, CH заказы/реклама/возвраты/комиссии/контент-рейтинг/промоакции/цены, PG events). Серверные фильтры, поиск, сортировка, пагинация.
