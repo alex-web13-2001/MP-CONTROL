@@ -1103,6 +1103,7 @@ def sync_wb_campaign_snapshot(self, shop_id: int, api_key: str):
             host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
             port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
             username=os.getenv("CLICKHOUSE_USER", "default"),
+            password=os.getenv("CLICKHOUSE_PASSWORD", ""),
             database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
         )
         event_detector = EventDetector(redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"))
@@ -1334,6 +1335,7 @@ def sync_wb_advert_history(
             host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
             port=int(os.getenv("CLICKHOUSE_PORT", 8123)),
             username=os.getenv("CLICKHOUSE_USER", "default"),
+            password=os.getenv("CLICKHOUSE_PASSWORD", ""),
             database=os.getenv("CLICKHOUSE_DB", "mms_analytics"),
         )
         event_detector = EventDetector(redis_url=os.getenv("REDIS_URL", "redis://redis:6379/0"))
