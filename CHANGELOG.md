@@ -14,6 +14,14 @@
   - ✅ Динамический label маркетплейса в шапке (Ozon / Wildberries)
   - ✅ Все компоненты переиспользуются: 6 KPI карточек, SalesChart, AdsChart, TopProductsTable
 
+### Fixed — Таблица «Товары» (TopProducts)
+
+- **Backend / `dashboard.py` [MODIFY]:** DRR и рекл. расход теперь считаются **внутри ClickHouse SQL** через JOIN (устранён сломанный маппинг `offer_id→sku→ad_spend` через PG). LIMIT увеличен с 10 до 50 для фильтрации по табам.
+- **Frontend / `DashboardPage.tsx` [MODIFY]:**
+  - ✅ Таб «Падающие» — фильтрует только `delta_pct < 0` (раньше показывал все товары)
+  - ✅ Таб «Проблемные» — фильтрует `stock = 0` ИЛИ `DRR > 20%`
+  - ✅ Empty state: «Нет товаров с падением продаж 🎉» / «Нет проблемных товаров 🎉»
+
 ## [Unreleased] - 2026-02-20
 
 ### Added — Alembic Database Migrations

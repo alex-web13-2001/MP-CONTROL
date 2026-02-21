@@ -197,7 +197,7 @@ async def get_ozon_dashboard(
         ]
 
         # ══════════════════════════════════════════════
-        # 4. Top products
+        # 4. Top products (with ad spend joined in CH)
         # ══════════════════════════════════════════════
         top_products_rows = ch.query("""
             WITH
@@ -216,8 +216,7 @@ async def get_ozon_dashboard(
                 orders_prev AS (
                     SELECT
                         offer_id,
-                        count() AS orders_count,
-                        sum(price * quantity) AS revenue
+                        count() AS orders_count
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(in_process_at) >= {prev_start:Date}
@@ -248,6 +247,25 @@ async def get_ozon_dashboard(
                           FROM mms_analytics.fact_ozon_prices
                           WHERE shop_id = {shop_id:UInt32}
                       )
+                ),
+                -- Map offer_id → sku from orders table
+                offer_sku_map AS (
+                    SELECT offer_id, any(sku) AS sku
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND sku > 0
+                    GROUP BY offer_id
+                ),
+                -- Ad spend aggregated per SKU
+                ad_per_sku AS (
+                    SELECT
+                        sku,
+                        sum(money_spent) AS ad_spend
+                    FROM mms_analytics.fact_ozon_ad_daily FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND dt >= {cur_start:Date}
+                      AND dt <= {cur_end:Date}
+                    GROUP BY sku
                 )
             SELECT
                 oc.offer_id,
@@ -259,35 +277,25 @@ async def get_ozon_dashboard(
                 END AS delta_pct,
                 coalesce(ls.stock_fbo, 0) AS stock_fbo,
                 coalesce(ls.stock_fbs, 0) AS stock_fbs,
-                coalesce(lp.price, 0) AS price
+                coalesce(lp.price, 0) AS price,
+                coalesce(aps.ad_spend, 0) AS ad_spend,
+                CASE WHEN oc.revenue > 0
+                    THEN round(coalesce(aps.ad_spend, 0) / oc.revenue * 100, 1)
+                    ELSE 0
+                END AS drr
             FROM orders_cur oc
             LEFT JOIN orders_prev op ON oc.offer_id = op.offer_id
             LEFT JOIN latest_stocks ls ON oc.offer_id = ls.offer_id
             LEFT JOIN latest_prices lp ON oc.offer_id = lp.offer_id
+            LEFT JOIN offer_sku_map osm ON oc.offer_id = osm.offer_id
+            LEFT JOIN ad_per_sku aps ON osm.sku = aps.sku
             ORDER BY oc.revenue DESC
-            LIMIT 10
+            LIMIT 50
         """, parameters={
             "shop_id": shop_id,
             "cur_start": cur_start, "cur_end": cur_end,
             "prev_start": prev_start, "prev_end": prev_end,
         }).result_rows
-
-        # Ad spend per SKU
-        ad_spend_rows = ch.query("""
-            SELECT
-                toString(sku) AS sku_str,
-                sum(money_spent) AS ad_spend,
-                sum(revenue) AS ad_revenue
-            FROM mms_analytics.fact_ozon_ad_daily FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {cur_start:Date}
-              AND dt <= {cur_end:Date}
-            GROUP BY sku_str
-        """, parameters={
-            "shop_id": shop_id,
-            "cur_start": cur_start, "cur_end": cur_end,
-        }).result_rows
-        ad_spend_map = {row[0]: {"spend": float(row[1]), "revenue": float(row[2])} for row in ad_spend_rows}
 
         top_products = []
         for row in top_products_rows:
@@ -301,16 +309,16 @@ async def get_ozon_dashboard(
                 "stock_fbo": int(row[4]),
                 "stock_fbs": int(row[5]),
                 "price": float(row[6]),
-                "ad_spend": 0.0,
-                "drr": 0.0,
+                "ad_spend": float(row[7]),
+                "drr": float(row[8]),
             })
 
-        # Enrich with product names, images & ad spend from PostgreSQL
+        # Enrich with product names & images from PostgreSQL
         if top_products:
             offer_ids = [p["offer_id"] for p in top_products]
             pg_result = await db.execute(
                 text("""
-                    SELECT offer_id, name, sku,
+                    SELECT offer_id, name,
                            COALESCE(main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
@@ -320,17 +328,12 @@ async def get_ozon_dashboard(
             )
             pg_map = {}
             for row in pg_result:
-                pg_map[row[0]] = {"name": row[1], "sku": str(row[2]) if row[2] else "", "image_url": row[3]}
+                pg_map[row[0]] = {"name": row[1], "image_url": row[2]}
 
             for p in top_products:
                 info = pg_map.get(p["offer_id"], {})
                 p["name"] = info.get("name", p["offer_id"])
                 p["image_url"] = info.get("image_url", "")
-                sku_str = info.get("sku", "")
-                if sku_str and sku_str in ad_spend_map:
-                    ad = ad_spend_map[sku_str]
-                    p["ad_spend"] = ad["spend"]
-                    p["drr"] = round(ad["spend"] / p["revenue"] * 100, 1) if p["revenue"] > 0 else 0
 
         # ══════════════════════════════════════════════
         # 5. Charts — Ads daily (fact_ozon_ad_daily)
@@ -656,7 +659,7 @@ async def get_wb_dashboard(
         ]
 
         # ══════════════════════════════════════════════
-        # 5. Top products
+        # 5. Top products (with ad spend joined in CH)
         # ══════════════════════════════════════════════
         top_products_rows = ch.query("""
             WITH
@@ -691,6 +694,16 @@ async def get_wb_dashboard(
                     FROM mms_analytics.fact_inventory_snapshot FINAL
                     WHERE shop_id = {shop_id:UInt32}
                     GROUP BY nm_id
+                ),
+                ad_per_nm AS (
+                    SELECT
+                        nm_id,
+                        sum(spend) AS ad_spend
+                    FROM mms_analytics.fact_advert_stats_v3 FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND date >= {cur_start:Date}
+                      AND date <= {cur_end:Date}
+                    GROUP BY nm_id
                 )
             SELECT
                 oc.nm_id,
@@ -701,52 +714,38 @@ async def get_wb_dashboard(
                     THEN round((oc.orders_count - op.orders_count) / op.orders_count * 100, 1)
                     ELSE 0
                 END AS delta_pct,
-                coalesce(ls.total_stock, 0) AS stock_total
+                coalesce(ls.total_stock, 0) AS stock_total,
+                coalesce(apn.ad_spend, 0) AS ad_spend,
+                CASE WHEN oc.revenue > 0
+                    THEN round(coalesce(apn.ad_spend, 0) / oc.revenue * 100, 1)
+                    ELSE 0
+                END AS drr
             FROM orders_cur oc
             LEFT JOIN orders_prev op ON oc.nm_id = op.nm_id
             LEFT JOIN latest_stocks ls ON oc.nm_id = ls.nm_id
+            LEFT JOIN ad_per_nm apn ON oc.nm_id = apn.nm_id
             ORDER BY oc.revenue DESC
-            LIMIT 10
+            LIMIT 50
         """, parameters={
             "shop_id": shop_id,
             "cur_start": cur_start, "cur_end": cur_end,
             "prev_start": prev_start, "prev_end": prev_end,
         }).result_rows
 
-        # Ad spend per nm_id
-        ad_spend_rows = ch.query("""
-            SELECT
-                nm_id,
-                sum(spend) AS ad_spend,
-                sum(revenue) AS ad_revenue
-            FROM mms_analytics.fact_advert_stats_v3 FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND date >= {cur_start:Date}
-              AND date <= {cur_end:Date}
-            GROUP BY nm_id
-        """, parameters={
-            "shop_id": shop_id,
-            "cur_start": cur_start, "cur_end": cur_end,
-        }).result_rows
-        ad_spend_map = {int(row[0]): {"spend": float(row[1]), "revenue": float(row[2])} for row in ad_spend_rows}
-
         top_products = []
         for row in top_products_rows:
-            nm_id = int(row[0])
-            revenue = float(row[3])
-            ad = ad_spend_map.get(nm_id, {"spend": 0, "revenue": 0})
             top_products.append({
-                "offer_id": str(nm_id),  # nm_id as offer_id for unified format
+                "offer_id": str(int(row[0])),  # nm_id as offer_id for unified format
                 "name": "",
                 "image_url": "",
                 "orders": int(row[2]),
-                "revenue": revenue,
+                "revenue": float(row[3]),
                 "delta_pct": float(row[4]),
                 "stock_fbo": int(row[5]),  # total stock in fbo field
-                "stock_fbs": 0,            # WB doesn't separate FBO/FBS in same way
+                "stock_fbs": 0,            # WB doesn't separate FBO/FBS
                 "price": 0.0,
-                "ad_spend": ad["spend"],
-                "drr": round(ad["spend"] / revenue * 100, 1) if revenue > 0 else 0,
+                "ad_spend": float(row[6]),
+                "drr": float(row[7]),
             })
 
         # Enrich with product names, images & prices from PostgreSQL

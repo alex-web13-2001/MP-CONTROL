@@ -522,16 +522,35 @@ type ProductTab = 'leaders' | 'falling' | 'problems'
 function TopProductsTable({ products }: { products: DashboardResponse['top_products'] }) {
   const [tab, setTab] = useState<ProductTab>('leaders')
 
-  const sorted = [...products]
-  if (tab === 'falling') {
-    sorted.sort((a, b) => a.delta_pct - b.delta_pct)
-  } else if (tab === 'problems') {
-    sorted.sort((a, b) => {
-      if (a.stock_fbo === 0 && b.stock_fbo !== 0) return -1
-      if (b.stock_fbo === 0 && a.stock_fbo !== 0) return 1
-      return b.drr - a.drr
-    })
-  }
+  // Filter + sort based on active tab
+  const filtered = (() => {
+    const all = [...products]
+    switch (tab) {
+      case 'leaders':
+        // Top by revenue (already sorted by backend), show first 10
+        return all.slice(0, 10)
+      case 'falling':
+        // Only products with negative delta (sales dropping)
+        return all
+          .filter((p) => p.delta_pct < 0)
+          .sort((a, b) => a.delta_pct - b.delta_pct)
+          .slice(0, 10)
+      case 'problems':
+        // Products with zero stock OR DRR > 20%
+        return all
+          .filter((p) => p.stock_fbo + p.stock_fbs === 0 || p.drr > 20)
+          .sort((a, b) => {
+            // Zero stock first, then by DRR descending
+            const aZero = a.stock_fbo + a.stock_fbs === 0 ? 1 : 0
+            const bZero = b.stock_fbo + b.stock_fbs === 0 ? 1 : 0
+            if (aZero !== bZero) return bZero - aZero
+            return b.drr - a.drr
+          })
+          .slice(0, 10)
+      default:
+        return all.slice(0, 10)
+    }
+  })()
 
   const tabs: { key: ProductTab; label: string; icon: string }[] = [
     { key: 'leaders', label: 'Лидеры', icon: '🏆' },
@@ -543,6 +562,12 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
     if (stock === 0) return 'text-red-400 font-semibold'
     if (stock < 10) return 'text-yellow-400'
     return 'text-emerald-400'
+  }
+
+  const emptyMessages: Record<ProductTab, string> = {
+    leaders: 'Нет данных о товарах',
+    falling: 'Нет товаров с падением продаж 🎉',
+    problems: 'Нет проблемных товаров 🎉',
   }
 
   return (
@@ -568,9 +593,9 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
         </div>
       </CardHeader>
       <CardContent>
-        {products.length === 0 ? (
+        {filtered.length === 0 ? (
           <p className="py-8 text-center text-sm text-[hsl(var(--muted-foreground)/0.5)]">
-            Нет данных о товарах
+            {emptyMessages[tab]}
           </p>
         ) : (
           <div className="overflow-x-auto -mx-5">
@@ -589,7 +614,7 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
                 </tr>
               </thead>
               <tbody>
-                {sorted.slice(0, 10).map((p, i) => {
+                {filtered.map((p, i) => {
                   const deltaFmt = formatDelta(p.delta_pct)
                   return (
                     <tr
