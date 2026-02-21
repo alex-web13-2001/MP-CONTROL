@@ -67,18 +67,18 @@ MARKETPLACE_LIMITS: Dict[str, RateLimitConfig] = {
         max_requests_in_window=10,
     ),
     "ozon_performance": RateLimitConfig(
-        # Ozon Performance API (statistics reports) has strict limits:
-        # - 1 concurrent report per account
-        # - 1 campaign = 1 выгрузка
-        # - max 2000 выгрузок/сутки
+        # Ozon Performance API: only order_report() goes through rate limiter.
+        # poll/download use raw httpx, so each batch = 1 rate-limited request.
+        # Ozon's real limits: 2000 downloads/day, 1 concurrent per account.
+        # Our BATCH_PAUSE (30s) handles spacing — rate limiter just prevents bursts.
         requests_per_second=1.0,
-        requests_per_minute=10,
-        requests_per_hour=100,
-        window_seconds=5.0,           # 1 request per 5 seconds
+        requests_per_minute=30,
+        requests_per_hour=2000,        # matches Ozon's documented daily limit
+        window_seconds=2.0,            # allow 1 request per 2 seconds
         max_requests_in_window=1,
-        initial_backoff_seconds=30.0,  # 429 → minimum 30 sec wait
-        max_backoff_seconds=300.0,     # max 5 min backoff
-        backoff_multiplier=2.0,
+        initial_backoff_seconds=5.0,   # light backoff — BATCH_PAUSE handles real spacing
+        max_backoff_seconds=60.0,      # max 1 min (not 5 min!)
+        backoff_multiplier=1.5,        # gentle escalation
     ),
 }
 
