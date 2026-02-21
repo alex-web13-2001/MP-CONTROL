@@ -250,7 +250,7 @@ async def get_ozon_dashboard(
                 ),
                 -- Map offer_id → sku from orders table
                 offer_sku_map AS (
-                    SELECT offer_id, any(sku) AS sku
+                    SELECT offer_id, any(sku) AS product_sku
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND sku > 0
@@ -288,7 +288,7 @@ async def get_ozon_dashboard(
             LEFT JOIN latest_stocks ls ON oc.offer_id = ls.offer_id
             LEFT JOIN latest_prices lp ON oc.offer_id = lp.offer_id
             LEFT JOIN offer_sku_map osm ON oc.offer_id = osm.offer_id
-            LEFT JOIN ad_per_sku aps ON osm.sku = aps.sku
+            LEFT JOIN ad_per_sku aps ON osm.product_sku = aps.sku
             ORDER BY oc.revenue DESC
             LIMIT 50
         """, parameters={
