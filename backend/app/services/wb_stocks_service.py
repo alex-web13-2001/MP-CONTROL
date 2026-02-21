@@ -1,8 +1,10 @@
 """
-WB Stocks Service — Fetch FBO inventory by warehouse.
+WB Stocks Service — Fetch FBO + FBS inventory.
 
-API: GET /api/v1/supplier/stocks?dateFrom=...
-Domain: statistics-api.wildberries.ru (wildberries_stats)
+FBO (WB warehouses): GET /api/v1/supplier/stocks?dateFrom=...
+  Domain: statistics-api.wildberries.ru (wildberries_stats)
+FBS (seller warehouses): POST /api/v3/stocks/{warehouseId}
+  Domain: marketplace-api.wildberries.ru (wildberries)
 
 Response format per item:
     {
@@ -47,13 +49,16 @@ logger = logging.getLogger(__name__)
 
 class WBStocksService:
     """
-    Fetches FBO stock quantities per warehouse from WB.
+    Fetches FBO + FBS stock quantities per warehouse from WB.
 
-    Uses statistics-api GET /api/v1/supplier/stocks?dateFrom=...
-    Returns all stocks in one request (no need for chunking).
+    FBO: statistics-api GET /api/v1/supplier/stocks?dateFrom=...
+    FBS: marketplace-api POST /api/v3/stocks/{warehouseId} with chrtIds
     """
 
-    ENDPOINT = "/api/v1/supplier/stocks"
+    ENDPOINT_FBO = "/api/v1/supplier/stocks"
+    ENDPOINT_FBS_WAREHOUSES = "/api/v3/warehouses"
+    ENDPOINT_FBS_STOCKS = "/api/v3/stocks"  # + /{warehouseId}
+    ENDPOINT_CARDS = "/content/v2/get/cards/list"
 
     def __init__(
         self,
@@ -98,20 +103,15 @@ class WBStocksService:
             api_key=self.api_key,
         ) as client:
             response = await client.get(
-                self.ENDPOINT,
+                self.ENDPOINT_FBO,
                 params={"dateFrom": date_from},
             )
+            data = response.json()
 
-            if not response.is_success:
-                logger.error(
-                    f"Stocks API error: status={response.status_code}, "
-                    f"error={response.error}"
-                )
-                return []
-
-            data = response.data
             if not isinstance(data, list):
-                logger.error(f"Stocks API returned unexpected format: {type(data)}")
+                logger.warning(
+                    f"Unexpected stocks response: {type(data)} — {str(data)[:200]}"
+                )
                 return []
 
             # nm_ids filter set (if provided — keep only known products)
@@ -127,22 +127,200 @@ class WBStocksService:
                     continue
 
                 warehouse_name = stock_item.get("warehouseName", "Unknown")
-                quantity = stock_item.get("quantity", 0)
+                # Use quantityFull (includes inWayToClient + inWayFromClient)
+                quantity_full = stock_item.get("quantityFull", stock_item.get("quantity", 0))
 
                 all_stocks.append({
                     "nm_id": nm_id,
                     "warehouse_name": warehouse_name,
-                    "amount": quantity,
+                    "amount": quantity_full,
                     "supplier_article": stock_item.get("supplierArticle", ""),
                     "price": stock_item.get("Price", 0),
                     "discount": stock_item.get("Discount", 0),
                     "in_way_to_client": stock_item.get("inWayToClient", 0),
                     "in_way_from_client": stock_item.get("inWayFromClient", 0),
-                    "quantity_full": stock_item.get("quantityFull", quantity),
+                    "quantity_full": quantity_full,
                 })
 
         logger.info(f"Total stocks fetched: {len(all_stocks)} for shop {self.shop_id}")
         return all_stocks
+
+    async def _get_chrt_to_nm_mapping(self) -> Dict[int, int]:
+        """
+        Build chrtId → nmId mapping from WB Content API.
+
+        Fetches all product cards and extracts chrtId from each size variant.
+        Returns: {chrtId: nmId}
+        """
+        chrt_to_nm: Dict[int, int] = {}
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_content",
+            api_key=self.api_key,
+        ) as client:
+            cursor = {"limit": 100}
+            total_fetched = 0
+
+            while True:
+                body = {
+                    "settings": {
+                        "cursor": cursor,
+                        "filter": {"withPhoto": -1},
+                    }
+                }
+                response = await client.post(self.ENDPOINT_CARDS, json=body)
+
+                if not response.is_success:
+                    logger.error(
+                        f"Content API cards error: status={response.status_code}, "
+                        f"error={response.error}"
+                    )
+                    break
+
+                data = response.data
+                cards = data.get("cards", []) if isinstance(data, dict) else []
+                if not cards:
+                    break
+
+                for card in cards:
+                    nm_id = card.get("nmID")
+                    if not nm_id:
+                        continue
+                    for size in card.get("sizes", []):
+                        chrt_id = size.get("chrtID")
+                        if chrt_id:
+                            chrt_to_nm[chrt_id] = nm_id
+
+                total_fetched += len(cards)
+
+                # Pagination: check cursor for next page
+                cursor_data = data.get("cursor", {})
+                if not cursor_data.get("total", 0) or len(cards) < 100:
+                    break
+                cursor = {
+                    "limit": 100,
+                    "updatedAt": cursor_data.get("updatedAt", ""),
+                    "nmID": cursor_data.get("nmID", 0),
+                }
+
+        logger.info(
+            f"Built chrtId→nmId mapping: {len(chrt_to_nm)} chrtIds "
+            f"for shop {self.shop_id}"
+        )
+        return chrt_to_nm
+
+    async def fetch_fbs_stocks(self, nm_ids: List[int] = None) -> List[Dict[str, Any]]:
+        """
+        Fetch FBS stock data from WB Marketplace API.
+
+        Flow:
+          1. Get chrtId → nmId mapping from Content API
+          2. Get seller warehouses (GET /api/v3/warehouses)
+          3. For each warehouse: POST /api/v3/stocks/{warehouseId} with chrtIds
+          4. Map chrtId back to nmId and aggregate per nm_id per warehouse
+
+        FBS warehouse names are prefixed with "FBS:" to distinguish from FBO.
+        """
+        all_fbs_stocks: List[Dict[str, Any]] = []
+        nm_ids_set = set(nm_ids) if nm_ids else None
+
+        # Step 1: Get chrtId → nmId mapping
+        chrt_to_nm = await self._get_chrt_to_nm_mapping()
+        if not chrt_to_nm:
+            logger.warning("No chrtId→nmId mapping available, skipping FBS stocks")
+            return []
+
+        # Filter chrtIds to only known nm_ids
+        if nm_ids_set:
+            chrt_ids = [c for c, n in chrt_to_nm.items() if n in nm_ids_set]
+        else:
+            chrt_ids = list(chrt_to_nm.keys())
+
+        if not chrt_ids:
+            logger.info("No chrtIds to query for FBS stocks")
+            return []
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_marketplace",
+            api_key=self.api_key,
+        ) as client:
+            # Step 2: Get seller warehouses
+            resp_wh = await client.get(self.ENDPOINT_FBS_WAREHOUSES)
+            if not resp_wh.is_success:
+                logger.error(
+                    f"FBS warehouses error: {resp_wh.status_code} {resp_wh.error}"
+                )
+                return []
+
+            warehouses = resp_wh.data
+            if not isinstance(warehouses, list) or not warehouses:
+                logger.info("No FBS warehouses found")
+                return []
+
+            logger.info(
+                f"Found {len(warehouses)} FBS warehouses, "
+                f"querying {len(chrt_ids)} chrtIds"
+            )
+
+            # Step 3: For each warehouse, fetch stocks
+            for wh in warehouses:
+                wh_id = wh.get("id")
+                wh_name = wh.get("name", "FBS")
+                if not wh_id:
+                    continue
+
+                # Chunk chrtIds (API might have payload limits)
+                chunk_size = 1000
+                for i in range(0, len(chrt_ids), chunk_size):
+                    chunk = chrt_ids[i:i + chunk_size]
+                    resp = await client.post(
+                        f"{self.ENDPOINT_FBS_STOCKS}/{wh_id}",
+                        json={"chrtIds": chunk},
+                    )
+
+                    if not resp.is_success:
+                        logger.error(
+                            f"FBS stocks error wh={wh_id}: "
+                            f"{resp.status_code} {resp.error}"
+                        )
+                        continue
+
+                    data = resp.data
+                    # Response: {"stocks": [{"chrtId": X, "amount": Y, "sku": "..."}]}
+                    stocks_list = data.get("stocks", []) if isinstance(data, dict) else []
+
+                    # Aggregate by nm_id (sum amounts for all sizes of same product)
+                    nm_amounts: Dict[int, int] = {}
+                    for item in stocks_list:
+                        chrt_id = item.get("chrtId")
+                        amount = item.get("amount", 0)
+                        nm_id = chrt_to_nm.get(chrt_id)
+                        if nm_id and amount > 0:
+                            nm_amounts[nm_id] = nm_amounts.get(nm_id, 0) + amount
+
+                    for nm_id, total_amount in nm_amounts.items():
+                        all_fbs_stocks.append({
+                            "nm_id": nm_id,
+                            "warehouse_name": f"FBS:{wh_name}",
+                            "amount": total_amount,
+                            "supplier_article": "",
+                            "price": 0,
+                            "discount": 0,
+                            "in_way_to_client": 0,
+                            "in_way_from_client": 0,
+                            "quantity_full": total_amount,
+                        })
+
+        logger.info(
+            f"Total FBS stocks: {len(all_fbs_stocks)} items, "
+            f"total qty={sum(s['amount'] for s in all_fbs_stocks)} "
+            f"for shop {self.shop_id}"
+        )
+        return all_fbs_stocks
 
     async def ensure_warehouses(self, stocks_data: List[Dict[str, Any]]) -> Dict[str, int]:
         """

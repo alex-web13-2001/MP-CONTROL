@@ -690,7 +690,8 @@ async def get_wb_dashboard(
                 latest_stocks AS (
                     SELECT
                         nm_id,
-                        sum(quantity) AS total_stock
+                        sum(CASE WHEN NOT startsWith(warehouse_name, 'FBS:') THEN quantity ELSE 0 END) AS stock_fbo,
+                        sum(CASE WHEN startsWith(warehouse_name, 'FBS:') THEN quantity ELSE 0 END) AS stock_fbs
                     FROM mms_analytics.fact_inventory_snapshot FINAL
                     WHERE shop_id = {shop_id:UInt32}
                     GROUP BY nm_id
@@ -714,7 +715,8 @@ async def get_wb_dashboard(
                     THEN round((oc.orders_count - op.orders_count) / op.orders_count * 100, 1)
                     ELSE 0
                 END AS delta_pct,
-                coalesce(ls.total_stock, 0) AS stock_total,
+                coalesce(ls.stock_fbo, 0) AS stock_fbo,
+                coalesce(ls.stock_fbs, 0) AS stock_fbs,
                 coalesce(apn.ad_spend, 0) AS ad_spend,
                 CASE WHEN oc.revenue > 0
                     THEN round(coalesce(apn.ad_spend, 0) / oc.revenue * 100, 1)
@@ -741,11 +743,11 @@ async def get_wb_dashboard(
                 "orders": int(row[2]),
                 "revenue": float(row[3]),
                 "delta_pct": float(row[4]),
-                "stock_fbo": int(row[5]),  # total stock in fbo field
-                "stock_fbs": 0,            # WB doesn't separate FBO/FBS
+                "stock_fbo": int(row[5]),
+                "stock_fbs": int(row[6]),
                 "price": 0.0,
-                "ad_spend": float(row[6]),
-                "drr": float(row[7]),
+                "ad_spend": float(row[7]),
+                "drr": float(row[8]),
             })
 
         # Enrich with product names, images & prices from PostgreSQL

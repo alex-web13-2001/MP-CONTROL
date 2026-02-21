@@ -1649,6 +1649,18 @@ def sync_commercial_data(
                 stocks_data = await stocks_service.fetch_stocks(nm_ids)
                 stats["stocks_fetched"] = len(stocks_data)
 
+            # ===== Step 3b: Fetch FBS stocks (seller warehouses) =====
+            self.update_state(state="PROGRESS", meta={"status": "Fetching FBS stocks..."})
+            try:
+                fbs_stocks = await stocks_service.fetch_fbs_stocks(nm_ids)
+                if fbs_stocks:
+                    stocks_data.extend(fbs_stocks)
+                    stats["fbs_stocks_fetched"] = len(fbs_stocks)
+                    logger.info(f"FBS stocks: {len(fbs_stocks)} items added")
+            except Exception as e:
+                logger.error(f"FBS stocks fetch error (non-fatal): {e}")
+                stats["errors"].append(f"FBS: {e}")
+
             # ===== Step 4: Detect STOCK_OUT / STOCK_REPLENISH =====
             self.update_state(state="PROGRESS", meta={"status": "Detecting stock events..."})
 
