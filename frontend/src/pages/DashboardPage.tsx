@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import {
   ShoppingCart,
@@ -62,6 +62,8 @@ function formatDelta(value: number, invert = false): { text: string; positive: b
 }
 
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+const MONTHS_FULL = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+const DAYS_SHORT = ['вс.', 'пн.', 'вт.', 'ср.', 'чт.', 'пт.', 'сб.']
 
 function formatChartDate(dateStr: string): string {
   const parts = dateStr.split('-')
@@ -71,6 +73,19 @@ function formatChartDate(dateStr: string): string {
     return `${day} ${MONTHS_SHORT[month] || parts[1]}`
   }
   return dateStr.slice(5)
+}
+
+function formatTooltipDate(dateStr: string): string {
+  const parts = dateStr.split('-')
+  if (parts.length >= 3) {
+    const y = parseInt(parts[0], 10)
+    const m = parseInt(parts[1], 10) - 1
+    const d = parseInt(parts[2], 10)
+    const dt = new Date(y, m, d)
+    const dayOfWeek = DAYS_SHORT[dt.getDay()]
+    return `${d} ${MONTHS_FULL[m]} (${dayOfWeek})`
+  }
+  return dateStr
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -207,7 +222,7 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
 
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+      <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
         <defs>
           <linearGradient id="barGrad" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8} />
@@ -217,8 +232,12 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.5} />
         <XAxis
           dataKey="date"
-          tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
+          tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
           tickFormatter={formatChartDate}
+          interval={0}
+          angle={-45}
+          textAnchor="end"
+          height={50}
           axisLine={false}
           tickLine={false}
         />
@@ -249,7 +268,7 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
             name === 'revenue' ? formatMoney(value) : formatNumber(value),
             name === 'revenue' ? 'Выручка' : 'Заказы',
           ]}
-          labelFormatter={(label: string) => `📅 ${label}`}
+          labelFormatter={formatTooltipDate}
         />
         <Bar yAxisId="left" dataKey="orders" fill="url(#barGrad)" radius={[4, 4, 0, 0]} barSize={20} />
         <Line
@@ -275,6 +294,7 @@ const ADS_METRICS = [
   { key: 'clicks', label: 'Клики', color: '#06b6d4', yAxis: 'right' },
   { key: 'cart', label: 'Корзины', color: '#8b5cf6', yAxis: 'right' },
   { key: 'orders', label: 'Заказы', color: '#10b981', yAxis: 'left' },
+  { key: 'ctr', label: 'Общий CTR', color: '#facc15', yAxis: 'percent' },
   { key: 'drr_ad', label: 'ДРР рекламы', color: '#ef4444', yAxis: 'percent' },
   { key: 'drr_total', label: 'Общий ДРР', color: '#ec4899', yAxis: 'percent' },
 ] as const
@@ -287,13 +307,14 @@ const ADS_METRIC_LABELS: Record<string, string> = {
   clicks: 'Клики',
   cart: 'Корзины',
   orders: 'Заказы',
+  ctr: 'Общий CTR',
   drr_ad: 'ДРР рекламы',
   drr_total: 'Общий ДРР',
 }
 
 function AdsChart({ data }: { data: AdsDailyPoint[] }) {
   const [activeMetrics, setActiveMetrics] = useState<Set<AdsMetricKey>>(
-    new Set(['spend', 'clicks'])
+    new Set<AdsMetricKey>(['spend', 'clicks'])
   )
 
   const toggleMetric = (key: AdsMetricKey) => {
@@ -307,6 +328,15 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
       return next
     })
   }
+
+  // Compute CTR (clicks/views*100) for each data point
+  const chartData = useMemo(() =>
+    data.map(d => ({
+      ...d,
+      ctr: d.views > 0 ? parseFloat(((d.clicks / d.views) * 100).toFixed(2)) : 0,
+    })),
+    [data],
+  )
 
   // Check which axes are needed
   const hasRightAxis = ADS_METRICS.some(
@@ -356,7 +386,7 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
 
       {/* Chart */}
       <ResponsiveContainer width="100%" height={320}>
-        <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+        <ComposedChart data={chartData} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
           <defs>
             <linearGradient id="spendGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
@@ -370,8 +400,12 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
+            tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
             tickFormatter={formatChartDate}
+            interval={0}
+            angle={-45}
+            textAnchor="end"
+            height={50}
             axisLine={false}
             tickLine={false}
           />
@@ -421,11 +455,11 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
             }}
             formatter={(value: number, name: string) => [
               name === 'spend' ? formatMoney(value)
-                : (name === 'drr_ad' || name === 'drr_total') ? `${value.toFixed(1)}%`
+                : (name === 'drr_ad' || name === 'drr_total' || name === 'ctr') ? `${value.toFixed(1)}%`
                 : formatNumber(value),
               ADS_METRIC_LABELS[name] || name,
             ]}
-            labelFormatter={(label: string) => `📅 ${label}`}
+            labelFormatter={formatTooltipDate}
           />
 
           {/* Spend — area chart */}
@@ -489,6 +523,20 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
               strokeWidth={2}
               dot={false}
               activeDot={{ r: 4, fill: '#8b5cf6' }}
+            />
+          )}
+
+          {/* Общий CTR — dashed line */}
+          {activeMetrics.has('ctr') && (
+            <Line
+              yAxisId="percent"
+              type="monotone"
+              dataKey="ctr"
+              stroke="#facc15"
+              strokeWidth={2}
+              strokeDasharray="6 3"
+              dot={false}
+              activeDot={{ r: 4, fill: '#facc15' }}
             />
           )}
 
