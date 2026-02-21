@@ -4,6 +4,22 @@
 
 ## [Unreleased] - 2026-02-21
 
+### Improved — Dashboard UI/UX
+
+- **Frontend / `DashboardPage.tsx` [MODIFY]:**
+  - Графики: все даты видны (`interval=0, angle=-45°`), русский формат «21 фев»
+  - Тултипы: дата «5 февраля (ср.)» — без года, с днём недели
+  - Легенды (Legend) на обоих графиках
+  - Новая метрика «Общий CTR» в рекламной аналитике (`clicks/views×100`)
+  - Фото товаров: формат 3:4, hover preview (fixed positioning, обход overflow)
+  - Увеличены шрифты: KPI, таблица, артикулы, табы, metric chips
+  - Period selector: увеличен padding
+
+### Fixed — Ozon Primary Image
+
+- **Backend / `dashboard.py` [MODIFY]:** Ozon dashboard использует `COALESCE(NULLIF(primary_image_url, ''), main_image_url, '')` — приоритет главного фото продавца
+- **Backend / `ozon_products_service.py` [MODIFY]:** `main_image_url` при upsert приоритетно из `primary_image` API вместо `images[0]`
+
 ### Added — Дашборд Wildberries (по аналогии с Ozon)
 
 - **Backend / `dashboard.py` [MODIFY]:** Добавлен endpoint `GET /dashboard/wb?shop_id=X&period=7d` — 5 SQL-запросов к ClickHouse (`fact_orders_raw` для заказов, `fact_advert_stats_v3` для рекламы, `fact_inventory_snapshot` для остатков) + PostgreSQL enrichment (`dim_products` для имён, фото, цен). Формат ответа **идентичен** Ozon Dashboard для переиспользования frontend компонентов.

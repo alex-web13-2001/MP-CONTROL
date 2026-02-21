@@ -193,6 +193,7 @@ API для фронтенда — запрос финансовых данных
 - Извлечение комиссий: `_extract_commissions()` — sales_percent, FBO/FBS logistics
 - MD5 хеши контента для change detection
 - Извлечение FBO/FBS стоков: `_extract_stocks()`
+- **Primary Image:** при upsert `main_image_url` приоритетно берётся из API поля `primary_image` (главная фото продавца), а не `images[0]` (может быть не главной)
 
 ---
 
@@ -336,3 +337,9 @@ FBO + FBS возвраты Ozon.
 | `ozon_warehouse_stocks_service` | Ozon        | Seller API      | CH: stock tables                                   |
 | `ozon_price_service`            | Ozon        | Seller API      | CH: price snapshots                                |
 | `ozon_seller_rating_service`    | Ozon        | Seller API      | CH: rating snapshots                               |
+
+---
+
+### 2026-02-21
+
+- `ozon_products_service.py`: `main_image_url` теперь приоритетно берётся из `primary_image` API (главное фото продавца), а не `images[0]`

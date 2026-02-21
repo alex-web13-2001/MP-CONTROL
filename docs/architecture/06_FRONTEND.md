@@ -163,9 +163,13 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Шаги: выбор маркетплейса → ввод ключа → валидация → создание
 - По завершении: redirect → `/`
 
-### `DashboardPage` (~480 строк)
+### `DashboardPage` (~1010 строк)
 
-Подключён к `GET /api/v1/dashboard/ozon`. Auto-refresh каждые 2 мин.
+Универсальный дашборд для Ozon и WB. Автоматически определяет маркетплейс по выбранному магазину.
+
+- Ozon → `GET /api/v1/dashboard/ozon?shop_id=X&period=7d`
+- WB → `GET /api/v1/dashboard/wb?shop_id=X&period=7d`
+- Auto-refresh каждые 2 мин.
 
 **6 KPI-карточек** (Framer Motion анимация, delta к предыдущему периоду):
 
@@ -178,16 +182,52 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **Компоненты:**
 
-| Компонент           | Описание                                                      |
-| ------------------- | ------------------------------------------------------------- |
-| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent      |
-| `PeriodSelector`    | Сегодня / 7д / 30д                                            |
-| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y)            |
-| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото, артикул, DRR |
-| `DashboardSkeleton` | Skeleton loader                                               |
+| Компонент           | Описание                                                                    |
+| ------------------- | --------------------------------------------------------------------------- |
+| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent                    |
+| `PeriodSelector`    | Сегодня / 7д / 30д                                                          |
+| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y, Legend)                  |
+| `AdsChart`          | ComposedChart рекламной аналитики: 8 метрик, toggle chips, 3 оси Y          |
+| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото 3:4, hover preview, артикул |
+| `DashboardSkeleton` | Skeleton loader                                                             |
 
-**API клиент:** `src/api/dashboard.ts` — TypeScript типы + `getOzonDashboardApi()`.  
+**Рекламная аналитика (AdsChart) — метрики:**
+
+| Метрика     | Тип      | Ось Y   | Цвет    |
+| ----------- | -------- | ------- | ------- |
+| Расход ₽    | Area     | left    | #f97316 |
+| Показы      | Line     | right   | #3b82f6 |
+| Клики       | Line     | right   | #06b6d4 |
+| Корзины     | Line     | right   | #8b5cf6 |
+| Заказы      | Bar      | left    | #10b981 |
+| Общий CTR   | Line (%) | percent | #facc15 |
+| ДРР рекламы | Line (%) | percent | #ef4444 |
+| Общий ДРР   | Line (%) | percent | #ec4899 |
+
+**Фичи графиков:**
+
+- Оси X: все даты видны (interval=0, angle=-45°), русский формат «21 фев»
+- Тултипы: дата «5 февраля (ср.)» — без года, с днём недели
+- Легенды: сверху графика, русские имена метрик
+- CTR вычисляется на фронте: `clicks / views × 100`
+
+**Hover preview товаров:**
+
+- При наведении на фото → `fixed` overlay 208×160px с крупным изображением
+- React state + `getBoundingClientRect()` для позиционирования (обходит overflow-x-auto таблицы)
+
+**API клиент:** `src/api/dashboard.ts` — TypeScript типы + `getOzonDashboardApi()` / `getWbDashboardApi()`.  
 **Числа:** полные, без сокращений (например `180 671 ₽`, не `180К ₽`).
+
+**Вспомогательные функции:**
+
+| Функция             | Описание                              |
+| ------------------- | ------------------------------------- |
+| `formatChartDate`   | ISO → «21 фев» для осей X             |
+| `formatTooltipDate` | ISO → «5 февраля (ср.)» для тултипов  |
+| `formatDelta`       | Число → «+12.5%» / «-3.2%» с цветом   |
+| `formatMoney`       | Число → «180 671 ₽»                   |
+| `formatNumber`      | Число → «1 234» (пробелы-разделители) |
 
 ### `SettingsPage` (633 строки — самая большая страница)
 
@@ -258,3 +298,11 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 ### 2026-02-19
 
 - Обновлена секция `DashboardPage`: живые данные из API вместо placeholder, 6 KPI-карточек (Показы/Клики вместо Остатки FBO/Конверсия), компоненты, API клиент
+
+### 2026-02-21
+
+- `DashboardPage` переписан: поддержка Ozon + WB, 1010 строк
+- Добавлен `AdsChart` — 8 метрик рекламной аналитики с toggle chips (включая Общий CTR)
+- Графики: все даты видны (interval=0, angle=-45°), Legend, русские тултипы «5 февраля (ср.)»
+- `TopProductsTable`: фото 3:4 с hover preview (fixed positioning), supplier_article
+- Увеличены шрифты: KPI, таблица, артикулы, metric chips (text-[13px]+)

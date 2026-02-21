@@ -161,6 +161,7 @@ POST /commercial/turnover
 | Метод | Path              | Описание                          | Auth   |
 | ----- | ----------------- | --------------------------------- | ------ |
 | `GET` | `/dashboard/ozon` | Агрегированные KPI + графики Ozon | Bearer |
+| `GET` | `/dashboard/wb`   | Агрегированные KPI + графики WB   | Bearer |
 
 ### Query Parameters
 
@@ -184,10 +185,11 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
     drr, drr_delta                      // DRR = ad_spend / revenue × 100
   },
   charts: {
-    sales_daily: [{ date, orders, revenue }]
+    sales_daily: [{ date, orders, revenue }],
+    ads_daily: [{ date, spend, views, clicks, cart, orders, drr_ad, drr_total }]
   },
   top_products: [{
-    offer_id, name, image_url,
+    offer_id, supplier_article, name, image_url,
     orders, revenue, delta_pct,
     stock_fbo, stock_fbs, price,
     ad_spend, drr
@@ -197,10 +199,12 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 
 ### Ключевая логика
 
-- 4 SQL-запроса к ClickHouse: заказы (`fact_ozon_orders`), реклама (`fact_ozon_ad_daily`), график продаж, ТОП товаров
+- 5 SQL-запросов к ClickHouse: заказы, реклама, график продаж, график рекламы, ТОП товаров
 - **DRR** = `ad_spend / orders_revenue × 100` (НЕ ad_revenue)
 - Delta = процент изменения к предыдущему аналогичному периоду
-- Обогащение товаров именами/изображениями из PostgreSQL `dim_ozon_products`
+- Обогащение товаров именами/изображениями из PostgreSQL
+- **Ozon images:** `COALESCE(NULLIF(primary_image_url, ''), main_image_url, '')` — приоритет primary_image
+- **WB images:** динамическая генерация CDN URL через `wb_image_url(nm_id)`
 - Проверка ownership магазина через `get_current_user`
 
 ---
@@ -252,3 +256,10 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 
 - Добавлена секция `Дашборд Ozon — /api/v1/dashboard` с endpoint, response schema и логикой
 - Обновлён список роутеров (6 вместо 5)
+
+### 2026-02-21
+
+- Добавлен WB dashboard endpoint `GET /dashboard/wb`
+- Обновлена response schema: добавлен `ads_daily[]` в charts, `supplier_article` в top_products
+- Документировано использование `primary_image_url` вместо `main_image_url` для Ozon
+- Добавлена динамическая генерация CDN URL для WB (`wb_image_url(nm_id)`)
