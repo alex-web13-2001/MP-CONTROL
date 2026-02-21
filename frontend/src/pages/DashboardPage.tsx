@@ -22,6 +22,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -270,6 +271,12 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
           ]}
           labelFormatter={formatTooltipDate}
         />
+        <Legend
+          verticalAlign="top"
+          height={30}
+          formatter={(value: string) => value === 'orders' ? 'Заказы' : value === 'revenue' ? 'Выручка' : value}
+          wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
+        />
         <Bar yAxisId="left" dataKey="orders" fill="url(#barGrad)" radius={[4, 4, 0, 0]} barSize={20} />
         <Line
           yAxisId="right"
@@ -460,6 +467,12 @@ function AdsChart({ data }: { data: AdsDailyPoint[] }) {
               ADS_METRIC_LABELS[name] || name,
             ]}
             labelFormatter={formatTooltipDate}
+          />
+          <Legend
+            verticalAlign="top"
+            height={30}
+            formatter={(value: string) => ADS_METRIC_LABELS[value] || value}
+            wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
           />
 
           {/* Spend — area chart */}
