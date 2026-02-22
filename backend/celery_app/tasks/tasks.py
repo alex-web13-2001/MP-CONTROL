@@ -579,6 +579,7 @@ def sync_all_daily(self):
             from celery_app.tasks.tasks import (
                 sync_warehouses,
                 sync_product_content,
+                sync_wb_finance_history,
             )
 
             for task_ref in [sync_warehouses, sync_product_content]:
@@ -586,6 +587,13 @@ def sync_all_daily(self):
                     dispatched += 1
                 else:
                     skipped += 1
+
+            # Финансовые отчёты WB — ежедневно, за последние 30 дней
+            # (skipping already loaded weeks internally)
+            if _dedup_dispatch(sync_wb_finance_history, r, shop.id, ttl=82800, api_key=api_key, days_back=30):
+                dispatched += 1
+            else:
+                skipped += 1
 
             logger.info("sync_all_daily: WB shop %s (%s) — dispatched/skipped", shop.id, shop.name)
 
