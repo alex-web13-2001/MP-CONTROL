@@ -21,7 +21,8 @@ const navSections = [
     title: 'Аналитика',
     items: [
       { path: '/', label: 'Обзор', icon: LayoutDashboard },
-      { path: '/products', label: 'Товары', icon: Package },
+      { path: '/products', label: 'Товары Ozon', icon: Package },
+      { path: '/wb-products', label: 'Товары WB', icon: Package },
       { path: '/sales', label: 'Продажи', icon: ShoppingCart },
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse },
