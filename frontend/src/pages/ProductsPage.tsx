@@ -40,6 +40,13 @@ import {
   type OzonProduct,
   type ProductEvent,
 } from '@/api/products'
+import {
+  getWBProductsApi,
+  updateWBCostApi,
+  uploadWBCostExcelApi,
+  downloadWBCostTemplate,
+  type WBProduct,
+} from '@/api/wb-products'
 
 /* ═══════════════════════════════════════════════════════════
    Helpers
@@ -53,6 +60,71 @@ function fmtMoney(v: number | null | undefined): string {
 
 function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString('ru-RU')
+}
+
+/** WB CDN image URL by nm_id */
+function wbImageUrl(nmId: number): string {
+  const vol = Math.floor(nmId / 100000)
+  const part = Math.floor(nmId / 1000)
+  const basket = String((vol % 17) + 1).padStart(2, '0')
+  return `https://basket-${basket}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
+}
+
+/** Convert WBProduct → OzonProduct shape for unified table rendering */
+function wbToOzon(p: WBProduct): OzonProduct {
+  const grossProfit = p.gross_profit ?? null
+  const grossProfitPct = (grossProfit !== null && p.revenue_7d > 0)
+    ? Math.round(grossProfit / p.revenue_7d * 100)
+    : null
+  return {
+    product_id: p.nm_id,
+    offer_id: p.vendor_code,
+    sku: p.nm_id,
+    name: p.name || p.vendor_code,
+    barcode: null,
+    image_url: wbImageUrl(p.nm_id),
+    price: p.current_price,
+    old_price: 0,
+    min_price: 0,
+    marketing_price: p.current_price,
+    stocks_fbo: p.stock_fbo,
+    stocks_fbs: p.stock_fbs,
+    price_index_color: '',
+    price_index_value: 0,
+    competitor_min_price: 0,
+    status: 'active',
+    status_name: '',
+    is_archived: false,
+    volume_weight: 0,
+    model_count: 0,
+    images_count: 0,
+    cost_price: p.cost_price,
+    packaging_cost: p.packaging_cost,
+    orders_7d: p.orders_7d,
+    revenue_7d: p.revenue_7d,
+    orders_prev_7d: p.orders_prev ?? 0,
+    revenue_delta: p.revenue_delta,
+    ad_spend_7d: p.ad_spend_7d,
+    drr: p.drr,
+    returns_30d: 0,
+    orders_30d: p.orders_7d,
+    content_rating: 0,
+    commission_percent: 0,
+    fbo_logistics: 0,
+    margin: p.cost_price > 0 ? (grossProfit ?? null) : null,
+    margin_percent: p.cost_price > 0 ? grossProfitPct : null,
+    payout_period: 0,
+    payout_prev: 0,
+    gross_profit: grossProfit,
+    gross_profit_percent: grossProfitPct,
+    gross_profit_prev: null,
+    gross_profit_delta: null,
+    mp_fees: 0,
+    mp_fees_percent: 0,
+    period: 7,
+    events: [] as ProductEvent[],
+    promotions: [] as string[],
+  }
 }
 
 const FILTERS = [
@@ -288,6 +360,7 @@ function DeltaBadge({ value, suffix = '%' }: { value: number; suffix?: string })
 export default function ProductsPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const isOzon = currentShop?.marketplace === 'ozon'
+  const isWB = currentShop?.marketplace === 'wildberries'
   const shopId = currentShop?.id
 
   const [products, setProducts] = useState<OzonProduct[]>([])
@@ -313,50 +386,70 @@ export default function ProductsPage() {
 
   // Fetch page 1 (reset)
   const fetchProducts = useCallback(async () => {
-    if (!shopId || !isOzon) return
+    if (!shopId || (!isOzon && !isWB)) return
     setLoading(true)
     try {
-      const data = await getOzonProductsApi({
-        shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
-      })
-      setProducts(data.products)
-      setTotal(data.total)
-      setCostMissing(data.cost_missing_count)
+      if (isWB) {
+        const data = await getWBProductsApi({
+          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
+        })
+        setProducts(data.products.map(wbToOzon))
+        setTotal(data.total)
+        setCostMissing(data.cost_missing_count)
+      } else {
+        const data = await getOzonProductsApi({
+          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
+        })
+        setProducts(data.products)
+        setTotal(data.total)
+        setCostMissing(data.cost_missing_count)
+      }
       pageRef.current = 1
       setPage(1)
-      setHasMore(data.products.length < data.total)
+      setHasMore(true)
     } catch (e) {
       console.error('Failed to fetch products', e)
     } finally {
       setLoading(false)
     }
-  }, [shopId, isOzon, perPage, sort, order, filter, search, period])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period])
 
   // Load next page (append) — uses refs to prevent duplicate calls
   const loadMore = useCallback(async () => {
-    if (!shopId || !isOzon || loadingMoreRef.current || !hasMore) return
+    if (!shopId || (!isOzon && !isWB) || loadingMoreRef.current || !hasMore) return
     loadingMoreRef.current = true
     setLoadingMore(true)
     const nextPage = pageRef.current + 1
     try {
-      const data = await getOzonProductsApi({
-        shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
-      })
+      let newProducts: OzonProduct[]
+      let newTotal: number
+      if (isWB) {
+        const data = await getWBProductsApi({
+          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
+        })
+        newProducts = data.products.map(wbToOzon)
+        newTotal = data.total
+      } else {
+        const data = await getOzonProductsApi({
+          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
+        })
+        newProducts = data.products
+        newTotal = data.total
+      }
       setProducts((prev) => {
         const existingIds = new Set(prev.map((p: OzonProduct) => p.offer_id))
-        const newItems = data.products.filter((p: OzonProduct) => !existingIds.has(p.offer_id))
-        return [...prev, ...newItems]
+        return [...prev, ...newProducts.filter((p) => !existingIds.has(p.offer_id))]
       })
       pageRef.current = nextPage
       setPage(nextPage)
-      setHasMore(nextPage * perPage < data.total)
+      setHasMore(nextPage * perPage < newTotal)
     } catch (e) {
       console.error('Failed to load more', e)
     } finally {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [shopId, isOzon, perPage, sort, order, filter, search, period, hasMore])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, hasMore])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
@@ -391,9 +484,12 @@ export default function ProductsPage() {
     if (!file || !shopId) return
     setUploading(true)
     try {
-      const res = await uploadCostExcelApi(shopId, file)
-      if (res.ok) {
-        fetchProducts()
+      if (isWB) {
+        const res = await uploadWBCostExcelApi(shopId, file)
+        if (res.ok) fetchProducts()
+      } else {
+        const res = await uploadCostExcelApi(shopId, file)
+        if (res.ok) fetchProducts()
       }
     } catch (err) {
       console.error('Excel upload failed', err)
@@ -409,15 +505,24 @@ export default function ProductsPage() {
     fetchProducts()
   }
 
+  const handleWBCostSaved = async (offerId: string, cost: number) => {
+    if (!shopId) return
+    try {
+      await updateWBCostApi({ shop_id: shopId, vendor_code: offerId, cost_price: cost })
+      setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
+      setCostMissing((c) => Math.max(0, c - 1))
+    } catch { /* silent */ }
+  }
 
-  /* ── No Ozon ── */
-  if (!isOzon) {
+
+  /* ── Marketplace not selected ── */
+  if (!isOzon && !isWB) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
         <div className="text-center space-y-3">
           <Package className="mx-auto h-16 w-16 text-[hsl(var(--muted-foreground)/0.15)]" />
-          <p className="text-lg font-medium text-[hsl(var(--muted-foreground))]">Доступно для Ozon</p>
-          <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">Wildberries — в ближайшем обновлении</p>
+          <p className="text-lg font-medium text-[hsl(var(--muted-foreground))]">Выберите магазин</p>
+          <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">Ozon или Wildberries</p>
         </div>
       </div>
     )
@@ -513,7 +618,7 @@ export default function ProductsPage() {
             </button>
             {shopId && (
               <button
-                onClick={() => downloadCostTemplate(shopId)}
+                onClick={() => isWB ? downloadWBCostTemplate(shopId) : downloadCostTemplate(shopId)}
                 className="inline-flex items-center gap-1.5 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-1.5 text-xs font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -695,7 +800,11 @@ export default function ProductsPage() {
 
                     {/* ── 5. С/с И МАРЖА ── */}
                     <td className="px-3 py-2.5 text-right">
-                      <CostEdit product={p} shopId={shopId!} onSaved={handleCostSaved} />
+                      <CostEdit
+                        product={p}
+                        shopId={shopId!}
+                        onSaved={isWB ? handleWBCostSaved : handleCostSaved}
+                      />
                       {p.margin !== null && p.margin_percent !== null && (
                         <p className={cn(
                           'text-[11px] font-bold mt-0.5',

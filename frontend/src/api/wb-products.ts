@@ -14,6 +14,7 @@ export interface WBProduct {
   // Sales
   orders_7d: number
   revenue_7d: number
+  orders_prev: number
   revenue_prev: number
   revenue_delta: number
   // Ads
