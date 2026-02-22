@@ -52,7 +52,9 @@ async def get_ozon_products(
     order: str = Query("desc"),
     filter: str = Query("all"),
     search: str = Query(""),
-    period: int = Query(7, ge=7, le=30),
+    period: int = Query(7, ge=1, le=366),
+    date_from: Optional[date] = Query(None, description="Custom range start (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(None, description="Custom range end (YYYY-MM-DD)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -75,9 +77,14 @@ async def get_ozon_products(
         raise HTTPException(status_code=500, detail="Analytics unavailable")
 
     today = date.today()
-    # Dynamic period for main queries
-    d_start = today - timedelta(days=period - 1)
-    d_prev_start = d_start - timedelta(days=period)
+    if date_from and date_to:
+        d_start = date_from
+        d_end = date_to
+    else:
+        d_end = today
+        d_start = today - timedelta(days=period - 1)
+    span = (d_end - d_start).days + 1
+    d_prev_start = d_start - timedelta(days=span)
     d_prev_end = d_start - timedelta(days=1)
     d30_start = today - timedelta(days=29)
 

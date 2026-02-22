@@ -46,7 +46,9 @@ async def get_wb_products(
     order: str = Query("desc"),
     filter: str = Query("all"),
     search: str = Query(""),
-    period: int = Query(7, ge=7, le=30),
+    period: int = Query(7, ge=1, le=366),
+    date_from: Optional[date] = Query(None, description="Custom range start (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(None, description="Custom range end (YYYY-MM-DD)"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -67,10 +69,15 @@ async def get_wb_products(
 
     # ── Dates ─────────────────────────────────────────────
     today = date.today()
-    d_end = today
-    d_start = today - timedelta(days=period - 1)
+    if date_from and date_to:
+        d_start = date_from
+        d_end = date_to
+    else:
+        d_end = today
+        d_start = today - timedelta(days=period - 1)
+    span = (d_end - d_start).days + 1
     d_prev_end = d_start - timedelta(days=1)
-    d_prev_start = d_prev_end - timedelta(days=period - 1)
+    d_prev_start = d_prev_end - timedelta(days=span - 1)
 
     from app.core.clickhouse import get_clickhouse_client
     ch = get_clickhouse_client()

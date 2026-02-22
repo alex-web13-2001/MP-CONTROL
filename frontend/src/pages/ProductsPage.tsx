@@ -47,6 +47,7 @@ import {
   downloadWBCostTemplate,
   type WBProduct,
 } from '@/api/wb-products'
+import { DateRangePicker, type DateRange } from '@/components/DateRangePicker'
 
 /* ═══════════════════════════════════════════════════════════
    Helpers
@@ -377,6 +378,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [period, setPeriod] = useState<7 | 30>(7)
+  const [dateRange, setDateRange] = useState<DateRange | null>(null)
   const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -388,17 +390,22 @@ export default function ProductsPage() {
   const fetchProducts = useCallback(async () => {
     if (!shopId || (!isOzon && !isWB)) return
     setLoading(true)
+    // date params for custom range
+    const dateParams = dateRange?.from && dateRange?.to ? {
+      date_from: dateRange.from.toISOString().slice(0, 10),
+      date_to: dateRange.to.toISOString().slice(0, 10),
+    } : {}
     try {
       if (isWB) {
         const data = await getWBProductsApi({
-          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
+          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period, ...dateParams,
         })
         setProducts(data.products.map(wbToOzon))
         setTotal(data.total)
         setCostMissing(data.cost_missing_count)
       } else {
         const data = await getOzonProductsApi({
-          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
+          shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period, ...dateParams,
         })
         setProducts(data.products)
         setTotal(data.total)
@@ -412,7 +419,7 @@ export default function ProductsPage() {
     } finally {
       setLoading(false)
     }
-  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, dateRange])
 
   // Load next page (append) — uses refs to prevent duplicate calls
   const loadMore = useCallback(async () => {
@@ -420,18 +427,22 @@ export default function ProductsPage() {
     loadingMoreRef.current = true
     setLoadingMore(true)
     const nextPage = pageRef.current + 1
+    const dateParams = dateRange?.from && dateRange?.to ? {
+      date_from: dateRange.from.toISOString().slice(0, 10),
+      date_to: dateRange.to.toISOString().slice(0, 10),
+    } : {}
     try {
       let newProducts: OzonProduct[]
       let newTotal: number
       if (isWB) {
         const data = await getWBProductsApi({
-          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
+          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period, ...dateParams,
         })
         newProducts = data.products.map(wbToOzon)
         newTotal = data.total
       } else {
         const data = await getOzonProductsApi({
-          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
+          shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period, ...dateParams,
         })
         newProducts = data.products
         newTotal = data.total
@@ -449,7 +460,7 @@ export default function ProductsPage() {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, hasMore])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, hasMore, dateRange])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
@@ -561,10 +572,10 @@ export default function ProductsPage() {
           {([7, 30] as const).map((d) => (
             <button
               key={d}
-              onClick={() => { setPeriod(d); setPage(1) }}
+              onClick={() => { setPeriod(d); setDateRange(null); setPage(1) }}
               className={cn(
                 'rounded-md px-5 py-2 text-sm font-medium transition-all duration-200',
-                period === d
+                period === d && !dateRange
                   ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
                   : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]',
               )}
@@ -573,6 +584,11 @@ export default function ProductsPage() {
             </button>
           ))}
         </div>
+        {/* Кастомный диапазон дат */}
+        <DateRangePicker
+          value={dateRange}
+          onChange={(range) => { setDateRange(range); setPage(1) }}
+        />
         {/* Filters */}
         <div className="flex items-center gap-1.5 flex-wrap">
           {FILTERS.map((f) => (
@@ -658,7 +674,7 @@ export default function ProductsPage() {
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    С/с и маржа {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    Себестоимость {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
@@ -740,9 +756,9 @@ export default function ProductsPage() {
                           <p className="text-[13px] font-medium leading-snug line-clamp-2" title={p.name}>
                             {p.name}
                           </p>
-                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
-                            <span className="font-mono">{p.offer_id}</span>
-                            {p.sku && <span>SKU {p.sku}</span>}
+                          <div className="mt-0.5 flex items-center gap-2">
+                            <span className="text-[12px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide">{p.offer_id}</span>
+                            {p.sku && <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.45)]">SKU {p.sku}</span>}
                           </div>
                           <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
                             <ContentRating rating={p.content_rating} />
@@ -823,7 +839,7 @@ export default function ProductsPage() {
                               : p.margin_percent > 5 ? 'bg-amber-500/12 text-amber-400'
                               : 'bg-red-500/12 text-red-400',
                           )}>
-                            {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}% маржа
+                            {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}%
                           </span>
                         </div>
                       )}
@@ -840,7 +856,7 @@ export default function ProductsPage() {
                               : p.drr > 10 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
                               : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
                           )}>
-                            DRR {p.drr}%
+                            ДРР {p.drr}%
                           </span>
                         </div>
                       ) : (
@@ -876,7 +892,7 @@ export default function ProductsPage() {
                             "inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold mt-1",
                             p.mp_fees_percent > 35 ? "bg-orange-500/12 text-orange-400" : "bg-slate-500/12 text-[hsl(var(--muted-foreground)/0.7)]"
                           )}>
-                            {p.mp_fees_percent}% от выручки
+                            {p.mp_fees_percent}%
                           </span>
                         </div>
                       ) : (

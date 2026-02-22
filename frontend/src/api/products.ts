@@ -78,6 +78,8 @@ export async function getOzonProductsApi(params: {
   filter?: string
   search?: string
   period?: number
+  date_from?: string
+  date_to?: string
 }): Promise<ProductsResponse> {
   const { data } = await apiClient.get('/products/ozon', { params })
   return data

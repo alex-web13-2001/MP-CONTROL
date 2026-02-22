@@ -51,6 +51,8 @@ export async function getWBProductsApi(params: {
   filter?: string
   search?: string
   period?: number
+  date_from?: string
+  date_to?: string
 }): Promise<WBProductsResponse> {
   const q = new URLSearchParams()
   q.set('shop_id', String(params.shop_id))
@@ -61,6 +63,8 @@ export async function getWBProductsApi(params: {
   q.set('filter', params.filter ?? 'all')
   q.set('search', params.search ?? '')
   q.set('period', String(params.period ?? 7))
+  if (params.date_from) q.set('date_from', params.date_from)
+  if (params.date_to) q.set('date_to', params.date_to)
   const resp = await apiClient.get(`/products/wb?${q.toString()}`)
   return resp.data
 }
