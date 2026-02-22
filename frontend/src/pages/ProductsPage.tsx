@@ -784,7 +784,7 @@ export default function ProductsPage() {
                               {p.gross_profit_percent > 0 ? '+' : ''}{p.gross_profit_percent}%
                             </span>
                           )}
-                          {p.gross_profit_delta !== null && (
+                          {p.gross_profit_delta !== null && isFinite(p.gross_profit_delta) && (
                             <p className={cn(
                               'text-[10px] font-medium tabular-nums mt-0.5',
                               p.gross_profit_delta > 0 ? 'text-emerald-500/70' : 'text-red-400/70',
