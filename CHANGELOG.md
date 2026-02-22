@@ -73,6 +73,12 @@
 
 - **Backend / `tasks.py` [MODIFY]:** `sync_all_daily` (WB): добавлен `sync_wb_finance_history(days_back=30)` — финотчёты обновляются ежедневно (ранее только при первичной загрузке)
 
+### Added — ClickHouse Migrations система
+
+- **`docker/clickhouse/migrations/001_add_wb_acquiring.sql` [NEW]:** Первая CH миграция — добавляет колонку + backfill из raw_payload
+- **`backend/scripts/run_ch_migrations.py` [NEW]:** Идемпотентный runner CH миграций (читает `*.sql` по нумерации, игнорирует «уже существует»)
+- **`deploy.sh` [MODIFY]:** Добавлены шаги: копирование `scripts/` + `migrations/` → запуск CH runner **до** рестарта контейнеров
+
 ## [Unreleased] - 2026-02-21
 
 ### Improved — Dashboard UI/UX

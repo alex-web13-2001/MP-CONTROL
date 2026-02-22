@@ -158,6 +158,44 @@ server {
 
 Создаёт: database `mms_analytics` → 16 таблиц → 3 Materialized Views → 6 Views.
 
+### ClickHouse Migrations (инкрементальные изменения схемы)
+
+> [!IMPORTANT]
+> ClickHouse **не поддерживает Alembic**. Для инкрементальных изменений схемы используется собственная система миграций.
+
+**Файлы:**
+
+| Файл                                   | Описание                                   |
+| -------------------------------------- | ------------------------------------------ |
+| `docker/clickhouse/migrations/*.sql`   | SQL файлы с именем `NNN_описание.sql`      |
+| `backend/scripts/run_ch_migrations.py` | Скрипт применения миграций (идемпотентный) |
+
+**Как работает:**
+
+1. `deploy.sh` копирует `docker/clickhouse/migrations/` в контейнер
+2. Запускает `python3 /app/scripts/run_ch_migrations.py` **до** рестарта контейнеров
+3. Скрипт читает `*.sql` файлы по порядку нумерации
+4. Каждый `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` — идемпотентен
+5. Ошибки «уже существует» игнорируются
+
+**Создание новой миграции:**
+
+```bash
+# Создать файл вида NNN_описание.sql
+cat > docker/clickhouse/migrations/002_add_my_column.sql << 'EOF'
+-- Migration 002: Add my_column
+ALTER TABLE mms_analytics.my_table
+    ADD COLUMN IF NOT EXISTS my_column UInt64 DEFAULT 0;
+EOF
+# Следующий deploy.sh применит автоматически
+```
+
+**Текущие миграции:**
+
+| Файл                       | Описание                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `001_add_wb_acquiring.sql` | Добавляет `wb_acquiring Decimal(18,2) DEFAULT 0` + backfill из `raw_payload` |
+
 ---
 
 ## Volumes (persistent data)
@@ -317,25 +355,39 @@ docker-compose up -d --build
 
 ### Файлы
 
-| Файл                      | Описание                                  |
-| ------------------------- | ----------------------------------------- |
-| `docker-compose.prod.yml` | Prod compose (нет frontend/pgadmin/tabix) |
-| `backend/Dockerfile.prod` | 2 workers, нет --reload, с entrypoint.sh  |
-| `nginx/nginx.prod.conf`   | SSL (Let's Encrypt), mp-control.ru        |
-| `deploy.sh`               | Скрипт деплоя                             |
+| Файл                                   | Описание                                   |
+| -------------------------------------- | ------------------------------------------ |
+| `docker-compose.prod.yml`              | Prod compose (нет frontend/pgadmin/tabix)  |
+| `backend/Dockerfile.prod`              | 2 workers, нет --reload, с entrypoint.sh   |
+| `nginx/nginx.prod.conf`                | SSL (Let's Encrypt), mp-control.ru         |
+| `deploy.sh`                            | Скрипт деплоя (fast + full-rebuild режимы) |
+| `backend/scripts/run_ch_migrations.py` | Применение ClickHouse миграций             |
+| `docker/clickhouse/migrations/*.sql`   | SQL файлы изменений схемы CH               |
 
-### Процесс деплоя
+### Процесс деплоя (`./deploy.sh`)
+
+```
+1. git add && git push origin main
+2. git pull на сервере
+3. docker cp backend/app, celery_app, scripts, migrations → контейнеры
+4. python3 run_ch_migrations.py  ← ClickHouse schema изменения ПЕРЕД рестартом
+5. docker restart mms-backend, mms-celery-worker, mms-celery-beat
+6. npm run build (frontend на сервере)
+7. nginx -s reload
+8. health check
+```
 
 ```bash
-ssh root@5.42.98.106
-cd /opt/mp-control
+# Fast deploy (по умолчанию, ~30 сек):
 ./deploy.sh
-# или вручную:
-git pull
-npm run build        # frontend
-docker compose -f docker-compose.prod.yml build backend
-docker compose -f docker-compose.prod.yml up -d
+
+# Full rebuild (нужен при изменении pip зависимостей/Dockerfile, ~10 мин):
+./deploy.sh --full-rebuild
 ```
+
+> [!IMPORTANT]
+> CH миграции применяются **автоматически** при каждом деплое, **до** рестарта контейнеров.
+> Это гарантирует, что новый код никогда не запустится с устаревшей схемой БД.
 
 ### Переменные окружения (прод)
 
@@ -367,3 +419,10 @@ docker compose -f docker-compose.prod.yml up -d
 - Добавлено предупреждение о ClickHouse пароле (XML конфиг vs .env)
 - Добавлен `alembic` и `psycopg2-binary` в таблицу зависимостей
 - Добавлено предупреждение: при изменении .env рестартить ВСЕ контейнеры
+
+### 2026-02-22
+
+- **Новая система CH миграций:** `docker/clickhouse/migrations/*.sql` + `backend/scripts/run_ch_migrations.py`
+- **`deploy.sh` обновлён:** добавлены шаги копирования `scripts/` и `migrations/` + автоматический запуск `run_ch_migrations.py` перед рестартом контейнеров
+- Обновлена секция «Процесс деплоя» — полный пошаговый список с CH миграциями
+- **Причина:** при деплое `wb_acquiring` код уже включал колонку в INSERT, но колонки не было в prod схеме CH → все финотчёты shop_id=12 падали. CH миграции решают эту проблему.
