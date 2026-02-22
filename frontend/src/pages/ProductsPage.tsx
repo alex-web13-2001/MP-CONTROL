@@ -639,7 +639,12 @@ export default function ProductsPage() {
             <thead className="sticky top-0 z-30">
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
                 <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))] shadow-[1px_0_0_hsl(var(--border))/30]">
-                  Товар · Цена
+                  Товар
+                </th>
+                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                    Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                  </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('stocks')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'stocks' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
@@ -740,11 +745,6 @@ export default function ProductsPage() {
                             {p.sku && <span>SKU {p.sku}</span>}
                           </div>
                           <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-                            {/* Цена — перенесена в ячейку товара чтобы освободить колонку */}
-                            <span className="text-[13px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</span>
-                            {p.old_price > 0 && p.old_price !== p.price && (
-                              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</span>
-                            )}
                             <ContentRating rating={p.content_rating} />
                             {p.status === 'active' && (
                               <span className="rounded px-1 py-[1px] text-[10px] font-semibold bg-emerald-500/12 text-emerald-400 leading-tight">Продаётся</span>
@@ -754,7 +754,20 @@ export default function ProductsPage() {
                       </div>
                     </td>
 
-                    {/* ── 2. ЦЕНА — убрана в ячейку товара ── */}
+                    {/* ── 2. ЦЕНА ── */}
+                    <td className="px-3 py-3.5 text-right">
+                      <div>
+                        {p.old_price > 0 && p.old_price !== p.price && (
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</p>
+                        )}
+                        <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
+                        {discount > 0 && (
+                          <span className="inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight bg-emerald-500/12 text-emerald-400">
+                            -{discount}%
+                          </span>
+                        )}
+                      </div>
+                    </td>
 
                     {/* ── 3. ОСТАТКИ: FBO и FBS отдельными строками с подписями ── */}
                     <td className="px-3 py-3.5 text-right">
