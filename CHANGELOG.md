@@ -23,6 +23,28 @@
 - **Frontend / `ProductsPage.tsx` [MODIFY]:** Удалён SortDropdown бар (сортировка только через заголовки таблицы)
 - **Frontend / `ProductsPage.tsx` [MODIFY]:** Переключатель периода укрупнён по стилю дашборда (`px-5 py-2 text-sm`, solid primary bg, `text-white`)
 - **Frontend / `ProductsPage.tsx` [MODIFY]:** Стили заголовков таблицы: `text-[13px] font-medium` вместо `text-[11px] uppercase tracking-wider` (как дашборд)
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Пагинация заменена на infinite scroll (window scroll + автоподгрузка по 25 товаров)
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Порядок столбцов: Товар → Цена → Остатки → Продажи → С/с → Реклама → Возвр. → Чистая прибыль → События
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** «Вал» переименован в «Чистая прибыль»
+
+### Fixed — Расчёты и сортировка
+
+- **Backend / `products.py` [MODIFY]:** Чистая прибыль = payout − (с/с × заказы) − реклама (ранее не учитывала ad_spend)
+- **Backend / `products.py` [MODIFY]:** Убрана ветка gross_profit без заказов (корректно: нет продаж → нет прибыли)
+- **Backend / `products.py` [MODIFY]:** Нули/null всегда в конце при сортировке (float('-inf')/float('inf') вместо 0)
+
+### Fixed — Данные себестоимости и защита от ошибок
+
+- **Data [FIX]:** АМ-ЩЕН-ТЕЛ-1 cost_price: 2554₽ → 158₽ (была стоимость за упаковку, не за штуку)
+- **Data [FIX]:** Удалены дубли артикулов с пробелами (`АМ- ЩЕН-ТЕЛ-1`, `АМ- КШ-ТЕЛ-0,4`)
+- **Backend / `products.py` [MODIFY]:** PATCH `/ozon/cost` — trim() offer_id для предотвращения дублей
+- **Backend / `products.py` [MODIFY]:** PATCH `/ozon/cost` — предупреждение если с/с > цены продажи
+- **Backend / `products.py` [MODIFY]:** POST `/ozon/cost/bulk` — warnings[] с товарами где с/с > цена
+
+### Added — Реальные цены из Ozon v5 API
+
+- **Backend / `ozon_products_service.py` [MODIFY]:** Метод `fetch_prices_v5()` — пагинированный запрос `/v5/product/info/prices` для получения `marketing_seller_price` (реальная «Ваша цена» с учётом скидок Ozon)
+- **Backend / `tasks.py` [MODIFY]:** В `sync_ozon_products` добавлен шаг 4 — обновление `marketing_price` в dim_ozon_products из v5 API
 
 ### Added — Раздел «Ваши товары» (Ozon)
 

@@ -172,7 +172,7 @@ API для фронтенда — запрос финансовых данных
 
 ## Ozon Services (10 файлов)
 
-### `ozon_products_service.py` (1220 строк — самый большой сервис)
+### `ozon_products_service.py` (1290 строк — самый большой сервис)
 
 | Компонент                  | Описание                                    |
 | -------------------------- | ------------------------------------------- |
@@ -185,15 +185,27 @@ API для фронтенда — запрос финансовых данных
 
 - `POST /v3/product/list` — все product_ids (пагинация через last_id)
 - `POST /v3/product/info/list` — детальная инфа (batch 100)
+- `POST /v5/product/info/prices` — реальные цены с учётом скидок Ozon (пагинация через cursor)
 - `POST /v1/product/info/description` — описания (sequential)
 - `POST /v1/product/rating-by-sku` — рейтинг контента (batch 100)
+
+**Ключевые методы:**
+
+| Метод                    | API                            | Возвращает                           |
+| ------------------------ | ------------------------------ | ------------------------------------ |
+| `fetch_product_list()`   | `/v3/product/list`             | `[{product_id, offer_id}]`           |
+| `fetch_product_info()`   | `/v3/product/info/list`        | Полные данные товара (batch 100)     |
+| `fetch_prices_v5()`      | `/v5/product/info/prices`      | `{offer_id: marketing_seller_price}` |
+| `fetch_description()`    | `/v1/product/info/description` | HTML описание                        |
+| `fetch_content_rating()` | `/v1/product/rating-by-sku`    | Content rating (0-100)               |
 
 **Дополнительные функции:**
 
 - Извлечение комиссий: `_extract_commissions()` — sales_percent, FBO/FBS logistics
 - MD5 хеши контента для change detection
 - Извлечение FBO/FBS стоков: `_extract_stocks()`
-- **Primary Image:** при upsert `main_image_url` приоритетно берётся из API поля `primary_image` (главная фото продавца), а не `images[0]` (может быть не главной)
+- **Primary Image:** `main_image_url` приоритетно из `primary_image` API, а не `images[0]`
+- **marketing_seller_price:** реальная «Ваша цена» после скидок Ozon (Эластичный бустинг и пр.) — доступна только через `/v5`, в `/v3` отсутствует
 
 ---
 
@@ -343,3 +355,8 @@ FBO + FBS возвраты Ozon.
 ### 2026-02-21
 
 - `ozon_products_service.py`: `main_image_url` теперь приоритетно берётся из `primary_image` API (главное фото продавца), а не `images[0]`
+
+### 2026-02-22
+
+- `ozon_products_service.py`: добавлен метод `fetch_prices_v5()` — загрузка `marketing_seller_price` из `/v5/product/info/prices` (реальная «Ваша цена» с учётом скидок Ozon)
+- Обновлена таблица методов и описание API endpoints

@@ -2437,6 +2437,30 @@ def sync_ozon_products(
             if events:
                 logger.info(f"Detected {len(events)} image change events")
 
+            # 4. Fetch real seller prices from /v5/product/info/prices
+            #    (marketing_seller_price = actual price after Ozon discounts)
+            self.update_state(state='PROGRESS', meta={'status': 'Fetching real prices (v5)...'})
+            async with async_session_factory() as db:
+                service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
+                v5_prices = await service.fetch_prices_v5()
+
+            if v5_prices:
+                import psycopg2
+                pg_conn = psycopg2.connect(**conn_params)
+                pg_cur = pg_conn.cursor()
+                updated_prices = 0
+                for offer_id, mktg_price in v5_prices.items():
+                    if mktg_price > 0:
+                        pg_cur.execute(
+                            "UPDATE dim_ozon_products SET marketing_price = %s WHERE shop_id = %s AND offer_id = %s",
+                            (mktg_price, shop_id, offer_id),
+                        )
+                        updated_prices += pg_cur.rowcount
+                pg_conn.commit()
+                pg_cur.close()
+                pg_conn.close()
+                logger.info(f"Updated marketing_price for {updated_prices} products from v5 API")
+
             await engine.dispose()
             return {
                 "status": "completed",
@@ -2444,6 +2468,7 @@ def sync_ozon_products(
                 "products_found": len(product_list),
                 "products_upserted": count,
                 "image_events": len(events),
+                "prices_updated": len(v5_prices) if v5_prices else 0,
             }
         except Exception as e:
             await engine.dispose()

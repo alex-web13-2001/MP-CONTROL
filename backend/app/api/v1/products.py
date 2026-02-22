@@ -442,6 +442,7 @@ async def get_ozon_products(
             p["margin_percent"] = round(margin / p["price"] * 100, 1)
 
         # Gross profit = payout - COGS - ad_spend (net of advertising)
+        # Only calculate if there are actual orders
         if cost > 0 and p["orders_7d"] > 0:
             cogs = cost * p["orders_7d"]
             gp = p["payout_period"] - cogs - p["ad_spend_7d"]
@@ -457,9 +458,6 @@ async def get_ozon_products(
                     p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
                 elif gp > 0:
                     p["gross_profit_delta"] = 100.0
-        elif cost > 0 and p["payout_period"] != 0:
-            # Has cost but no orders — payout is likely returns/refunds
-            p["gross_profit"] = round(p["payout_period"] - p["ad_spend_7d"], 2)
 
     # ────────────────────────────────────────────────────
     # Apply filter
@@ -492,18 +490,23 @@ async def get_ozon_products(
             or q in (p["barcode"] or "").lower()
         ]
 
-    # Sort
+    # Sort — push null/zero to the end regardless of direction
+    # Use (primary_key, offer_id) tuple for STABLE pagination across pages
+    _DESC_NULL = float('-inf')  # for desc: nulls go last (smallest)
+    _ASC_NULL = float('inf')   # for asc: nulls go last (largest)
+    _null = _DESC_NULL if order == "desc" else _ASC_NULL
+
     sort_key_map = {
-        "revenue_7d": lambda p: p["revenue_7d"],
-        "orders_7d": lambda p: p["orders_7d"],
-        "stocks": lambda p: p["stocks_fbo"] + p["stocks_fbs"],
-        "price": lambda p: p["price"],
-        "margin": lambda p: p["margin"] if p["margin"] is not None else -999999,
-        "gross_profit": lambda p: p["gross_profit"] if p["gross_profit"] is not None else -999999,
-        "drr": lambda p: p["drr"],
-        "returns": lambda p: p["returns_30d"],
-        "name": lambda p: (p["name"] or "").lower(),
-        "content_rating": lambda p: p["content_rating"],
+        "revenue_7d": lambda p: (p["revenue_7d"] if p["revenue_7d"] else _null, p["offer_id"]),
+        "orders_7d": lambda p: (p["orders_7d"] if p["orders_7d"] else _null, p["offer_id"]),
+        "stocks": lambda p: ((p["stocks_fbo"] + p["stocks_fbs"]) or _null, p["offer_id"]),
+        "price": lambda p: (p["price"] if p["price"] else _null, p["offer_id"]),
+        "margin": lambda p: (p["margin"] if p["margin"] is not None else _null, p["offer_id"]),
+        "gross_profit": lambda p: (p["gross_profit"] if p["gross_profit"] is not None else _null, p["offer_id"]),
+        "drr": lambda p: (p["drr"] if p["drr"] else _null, p["offer_id"]),
+        "returns": lambda p: (p["returns_30d"] if p["returns_30d"] else _null, p["offer_id"]),
+        "name": lambda p: ((p["name"] or "").lower(), p["offer_id"]),
+        "content_rating": lambda p: (p["content_rating"] if p["content_rating"] else _null, p["offer_id"]),
     }
     sort_fn = sort_key_map.get(sort, sort_key_map["revenue_7d"])
     products_list.sort(key=sort_fn, reverse=(order == "desc"))
@@ -549,6 +552,9 @@ async def update_ozon_cost(
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
 
+    # Trim offer_id to prevent space duplicates
+    offer_id = body.offer_id.strip()
+
     # Upsert cost
     await db.execute(
         text("""
@@ -561,16 +567,26 @@ async def update_ozon_cost(
         """),
         {
             "shop_id": body.shop_id,
-            "offer_id": body.offer_id,
+            "offer_id": offer_id,
             "cost_price": body.cost_price,
             "packaging_cost": body.packaging_cost,
         },
     )
     await db.commit()
 
+    # Check if cost > price for this product → warn
+    warning = None
+    price_result = await db.execute(
+        text("SELECT price FROM dim_ozon_products WHERE shop_id = :sid AND offer_id = :oid LIMIT 1"),
+        {"sid": body.shop_id, "oid": offer_id},
+    )
+    row = price_result.fetchone()
+    if row and row[0] and body.cost_price > float(row[0]):
+        warning = f"Себестоимость ({body.cost_price}₽) выше цены продажи ({float(row[0])}₽)"
+
     return CostUpdateResponse(
         ok=True,
-        offer_id=body.offer_id,
+        offer_id=offer_id,
         cost_price=body.cost_price,
     )
 
@@ -647,10 +663,26 @@ async def upload_cost_excel(
 
     await db.commit()
 
+    # Check for cost > price warnings
+    warnings = []
+    if updated > 0:
+        warn_result = await db.execute(
+            text("""
+                SELECT c.offer_id, c.cost_price, p.price
+                FROM product_costs c
+                JOIN dim_ozon_products p ON p.shop_id = c.shop_id AND p.offer_id = c.offer_id
+                WHERE c.shop_id = :shop_id AND c.cost_price > p.price AND p.price > 0
+            """),
+            {"shop_id": shop_id},
+        )
+        for r in warn_result.fetchall():
+            warnings.append(f"{r[0]}: с/с {float(r[1]):.0f}₽ > цена {float(r[2]):.0f}₽")
+
     return {
         "ok": True,
         "updated": updated,
-        "errors": errors[:20],  # Limit error messages
+        "errors": errors[:20],
+        "warnings": warnings[:20],
     }
 
 

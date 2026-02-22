@@ -1,7 +1,7 @@
 # MP-CONTROL — Celery Pipeline
 
 > Полный разбор всех фоновых задач: очереди, координаторы, data flow, backfill стратегии.  
-> Файл-источник: `backend/celery_app/tasks/tasks.py` (4134 строки, 106 функций)
+> Файл-источник: `backend/celery_app/tasks/tasks.py` (~4160 строк, 106 функций)
 
 ---
 
@@ -216,11 +216,16 @@ Per-request timeout: 120 сек. Rate limit: пауза между неделя�
 ### `sync_ozon_products` (ежедневно)
 
 ```
-1. POST /v3/product/list → all product_ids (paginated)
+1. POST /v3/product/list → all product_ids (paginated via last_id)
 2. POST /v3/product/info/list → detailed info (batches of 100)
-3. Upsert → dim_ozon_products (PostgreSQL)
-4. Detect image hash changes → event_log
+3. Upsert → dim_ozon_products (PostgreSQL) + detect image changes
+4. POST /v5/product/info/prices → marketing_seller_price (paginated via cursor)
+   → UPDATE dim_ozon_products SET marketing_price = marketing_seller_price
 ```
+
+> [!NOTE]
+> Шаг 4 необходим, т.к. `/v3/product/info/list` не возвращает `marketing_seller_price`.
+> Это реальная «Ваша цена» с учётом скидок Ozon (Эластичный бустинг, промоакции и др.).
 
 ### `sync_ozon_orders` (30 мин)
 
@@ -421,3 +426,8 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 - Обновлены параметры `sync_ozon_ad_stats`: time_limit 600→1800, retry 5/300→3/60, batch_size 10→5, добавлен BATCH_PAUSE
 - Обновлён `backfill_ozon_ads`: chunk_days 7→30, описание early exit
 - Добавлена секция PostgreSQL подключение (psycopg2_conn_params)
+
+### 2026-02-22
+
+- `sync_ozon_products`: добавлен шаг 4 — загрузка `marketing_seller_price` из `/v5/product/info/prices`
+- Обновлён pipeline: 3 шага → 4 шага (добавлен UPDATE marketing_price)

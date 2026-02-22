@@ -196,6 +196,65 @@ class OzonProductsService:
 
         return all_items
 
+    async def fetch_prices_v5(self) -> Dict[str, float]:
+        """
+        Fetch real seller prices via POST /v5/product/info/prices.
+
+        This endpoint returns `marketing_seller_price` — the actual seller price
+        after Ozon's own discounts (elastic boosting, promotions, etc.).
+        The `/v3/product/info/list` only returns the base `price` set by seller.
+
+        Returns dict {offer_id: marketing_seller_price}
+        """
+        prices = {}
+        last_id = ""
+
+        while True:
+            async with self._make_client() as client:
+                response = await client.post(
+                    "/v5/product/info/prices",
+                    json={
+                        "filter": {"visibility": "ALL"},
+                        "limit": PAGE_SIZE,
+                        "last_id": last_id,
+                    },
+                )
+
+            if not response.is_success:
+                logger.warning(
+                    "Ozon /v5/product/info/prices error: status=%s error=%s",
+                    response.status_code, response.error,
+                )
+                break
+
+            data = response.data
+            # v5 returns items at root level, not under result
+            items = data.get("items", [])
+            cursor = data.get("cursor", "")
+
+            for item in items:
+                oid = item.get("offer_id", "")
+                price_obj = item.get("price", {})
+                if isinstance(price_obj, dict):
+                    msp = _safe_decimal(price_obj.get("marketing_seller_price", 0))
+                    if msp > 0:
+                        prices[oid] = msp
+                    else:
+                        # Fall back to base price from the nested object
+                        prices[oid] = _safe_decimal(price_obj.get("price", 0))
+
+            logger.info(
+                "Ozon v5/prices: got %d items, total mapped: %d",
+                len(items), len(prices),
+            )
+
+            if not items or not cursor or cursor == last_id:
+                break
+            last_id = cursor
+            await asyncio.sleep(0.3)
+
+        return prices
+
     async def fetch_description(self, product_id: int) -> str:
         """
         Fetch description via POST /v1/product/info/description.

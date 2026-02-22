@@ -17,8 +17,6 @@ import {
   Search,
   Package,
   AlertTriangle,
-  ChevronLeft,
-  ChevronRight,
   Camera,
   Pencil,
   TrendingUp,
@@ -31,7 +29,6 @@ import {
   X,
   Upload,
   Download,
-  FileSpreadsheet,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
@@ -68,17 +65,7 @@ const FILTERS = [
 
 type FilterKey = typeof FILTERS[number]['key']
 
-const SORT_OPTIONS = [
-  { key: 'revenue_7d', label: 'Выручке' },
-  { key: 'orders_7d', label: 'Заказам' },
-  { key: 'stocks', label: 'Остаткам' },
-  { key: 'price', label: 'Цене' },
-  { key: 'margin', label: 'Марже' },
-  { key: 'gross_profit', label: 'Валу' },
-  { key: 'drr', label: 'DRR' },
-  { key: 'returns', label: 'Возвратам' },
-  { key: 'name', label: 'Названию' },
-]
+
 
 /* ═══════════════════════════════════════════════════════════
    Event Badges
@@ -305,8 +292,10 @@ export default function ProductsPage() {
   const [total, setTotal] = useState(0)
   const [costMissing, setCostMissing] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [page, setPage] = useState(1)
-  const [perPage] = useState(25)
+  const [hasMore, setHasMore] = useState(true)
+  const perPage = 25
   const [sort, setSort] = useState('revenue_7d')
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [filter, setFilter] = useState<FilterKey>('all')
@@ -317,41 +306,82 @@ export default function ProductsPage() {
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const pageRef = useRef(1)
+  const loadingMoreRef = useRef(false)
+
+  // Fetch page 1 (reset)
   const fetchProducts = useCallback(async () => {
     if (!shopId || !isOzon) return
     setLoading(true)
     try {
       const data = await getOzonProductsApi({
-        shop_id: shopId!, page, per_page: perPage, sort, order, filter, search, period,
+        shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period,
       })
       setProducts(data.products)
       setTotal(data.total)
       setCostMissing(data.cost_missing_count)
+      pageRef.current = 1
+      setPage(1)
+      setHasMore(data.products.length < data.total)
     } catch (e) {
       console.error('Failed to fetch products', e)
     } finally {
       setLoading(false)
     }
-  }, [shopId, isOzon, page, perPage, sort, order, filter, search, period])
+  }, [shopId, isOzon, perPage, sort, order, filter, search, period])
+
+  // Load next page (append) — uses refs to prevent duplicate calls
+  const loadMore = useCallback(async () => {
+    if (!shopId || !isOzon || loadingMoreRef.current || !hasMore) return
+    loadingMoreRef.current = true
+    setLoadingMore(true)
+    const nextPage = pageRef.current + 1
+    try {
+      const data = await getOzonProductsApi({
+        shop_id: shopId!, page: nextPage, per_page: perPage, sort, order, filter, search, period,
+      })
+      setProducts((prev) => {
+        const existingIds = new Set(prev.map((p: OzonProduct) => p.offer_id))
+        const newItems = data.products.filter((p: OzonProduct) => !existingIds.has(p.offer_id))
+        return [...prev, ...newItems]
+      })
+      pageRef.current = nextPage
+      setPage(nextPage)
+      setHasMore(nextPage * perPage < data.total)
+    } catch (e) {
+      console.error('Failed to load more', e)
+    } finally {
+      loadingMoreRef.current = false
+      setLoadingMore(false)
+    }
+  }, [shopId, isOzon, perPage, sort, order, filter, search, period, hasMore])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
+  // Window scroll → load more when near bottom
+  useEffect(() => {
+    const handleScroll = () => {
+      if (loadingMoreRef.current || !hasMore || loading) return
+      const scrollBottom = window.innerHeight + window.scrollY
+      const docHeight = document.documentElement.scrollHeight
+      if (scrollBottom >= docHeight - 400) {
+        loadMore()
+      }
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [loadMore, hasMore, loading])
+
+
   // Debounced search
   useEffect(() => {
-    const t = setTimeout(() => { setSearch(searchInput); setPage(1) }, 400)
+    const t = setTimeout(() => setSearch(searchInput), 400)
     return () => clearTimeout(t)
   }, [searchInput])
 
   const toggleSort = (key: string) => {
     if (sort === key) setOrder((o) => (o === 'desc' ? 'asc' : 'desc'))
     else { setSort(key); setOrder('desc') }
-    setPage(1)
-  }
-
-  const handleCostSaved = (offerId: string, cost: number) => {
-    setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
-    setCostMissing((c) => Math.max(0, c - 1))
-    fetchProducts()
   }
 
   const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -371,7 +401,12 @@ export default function ProductsPage() {
     }
   }
 
-  const totalPages = Math.ceil(total / perPage)
+  const handleCostSaved = (offerId: string, cost: number) => {
+    setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
+    setCostMissing((c) => Math.max(0, c - 1))
+    fetchProducts()
+  }
+
 
   /* ── No Ozon ── */
   if (!isOzon) {
@@ -496,14 +531,12 @@ export default function ProductsPage() {
           <table className="w-full min-w-[1200px]">
             <thead>
               <tr className="border-b border-[hsl(var(--border))]">
-                {/* Sticky: Photo + Product */}
                 <th className="sticky left-0 z-20 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   Товар
                 </th>
-                {/* Business metrics — dashboard-style headers */}
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('revenue_7d')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'revenue_7d' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Продажи {sort === 'revenue_7d' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                  <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                    Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
@@ -512,13 +545,13 @@ export default function ProductsPage() {
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    С/с и маржа {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                  <button onClick={() => toggleSort('revenue_7d')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'revenue_7d' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                    Продажи {sort === 'revenue_7d' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Вал {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                  <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                    С/с и маржа {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
@@ -532,8 +565,8 @@ export default function ProductsPage() {
                   </button>
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                  <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                    Чистая прибыль {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
                 <th className="px-3 py-3 text-center text-[13px] font-medium text-[hsl(var(--muted-foreground))] w-[100px]">
@@ -611,17 +644,19 @@ export default function ProductsPage() {
                       </div>
                     </td>
 
-                    {/* ── 2. ПРОДАЖИ 7д (главный KPI: выручка крупно, штуки мельче, дельта) ── */}
+                    {/* ── 2. ЦЕНА (старая → скидка → текущая) ── */}
                     <td className="px-3 py-2.5 text-right">
-                      {p.revenue_7d > 0 ? (
-                        <div>
-                          <p className="text-[15px] font-bold tabular-nums">{fmtMoney(p.revenue_7d)}</p>
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums">{p.orders_7d} шт</p>
-                          {p.revenue_delta !== 0 && <DeltaBadge value={p.revenue_delta} />}
-                        </div>
-                      ) : (
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
-                      )}
+                      <div>
+                        {p.old_price > 0 && p.old_price !== p.price && (
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</p>
+                        )}
+                        <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
+                        {discount > 0 && (
+                          <span className="inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight bg-emerald-500/12 text-emerald-400">
+                            -{discount}%
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* ── 3. ОСТАТКИ (число крупно, FBO/FBS компактно) ── */}
@@ -640,7 +675,20 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 4. С/с И МАРЖА ── */}
+                    {/* ── 4. ПРОДАЖИ (выручка крупно, штуки мельче, дельта) ── */}
+                    <td className="px-3 py-2.5 text-right">
+                      {p.revenue_7d > 0 ? (
+                        <div>
+                          <p className="text-[15px] font-bold tabular-nums">{fmtMoney(p.revenue_7d)}</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums">{p.orders_7d} шт</p>
+                          {p.revenue_delta !== 0 && <DeltaBadge value={p.revenue_delta} />}
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 5. С/с И МАРЖА ── */}
                     <td className="px-3 py-2.5 text-right">
                       <CostEdit product={p} shopId={shopId!} onSaved={handleCostSaved} />
                       {p.margin !== null && p.margin_percent !== null && (
@@ -654,7 +702,43 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 5. ВАЛОВАЯ ПРИБЫЛЬ (payout - cost × qty) + delta ── */}
+                    {/* ── 6. РЕКЛАМА (расход + DRR) ── */}
+                    <td className="px-3 py-2.5 text-right">
+                      {p.ad_spend_7d > 0 ? (
+                        <div>
+                          <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
+                          <span className={cn(
+                            'inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5',
+                            p.drr > 20 ? 'bg-red-500/12 text-red-400'
+                              : p.drr > 10 ? 'bg-amber-500/12 text-amber-400'
+                              : 'bg-emerald-500/12 text-emerald-400',
+                          )}>
+                            DRR {p.drr}%
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 7. ВОЗВРАТЫ % (30д returns / 30д orders) ── */}
+                    <td className="px-3 py-2.5 text-right">
+                      {p.returns_30d > 0 ? (
+                        <div>
+                          <span className={cn(
+                            'text-sm font-bold tabular-nums',
+                            returnPct > 10 ? 'text-red-400' : returnPct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.8)]',
+                          )}>
+                            {returnPct}%
+                          </span>
+                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)] tabular-nums">{p.returns_30d} шт</p>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 8. ЧИСТАЯ ПРИБЫЛЬ (payout - COGS - ad_spend) + delta ── */}
                     <td className="px-3 py-2.5 text-right">
                       {p.cost_price === 0 ? (
                         <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>
@@ -690,58 +774,7 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 6. РЕКЛАМА (расход + DRR) ── */}
-                    <td className="px-3 py-2.5 text-right">
-                      {p.ad_spend_7d > 0 ? (
-                        <div>
-                          <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
-                          <span className={cn(
-                            'inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5',
-                            p.drr > 20 ? 'bg-red-500/12 text-red-400'
-                              : p.drr > 10 ? 'bg-amber-500/12 text-amber-400'
-                              : 'bg-emerald-500/12 text-emerald-400',
-                          )}>
-                            DRR {p.drr}%
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
-                      )}
-                    </td>
-
-                    {/* ── 6. ВОЗВРАТЫ % (30д returns / 30д orders) ── */}
-                    <td className="px-3 py-2.5 text-right">
-                      {p.returns_30d > 0 ? (
-                        <div>
-                          <span className={cn(
-                            'text-sm font-bold tabular-nums',
-                            returnPct > 10 ? 'text-red-400' : returnPct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.8)]',
-                          )}>
-                            {returnPct}%
-                          </span>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)] tabular-nums">{p.returns_30d} шт</p>
-                        </div>
-                      ) : (
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
-                      )}
-                    </td>
-
-                    {/* ── 7. ЦЕНА (старая → скидка → текущая) ── */}
-                    <td className="px-3 py-2.5 text-right">
-                      <div>
-                        {p.old_price > 0 && p.old_price !== p.price && (
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</p>
-                        )}
-                        <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
-                        {discount > 0 && (
-                          <span className="inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight bg-emerald-500/12 text-emerald-400">
-                            -{discount}%
-                          </span>
-                        )}
-                      </div>
-                    </td>
-
-                    {/* ── 8. СОБЫТИЯ ── */}
+                    {/* ── 9. СОБЫТИЯ ── */}
                     <td className="px-3 py-2.5">
                       <div className="flex items-center justify-center gap-0 flex-wrap">
                         {p.promotions.map((pt: string, i: number) => <PromoBadge key={`promo-${i}`} type={pt} />)}
@@ -759,47 +792,19 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {/* ── Pagination ── */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between px-1">
-          <p className="text-sm text-[hsl(var(--muted-foreground)/0.6)]">
-            {(page - 1) * perPage + 1}–{Math.min(page * perPage, total)} из {total}
-          </p>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] hover:bg-white/5 disabled:opacity-20 transition-colors"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-              const pg = page <= 3 ? i + 1 : page >= totalPages - 2 ? totalPages - 4 + i : page - 2 + i
-              if (pg < 1 || pg > totalPages) return null
-              return (
-                <button
-                  key={pg}
-                  onClick={() => setPage(pg)}
-                  className={cn(
-                    'flex h-9 min-w-[36px] items-center justify-center rounded-lg border px-2.5 text-sm font-medium transition-colors',
-                    pg === page
-                      ? 'border-[hsl(var(--primary)/0.3)] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]'
-                      : 'border-[hsl(var(--border))] bg-[hsl(var(--card))] hover:bg-white/5',
-                  )}
-                >
-                  {pg}
-                </button>
-              )
-            })}
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] hover:bg-white/5 disabled:opacity-20 transition-colors"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
+      {/* ── Infinite scroll loader ── */}
+      {hasMore && !loading && (
+        <div className="flex justify-center py-6">
+          {loadingMore && (
+            <div className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground)/0.5)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Загрузка...
+            </div>
+          )}
         </div>
+      )}
+      {!hasMore && products.length > 0 && (
+        <p className="text-center text-xs text-[hsl(var(--muted-foreground)/0.3)] py-4">Все {total} товаров загружены</p>
       )}
 
       {/* ── Hover Preview ── */}

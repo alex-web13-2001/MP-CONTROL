@@ -209,6 +209,51 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 
 ---
 
+## Товары — `/api/v1/products`
+
+### Endpoints
+
+| Метод   | Path                           | Описание                                   | Auth   |
+| ------- | ------------------------------ | ------------------------------------------ | ------ |
+| `GET`   | `/products/ozon`               | Агрегированные данные по всем товарам Ozon | Bearer |
+| `PATCH` | `/products/ozon/cost`          | Обновить себестоимость товара (single)     | Bearer |
+| `POST`  | `/products/ozon/cost/bulk`     | Загрузить себестоимость из Excel (.xlsx)   | Bearer |
+| `GET`   | `/products/ozon/cost/template` | Скачать Excel-шаблон для заполнения        | Bearer |
+
+### GET `/products/ozon` — Query Parameters
+
+```
+shop_id: int (required)
+page: int (default: 1)
+per_page: int (default: 50)
+sort: "revenue_7d" | "orders_7d" | "stocks" | "price" | "gross_profit" | "drr" | "returns" | "name" | "content_rating"
+order: "desc" | "asc" (default: "desc")
+filter: "all" | "profitable" | "unprofitable" | "zero_cost" | "no_sales"
+search: string
+period: "7d" | "14d" | "30d" (default: "7d")
+```
+
+### Ключевая логика
+
+- 8 источников данных: PG каталог + product_costs → CH заказы/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
+- **Стабильная сортировка**: composite key `(primary_value, offer_id)` — гарантирует детерминированную пагинацию
+- **Формула чистой прибыли**: `payout_period − (cost_price × orders) − ad_spend`
+- **payout_period**: NET-сумма из `fact_ozon_transactions` (после комиссий Ozon, логистики, эквайринга)
+- **marketing_price**: реальная «Ваша цена» из `/v5/product/info/prices` (с учётом скидок Ozon)
+
+### PATCH `/products/ozon/cost` — защита
+
+- `offer_id.strip()` — предотвращение дублей с пробелами
+- Warning если `cost_price > price` продажи
+
+### POST `/products/ozon/cost/bulk` — Excel upload
+
+- Формат: колонка A = артикул, колонка B = себестоимость
+- `offer_id.strip()` при импорте
+- Возвращает `warnings[]` если с/с > цена продажи
+
+---
+
 ## Финансовые отчёты — `/api/v1/finance-reports`
 
 | Метод  | Path                                | Описание                         | Auth |
@@ -248,7 +293,7 @@ get_db()            → AsyncSession (PostgreSQL)
 get_current_user()  → User (JWT decode → SELECT user + shops)
 ```
 
-`get_current_user` используется как `Depends()` в auth/shops/dashboard endpoints. Commercial/finance endpoints пока не защищены Bearer (принимают api_key в body).
+`get_current_user` используется как `Depends()` в auth/shops/dashboard/products endpoints. Commercial/finance endpoints пока не защищены Bearer (принимают api_key в body).
 
 ---
 
@@ -263,3 +308,10 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - Обновлена response schema: добавлен `ads_daily[]` в charts, `supplier_article` в top_products
 - Документировано использование `primary_image_url` вместо `main_image_url` для Ozon
 - Добавлена динамическая генерация CDN URL для WB (`wb_image_url(nm_id)`)
+
+### 2026-02-22
+
+- Добавлена полная секция «Товары — /api/v1/products» с 4 endpoints
+- PATCH `/ozon/cost`: trim() offer_id, warning при cost > price
+- POST `/ozon/cost/bulk`: warnings[] при cost > price
+- Стабильная сортировка с composite key для пагинации без дублей

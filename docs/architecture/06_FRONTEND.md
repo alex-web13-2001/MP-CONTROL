@@ -229,6 +229,35 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | `formatMoney`       | Число → «180 671 ₽»                   |
 | `formatNumber`      | Число → «1 234» (пробелы-разделители) |
 
+### `ProductsPage` (~820 строк)
+
+Страница «Ваши товары» для Ozon. Таблица с infinite scroll и серверной сортировкой/фильтрацией.
+
+**Столбцы таблицы:**
+
+| Столбец        | Описание                                                            |
+| -------------- | ------------------------------------------------------------------- |
+| Товар          | Фото + название + артикул + SKU + content rating                    |
+| Цена           | marketing_price (Ozon) или price, перечёркнутая old_price, % скидки |
+| Остатки        | FBO + FBS                                                           |
+| Продажи        | Заказы + выручка + дельта                                           |
+| С/с            | Себестоимость (редактирование inline popover)                       |
+| Реклама        | DRR + кол-во рекламных заказов                                      |
+| Возвр.         | Возвраты 30д + %                                                    |
+| Чистая прибыль | payout − COGS − ads                                                 |
+| События        | Последние 5 event_log                                               |
+
+**Infinite Scroll:**
+
+- `useRef(page)` и `useRef(loadingMore)` для предотвращения race condition
+- Дедупликация при append по `offer_id`
+
+**Управление себестоимостью:**
+
+- Inline popover для редактирования (С/с + упаковка)
+- Excel bulk upload (.xlsx)
+- Excel шаблон для заполнения
+
 ### `SettingsPage` (633 строки — самая большая страница)
 
 Управление магазинами:
@@ -306,3 +335,9 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Графики: все даты видны (interval=0, angle=-45°), Legend, русские тултипы «5 февраля (ср.)»
 - `TopProductsTable`: фото 3:4 с hover preview (fixed positioning), supplier_article
 - Увеличены шрифты: KPI, таблица, артикулы, metric chips (text-[13px]+)
+
+### 2026-02-22
+
+- Добавлена секция `ProductsPage` — страница товаров Ozon с infinite scroll, себестоимостью, Excel загрузкой
+- Порядок столбцов: Товар → Цена → Остатки → Продажи → С/с → Реклама → Возвр. → Чистая прибыль → События
+- Infinite scroll: `useRef` для page/loadingMore, дедупликация по offer_id
