@@ -198,8 +198,8 @@ async def get_ozon_products(
     try:
         orders_result = ch.query("""
             SELECT offer_id,
-                   sumIf(quantity, order_date >= {d_start:Date} AND order_date <= {today:Date}) AS orders_period,
-                   sumIf(price * quantity, order_date >= {d_start:Date} AND order_date <= {today:Date}) AS revenue_period,
+                   sumIf(quantity, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS orders_period,
+                   sumIf(price * quantity, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS revenue_period,
                    sumIf(quantity, order_date >= {d_prev_start:Date} AND order_date <= {d_prev_end:Date}) AS orders_prev
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
@@ -209,7 +209,7 @@ async def get_ozon_products(
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start,
-            "today": today,
+            "d_end": d_end,
             "d_prev_start": d_prev_start,
             "d_prev_end": d_prev_end,
         })
