@@ -45,13 +45,14 @@ import {
    Helpers
    ═══════════════════════════════════════════════════════════ */
 
-function fmtMoney(v: number): string {
-  if (v >= 1_000_000) return (v / 1_000_000).toFixed(1).replace('.0', '') + 'M ₽'
-  return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
+function fmtMoney(v: number | null | undefined): string {
+  const n = v ?? 0
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace('.0', '') + 'M ₽'
+  return n.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
 }
 
-function fmtNum(v: number): string {
-  return v.toLocaleString('ru-RU')
+function fmtNum(v: number | null | undefined): string {
+  return (v ?? 0).toLocaleString('ru-RU')
 }
 
 const FILTERS = [
