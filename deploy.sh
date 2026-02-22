@@ -41,8 +41,16 @@ else
     $SSH "docker cp $REMOTE_DIR/backend/app mms-backend:/app/ 2>&1"
     $SSH "docker cp $REMOTE_DIR/backend/celery_app mms-celery-worker:/app/ 2>&1"
     $SSH "docker cp $REMOTE_DIR/backend/celery_app mms-celery-beat:/app/ 2>&1"
+    $SSH "docker cp $REMOTE_DIR/backend/scripts mms-backend:/app/ 2>&1"
+    $SSH "docker cp $REMOTE_DIR/docker/clickhouse/migrations mms-backend:/app/clickhouse_migrations/ 2>&1" 2>/dev/null || true
     echo "   ✓ Backend files copied"
     
+    # ── Apply ClickHouse migrations ──
+    echo ""
+    echo "🗄️  Applying ClickHouse migrations..."
+    $SSH "docker exec mms-backend python3 /app/scripts/run_ch_migrations.py 2>&1 | tail -10"
+    echo "   ✓ CH migrations done"
+
     # Restart containers
     $SSH "docker restart mms-backend && echo '   ✓ backend restarted'"
     $SSH "docker restart mms-celery-worker && echo '   ✓ celery-worker restarted'"
