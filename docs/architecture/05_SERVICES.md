@@ -33,21 +33,24 @@ Service (async, MarketplaceClient)    →    Loader (sync, ClickHouse/PostgreSQL
 
 **API → fact_finances маппинг:**
 
-| API поле                    | →   | DB поле                              |
-| --------------------------- | --- | ------------------------------------ |
-| `rr_dt` / `sale_dt`         | →   | `event_date`                         |
-| `srid`                      | →   | `order_id`                           |
-| `nm_id`                     | →   | `external_id`                        |
-| `sa_name`                   | →   | `vendor_code`                        |
-| `rrd_id`                    | →   | `rrd_id` (дедуп)                     |
-| `supplier_oper_name`        | →   | `operation_type`                     |
-| `retail_amount`             | →   | `retail_amount`                      |
-| `ppvz_for_pay`              | →   | `payout_amount`, `wb_ppvz_for_pay`   |
-| `delivery_rub`              | →   | `logistics_total`, `wb_delivery_rub` |
-| `penalty`                   | →   | `penalty_total`                      |
-| `storage_fee` + `deduction` | →   | `storage_fee`                        |
-| `acceptance`                | →   | `acceptance_fee`                     |
-| `bonus_type_name` → amount  | →   | `bonus_amount`                       |
+| API поле                   | →   | DB поле                                   |
+| -------------------------- | --- | ----------------------------------------- |
+| `rr_dt` / `sale_dt`        | →   | `event_date`                              |
+| `srid`                     | →   | `order_id`                                |
+| `nm_id`                    | →   | `external_id`                             |
+| `sa_name`                  | →   | `vendor_code`                             |
+| `rrd_id`                   | →   | `rrd_id` (дедуп)                          |
+| `supplier_oper_name`       | →   | `operation_type`                          |
+| `retail_amount`            | →   | `retail_amount`                           |
+| `ppvz_for_pay`             | →   | `payout_amount`, `wb_ppvz_for_pay`        |
+| `ppvz_sales_commission`    | →   | `commission_amount`                       |
+| `delivery_rub`             | →   | `logistics_total`, `wb_delivery_rub`      |
+| `rebill_logistic_cost`     | →   | `logistics_total` (суммируется)           |
+| `penalty`                  | →   | `penalty_total`                           |
+| `storage_fee`              | →   | `storage_fee`, `wb_storage_amount`        |
+| `acceptance`               | →   | `acceptance_fee`                          |
+| `bonus_type_name` → amount | →   | `bonus_amount`                            |
+| **`acquiring_fee`**        | →   | **`wb_acquiring`** (добавлено 2026-02-22) |
 
 ---
 
@@ -360,3 +363,5 @@ FBO + FBS возвраты Ozon.
 
 - `ozon_products_service.py`: добавлен метод `fetch_prices_v5()` — загрузка `marketing_seller_price` из `/v5/product/info/prices` (реальная «Ваша цена» с учётом скидок Ozon)
 - Обновлена таблица методов и описание API endpoints
+- `wb_finance_loader.py`: добавлено поле `wb_acquiring` в `FactFinancesRow` и маппинг `acquiring_fee` → `wb_acquiring` в `WBReportParser`; обновлен `ClickHouseLoader.COLUMNS` и `_row_to_tuple`
+- Обновлена таблица API→DB маппинга: добавлены `ppvz_sales_commission`, `rebill_logistic_cost`, `acquiring_fee`

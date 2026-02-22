@@ -74,7 +74,7 @@ DEL key
 | Marketplace | Dispatch задачи                                                                                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Ozon**    | sync_ozon_products, sync_ozon_product_snapshots, sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns, sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content, sync_ozon_commissions |
-| **WB**      | sync_warehouses, sync_product_content                                                                                                                                                                |
+| **WB**      | sync_warehouses, sync_product_content, **sync_wb_finance_history(days_back=30)**                                                                                                                     |
 
 ### `sync_all_frequent` — каждые 30 мин
 
@@ -431,3 +431,4 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 
 - `sync_ozon_products`: добавлен шаг 4 — загрузка `marketing_seller_price` из `/v5/product/info/prices`
 - Обновлён pipeline: 3 шага → 4 шага (добавлен UPDATE marketing_price)
+- `sync_all_daily` (WB): добавлен dispatch `sync_wb_finance_history(days_back=30)` — ежедневное обновление финансовых отчётов WB (TTL 23ч, скип уже загруженных недель)

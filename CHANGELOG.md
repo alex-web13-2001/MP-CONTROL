@@ -57,6 +57,22 @@
 - **Frontend / `Sidebar.tsx` [MODIFY]:** Пункт «Товары» с иконкой Package
 - **Frontend / `App.tsx` [MODIFY]:** Route `/products`
 
+### Added — WB Раздел товаров (/products для WB магазинов)
+
+- **Backend / `wb_products.py` [NEW]:** `GET /products/wb` — продажи 7д/30д, реклама, остатки FBO, Услуги МП (по финотчёту), Чистая прибыль. Исправлена формула: gross_profit не может превышать выручку.
+- **Backend / `router.py` [MODIFY]:** Подключён `wb_products` роутер
+
+### Added — WB Эквайринг в Услугах МП
+
+- **DB / `fact_finances` [MODIFY]:** Новая колонка `wb_acquiring Decimal(18,2) DEFAULT 0` — банковский эквайринг (~3-4% от продажи, `acquiring_fee` из WB API)
+- **Backend / `wb_finance_loader.py` [MODIFY]:** Маппинг `acquiring_fee` → `wb_acquiring`; обновлены `FactFinancesRow`, `WBReportParser`, `ClickHouseLoader`
+- **Backend / `wb_products.py` [MODIFY]:** `wb_acquiring` включён в расчёт Услуг МП
+- **Data / Backfill:** 2 162 строки обновлены из `raw_payload` — восстановлено **34 326 ₽** эквайринга
+
+### Fixed — WB Финансы: ежедневное автообновление
+
+- **Backend / `tasks.py` [MODIFY]:** `sync_all_daily` (WB): добавлен `sync_wb_finance_history(days_back=30)` — финотчёты обновляются ежедневно (ранее только при первичной загрузке)
+
 ## [Unreleased] - 2026-02-21
 
 ### Improved — Dashboard UI/UX
