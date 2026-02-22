@@ -59,6 +59,7 @@ const FILTERS = [
   { key: 'in_stock', label: 'В наличии' },
   { key: 'no_stock', label: 'Без остатков' },
   { key: 'with_ads', label: 'С рекламой' },
+  { key: 'no_ads', label: 'Без рекламы' },
   { key: 'problems', label: 'Проблемные' },
   { key: 'archived', label: 'Архив' },
 ] as const
@@ -527,11 +528,11 @@ export default function ProductsPage() {
          [Photo|Товар] sticky → Продажи → Остатки → С/с → DRR → Возвр% → Цена → Events
          ═══════════════════════════════════════════════════ */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-240px)]">
           <table className="w-full min-w-[1200px]">
-            <thead>
-              <tr className="border-b border-[hsl(var(--border))]">
-                <th className="sticky left-0 z-20 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+            <thead className="sticky top-0 z-30">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))] shadow-[1px_0_0_hsl(var(--border))/30]">
                   Товар
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
@@ -563,6 +564,9 @@ export default function ProductsPage() {
                   <button onClick={() => toggleSort('returns')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'returns' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
                     Возвр. {sort === 'returns' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
+                </th>
+                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                  Услуги МП
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
@@ -738,7 +742,26 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 8. ЧИСТАЯ ПРИБЫЛЬ (payout - COGS - ad_spend) + delta ── */}
+                    {/* ── 8. УСЛУГИ МП (revenue - payout) ── */}
+                    <td className="px-3 py-2.5 text-right">
+                      {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
+                        <div>
+                          <p className="text-sm font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">
+                            {fmtMoney(p.mp_fees)}
+                          </p>
+                          <span className={cn(
+                            "inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5",
+                            p.mp_fees_percent > 35 ? "bg-orange-500/12 text-orange-400" : "bg-emerald-500/12 text-emerald-400"
+                          )}>
+                            {p.mp_fees_percent}%
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 9. ЧИСТАЯ ПРИБЫЛЬ (payout - COGS - ad_spend) + delta ── */}
                     <td className="px-3 py-2.5 text-right">
                       {p.cost_price === 0 ? (
                         <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>

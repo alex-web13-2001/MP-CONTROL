@@ -174,6 +174,8 @@ async def get_ozon_products(
             "gross_profit_percent": None,
             "gross_profit_prev": None,
             "gross_profit_delta": None,
+            "mp_fees": 0.0,
+            "mp_fees_percent": 0.0,
             "period": period,
             "events": [],
             "promotions": [],
@@ -459,6 +461,15 @@ async def get_ozon_products(
                 elif gp > 0:
                     p["gross_profit_delta"] = 100.0
 
+        # Marketplace fees = revenue - payout (commissions, logistics, acquiring, etc.)
+        if p["revenue_7d"] > 0 or p["payout_period"] != 0:
+            fees = p["revenue_7d"] - p["payout_period"]
+            p["mp_fees"] = round(fees, 2)
+            if p["revenue_7d"] > 0:
+                p["mp_fees_percent"] = round(fees / p["revenue_7d"] * 100, 1)
+            else:
+                p["mp_fees_percent"] = 0.0
+
     # ────────────────────────────────────────────────────
     # Apply filter
     # ────────────────────────────────────────────────────
@@ -470,6 +481,8 @@ async def get_ozon_products(
         products_list = [p for p in products_list if p["stocks_fbo"] + p["stocks_fbs"] == 0 and not p["is_archived"]]
     elif filter == "with_ads":
         products_list = [p for p in products_list if p["ad_spend_7d"] > 0]
+    elif filter == "no_ads":
+        products_list = [p for p in products_list if p["ad_spend_7d"] == 0 and not p["is_archived"]]
     elif filter == "problems":
         products_list = [p for p in products_list if (
             p["drr"] > 20 or
