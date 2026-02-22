@@ -294,7 +294,7 @@ export default function ProductsPage() {
   const [costMissing, setCostMissing] = useState(0)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [page, setPage] = useState(1)
+  const [_page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const perPage = 25
   const [sort, setSort] = useState('revenue_7d')
