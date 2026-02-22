@@ -639,12 +639,7 @@ export default function ProductsPage() {
             <thead className="sticky top-0 z-30">
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
                 <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))] shadow-[1px_0_0_hsl(var(--border))/30]">
-                  Товар
-                </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                  Товар · Цена
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('stocks')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'stocks' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
@@ -708,12 +703,12 @@ export default function ProductsPage() {
                 const returnPct = p.orders_30d > 0 ? Math.round(p.returns_30d / p.orders_30d * 100) : 0
 
                 return (
-                  <tr key={p.offer_id} className="border-b border-[hsl(var(--border)/0.15)] hover:bg-white/[0.02] group transition-colors">
+                  <tr key={p.offer_id} className="border-b border-[hsl(var(--border)/0.15)] hover:bg-white/[0.025] group transition-colors">
 
-                    {/* ── 1. ТОВАР (sticky: фото 3:4 + название + артикул + рейтинг) ── */}
-                    <td className="sticky left-0 z-10 bg-[hsl(var(--card))] group-hover:bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 transition-colors">
+                    {/* ── 1. ТОВАР (sticky: фото 3:4 + название + артикул + цена) ── */}
+                    <td className="sticky left-0 z-10 bg-[hsl(var(--card))] group-hover:bg-[hsl(var(--card))] pl-4 pr-2 py-3.5 transition-colors">
                       <div className="flex items-center gap-3">
-                        {/* Photo 3:4 aspect */}
+                        {/* Photo 3:4 aspect — увеличено для читаемости */}
                         {p.image_url ? (
                           <div
                             className="relative shrink-0 cursor-pointer"
@@ -726,13 +721,13 @@ export default function ProductsPage() {
                             <img
                               src={p.image_url}
                               alt=""
-                              className="h-[52px] w-[40px] rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
+                              className="h-[64px] w-[48px] rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
                               loading="lazy"
                             />
                           </div>
                         ) : (
-                          <div className="flex h-[52px] w-[40px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
-                            <Package className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.2)]" />
+                          <div className="flex h-[64px] w-[48px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
+                            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.2)]" />
                           </div>
                         )}
                         {/* Info */}
@@ -740,11 +735,16 @@ export default function ProductsPage() {
                           <p className="text-[13px] font-medium leading-snug line-clamp-2" title={p.name}>
                             {p.name}
                           </p>
-                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground)/0.6)]">
+                          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
                             <span className="font-mono">{p.offer_id}</span>
                             {p.sku && <span>SKU {p.sku}</span>}
                           </div>
-                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                          <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                            {/* Цена — перенесена в ячейку товара чтобы освободить колонку */}
+                            <span className="text-[13px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</span>
+                            {p.old_price > 0 && p.old_price !== p.price && (
+                              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</span>
+                            )}
                             <ContentRating rating={p.content_rating} />
                             {p.status === 'active' && (
                               <span className="rounded px-1 py-[1px] text-[10px] font-semibold bg-emerald-500/12 text-emerald-400 leading-tight">Продаётся</span>
@@ -754,43 +754,40 @@ export default function ProductsPage() {
                       </div>
                     </td>
 
-                    {/* ── 2. ЦЕНА (старая → скидка → текущая) ── */}
-                    <td className="px-3 py-2.5 text-right">
-                      <div>
-                        {p.old_price > 0 && p.old_price !== p.price && (
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</p>
-                        )}
-                        <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
-                        {discount > 0 && (
-                          <span className="inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight bg-emerald-500/12 text-emerald-400">
-                            -{discount}%
-                          </span>
-                        )}
-                      </div>
-                    </td>
+                    {/* ── 2. ЦЕНА — убрана в ячейку товара ── */}
 
-                    {/* ── 3. ОСТАТКИ (число крупно, FBO/FBS компактно) ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    {/* ── 3. ОСТАТКИ: FBO и FBS отдельными строками с подписями ── */}
+                    <td className="px-3 py-3.5 text-right">
                       {totalStock === 0 ? (
-                        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-semibold bg-red-500/12 text-red-400">
-                          Нет
+                        <span className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold bg-red-500/12 text-red-400 border border-red-500/15">
+                          Нет остатков
                         </span>
                       ) : (
-                        <div>
-                          <p className="text-[15px] font-bold tabular-nums">{fmtNum(totalStock)}</p>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums">
-                            FBO {fmtNum(p.stocks_fbo)} · FBS {fmtNum(p.stocks_fbs)}
-                          </p>
+                        <div className="flex flex-col items-end gap-1">
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">FBO</span>
+                            <span className={cn(
+                              'text-[15px] font-bold tabular-nums',
+                              p.stocks_fbo === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground))]'
+                            )}>{fmtNum(p.stocks_fbo)}</span>
+                          </div>
+                          <div className="flex items-baseline gap-1.5">
+                            <span className="text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">FBS</span>
+                            <span className={cn(
+                              'text-[13px] font-semibold tabular-nums',
+                              p.stocks_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.35)]' : 'text-[hsl(var(--foreground)/0.8)]'
+                            )}>{fmtNum(p.stocks_fbs)}</span>
+                          </div>
                         </div>
                       )}
                     </td>
 
                     {/* ── 4. ПРОДАЖИ (выручка крупно, штуки мельче, дельта) ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-3 py-3.5 text-right">
                       {p.revenue_7d > 0 ? (
                         <div>
-                          <p className="text-[15px] font-bold tabular-nums">{fmtMoney(p.revenue_7d)}</p>
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums">{p.orders_7d} шт</p>
+                          <p className="text-[16px] font-bold tabular-nums">{fmtMoney(p.revenue_7d)}</p>
+                          <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums mt-0.5">{p.orders_7d} шт</p>
                           {p.revenue_delta !== 0 && <DeltaBadge value={p.revenue_delta} />}
                         </div>
                       ) : (
@@ -799,33 +796,36 @@ export default function ProductsPage() {
                     </td>
 
                     {/* ── 5. С/с И МАРЖА ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-3 py-3.5 text-right">
                       <CostEdit
                         product={p}
                         shopId={shopId!}
                         onSaved={isWB ? handleWBCostSaved : handleCostSaved}
                       />
                       {p.margin !== null && p.margin_percent !== null && (
-                        <p className={cn(
-                          'text-[11px] font-bold mt-0.5',
-                          p.margin_percent > 15 ? 'text-emerald-400' : p.margin_percent > 5 ? 'text-amber-400' : 'text-red-400',
-                        )}>
-                          {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}%
-                          <span className="font-normal text-[hsl(var(--muted-foreground)/0.5)] ml-1">{fmtMoney(p.margin)}</span>
-                        </p>
+                        <div className="mt-1">
+                          <span className={cn(
+                            'inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold',
+                            p.margin_percent > 15 ? 'bg-emerald-500/12 text-emerald-400'
+                              : p.margin_percent > 5 ? 'bg-amber-500/12 text-amber-400'
+                              : 'bg-red-500/12 text-red-400',
+                          )}>
+                            {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}% маржа
+                          </span>
+                        </div>
                       )}
                     </td>
 
-                    {/* ── 6. РЕКЛАМА (расход + DRR) ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    {/* ── 6. РЕКЛАМА (расход + DRR крупным badge) ── */}
+                    <td className="px-3 py-3.5 text-right">
                       {p.ad_spend_7d > 0 ? (
-                        <div>
-                          <p className="text-sm font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
+                        <div className="flex flex-col items-end gap-1.5">
+                          <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
                           <span className={cn(
-                            'inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5',
-                            p.drr > 20 ? 'bg-red-500/12 text-red-400'
-                              : p.drr > 10 ? 'bg-amber-500/12 text-amber-400'
-                              : 'bg-emerald-500/12 text-emerald-400',
+                            'inline-flex items-center rounded-md px-2 py-0.5 text-[12px] font-bold',
+                            p.drr > 20 ? 'bg-red-500/15 text-red-400 border border-red-500/20'
+                              : p.drr > 10 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
+                              : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
                           )}>
                             DRR {p.drr}%
                           </span>
@@ -836,34 +836,34 @@ export default function ProductsPage() {
                     </td>
 
                     {/* ── 7. ВОЗВРАТЫ % (30д returns / 30д orders) ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-3 py-3.5 text-right">
                       {p.returns_30d > 0 ? (
                         <div>
                           <span className={cn(
-                            'text-sm font-bold tabular-nums',
+                            'text-[15px] font-bold tabular-nums',
                             returnPct > 10 ? 'text-red-400' : returnPct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.8)]',
                           )}>
                             {returnPct}%
                           </span>
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)] tabular-nums">{p.returns_30d} шт</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.45)] tabular-nums mt-0.5">{p.returns_30d} шт</p>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* ── 8. УСЛУГИ МП (revenue - payout) ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    {/* ── 8. УСЛУГИ МП (с % от выручки для контекста) ── */}
+                    <td className="px-3 py-3.5 text-right">
                       {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
                         <div>
-                          <p className="text-sm font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">
+                          <p className="text-[14px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">
                             {fmtMoney(p.mp_fees)}
                           </p>
                           <span className={cn(
-                            "inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5",
-                            p.mp_fees_percent > 35 ? "bg-orange-500/12 text-orange-400" : "bg-emerald-500/12 text-emerald-400"
+                            "inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold mt-1",
+                            p.mp_fees_percent > 35 ? "bg-orange-500/12 text-orange-400" : "bg-slate-500/12 text-[hsl(var(--muted-foreground)/0.7)]"
                           )}>
-                            {p.mp_fees_percent}%
+                            {p.mp_fees_percent}% от выручки
                           </span>
                         </div>
                       ) : (
@@ -871,21 +871,21 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 9. ЧИСТАЯ ПРИБЫЛЬ (payout - COGS - ad_spend) + delta ── */}
-                    <td className="px-3 py-2.5 text-right">
+                    {/* ── 9. ЧИСТАЯ ПРИБЫЛЬ (крупно, + процент) ── */}
+                    <td className="px-3 py-3.5 text-right">
                       {p.cost_price === 0 ? (
                         <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>
                       ) : p.gross_profit !== null ? (
                         <div>
                           <p className={cn(
-                            'text-sm font-bold tabular-nums',
+                            'text-[16px] font-bold tabular-nums',
                             p.gross_profit > 0 ? 'text-emerald-400' : 'text-red-400',
                           )}>
                             {p.gross_profit > 0 ? '+' : ''}{fmtMoney(p.gross_profit)}
                           </p>
                           {p.gross_profit_percent !== null && (
                             <span className={cn(
-                              'inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight mt-0.5',
+                              'inline-flex items-center rounded-md px-1.5 py-0.5 text-[12px] font-bold mt-1',
                               p.gross_profit_percent > 15 ? 'bg-emerald-500/12 text-emerald-400'
                                 : p.gross_profit_percent > 0 ? 'bg-amber-500/12 text-amber-400'
                                 : 'bg-red-500/12 text-red-400',
@@ -893,22 +893,14 @@ export default function ProductsPage() {
                               {p.gross_profit_percent > 0 ? '+' : ''}{p.gross_profit_percent}%
                             </span>
                           )}
-                          {p.gross_profit_delta !== null && isFinite(p.gross_profit_delta) && (
-                            <p className={cn(
-                              'text-[10px] font-medium tabular-nums mt-0.5',
-                              p.gross_profit_delta > 0 ? 'text-emerald-500/70' : 'text-red-400/70',
-                            )}>
-                              {p.gross_profit_delta > 0 ? '↑' : '↓'} {Math.abs(p.gross_profit_delta)}%
-                            </p>
-                          )}
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* ── 9. СОБЫТИЯ ── */}
-                    <td className="px-3 py-2.5">
+                    {/* ── 10. СОБЫТИЯ ── */}
+                    <td className="px-3 py-3.5">
                       <div className="flex items-center justify-center gap-0 flex-wrap">
                         {p.promotions.map((pt: string, i: number) => <PromoBadge key={`promo-${i}`} type={pt} />)}
                         {p.events.slice(0, 4).map((ev: ProductEvent, i: number) => <EvBadge key={`ev-${i}`} event={ev} />)}
