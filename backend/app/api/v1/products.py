@@ -248,8 +248,9 @@ async def get_ozon_products(
             FROM mms_analytics.fact_ozon_ad_daily FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND dt >= {d_start:Date}
+              AND dt <= {d_end:Date}
             GROUP BY sku
-        """, parameters={"shop_id": shop_id, "d_start": d_start})
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
         for r in ads_result.result_rows:
             oid = sku_to_offer.get(r[0])
             if oid and oid in products_map:
@@ -422,14 +423,18 @@ async def get_ozon_products(
     try:
         txn_result = ch.query("""
             SELECT sku,
-                   sum(CASE WHEN operation_date >= {d_start:Date} THEN amount ELSE 0 END) AS payout_cur,
-                   sum(CASE WHEN operation_date >= {d_prev_start:Date} AND operation_date < {d_start:Date} THEN amount ELSE 0 END) AS payout_prev
+                   sum(CASE WHEN operation_date >= {d_start:Date} AND operation_date <= {d_end:Date} THEN amount ELSE 0 END) AS payout_cur,
+                   sum(CASE WHEN operation_date >= {d_prev_start:Date} AND operation_date <= {d_prev_end:Date} THEN amount ELSE 0 END) AS payout_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND operation_date >= {d_prev_start:Date}
+              AND operation_date <= {d_end:Date}
               AND sku > 0
             GROUP BY sku
-        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_prev_start": d_prev_start})
+        """, parameters={
+            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
         for r in txn_result.result_rows:
             oid = sku_to_offer.get(r[0])
             if oid and oid in products_map:

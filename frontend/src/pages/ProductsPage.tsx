@@ -47,7 +47,7 @@ import {
   downloadWBCostTemplate,
   type WBProduct,
 } from '@/api/wb-products'
-import { DateRangePicker, type DateRange } from '@/components/DateRangePicker'
+import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 
 /* ═══════════════════════════════════════════════════════════
    Helpers
@@ -378,7 +378,9 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('')
   const [searchInput, setSearchInput] = useState('')
   const [period, setPeriod] = useState<7 | 30>(7)
-  const [dateRange, setDateRange] = useState<DateRange | null>(null)
+  const [periodValue, setPeriodValue] = useState<PeriodValue>({
+    mode: 'quick', period: 7, dateRange: null,
+  })
   const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -390,10 +392,10 @@ export default function ProductsPage() {
   const fetchProducts = useCallback(async () => {
     if (!shopId || (!isOzon && !isWB)) return
     setLoading(true)
-    // date params for custom range
-    const dateParams = dateRange?.from && dateRange?.to ? {
-      date_from: dateRange.from.toISOString().slice(0, 10),
-      date_to: dateRange.to.toISOString().slice(0, 10),
+    const period = periodValue.period
+    const dateParams = periodValue.mode === 'custom' && periodValue.dateRange?.from && periodValue.dateRange?.to ? {
+      date_from: periodValue.dateRange.from.toISOString().slice(0, 10),
+      date_to: periodValue.dateRange.to.toISOString().slice(0, 10),
     } : {}
     try {
       if (isWB) {
@@ -419,7 +421,7 @@ export default function ProductsPage() {
     } finally {
       setLoading(false)
     }
-  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, dateRange])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, periodValue])
 
   // Load next page (append) — uses refs to prevent duplicate calls
   const loadMore = useCallback(async () => {
@@ -427,9 +429,10 @@ export default function ProductsPage() {
     loadingMoreRef.current = true
     setLoadingMore(true)
     const nextPage = pageRef.current + 1
-    const dateParams = dateRange?.from && dateRange?.to ? {
-      date_from: dateRange.from.toISOString().slice(0, 10),
-      date_to: dateRange.to.toISOString().slice(0, 10),
+    const period = periodValue.period
+    const dateParams = periodValue.mode === 'custom' && periodValue.dateRange?.from && periodValue.dateRange?.to ? {
+      date_from: periodValue.dateRange.from.toISOString().slice(0, 10),
+      date_to: periodValue.dateRange.to.toISOString().slice(0, 10),
     } : {}
     try {
       let newProducts: OzonProduct[]
@@ -460,7 +463,7 @@ export default function ProductsPage() {
       loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, period, hasMore, dateRange])
+  }, [shopId, isOzon, isWB, perPage, sort, order, filter, search, periodValue, hasMore])
 
   useEffect(() => { fetchProducts() }, [fetchProducts])
 
@@ -567,27 +570,10 @@ export default function ProductsPage() {
 
       {/* ── Period selector + Filters (dashboard-style) ── */}
       <div className="flex items-center justify-between gap-4">
-        {/* Period — enlarged, dashboard-style */}
-        <div className="inline-flex rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1">
-          {([7, 30] as const).map((d) => (
-            <button
-              key={d}
-              onClick={() => { setPeriod(d); setDateRange(null); setPage(1) }}
-              className={cn(
-                'rounded-md px-5 py-2 text-sm font-medium transition-all duration-200',
-                period === d && !dateRange
-                  ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
-                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]',
-              )}
-            >
-              {d === 7 ? '7 дней' : '30 дней'}
-            </button>
-          ))}
-        </div>
-        {/* Кастомный диапазон дат */}
-        <DateRangePicker
-          value={dateRange}
-          onChange={(range) => { setDateRange(range); setPage(1) }}
+        {/* Единый виджет периода */}
+        <PeriodSelector
+          value={periodValue}
+          onChange={(v) => { setPeriodValue(v); setPage(1) }}
         />
         {/* Filters */}
         <div className="flex items-center gap-1.5 flex-wrap">
