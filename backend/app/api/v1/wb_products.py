@@ -158,39 +158,37 @@ async def get_wb_products(
         stocks_map = {}
 
     # ── 4. WB Finance fees (commission + logistics + fines) from fact_finances ──
-    # WB финансовые отчёты приходят с лагом ~2 недели.
-    # Берём данные за scoped период — пересечение с тем, что есть в БД.
-    # JOINим по vendor_code (нижний регистр в fact_finances).
+    # WB финотчёты приходят с лагом, поэтому берём последние 90 дней
+    # и масштабируем на выручку текущего периода.
     try:
         fees_result = ch.query("""
             SELECT
-                lower(vendor_code)                            AS vc,
-                sum(retail_amount)                            AS fin_revenue,
-                sum(commission_amount)                        AS commission,
-                sum(logistics_total + wb_delivery_rub)        AS logistics,
-                sum(storage_fee + wb_storage_amount)          AS storage,
-                sum(acceptance_fee)                           AS acceptance,
-                sum(penalty_total)                            AS fines,
-                sum(payout_amount + wb_ppvz_for_pay)          AS payout,
-                count()                                       AS rows_count
+                lower(vendor_code)                      AS vc,
+                sum(retail_amount)                      AS fin_revenue,
+                sum(commission_amount)                  AS commission,
+                sum(logistics_total)                    AS logistics,
+                sum(storage_fee)                        AS storage,
+                sum(acceptance_fee)                     AS acceptance,
+                sum(penalty_total)                      AS fines
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
-              AND event_date >= {d_prev_start:Date}
-              AND event_date <= {d_end:Date}
+              AND event_date >= toDate(now()) - 90
             GROUP BY vc
-        """, parameters={"shop_id": shop_id, "d_prev_start": d_prev_start, "d_end": d_end})
+        """, parameters={"shop_id": shop_id})
         fees_map = {}
         for r in fees_result.result_rows:
             vc = str(r[0]).lower()
+            fin_revenue_v = float(r[1])
+            if fin_revenue_v <= 0:
+                continue
             fees_map[vc] = {
-                "fin_revenue": float(r[1]),
+                "fin_revenue": fin_revenue_v,
                 "commission": float(r[2]),
                 "logistics": float(r[3]),
                 "storage": float(r[4]),
                 "acceptance": float(r[5]),
                 "fines": float(r[6]),
-                "payout": float(r[7]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
@@ -252,20 +250,20 @@ async def get_wb_products(
         # ── WB Finance fees (from finreport) ──────────────
         fees = fees_map.get(vendor_code.lower(), {})
         fin_revenue = fees.get("fin_revenue", 0.0)
-        commission = fees.get("commission", 0.0)
-        logistics = fees.get("logistics", 0.0)
-        storage = fees.get("storage", 0.0)
-        acceptance = fees.get("acceptance", 0.0)
-        fines = fees.get("fines", 0.0)
-        payout = fees.get("payout", 0.0)
 
-        # mp_fees = sum of all WB marketplace costs
-        raw_mp_fees = commission + logistics + storage + acceptance + fines
-        # Scale proportionally to current period if finreport covers different volume
-        if fin_revenue > 0 and revenue_7d > 0:
-            mp_fees = round(raw_mp_fees * (revenue_7d / fin_revenue), 2)
-        elif raw_mp_fees > 0:
-            mp_fees = round(raw_mp_fees, 2)
+        # Средняя доля каждого типа расходов от выручки (по финотчёту)
+        # Масштабируем на выручку текущего периода
+        raw_mp_fees = (
+            fees.get("commission", 0.0)
+            + fees.get("logistics", 0.0)
+            + fees.get("storage", 0.0)
+            + fees.get("acceptance", 0.0)
+            + fees.get("fines", 0.0)
+        )
+        if fin_revenue > 0 and raw_mp_fees > 0:
+            # Доля комиссий от выручки (из финотчёта), применяем к текущей выручке
+            mp_fees_rate = min(raw_mp_fees / fin_revenue, 0.95)  # cap 95% на случай аномалий
+            mp_fees = round(revenue_7d * mp_fees_rate, 2) if revenue_7d > 0 else 0.0
         else:
             mp_fees = 0.0
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
@@ -281,18 +279,13 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit: payout - себестоимость - реклама ──
+        # ── Gross profit = выручка - комиссии МП - себестоимость - реклама ──
+        # Строго: прибыль не может быть > выручки
         gross_profit = None
         margin = None
         if cost_price > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
-            if fin_revenue > 0 and revenue_7d > 0:
-                # Есть финотчёт: берём реальный scaled payout
-                scaled_payout = payout * (revenue_7d / fin_revenue)
-                gross_profit = round(scaled_payout - total_cogs - ad_spend_7d, 2)
-            else:
-                # Нет финотчёта: выручка - mp_fees - себестоимость - реклама
-                gross_profit = round(revenue_7d - mp_fees - total_cogs - ad_spend_7d, 2)
+            gross_profit = round(revenue_7d - mp_fees - total_cogs - ad_spend_7d, 2)
             if revenue_7d > 0:
                 margin = round(gross_profit / revenue_7d * 100, 1)
 
