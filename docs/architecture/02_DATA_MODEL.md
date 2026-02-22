@@ -316,16 +316,16 @@ SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
 
 Принимает данные от **WB API**, **Ozon API** и **Excel/CSV**.
 
-| Группа             | Поля                                                                                                    | Описание                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------ |
-| **Core**           | event_date, shop_id, marketplace, order_id, external_id, vendor_code, rrd_id                            | Общие для всех МП        |
-| **Money**          | quantity, retail_amount, payout_amount                                                                  | Основные суммы           |
-| **Geography**      | warehouse_name, delivery_address, region_name                                                           | Склад + ПВЗ + регион     |
-| **Unit Economics** | commission_amount, logistics_total, ads_total, penalty_total, storage_fee, acceptance_fee, bonus_amount | Детализация расходов     |
-| **Identifiers**    | shk_id, rid, srid                                                                                       | Трассировка              |
-| **WB Only**        | wb_gi_id, wb_ppvz_for_pay, wb_delivery_rub, wb_storage_amount                                           | Поставка, к перечислению |
-| **Ozon Only**      | ozon_acquiring, ozon_last_mile, ozon_milestone, ozon_marketing_services                                 | Эквайринг, доставка      |
-| **Service**        | source_file_name, raw_payload                                                                           | Аудит                    |
+| Группа             | Поля                                                                                                    | Описание                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| **Core**           | event_date, shop_id, marketplace, order_id, external_id, vendor_code, rrd_id                            | Общие для всех МП                             |
+| **Money**          | quantity, retail_amount, payout_amount                                                                  | Основные суммы                                |
+| **Geography**      | warehouse_name, delivery_address, region_name                                                           | Склад + ПВЗ + регион                          |
+| **Unit Economics** | commission_amount, logistics_total, ads_total, penalty_total, storage_fee, acceptance_fee, bonus_amount | Детализация расходов                          |
+| **Identifiers**    | shk_id, rid, srid                                                                                       | Трассировка                                   |
+| **WB Only**        | wb_gi_id, wb_ppvz_for_pay, wb_delivery_rub, wb_storage_amount, **wb_acquiring**                         | Поставка, к перечислению, **эквайринг банка** |
+| **Ozon Only**      | ozon_acquiring, ozon_last_mile, ozon_milestone, ozon_marketing_services                                 | Эквайринг, доставка                           |
+| **Service**        | source_file_name, raw_payload                                                                           | Аудит                                         |
 
 ---
 
@@ -491,3 +491,8 @@ alembic revision --autogenerate -m "описание"
 - Расширена документация `dim_ozon_products` до 39 колонок (сгруппированы по категориям)
 - Добавлена секция Alembic миграций (конфигурация, текущие миграции, workflow)
 - Добавлена таблица `dim_ozon_product_content` с описанием полей
+
+### 2026-02-22
+
+- `fact_finances`: добавлена колонка `wb_acquiring Decimal(18,2) DEFAULT 0` — банковский эквайринг WB (поле `acquiring_fee` из API `reportDetailByPeriod`, ~3-4% от продажи)
+- Выполнен backfill: 2 162 исторических строки обновлены через `JSONExtractFloat(raw_payload, 'acquiring_fee')` — суммарно восстановлено **34 326 ₽** эквайринга
