@@ -170,13 +170,14 @@ async def get_wb_products(
                 sum(logistics_total + wb_delivery_rub)      AS logistics,
                 sum(storage_fee + wb_storage_amount)        AS storage,
                 sum(acceptance_fee)                         AS acceptance,
-                sum(penalty_total)                          AS fines
+                sum(penalty_total)                          AS fines,
+                sum(wb_acquiring)                           AS acquiring
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
               AND event_date >= toDate(now()) - 90
             GROUP BY vc
-            HAVING commission > 0 OR logistics > 0 OR storage > 0
+            HAVING commission > 0 OR logistics > 0 OR storage > 0 OR acquiring > 0
         """, parameters={"shop_id": shop_id})
         fees_map = {}
         for r in fees_result.result_rows:
@@ -188,6 +189,7 @@ async def get_wb_products(
                 "storage": float(r[4]),
                 "acceptance": float(r[5]),
                 "fines": float(r[6]),
+                "acquiring": float(r[7]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
@@ -253,11 +255,12 @@ async def get_wb_products(
         # Средняя доля каждого типа расходов от выручки (по финотчёту)
         # Масштабируем на выручку текущего периода
         raw_mp_fees = (
-            fees.get("commission", 0.0)
-            + fees.get("logistics", 0.0)
-            + fees.get("storage", 0.0)
-            + fees.get("acceptance", 0.0)
-            + fees.get("fines", 0.0)
+            fees.get("commission", 0.0)    # Комиссия WB (ppvz_sales_commission)
+            + fees.get("logistics", 0.0)   # Логистика и доставка
+            + fees.get("storage", 0.0)     # Хранение
+            + fees.get("acceptance", 0.0)  # Платная приёмка
+            + fees.get("fines", 0.0)       # Штрафы
+            + fees.get("acquiring", 0.0)   # Эквайринг банка (acquiring_fee, ~4%)
         )
         if fin_revenue > 0 and raw_mp_fees > 0:
             # Доля комиссий от выручки (из финотчёта), применяем к текущей выручке

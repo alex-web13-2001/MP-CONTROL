@@ -58,6 +58,7 @@ class FactFinancesRow:
     wb_ppvz_for_pay: Decimal = Decimal("0")
     wb_delivery_rub: Decimal = Decimal("0")
     wb_storage_amount: Decimal = Decimal("0")
+    wb_acquiring: float = 0.0  # Эквайринг банка (acquiring_fee из API)
     # Service
     source_file_name: str = ""
     raw_payload: str = ""
@@ -195,6 +196,8 @@ class WBReportParser:
         wb_ppvz_for_pay = payout_amount
         wb_delivery_rub = self._safe_decimal(row.get("delivery_rub", 0))
         wb_storage_amount = abs(self._safe_decimal(row.get("storage_fee", 0)))
+        # Эквайринг банка (Tinkoff/Sberbank) — WB взымает с поставщика
+        wb_acquiring = self._safe_float(row.get("acquiring_fee", 0))
         
         return FactFinancesRow(
             event_date=event_date,
@@ -232,6 +235,7 @@ class WBReportParser:
             wb_ppvz_for_pay=wb_ppvz_for_pay,
             wb_delivery_rub=wb_delivery_rub,
             wb_storage_amount=wb_storage_amount,
+            wb_acquiring=wb_acquiring,
             source_file_name=source_filename,
             raw_payload=json.dumps(row, ensure_ascii=False, default=str),
         )
@@ -265,7 +269,7 @@ class ClickHouseLoader:
         # Identifiers
         "shk_id", "rid", "srid",
         # WB Specific
-        "wb_gi_id", "wb_ppvz_for_pay", "wb_delivery_rub", "wb_storage_amount",
+        "wb_gi_id", "wb_ppvz_for_pay", "wb_delivery_rub", "wb_storage_amount", "wb_acquiring",
         # Ozon Specific
         "ozon_acquiring", "ozon_last_mile", "ozon_milestone", "ozon_marketing_services",
         # Service
@@ -346,6 +350,7 @@ class ClickHouseLoader:
             float(row.wb_ppvz_for_pay),
             float(row.wb_delivery_rub),
             float(row.wb_storage_amount),
+            float(row.wb_acquiring),
             # Ozon Specific (defaults 0)
             0.0, # ozon_acquiring
             0.0, # ozon_last_mile
