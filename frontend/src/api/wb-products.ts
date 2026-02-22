@@ -25,6 +25,10 @@ export interface WBProduct {
   // Stocks
   stock_fbo: number
   stock_fbs: number
+  // Marketplace fees (from fact_finances)
+  mp_fees: number
+  mp_fees_percent: number
+  payout: number
   // Profit
   gross_profit: number | null
   margin: number | null

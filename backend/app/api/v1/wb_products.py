@@ -157,6 +157,45 @@ async def get_wb_products(
         logger.warning("CH stocks query failed: %s", e)
         stocks_map = {}
 
+    # ── 4. WB Finance fees (commission + logistics + fines) from fact_finances ──
+    # WB финансовые отчёты приходят с лагом ~2 недели.
+    # Берём данные за scoped период — пересечение с тем, что есть в БД.
+    # JOINим по vendor_code (нижний регистр в fact_finances).
+    try:
+        fees_result = ch.query("""
+            SELECT
+                lower(vendor_code)                            AS vc,
+                sum(retail_amount)                            AS fin_revenue,
+                sum(commission_amount)                        AS commission,
+                sum(logistics_total + wb_delivery_rub)        AS logistics,
+                sum(storage_fee + wb_storage_amount)          AS storage,
+                sum(acceptance_fee)                           AS acceptance,
+                sum(penalty_total)                            AS fines,
+                sum(payout_amount + wb_ppvz_for_pay)          AS payout,
+                count()                                       AS rows_count
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d_prev_start:Date}
+              AND event_date <= {d_end:Date}
+            GROUP BY vc
+        """, parameters={"shop_id": shop_id, "d_prev_start": d_prev_start, "d_end": d_end})
+        fees_map = {}
+        for r in fees_result.result_rows:
+            vc = str(r[0]).lower()
+            fees_map[vc] = {
+                "fin_revenue": float(r[1]),
+                "commission": float(r[2]),
+                "logistics": float(r[3]),
+                "storage": float(r[4]),
+                "acceptance": float(r[5]),
+                "fines": float(r[6]),
+                "payout": float(r[7]),
+            }
+    except Exception as e:
+        logger.warning("CH fees query failed: %s", e)
+        fees_map = {}
+
     ch.close()
 
     # ── 4. Product catalog from PostgreSQL (dim_products) ──
@@ -210,6 +249,27 @@ async def get_wb_products(
         cost_price = info.get("cost_price", 0.0)
         packaging_cost = info.get("packaging_cost", 0.0)
 
+        # ── WB Finance fees (from finreport) ──────────────
+        fees = fees_map.get(vendor_code.lower(), {})
+        fin_revenue = fees.get("fin_revenue", 0.0)
+        commission = fees.get("commission", 0.0)
+        logistics = fees.get("logistics", 0.0)
+        storage = fees.get("storage", 0.0)
+        acceptance = fees.get("acceptance", 0.0)
+        fines = fees.get("fines", 0.0)
+        payout = fees.get("payout", 0.0)
+
+        # mp_fees = sum of all WB marketplace costs
+        raw_mp_fees = commission + logistics + storage + acceptance + fines
+        # Scale proportionally to current period if finreport covers different volume
+        if fin_revenue > 0 and revenue_7d > 0:
+            mp_fees = round(raw_mp_fees * (revenue_7d / fin_revenue), 2)
+        elif raw_mp_fees > 0:
+            mp_fees = round(raw_mp_fees, 2)
+        else:
+            mp_fees = 0.0
+        mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
+
         # ── DRR ───────────────────────────────────────────
         drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
@@ -221,12 +281,18 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit (выручка - себестоимость - реклама) ──
+        # ── Gross profit: payout - себестоимость - реклама ──
         gross_profit = None
         margin = None
         if cost_price > 0:
-            total_cost = (cost_price + packaging_cost) * orders_7d
-            gross_profit = round(revenue_7d - total_cost - ad_spend_7d, 2)
+            total_cogs = (cost_price + packaging_cost) * orders_7d
+            if fin_revenue > 0 and revenue_7d > 0:
+                # Есть финотчёт: берём реальный scaled payout
+                scaled_payout = payout * (revenue_7d / fin_revenue)
+                gross_profit = round(scaled_payout - total_cogs - ad_spend_7d, 2)
+            else:
+                # Нет финотчёта: выручка - mp_fees - себестоимость - реклама
+                gross_profit = round(revenue_7d - mp_fees - total_cogs - ad_spend_7d, 2)
             if revenue_7d > 0:
                 margin = round(gross_profit / revenue_7d * 100, 1)
 
@@ -241,6 +307,7 @@ async def get_wb_products(
             # Sales
             "orders_7d": orders_7d,
             "revenue_7d": revenue_7d,
+            "orders_prev": orders.get("orders_prev", 0),
             "revenue_prev": revenue_prev,
             "revenue_delta": revenue_delta,
             # Ads
@@ -251,11 +318,16 @@ async def get_wb_products(
             # Stocks
             "stock_fbo": stocks.get("stock_fbo", 0),
             "stock_fbs": stocks.get("stock_fbs", 0),
+            # WB Marketplace fees
+            "mp_fees": mp_fees,
+            "mp_fees_percent": mp_fees_percent,
+            "payout": round(payout, 2),
             # Profit
             "gross_profit": gross_profit,
             "margin": margin,
         }
         products.append(p)
+
 
     # ── 6. Search ────────────────────────────────────────────
     if search:
