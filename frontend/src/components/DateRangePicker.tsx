@@ -149,6 +149,51 @@ export function PeriodSelector({ value, onChange, className }: PeriodSelectorPro
           className="absolute left-0 top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4"
           style={{ animation: 'dpPop 160ms ease-out' }}
         >
+          <style>{`
+            .rdp-root { --rdp-accent-color: hsl(var(--primary)); font-family: inherit; }
+            .rdp-months { display: flex; gap: 24px; }
+            .rdp-month { }
+            .rdp-month_caption { display: flex; align-items: center; justify-content: center; padding-bottom: 10px; }
+            .rdp-caption_label { font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); text-transform: capitalize; }
+            .rdp-nav { display: flex; align-items: center; gap: 4px; }
+            .rdp-button_previous, .rdp-button_next {
+              width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+              color: hsl(var(--muted-foreground)); background: transparent; border: none; cursor: pointer;
+              transition: background 150ms, color 150ms;
+            }
+            .rdp-button_previous:hover, .rdp-button_next:hover { background: rgba(255,255,255,0.08); color: hsl(var(--foreground)); }
+            .rdp-weekdays { display: flex; }
+            .rdp-weekday { width: 36px; text-align: center; font-size: 11px; font-weight: 500; color: hsl(var(--muted-foreground) / 0.45); padding-bottom: 4px; }
+            .rdp-weeks { }
+            .rdp-week { display: flex; margin-top: 2px; }
+            .rdp-day { position: relative; padding: 0; }
+            .rdp-day_button {
+              width: 36px; height: 36px; border-radius: 8px; border: none; background: transparent; cursor: pointer;
+              font-size: 13px; font-weight: 500; color: hsl(var(--foreground) / 0.85);
+              transition: background 120ms, color 120ms;
+              display: flex; align-items: center; justify-content: center;
+            }
+            .rdp-day_button:hover { background: rgba(255,255,255,0.08); }
+            .rdp-day_button:focus-visible { outline: 2px solid hsl(var(--primary) / 0.5); outline-offset: 1px; }
+            /* Selected single */
+            .rdp-selected .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; }
+            /* Range start */
+            .rdp-range_start .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; border-radius: 8px 0 0 8px; }
+            /* Range end */
+            .rdp-range_end .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; border-radius: 0 8px 8px 0; }
+            /* Range middle */
+            .rdp-range_middle .rdp-day_button { background: hsl(var(--primary) / 0.15) !important; color: hsl(var(--primary)) !important; border-radius: 0; }
+            /* Range start+end same day (single) */
+            .rdp-range_start.rdp-range_end .rdp-day_button { border-radius: 8px !important; }
+            /* Today */
+            .rdp-today .rdp-day_button { font-weight: 700; text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; }
+            /* Outside month */
+            .rdp-outside { opacity: 0; pointer-events: none; }
+            /* Disabled */
+            .rdp-disabled .rdp-day_button { opacity: 0.2; cursor: not-allowed; }
+            @keyframes dpPop { from { opacity:0; transform:translateY(-4px) scale(.98) } to { opacity:1; transform:none } }
+          `}</style>
+
           <DayPicker
             mode="range"
             selected={draft}
@@ -162,28 +207,6 @@ export function PeriodSelector({ value, onChange, className }: PeriodSelectorPro
                 ? new Date(draft.from.getFullYear(), draft.from.getMonth() - 1)
                 : new Date(new Date().getFullYear(), new Date().getMonth() - 1)
             }
-            classNames={{
-              months: 'flex gap-6',
-              month: 'space-y-1',
-              month_caption: 'flex items-center justify-center pb-2',
-              caption_label: 'text-[13px] font-semibold text-[hsl(var(--foreground))] capitalize',
-              nav: 'flex items-center gap-1',
-              button_previous: 'h-7 w-7 rounded-lg flex items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-white/8 hover:text-[hsl(var(--foreground))] transition-colors',
-              button_next:     'h-7 w-7 rounded-lg flex items-center justify-center text-[hsl(var(--muted-foreground))] hover:bg-white/8 hover:text-[hsl(var(--foreground))] transition-colors',
-              month_grid: 'w-full',
-              weekdays: 'flex',
-              weekday: 'w-9 text-center text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.4)] pb-1',
-              week: 'flex mt-0.5',
-              day: 'relative p-0',
-              day_button: 'h-9 w-9 text-[13px] font-medium transition-colors rounded-lg w-full hover:bg-white/8 text-[hsl(var(--foreground)/0.85)] focus:outline-none',
-              selected: '!bg-[hsl(var(--primary))] !text-white',
-              range_start: '!bg-[hsl(var(--primary))] !text-white !rounded-l-lg !rounded-r-none',
-              range_end:   '!bg-[hsl(var(--primary))] !text-white !rounded-r-lg !rounded-l-none',
-              range_middle: '!bg-[hsl(var(--primary)/0.14)] !text-[hsl(var(--primary))] !rounded-none',
-              today: 'font-bold underline decoration-dotted underline-offset-2',
-              outside: 'opacity-0 pointer-events-none',
-              disabled: '!opacity-20 !cursor-not-allowed',
-            }}
           />
 
           {/* Подсказка + кнопки */}
@@ -214,7 +237,6 @@ export function PeriodSelector({ value, onChange, className }: PeriodSelectorPro
         </div>
       )}
 
-      <style>{`@keyframes dpPop { from { opacity:0; transform:translateY(-4px) scale(.98) } to { opacity:1; transform:none } }`}</style>
     </div>
   )
 }
