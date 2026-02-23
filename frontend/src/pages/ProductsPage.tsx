@@ -636,15 +636,10 @@ export default function ProductsPage() {
          ═══════════════════════════════════════════════════ */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-240px)]">
-          <style>{`
-            .products-tbl { border-collapse: separate; border-spacing: 0; }
-            .products-tbl thead tr:first-child th { position: sticky; top: 0; z-index: 30; }
-            .products-tbl thead tr:nth-child(2) td { position: sticky; top: 66px; z-index: 29; }
-          `}</style>
-          <table className="products-tbl w-full min-w-[1200px]">
-            <thead>
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))] shadow-[1px_0_0_hsl(var(--border))/30]">
+          <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
+            <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+              <tr className="bg-[hsl(var(--card))]">
+                <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   Товар
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
@@ -706,7 +701,7 @@ export default function ProductsPage() {
                 const profitPct = t.revenue > 0 ? Math.round(t.profit / t.revenue * 1000) / 10 : 0
                 return (
                   <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
-                    <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 shadow-[1px_0_0_hsl(var(--border))/30]">
+                    <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
                       <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {products.length} товаров</span>
                     </td>
                     <td className="px-3 py-2.5" />
