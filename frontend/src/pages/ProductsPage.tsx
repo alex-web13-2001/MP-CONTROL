@@ -636,8 +636,13 @@ export default function ProductsPage() {
          ═══════════════════════════════════════════════════ */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-240px)]">
-          <table className="w-full min-w-[1200px]">
-            <thead className="sticky top-0 z-30">
+          <style>{`
+            .products-tbl { border-collapse: separate; border-spacing: 0; }
+            .products-tbl thead tr:first-child th { position: sticky; top: 0; z-index: 30; }
+            .products-tbl thead tr:nth-child(2) td { position: sticky; top: 66px; z-index: 29; }
+          `}</style>
+          <table className="products-tbl w-full min-w-[1200px]">
+            <thead>
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
                 <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))] shadow-[1px_0_0_hsl(var(--border))/30]">
                   Товар
