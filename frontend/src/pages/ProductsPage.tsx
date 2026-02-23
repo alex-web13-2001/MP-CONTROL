@@ -700,7 +700,7 @@ export default function ProductsPage() {
                 const mpPct = t.revenue > 0 ? Math.round(t.mpFees / t.revenue * 1000) / 10 : 0
                 const profitPct = t.revenue > 0 ? Math.round(t.profit / t.revenue * 1000) / 10 : 0
                 return (
-                  <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]" style={{ position: 'sticky', top: '44px', zIndex: 29 }}>
+                  <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
                     <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 shadow-[1px_0_0_hsl(var(--border))/30]">
                       <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {products.length} товаров</span>
                     </td>
