@@ -219,14 +219,14 @@ async def get_wb_products(
         prev_result = ch.query("""
             SELECT
                 toUInt64(external_id) AS nm_id,
-                sum(retail_amount) AS fin_revenue_prev
+                sum(wb_ppvz_for_pay) AS payout_prev
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
               AND event_date >= {d_prev_start:Date}
               AND event_date <= {d_prev_end:Date}
             GROUP BY nm_id
-            HAVING fin_revenue_prev > 0
+            HAVING payout_prev > 0
         """, parameters={
             "shop_id": shop_id,
             "d_prev_start": d_prev_start,
@@ -235,9 +235,9 @@ async def get_wb_products(
         for r in prev_result.result_rows:
             nm = int(r[0])
             if nm in fees_map:
-                fees_map[nm]["fin_revenue_prev"] = float(r[1])
+                fees_map[nm]["payout_prev"] = float(r[1])
             else:
-                fees_map[nm] = {"fin_revenue_prev": float(r[1])}
+                fees_map[nm] = {"payout_prev": float(r[1])}
     except Exception as e:
         logger.warning("CH prev period query failed: %s", e)
 
@@ -294,11 +294,11 @@ async def get_wb_products(
         # ── WB Finance data (единый источник P&L) ────────
         fees = fees_map.get(nm_id, {})
 
-        # Revenue & qty — из fact_finances (по дате реализации)
-        revenue_7d = fees.get("fin_revenue", 0.0)
-        revenue_prev = fees.get("fin_revenue_prev", 0.0)
+        # Revenue = ppvz_for_pay (к перечислению от WB)
+        revenue_7d = fees.get("payout", 0.0)
+        revenue_prev = fees.get("payout_prev", 0.0)
         orders_7d = fees.get("qty", 0)     # кол-во реализованных
-        payout = fees.get("payout", 0.0)   # к перечислению от WB
+        payout = revenue_7d  # payout = revenue для WB (ppvz_for_pay)
 
         # Детализация удержаний
         fee_commission = fees.get("commission", 0.0)
