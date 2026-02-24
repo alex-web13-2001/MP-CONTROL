@@ -334,16 +334,20 @@ async def get_wb_products(
             if payout > 0:
                 margin = round(gross_profit / payout * 100, 1)
 
+        current_price = info.get("current_price", 0.0)
+        sales_amount = round(current_price * orders_7d, 2)  # Продажи по цене из админки
+
         p = {
             "nm_id": nm_id,
             "vendor_code": vendor_code,
             "name": info.get("name", vendor_code),
             "image_url": info.get("image_url", ""),
-            "current_price": info.get("current_price", 0.0),
+            "current_price": current_price,
             "cost_price": cost_price,
             "packaging_cost": packaging_cost,
             # P&L waterfall
             "avg_price": avg_price,
+            "sales_amount": sales_amount,
             "orders_7d": orders_7d,
             "revenue_7d": revenue_7d,
             "orders_prev": 0,
@@ -414,6 +418,7 @@ async def get_wb_products(
     # Compute totals across ALL filtered products (before pagination)
     t_stocks = 0
     t_orders = 0
+    t_sales = 0.0
     t_revenue = 0.0
     t_payout = 0.0
     t_ad_spend = 0.0
@@ -425,6 +430,7 @@ async def get_wb_products(
     for p in products:
         t_stocks += p["stock_fbo"] + p["stock_fbs"]
         t_orders += p["orders_7d"]
+        t_sales += p["sales_amount"]
         t_revenue += p["revenue_7d"]
         t_payout += p["payout"]
         t_ad_spend += p["ad_spend_7d"]
@@ -439,6 +445,7 @@ async def get_wb_products(
         "count": len(products),
         "stocks": t_stocks,
         "orders": t_orders,
+        "sales": round(t_sales, 2),
         "revenue": round(t_revenue, 2),
         "payout": round(t_payout, 2),
         "ad_spend": round(t_ad_spend, 2),

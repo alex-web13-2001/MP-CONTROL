@@ -666,6 +666,9 @@ export default function ProductsPage() {
                   К перечислению
                 </th>
                 <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                  Ср. цена
+                </th>
+                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
                     Себестоимость {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
@@ -708,15 +711,17 @@ export default function ProductsPage() {
                     <td className="px-3 py-2.5 text-right">
                       <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stocks)}</p>
                     </td>
-                    {/* Продажи */}
+                    {/* Продажи (цена из админки × шт) */}
                     <td className="px-3 py-2.5 text-right">
-                      <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.revenue)}</p>
+                      <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.sales ?? t.revenue)}</p>
                       <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{fmtNum(t.orders)} шт</p>
                     </td>
                     {/* К перечислению */}
                     <td className="px-3 py-2.5 text-right">
                       <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.payout ?? 0)}</p>
                     </td>
+                    {/* Ср. цена */}
+                    <td className="px-3 py-2.5" />
                     {/* Себестоимость */}
                     <td className="px-3 py-2.5" />
                     {/* Реклама */}
@@ -760,12 +765,12 @@ export default function ProductsPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-[hsl(var(--border)/0.2)]">
-                    <td colSpan={10} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
+                    <td colSpan={11} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
                   </tr>
                 ))
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-16 text-center">
+                  <td colSpan={11} className="px-4 py-16 text-center">
                     <Package className="mx-auto mb-3 h-10 w-10 text-[hsl(var(--muted-foreground)/0.15)]" />
                     <p className="text-[hsl(var(--muted-foreground))]">Товары не найдены</p>
                     {search && <p className="mt-1 text-sm text-[hsl(var(--muted-foreground)/0.5)]">Попробуйте другой запрос</p>}
@@ -867,11 +872,11 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 4. ПРОДАЖИ (выручка крупно, штуки мельче, дельта) ── */}
+                    {/* ── 4. ПРОДАЖИ (цена из админки × шт, дельта) ── */}
                     <td className="px-3 py-3.5 text-right">
-                      {p.revenue_7d > 0 ? (
+                      {p.orders_7d > 0 ? (
                         <div>
-                          <p className="text-[16px] font-bold tabular-nums">{fmtMoney(p.revenue_7d)}</p>
+                          <p className="text-[16px] font-bold tabular-nums">{fmtMoney((p.marketing_price || p.price) * p.orders_7d)}</p>
                           <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums mt-0.5">{p.orders_7d} шт</p>
                           {p.revenue_delta !== 0 && <DeltaBadge value={p.revenue_delta} />}
                         </div>
@@ -884,6 +889,17 @@ export default function ProductsPage() {
                     <td className="px-3 py-3.5 text-right">
                       {p.payout_period > 0 ? (
                         <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.payout_period)}</p>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 4c. СР. ЦЕНА ПОКУПАТЕЛЯ (retail_amount / qty) ── */}
+                    <td className="px-3 py-3.5 text-right">
+                      {p.orders_7d > 0 && p.revenue_7d > 0 ? (
+                        <p className="text-[13px] font-medium tabular-nums text-[hsl(var(--foreground)/0.7)]">
+                          {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
+                        </p>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
