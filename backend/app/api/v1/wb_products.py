@@ -164,14 +164,18 @@ async def get_wb_products(
         logger.warning("CH stocks query failed: %s", e)
         stocks_map = {}
 
-    # ── 4. WB Finance fees from fact_finances (current period) ───────
-    # Реальные суммы удержаний за текущий период.
-    # Используем sa_name (артикул поставщика) для привязки к vendor_code.
+    # ── 4. WB Finance data from fact_finances (single source of truth) ──
+    # Все финансовые данные из единого источника по дате реализации.
+    # Revenue, payout, fees — всё привязано к одним и тем же сделкам.
     try:
         fees_result = ch.query("""
             SELECT
                 lower(vendor_code)                          AS vc,
+                -- Revenue & payout (current period)
                 sum(retail_amount)                          AS fin_revenue,
+                sum(wb_ppvz_for_pay)                        AS payout,
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS qty,
+                -- Fee components
                 sum(commission_amount)                      AS commission,
                 sum(logistics_total)                        AS logistics,
                 sum(storage_fee)                            AS storage,
@@ -196,17 +200,46 @@ async def get_wb_products(
             vc = str(r[0]).lower()
             fees_map[vc] = {
                 "fin_revenue": float(r[1]),
-                "commission": float(r[2]),
-                "logistics": float(r[3]),
-                "storage": float(r[4]),
-                "acceptance": float(r[5]),
-                "fines": float(r[6]),
-                "acquiring": float(r[7]),
-                "deduction": float(r[8]),
+                "payout": float(r[2]),
+                "qty": int(r[3]),
+                "commission": float(r[4]),
+                "logistics": float(r[5]),
+                "storage": float(r[6]),
+                "acceptance": float(r[7]),
+                "fines": float(r[8]),
+                "acquiring": float(r[9]),
+                "deduction": float(r[10]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
         fees_map = {}
+
+    # ── 4b. Prev period revenue from fact_finances ────────────────────
+    try:
+        prev_result = ch.query("""
+            SELECT
+                lower(vendor_code) AS vc,
+                sum(retail_amount) AS fin_revenue_prev
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d_prev_start:Date}
+              AND event_date <= {d_prev_end:Date}
+            GROUP BY vc
+            HAVING fin_revenue_prev > 0
+        """, parameters={
+            "shop_id": shop_id,
+            "d_prev_start": d_prev_start,
+            "d_prev_end": d_prev_end,
+        })
+        for r in prev_result.result_rows:
+            vc = str(r[0]).lower()
+            if vc in fees_map:
+                fees_map[vc]["fin_revenue_prev"] = float(r[1])
+            else:
+                fees_map[vc] = {"fin_revenue_prev": float(r[1])}
+    except Exception as e:
+        logger.warning("CH prev period query failed: %s", e)
 
     ch.close()
 
@@ -254,17 +287,20 @@ async def get_wb_products(
         stocks = stocks_map.get(nm_id, {})
 
         vendor_code = info.get("vendor_code") or orders.get("vendor_code") or str(nm_id)
-        revenue_7d = orders.get("revenue_7d", 0.0)
-        revenue_prev = orders.get("revenue_prev", 0.0)
-        orders_7d = orders.get("orders_7d", 0)
         ad_spend_7d = ads.get("ad_spend_7d", 0.0)
         cost_price = info.get("cost_price", 0.0)
         packaging_cost = info.get("packaging_cost", 0.0)
 
-        # ── WB Finance fees (actual sums for the period) ───
+        # ── WB Finance data (единый источник P&L) ────────
         fees = fees_map.get(vendor_code.lower(), {})
 
-        # Actual fee components from fact_finances
+        # Revenue & qty — из fact_finances (по дате реализации)
+        revenue_7d = fees.get("fin_revenue", 0.0)
+        revenue_prev = fees.get("fin_revenue_prev", 0.0)
+        orders_7d = fees.get("qty", 0)     # кол-во реализованных
+        payout = fees.get("payout", 0.0)   # к перечислению от WB
+
+        # Детализация удержаний
         fee_commission = fees.get("commission", 0.0)
         fee_logistics = fees.get("logistics", 0.0)
         fee_storage = fees.get("storage", 0.0)
@@ -276,9 +312,6 @@ async def get_wb_products(
         )
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
-
-        # Payout = revenue minus all fees
-        payout = round(revenue_7d - mp_fees, 2)
 
         # ── DRR ───────────────────────────────────────────
         drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
@@ -311,7 +344,7 @@ async def get_wb_products(
             # Sales
             "orders_7d": orders_7d,
             "revenue_7d": revenue_7d,
-            "orders_prev": orders.get("orders_prev", 0),
+            "orders_prev": 0,  # prev qty not tracked in fact_finances
             "revenue_prev": revenue_prev,
             "revenue_delta": revenue_delta,
             # Ads
