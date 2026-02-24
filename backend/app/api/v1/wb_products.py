@@ -397,6 +397,14 @@ async def get_wb_products(
     elif filter == "problems":
         products = [p for p in products if p["stock_fbo"] + p["stock_fbs"] == 0 and p["revenue_7d"] > 0]
 
+    # ── 7b. Hide ghost products (no catalog entry + no sales) ──
+    products = [
+        p for p in products
+        if p["nm_id"] in pg_map  # есть в каталоге
+        or p["orders_7d"] > 0    # или есть продажи за период
+        or p["payout"] > 0       # или есть выплаты
+    ]
+
     # ── 8. Sort ──────────────────────────────────────────────
     SORT_FIELDS = {
         "revenue_7d", "orders_7d", "ad_spend_7d", "drr",
