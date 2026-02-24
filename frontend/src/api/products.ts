@@ -55,6 +55,8 @@ export interface OzonProduct {
   gross_profit_delta: number | null
   mp_fees: number
   mp_fees_percent: number
+  mp_fees_commission: number
+  mp_fees_logistics: number
   period: number
   events: ProductEvent[]
   promotions: string[]

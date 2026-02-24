@@ -703,37 +703,55 @@ export default function ProductsPage() {
                 const profitPct = t.revenue > 0 ? Math.round(t.profit / t.revenue * 1000) / 10 : 0
                 return (
                   <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
+                    {/* Товар */}
                     <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
                       <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {products.length} товаров</span>
                     </td>
+                    {/* Цена */}
                     <td className="px-3 py-2.5" />
+                    {/* Остатки */}
                     <td className="px-3 py-2.5 text-right">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stockFbo + t.stockFbs)}</span>
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stockFbo + t.stockFbs)}</p>
                     </td>
+                    {/* Продажи */}
                     <td className="px-3 py-2.5 text-right">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground))]">{fmtMoney(t.revenue)}</span>
-                      <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] ml-1.5">{fmtNum(t.orders)} шт</span>
+                      <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.revenue)}</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{fmtNum(t.orders)} шт</p>
                     </td>
+                    {/* Себестоимость */}
                     <td className="px-3 py-2.5" />
+                    {/* Реклама */}
                     <td className="px-3 py-2.5 text-right">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.adSpend)}</span>
-                      {totalDrr > 0 && <span className={cn('ml-1.5 text-[11px] font-bold', totalDrr > 20 ? 'text-red-400' : totalDrr > 10 ? 'text-amber-400' : 'text-emerald-400')}>ДРР {totalDrr}%</span>}
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.adSpend)}</p>
+                      {totalDrr > 0 && (
+                        <p className={cn('text-[11px] font-bold mt-0.5', totalDrr > 20 ? 'text-red-400' : totalDrr > 10 ? 'text-amber-400' : 'text-emerald-400')}>
+                          ДРР {totalDrr}%
+                        </p>
+                      )}
                     </td>
+                    {/* Возвраты */}
                     <td className="px-3 py-2.5 text-right">
-                      <span className={cn('text-[13px] font-bold', avgReturn > 10 ? 'text-red-400' : avgReturn > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.7)]')}>{avgReturn}%</span>
+                      <p className={cn('text-[13px] font-bold', avgReturn > 10 ? 'text-red-400' : avgReturn > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.7)]')}>{avgReturn}%</p>
                     </td>
+                    {/* Услуги МП */}
                     <td className="px-3 py-2.5 text-right">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.mpFees)}</span>
-                      <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] ml-1.5">{mpPct}%</span>
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.mpFees)}</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{mpPct}%</p>
                     </td>
+                    {/* Чистая прибыль */}
                     <td className="px-3 py-2.5 text-right">
                       {t.profitCount > 0 ? (
                         <>
-                          <span className={cn('text-[13px] font-bold', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>{t.profit > 0 ? '+' : ''}{fmtMoney(t.profit)}</span>
-                          <span className={cn('ml-1.5 text-[11px] font-bold', profitPct > 0 ? 'text-emerald-400' : 'text-red-400')}>{profitPct > 0 ? '+' : ''}{profitPct}%</span>
+                          <p className={cn('text-[14px] font-bold tabular-nums', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {t.profit > 0 ? '+' : ''}{fmtMoney(t.profit)}
+                          </p>
+                          <p className={cn('text-[11px] font-bold mt-0.5', profitPct > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {profitPct > 0 ? '+' : ''}{profitPct}%
+                          </p>
                         </>
                       ) : <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>}
                     </td>
+                    {/* События */}
                     <td className="px-3 py-2.5" />
                   </tr>
                 )

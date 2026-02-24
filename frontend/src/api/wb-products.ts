@@ -28,6 +28,8 @@ export interface WBProduct {
   // Marketplace fees (from fact_finances)
   mp_fees: number
   mp_fees_percent: number
+  mp_fees_commission: number
+  mp_fees_logistics: number
   payout: number
   // Profit
   gross_profit: number | null
