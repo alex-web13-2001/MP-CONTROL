@@ -207,8 +207,7 @@ async def get_ozon_products(
                    sumIf(price * quantity, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS revenue_list,
                    sumIf(payout, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS payout_period,
                    sumIf(quantity, order_date >= {d_prev_start:Date} AND order_date <= {d_prev_end:Date}) AS orders_prev,
-                   sumIf(payout, order_date >= {d_prev_start:Date} AND order_date <= {d_prev_end:Date}) AS payout_prev,
-                   sumIf((price - total_discount_value) * quantity, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS buyer_revenue
+                   sumIf(payout, order_date >= {d_prev_start:Date} AND order_date <= {d_prev_end:Date}) AS payout_prev
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND order_date >= {d_prev_start:Date}
@@ -228,12 +227,11 @@ async def get_ozon_products(
                 products_map[oid]["revenue_7d"] = float(r[2])       # price × qty (list price, like Ozon admin)
                 products_map[oid]["payout_period"] = float(r[3])    # payout from orders (for profit calc)
                 products_map[oid]["payout_prev"] = float(r[5])      # prev period payout
-                # Avg price = buyer revenue / orders (real price after Ozon discounts)
-                buyer_rev = float(r[6]) if r[6] else 0
-                if r[1] > 0 and buyer_rev > 0:
-                    products_map[oid]["avg_price"] = round(buyer_rev / r[1], 2)
-                elif r[1] > 0:
-                    products_map[oid]["avg_price"] = round(float(r[2]) / r[1], 2)
+                # avg_price = payout per unit (real money received per piece)
+                # NOTE: Ozon removed buyer price from Seller API (Nov 2025)
+                # price in orders = seller price, NOT buyer price
+                if r[1] > 0 and float(r[3]) > 0:
+                    products_map[oid]["avg_price"] = round(float(r[3]) / r[1], 2)
                 prev_orders = r[4]
                 products_map[oid]["orders_prev_7d"] = prev_orders
                 if prev_orders > 0:

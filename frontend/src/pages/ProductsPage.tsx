@@ -709,10 +709,10 @@ export default function ProductsPage() {
                 </th>
                 <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <div className="flex items-center justify-end gap-1">
-                    <span>Ср. цена</span>
+                    <span>Ср. выпл.</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Средняя цена, по которой покупатель оплатил товар (после всех скидок площадки)</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Средняя выплата за 1 единицу товара. Уже за вычетом комиссии, логистики и других удержаний маркетплейса</span>
                     </span>
                   </div>
                 </th>
@@ -916,7 +916,7 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 5b. СР. ЦЕНА ПОКУПАТЕЛЯ ── */}
+                    {/* ── 5b. СР. ВЫПЛАТА ЗА ЕДИНИЦУ ── */}
                     <td className="px-2 py-2.5 text-right">
                       {p.orders_7d > 0 && (p.avg_price > 0 || p.revenue_7d > 0) ? (
                         <p className="text-[13px] font-medium tabular-nums text-[hsl(var(--foreground)/0.7)]">
