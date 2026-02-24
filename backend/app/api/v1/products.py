@@ -472,32 +472,11 @@ async def get_ozon_products(
             p["margin"] = round(cost, 2)
             p["margin_percent"] = round(cost / p["price"] * 100, 1)
 
-        # Gross profit = txn_payout (net after ALL Ozon deductions) - COGS - ad_spend
+        # ── Marketplace fees (compute FIRST, needed for profit) ──
         txn_payout = p.get("txn_payout", 0)
         txn_payout_prev = p.get("txn_payout_prev", 0)
-        if cost > 0 and p["orders_7d"] > 0:
-            cogs = cost * p["orders_7d"]
-            gp = txn_payout - cogs - p["ad_spend_7d"]
-            p["gross_profit"] = round(gp, 2)
-            if p["revenue_7d"] > 0:
-                p["gross_profit_percent"] = round(gp / p["revenue_7d"] * 100, 1)
-            # Prev-period gross profit for delta
-            if txn_payout_prev != 0 and p.get("orders_prev_7d", 0) > 0:
-                cogs_prev = cost * p["orders_prev_7d"]
-                gp_prev = txn_payout_prev - cogs_prev - p.get("ad_spend_prev", 0)
-                p["gross_profit_prev"] = round(gp_prev, 2)
-                if gp_prev != 0:
-                    p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
-                elif gp > 0:
-                    p["gross_profit_delta"] = 100.0
-
-        # Marketplace fees = revenue_7d (price×qty) - txn_payout (net received)
-        # This is EVERYTHING Ozon took: discounts + commission + logistics + storage + acquiring
         if p["revenue_7d"] > 0 or txn_payout != 0:
             total_fees = p["revenue_7d"] - txn_payout
-            # Breakdown:
-            #   commission_part = revenue - orders.payout (discounts + commission + acquiring)
-            #   logistics_part  = orders.payout - txn_payout (logistics + storage + returns)
             commission_part = p["revenue_7d"] - p["payout_period"]
             logistics_part = p["payout_period"] - txn_payout
             p["mp_fees"] = round(total_fees, 2)
@@ -508,7 +487,30 @@ async def get_ozon_products(
             else:
                 p["mp_fees_percent"] = 0.0
 
-        # sales_amount = avg_price × orders (real buyer total)
+        # ── Gross profit = revenue - COGS - mp_fees - ad_spend ──
+        # NOTE: previously used txn_payout - COGS - ad, but txn_payout is NOT tied
+        # to order period (includes settlements for past orders, refunds, etc.)
+        if cost > 0 and p["orders_7d"] > 0:
+            cogs = cost * p["orders_7d"]
+            mp_fees_val = p.get("mp_fees", 0)
+            gp = p["revenue_7d"] - cogs - mp_fees_val - p["ad_spend_7d"]
+            p["gross_profit"] = round(gp, 2)
+            if p["revenue_7d"] > 0:
+                p["gross_profit_percent"] = round(gp / p["revenue_7d"] * 100, 1)
+            # Prev-period gross profit for delta
+            if p.get("orders_prev_7d", 0) > 0:
+                cogs_prev = cost * p["orders_prev_7d"]
+                rev_prev = p.get("revenue_prev", 0)
+                mp_pct = p.get("mp_fees_percent", 0) / 100
+                mp_fees_prev = rev_prev * mp_pct
+                gp_prev = rev_prev - cogs_prev - mp_fees_prev - p.get("ad_spend_prev", 0)
+                p["gross_profit_prev"] = round(gp_prev, 2)
+                if gp_prev != 0:
+                    p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
+                elif gp > 0:
+                    p["gross_profit_delta"] = 100.0
+
+        # sales_amount = avg_price × orders (payout-based total)
         if p["avg_price"] > 0 and p["orders_7d"] > 0:
             p["sales_amount"] = round(p["avg_price"] * p["orders_7d"], 2)
 
@@ -573,6 +575,7 @@ async def get_ozon_products(
     t_stocks = 0
     t_orders = 0
     t_revenue = 0.0
+    t_payout = 0.0
     t_ad_spend = 0.0
     t_mp_fees = 0.0
     t_mp_fees_commission = 0.0
@@ -585,6 +588,7 @@ async def get_ozon_products(
         t_stocks += p["stocks_fbo"] + p["stocks_fbs"]
         t_orders += p["orders_7d"]
         t_revenue += p["revenue_7d"]
+        t_payout += p.get("payout_period", 0)
         t_ad_spend += p["ad_spend_7d"]
         t_mp_fees += p["mp_fees"]
         t_mp_fees_commission += p.get("mp_fees_commission", 0)
@@ -600,6 +604,8 @@ async def get_ozon_products(
         "stocks": t_stocks,
         "orders": t_orders,
         "revenue": round(t_revenue, 2),
+        "payout": round(t_payout, 2),
+        "avg_price": round(t_payout / t_orders, 2) if t_orders > 0 and t_payout > 0 else 0,
         "ad_spend": round(t_ad_spend, 2),
         "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
         "returns_pct": round(t_returns / t_orders_30d * 100, 1) if t_orders_30d > 0 else 0,
