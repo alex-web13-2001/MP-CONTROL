@@ -314,6 +314,9 @@ async def get_wb_products(
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
         mp_fees_percent = round(mp_fees / payout * 100, 1) if payout > 0 else 0.0
 
+        current_price = info.get("current_price", 0.0)
+        sales_amount = round(current_price * orders_7d, 2)  # Продажи по цене из админки
+
         # ── DRR ───────────────────────────────────────────
         drr = round(ad_spend_7d / sales_amount * 100, 1) if sales_amount > 0 else 0.0
 
@@ -333,9 +336,6 @@ async def get_wb_products(
             gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
             if payout > 0:
                 margin = round(gross_profit / payout * 100, 1)
-
-        current_price = info.get("current_price", 0.0)
-        sales_amount = round(current_price * orders_7d, 2)  # Продажи по цене из админки
 
         p = {
             "nm_id": nm_id,
