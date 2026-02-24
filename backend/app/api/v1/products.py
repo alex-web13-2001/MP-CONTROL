@@ -425,10 +425,32 @@ async def get_ozon_products(
         logger.warning("CH price changes query failed: %s", e)
 
     # ────────────────────────────────────────────────────
-    # 10. Payout now comes from orders (step 2), not transactions.
-    #     Transactions query removed — payout from orders.payout
-    #     is more accurate (tied to order_date, not operation_date).
+    # 10. Net payout from fact_ozon_transactions (current + prev period)
+    #     This is the ACTUAL money received after ALL deductions
+    #     (commission, logistics, storage, acquiring, returns).
     # ────────────────────────────────────────────────────
+    try:
+        txn_result = ch.query("""
+            SELECT sku,
+                   sum(CASE WHEN operation_date >= {d_start:Date} AND operation_date <= {d_end:Date} THEN amount ELSE 0 END) AS txn_cur,
+                   sum(CASE WHEN operation_date >= {d_prev_start:Date} AND operation_date <= {d_prev_end:Date} THEN amount ELSE 0 END) AS txn_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND operation_date >= {d_prev_start:Date}
+              AND operation_date <= {d_end:Date}
+              AND sku > 0
+            GROUP BY sku
+        """, parameters={
+            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        for r in txn_result.result_rows:
+            oid = sku_to_offer.get(r[0])
+            if oid and oid in products_map:
+                products_map[oid]["txn_payout"] = float(r[1])
+                products_map[oid]["txn_payout_prev"] = float(r[2])
+    except Exception as e:
+        logger.warning("CH transactions query failed: %s", e)
 
     # ────────────────────────────────────────────────────
     # Calculate margin & gross profit
@@ -442,32 +464,33 @@ async def get_ozon_products(
             p["margin"] = round(margin, 2)
             p["margin_percent"] = round(margin / p["price"] * 100, 1)
 
-        # Gross profit = payout(from orders) - COGS - ad_spend
-        # payout_period is sum(payout) from fact_ozon_orders — real revenue after all deductions
+        # Gross profit = txn_payout (net after ALL Ozon deductions) - COGS - ad_spend
+        txn_payout = p.get("txn_payout", 0)
+        txn_payout_prev = p.get("txn_payout_prev", 0)
         if cost > 0 and p["orders_7d"] > 0:
             cogs = cost * p["orders_7d"]
-            gp = p["payout_period"] - cogs - p["ad_spend_7d"]
+            gp = txn_payout - cogs - p["ad_spend_7d"]
             p["gross_profit"] = round(gp, 2)
             if p["revenue_7d"] > 0:
                 p["gross_profit_percent"] = round(gp / p["revenue_7d"] * 100, 1)
             # Prev-period gross profit for delta
-            if p["payout_prev"] != 0 and p.get("orders_prev_7d", 0) > 0:
+            if txn_payout_prev != 0 and p.get("orders_prev_7d", 0) > 0:
                 cogs_prev = cost * p["orders_prev_7d"]
-                gp_prev = p["payout_prev"] - cogs_prev - p.get("ad_spend_prev", 0)
+                gp_prev = txn_payout_prev - cogs_prev - p.get("ad_spend_prev", 0)
                 p["gross_profit_prev"] = round(gp_prev, 2)
                 if gp_prev != 0:
                     p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
                 elif gp > 0:
                     p["gross_profit_delta"] = 100.0
 
-        # Marketplace fees = list_price_revenue - payout
-        # revenue_list is price*qty (before discounts), payout is real money received
-        revenue_list = p.get("revenue_list", 0)
-        if revenue_list > 0 or p["payout_period"] != 0:
-            fees = revenue_list - p["payout_period"]
+        # Marketplace fees = orders.payout - txn_payout
+        # Shows: logistics, storage, return handling, acquiring, etc.
+        # (everything Ozon deducts AFTER commission)
+        if p["payout_period"] != 0 or txn_payout != 0:
+            fees = p["payout_period"] - txn_payout
             p["mp_fees"] = round(fees, 2)
-            if revenue_list > 0:
-                p["mp_fees_percent"] = round(fees / revenue_list * 100, 1)
+            if p["revenue_7d"] > 0:
+                p["mp_fees_percent"] = round(fees / p["revenue_7d"] * 100, 1)
             else:
                 p["mp_fees_percent"] = 0.0
 
