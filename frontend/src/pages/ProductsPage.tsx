@@ -124,6 +124,9 @@ function wbToOzon(p: WBProduct): OzonProduct {
     mp_fees_percent: p.mp_fees_percent ?? 0,
     mp_fees_commission: p.mp_fees_commission ?? 0,
     mp_fees_logistics: p.mp_fees_logistics ?? 0,
+    mp_fees_storage: p.mp_fees_storage ?? 0,
+    mp_fees_other: p.mp_fees_other ?? 0,
+    sales_amount: p.sales_amount ?? 0,
     period: 7,
     events: [] as ProductEvent[],
     promotions: [] as string[],
@@ -399,6 +402,9 @@ export default function ProductsPage() {
       date_from: `${periodValue.dateRange.from.getFullYear()}-${String(periodValue.dateRange.from.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.from.getDate()).padStart(2, '0')}`,
       date_to: `${periodValue.dateRange.to.getFullYear()}-${String(periodValue.dateRange.to.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.to.getDate()).padStart(2, '0')}`,
     } : {}
+    setProducts([])
+    setTotal(0)
+    setApiTotals(null)
     try {
       if (isWB) {
         const data = await getWBProductsApi({
@@ -958,21 +964,34 @@ export default function ProductsPage() {
                           )}>{p.mp_fees_percent}%</p>
                           {/* Тултип */}
                           <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
-                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[200px] text-left">
-                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания</p>
+                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[260px] text-left">
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания WB</p>
                               <div className="space-y-1.5">
-                                <div className="flex justify-between gap-4">
-                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Комиссия</span>
-                                  <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(p.mp_fees_commission)}</span>
-                                </div>
-                                <div className="flex justify-between gap-4">
-                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Логистика + прочее</span>
-                                  <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(p.mp_fees_logistics)}</span>
-                                </div>
+                                {[
+                                  { label: 'Комиссия', val: p.mp_fees_commission },
+                                  { label: 'Логистика', val: p.mp_fees_logistics ?? 0 },
+                                  { label: 'Хранение', val: p.mp_fees_storage ?? 0 },
+                                  { label: 'Прочее', val: p.mp_fees_other ?? 0 },
+                                ].filter(r => r.val !== 0).map(r => (
+                                  <div key={r.label} className="flex justify-between gap-4">
+                                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{r.label}</span>
+                                    <div className="flex items-baseline gap-2">
+                                      <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(r.val)}</span>
+                                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums w-[32px] text-right">
+                                        {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(r.val / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
                                 <div className="border-t border-[hsl(var(--border)/0.5)] my-1" />
                                 <div className="flex justify-between gap-4">
                                   <span className="text-[11px] font-bold">Итого</span>
-                                  <span className="text-[12px] font-bold tabular-nums">{fmtMoney(p.mp_fees)}</span>
+                                  <div className="flex items-baseline gap-2">
+                                    <span className="text-[12px] font-bold tabular-nums">{fmtMoney(p.mp_fees)}</span>
+                                    <span className="text-[10px] font-bold tabular-nums w-[32px] text-right">
+                                      {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(p.mp_fees / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                    </span>
+                                  </div>
                                 </div>
                               </div>
                             </div>

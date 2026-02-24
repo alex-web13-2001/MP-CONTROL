@@ -57,6 +57,9 @@ export interface OzonProduct {
   mp_fees_percent: number
   mp_fees_commission: number
   mp_fees_logistics: number
+  mp_fees_storage: number
+  mp_fees_other: number
+  sales_amount: number
   period: number
   events: ProductEvent[]
   promotions: string[]

@@ -31,7 +31,10 @@ export interface WBProduct {
   mp_fees_percent: number
   mp_fees_commission: number
   mp_fees_logistics: number
+  mp_fees_storage: number
+  mp_fees_other: number
   payout: number
+  sales_amount: number
   // Profit
   gross_profit: number | null
   margin: number | null
