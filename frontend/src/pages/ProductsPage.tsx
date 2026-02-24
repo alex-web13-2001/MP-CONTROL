@@ -641,58 +641,47 @@ export default function ProductsPage() {
          ═══════════════════════════════════════════════════ */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-240px)]">
-          <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
+          <table className="w-full min-w-[940px]" style={{ borderCollapse: 'collapse' }}>
             <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
               <tr className="bg-[hsl(var(--card))]">
-                <th className="sticky left-0 z-40 w-[340px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   Товар
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
                     Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[55px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('stocks')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'stocks' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Остатки {sort === 'stocks' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    Ост. {sort === 'stocks' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[95px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('revenue_7d')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'revenue_7d' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
                     Продажи {sort === 'revenue_7d' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  К перечислению
+                <th className="w-[95px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  Выплата
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  Ср. цена
-                </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Себестоимость {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    С/с {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('drr')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'drr' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
                     Реклама {sort === 'drr' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('returns')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'returns' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Возвр. {sort === 'returns' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
-                </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   Услуги МП
                 </th>
-                <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="w-[85px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Чистая прибыль {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    Прибыль {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
                   </button>
-                </th>
-                <th className="px-3 py-3 text-center text-[13px] font-medium text-[hsl(var(--muted-foreground))] w-[100px]">
-                  События
                 </th>
               </tr>
 
@@ -701,62 +690,41 @@ export default function ProductsPage() {
                 const t = apiTotals
                 return (
                   <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
-                    {/* Товар */}
-                    <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {t.count} товаров</span>
+                    <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2">
+                      <span className="text-[12px] font-bold text-[hsl(var(--foreground)/0.6)]">Σ {t.count} товаров</span>
                     </td>
-                    {/* Цена */}
-                    <td className="px-3 py-2.5" />
-                    {/* Остатки */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stocks)}</p>
+                    <td className="px-2 py-2" />
+                    <td className="px-2 py-2 text-right">
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtNum(t.stocks)}</p>
                     </td>
-                    {/* Продажи (цена из админки × шт) */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.sales ?? t.revenue)}</p>
-                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{fmtNum(t.orders)} шт</p>
+                    <td className="px-2 py-2 text-right">
+                      <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.sales ?? t.revenue)}</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{fmtNum(t.orders)} шт</p>
                     </td>
-                    {/* К перечислению */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className="text-[14px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(t.payout ?? 0)}</p>
+                    <td className="px-2 py-2 text-right">
+                      <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.payout ?? 0)}</p>
                     </td>
-                    {/* Ср. цена */}
-                    <td className="px-3 py-2.5" />
-                    {/* Себестоимость */}
-                    <td className="px-3 py-2.5" />
-                    {/* Реклама */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.ad_spend)}</p>
-                      {t.drr > 0 && (
-                        <p className={cn('text-[11px] font-bold mt-0.5', t.drr > 20 ? 'text-red-400' : t.drr > 10 ? 'text-amber-400' : 'text-emerald-400')}>
-                          ДРР {t.drr}%
-                        </p>
-                      )}
+                    <td className="px-2 py-2" />
+                    <td className="px-2 py-2 text-right">
+                      <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.ad_spend)}</p>
+                      {t.drr > 0 && <p className={cn('text-[11px] font-semibold', t.drr > 20 ? 'text-red-400' : t.drr > 10 ? 'text-amber-400' : 'text-emerald-400')}>ДРР {t.drr}%</p>}
                     </td>
-                    {/* Возвраты */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className={cn('text-[13px] font-bold', t.returns_pct > 10 ? 'text-red-400' : t.returns_pct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.7)]')}>{t.returns_pct}%</p>
+                    <td className="px-2 py-2 text-right">
+                      <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.mp_fees)}</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{t.mp_fees_pct}%</p>
                     </td>
-                    {/* Услуги МП */}
-                    <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.mp_fees)}</p>
-                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{t.mp_fees_pct}%</p>
-                    </td>
-                    {/* Чистая прибыль */}
-                    <td className="px-3 py-2.5 text-right">
+                    <td className="px-2 py-2 text-right">
                       {t.profit_count > 0 ? (
                         <>
-                          <p className={cn('text-[14px] font-bold tabular-nums', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                          <p className={cn('text-[13px] font-bold tabular-nums', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>
                             {t.profit > 0 ? '+' : ''}{fmtMoney(t.profit)}
                           </p>
-                          <p className={cn('text-[11px] font-bold mt-0.5', t.profit_pct > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                          <p className={cn('text-[11px] font-semibold', t.profit_pct > 0 ? 'text-emerald-400' : 'text-red-400')}>
                             {t.profit_pct > 0 ? '+' : ''}{t.profit_pct}%
                           </p>
                         </>
                       ) : <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>}
                     </td>
-                    {/* События */}
-                    <td className="px-3 py-2.5" />
                   </tr>
                 )
               })()}
@@ -765,12 +733,12 @@ export default function ProductsPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-[hsl(var(--border)/0.2)]">
-                    <td colSpan={11} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
+                    <td colSpan={9} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
                   </tr>
                 ))
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-16 text-center">
+                  <td colSpan={9} className="px-4 py-16 text-center">
                     <Package className="mx-auto mb-3 h-10 w-10 text-[hsl(var(--muted-foreground)/0.15)]" />
                     <p className="text-[hsl(var(--muted-foreground))]">Товары не найдены</p>
                     {search && <p className="mt-1 text-sm text-[hsl(var(--muted-foreground)/0.5)]">Попробуйте другой запрос</p>}
@@ -778,11 +746,6 @@ export default function ProductsPage() {
                 </tr>
               ) : products.map((p) => {
                 const totalStock = p.stocks_fbo + p.stocks_fbs
-                const discount = p.old_price > 0 && p.old_price > p.price
-                  ? Math.round((1 - p.price / p.old_price) * 100)
-                  : 0
-                // Correct return rate: 30d returns / 30d orders
-                const returnPct = p.orders_30d > 0 ? Math.round(p.returns_30d / p.orders_30d * 100) : 0
 
                 return (
                   <tr key={p.offer_id} className="border-b border-[hsl(var(--border)/0.15)] hover:bg-white/[0.025] group transition-colors">
@@ -832,166 +795,130 @@ export default function ProductsPage() {
                     </td>
 
                     {/* ── 2. ЦЕНА ── */}
-                    <td className="px-3 py-3.5 text-right">
-                      <div>
-                        {p.old_price > 0 && p.old_price !== p.price && (
-                          <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] line-through tabular-nums">{fmtMoney(p.old_price)}</p>
-                        )}
-                        <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
-                        {discount > 0 && (
-                          <span className="inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight bg-emerald-500/12 text-emerald-400">
-                            -{discount}%
-                          </span>
-                        )}
-                      </div>
+                    <td className="px-2 py-2.5 text-right">
+                      <p className="text-[13px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
                     </td>
 
-                    {/* ── 3. ОСТАТКИ: FBO и FBS отдельными строками с подписями ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 3. ОСТАТКИ (одно число, FBO/FBS → тултип) ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {totalStock === 0 ? (
-                        <span className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-semibold bg-red-500/12 text-red-400 border border-red-500/15">
-                          Нет остатков
-                        </span>
+                        <span className="text-[11px] font-semibold text-red-400">0</span>
                       ) : (
-                        <div className="flex flex-col items-end gap-1">
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">FBO</span>
-                            <span className={cn(
-                              'text-[15px] font-bold tabular-nums',
-                              p.stocks_fbo === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground))]'
-                            )}>{fmtNum(p.stocks_fbo)}</span>
-                          </div>
-                          <div className="flex items-baseline gap-1.5">
-                            <span className="text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">FBS</span>
-                            <span className={cn(
-                              'text-[13px] font-semibold tabular-nums',
-                              p.stocks_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.35)]' : 'text-[hsl(var(--foreground)/0.8)]'
-                            )}>{fmtNum(p.stocks_fbs)}</span>
+                        <div className="relative group/stock cursor-default">
+                          <span className={cn(
+                            'text-[14px] font-bold tabular-nums',
+                            totalStock < 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground))]'
+                          )}>{fmtNum(totalStock)}</span>
+                          <div className="absolute right-0 bottom-full mb-1.5 z-50 hidden group-hover/stock:block">
+                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-3 py-2 min-w-[100px] text-right whitespace-nowrap">
+                              <div className="flex justify-between gap-3">
+                                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">FBO</span>
+                                <span className="text-[12px] font-semibold tabular-nums">{fmtNum(p.stocks_fbo)}</span>
+                              </div>
+                              <div className="flex justify-between gap-3 mt-1">
+                                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">FBS</span>
+                                <span className="text-[12px] font-semibold tabular-nums">{fmtNum(p.stocks_fbs)}</span>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       )}
                     </td>
 
-                    {/* ── 4. ПРОДАЖИ (цена из админки × шт, дельта) ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 4. ПРОДАЖИ (цена × шт + qty) ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {p.orders_7d > 0 ? (
                         <div>
-                          <p className="text-[16px] font-bold tabular-nums">{fmtMoney((p.marketing_price || p.price) * p.orders_7d)}</p>
-                          <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums mt-0.5">{p.orders_7d} шт</p>
-                          {p.revenue_delta !== 0 && <DeltaBadge value={p.revenue_delta} />}
+                          <p className="text-[14px] font-bold tabular-nums">{fmtMoney((p.marketing_price || p.price) * p.orders_7d)}</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
+                            {p.orders_7d} шт{p.revenue_delta !== 0 && <span className={cn('ml-1 font-semibold', p.revenue_delta > 0 ? 'text-emerald-400' : 'text-red-400')}>{p.revenue_delta > 0 ? '+' : ''}{p.revenue_delta}%</span>}
+                          </p>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* ── 4b. К ПЕРЕЧИСЛЕНИЮ (ppvz_for_pay) ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 5. ВЫПЛАТА (ppvz_for_pay + ср. цена покупателя) ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {p.payout_period > 0 ? (
-                        <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.payout_period)}</p>
+                        <div>
+                          <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.payout_period)}</p>
+                          {p.orders_7d > 0 && p.revenue_7d > 0 && (
+                            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
+                              ср. {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
+                            </p>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* ── 4c. СР. ЦЕНА ПОКУПАТЕЛЯ (retail_amount / qty) ── */}
-                    <td className="px-3 py-3.5 text-right">
-                      {p.orders_7d > 0 && p.revenue_7d > 0 ? (
-                        <p className="text-[13px] font-medium tabular-nums text-[hsl(var(--foreground)/0.7)]">
-                          {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
-                        </p>
-                      ) : (
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
-                      )}
-                    </td>
-
-                    {/* ── 5. С/с И МАРЖА ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 6. С/с + margin% ── */}
+                    <td className="px-2 py-2.5 text-right">
                       <CostEdit
                         product={p}
                         shopId={shopId!}
                         onSaved={isWB ? handleWBCostSaved : handleCostSaved}
                       />
-                      {p.margin !== null && p.margin_percent !== null && (
-                        <div className="mt-1">
-                          <span className={cn(
-                            'inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold',
-                            p.margin_percent > 15 ? 'bg-emerald-500/12 text-emerald-400'
-                              : p.margin_percent > 5 ? 'bg-amber-500/12 text-amber-400'
-                              : 'bg-red-500/12 text-red-400',
-                          )}>
-                            {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}%
-                          </span>
-                        </div>
+                      {p.margin_percent !== null && p.cost_price > 0 && (
+                        <p className={cn(
+                          'text-[11px] font-semibold',
+                          p.margin_percent > 15 ? 'text-emerald-400'
+                            : p.margin_percent > 5 ? 'text-amber-400'
+                            : 'text-red-400',
+                        )}>
+                          {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}%
+                        </p>
                       )}
                     </td>
 
-                    {/* ── 6. РЕКЛАМА (расход + DRR крупным badge) ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 7. РЕКЛАМА (расход + DRR текстом) ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {p.ad_spend_7d > 0 ? (
-                        <div className="flex flex-col items-end gap-1.5">
-                          <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
-                          <span className={cn(
-                            'inline-flex items-center rounded-md px-2 py-0.5 text-[12px] font-bold',
-                            p.drr > 20 ? 'bg-red-500/15 text-red-400 border border-red-500/20'
-                              : p.drr > 10 ? 'bg-amber-500/15 text-amber-400 border border-amber-500/20'
-                              : 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/20',
+                        <div>
+                          <p className="text-[13px] font-semibold tabular-nums">{fmtMoney(p.ad_spend_7d)}</p>
+                          <p className={cn(
+                            'text-[11px] font-semibold',
+                            p.drr > 20 ? 'text-red-400'
+                              : p.drr > 10 ? 'text-amber-400'
+                              : 'text-emerald-400',
                           )}>
                             ДРР {p.drr}%
-                          </span>
+                          </p>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* ── 7. ВОЗВРАТЫ % (30д returns / 30д orders) ── */}
-                    <td className="px-3 py-3.5 text-right">
-                      {p.returns_30d > 0 ? (
-                        <div>
-                          <span className={cn(
-                            'text-[15px] font-bold tabular-nums',
-                            returnPct > 10 ? 'text-red-400' : returnPct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.8)]',
-                          )}>
-                            {returnPct}%
-                          </span>
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.45)] tabular-nums mt-0.5">{p.returns_30d} шт</p>
-                        </div>
-                      ) : (
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
-                      )}
-                    </td>
-
-                    {/* ── 8. УСЛУГИ МП (с тултипом детализации) ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 8. УСЛУГИ МП (с тултипом) ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
                         <div className="relative group/fees cursor-default">
-                          <p className="text-[14px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">
-                            {fmtMoney(p.mp_fees)}
-                          </p>
-                          <span className={cn(
-                            "inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold mt-1",
-                            p.mp_fees_percent > 35 ? "bg-orange-500/12 text-orange-400" : "bg-slate-500/12 text-[hsl(var(--muted-foreground)/0.7)]"
-                          )}>
-                            {p.mp_fees_percent}%
-                          </span>
+                          <p className="text-[13px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">{fmtMoney(p.mp_fees)}</p>
+                          <p className={cn(
+                            'text-[11px] font-semibold',
+                            p.mp_fees_percent > 35 ? 'text-orange-400' : 'text-[hsl(var(--muted-foreground)/0.5)]'
+                          )}>{p.mp_fees_percent}%</p>
                           {/* Тултип */}
                           <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
-                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[220px] text-left">
-                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания Ozon</p>
+                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[200px] text-left">
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания</p>
                               <div className="space-y-1.5">
                                 <div className="flex justify-between gap-4">
-                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]" title="Скидки площадки + комиссия + эквайринг">Скидки + комиссия</span>
-                                  <span className="text-[12px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">{fmtMoney(p.mp_fees_commission)}</span>
+                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Комиссия</span>
+                                  <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(p.mp_fees_commission)}</span>
                                 </div>
                                 <div className="flex justify-between gap-4">
-                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]" title="Логистика + хранение + обработка возвратов">Логистика + прочее</span>
-                                  <span className="text-[12px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">{fmtMoney(p.mp_fees_logistics)}</span>
+                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Логистика + прочее</span>
+                                  <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(p.mp_fees_logistics)}</span>
                                 </div>
                                 <div className="border-t border-[hsl(var(--border)/0.5)] my-1" />
                                 <div className="flex justify-between gap-4">
-                                  <span className="text-[11px] font-bold text-[hsl(var(--foreground)/0.7)]">Итого</span>
-                                  <span className="text-[12px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(p.mp_fees)}</span>
+                                  <span className="text-[11px] font-bold">Итого</span>
+                                  <span className="text-[12px] font-bold tabular-nums">{fmtMoney(p.mp_fees)}</span>
                                 </div>
                               </div>
                             </div>
@@ -1002,43 +929,32 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 9. ЧИСТАЯ ПРИБЫЛЬ (крупно, + процент) ── */}
-                    <td className="px-3 py-3.5 text-right">
+                    {/* ── 9. ПРИБЫЛЬ ── */}
+                    <td className="px-2 py-2.5 text-right">
                       {p.cost_price === 0 ? (
-                        <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.3)]">—</span>
                       ) : p.gross_profit !== null ? (
                         <div>
                           <p className={cn(
-                            'text-[16px] font-bold tabular-nums',
+                            'text-[14px] font-bold tabular-nums',
                             p.gross_profit > 0 ? 'text-emerald-400' : 'text-red-400',
                           )}>
                             {p.gross_profit > 0 ? '+' : ''}{fmtMoney(p.gross_profit)}
                           </p>
                           {p.gross_profit_percent !== null && (
-                            <span className={cn(
-                              'inline-flex items-center rounded-md px-1.5 py-0.5 text-[12px] font-bold mt-1',
-                              p.gross_profit_percent > 15 ? 'bg-emerald-500/12 text-emerald-400'
-                                : p.gross_profit_percent > 0 ? 'bg-amber-500/12 text-amber-400'
-                                : 'bg-red-500/12 text-red-400',
+                            <p className={cn(
+                              'text-[11px] font-semibold',
+                              p.gross_profit_percent > 15 ? 'text-emerald-400'
+                                : p.gross_profit_percent > 0 ? 'text-amber-400'
+                                : 'text-red-400',
                             )}>
                               {p.gross_profit_percent > 0 ? '+' : ''}{p.gross_profit_percent}%
-                            </span>
+                            </p>
                           )}
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
-                    </td>
-
-                    {/* ── 10. СОБЫТИЯ ── */}
-                    <td className="px-3 py-3.5">
-                      <div className="flex items-center justify-center gap-0 flex-wrap">
-                        {p.promotions.map((pt: string, i: number) => <PromoBadge key={`promo-${i}`} type={pt} />)}
-                        {p.events.slice(0, 4).map((ev: ProductEvent, i: number) => <EvBadge key={`ev-${i}`} event={ev} />)}
-                        {p.events.length === 0 && p.promotions.length === 0 && (
-                          <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.2)]">—</span>
-                        )}
-                      </div>
                     </td>
                   </tr>
                 )
