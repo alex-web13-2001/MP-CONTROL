@@ -122,6 +122,8 @@ function wbToOzon(p: WBProduct): OzonProduct {
     gross_profit_delta: null,
     mp_fees: p.mp_fees ?? 0,
     mp_fees_percent: p.mp_fees_percent ?? 0,
+    mp_fees_commission: p.mp_fees_commission ?? 0,
+    mp_fees_logistics: p.mp_fees_logistics ?? 0,
     period: 7,
     events: [] as ProductEvent[],
     promotions: [] as string[],
@@ -918,10 +920,10 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 8. УСЛУГИ МП (с % от выручки для контекста) ── */}
+                    {/* ── 8. УСЛУГИ МП (с тултипом детализации) ── */}
                     <td className="px-3 py-3.5 text-right">
                       {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
-                        <div>
+                        <div className="relative group/fees cursor-default">
                           <p className="text-[14px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">
                             {fmtMoney(p.mp_fees)}
                           </p>
@@ -931,6 +933,27 @@ export default function ProductsPage() {
                           )}>
                             {p.mp_fees_percent}%
                           </span>
+                          {/* Тултип */}
+                          <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
+                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[220px] text-left">
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания Ozon</p>
+                              <div className="space-y-1.5">
+                                <div className="flex justify-between gap-4">
+                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]" title="Скидки площадки + комиссия + эквайринг">Скидки + комиссия</span>
+                                  <span className="text-[12px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">{fmtMoney(p.mp_fees_commission)}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                  <span className="text-[11px] text-[hsl(var(--muted-foreground))]" title="Логистика + хранение + обработка возвратов">Логистика + прочее</span>
+                                  <span className="text-[12px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.8)]">{fmtMoney(p.mp_fees_logistics)}</span>
+                                </div>
+                                <div className="border-t border-[hsl(var(--border)/0.5)] my-1" />
+                                <div className="flex justify-between gap-4">
+                                  <span className="text-[11px] font-bold text-[hsl(var(--foreground)/0.7)]">Итого</span>
+                                  <span className="text-[12px] font-bold tabular-nums text-[hsl(var(--foreground))]">{fmtMoney(p.mp_fees)}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>

@@ -482,14 +482,20 @@ async def get_ozon_products(
                 elif gp > 0:
                     p["gross_profit_delta"] = 100.0
 
-        # Marketplace fees = orders.payout - txn_payout
-        # Shows: logistics, storage, return handling, acquiring, etc.
-        # (everything Ozon deducts AFTER commission)
-        if p["payout_period"] != 0 or txn_payout != 0:
-            fees = p["payout_period"] - txn_payout
-            p["mp_fees"] = round(fees, 2)
+        # Marketplace fees = revenue_7d (price×qty) - txn_payout (net received)
+        # This is EVERYTHING Ozon took: discounts + commission + logistics + storage + acquiring
+        if p["revenue_7d"] > 0 or txn_payout != 0:
+            total_fees = p["revenue_7d"] - txn_payout
+            # Breakdown:
+            #   commission_part = revenue - orders.payout (discounts + commission + acquiring)
+            #   logistics_part  = orders.payout - txn_payout (logistics + storage + returns)
+            commission_part = p["revenue_7d"] - p["payout_period"]
+            logistics_part = p["payout_period"] - txn_payout
+            p["mp_fees"] = round(total_fees, 2)
+            p["mp_fees_commission"] = round(commission_part, 2)
+            p["mp_fees_logistics"] = round(logistics_part, 2)
             if p["revenue_7d"] > 0:
-                p["mp_fees_percent"] = round(fees / p["revenue_7d"] * 100, 1)
+                p["mp_fees_percent"] = round(total_fees / p["revenue_7d"] * 100, 1)
             else:
                 p["mp_fees_percent"] = 0.0
 
