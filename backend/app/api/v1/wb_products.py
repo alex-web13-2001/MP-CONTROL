@@ -170,7 +170,7 @@ async def get_wb_products(
     try:
         fees_result = ch.query("""
             SELECT
-                lower(vendor_code)                          AS vc,
+                toUInt64(external_id)                        AS nm_id,
                 -- Revenue & payout (current period)
                 sum(retail_amount)                          AS fin_revenue,
                 sum(wb_ppvz_for_pay)                        AS payout,
@@ -188,7 +188,7 @@ async def get_wb_products(
               AND marketplace = 1
               AND event_date >= {d_start:Date}
               AND event_date <= {d_end:Date}
-            GROUP BY vc
+            GROUP BY nm_id
             HAVING fin_revenue > 0 OR commission > 0 OR logistics > 0
         """, parameters={
             "shop_id": shop_id,
@@ -197,8 +197,8 @@ async def get_wb_products(
         })
         fees_map = {}
         for r in fees_result.result_rows:
-            vc = str(r[0]).lower()
-            fees_map[vc] = {
+            nm = int(r[0])
+            fees_map[nm] = {
                 "fin_revenue": float(r[1]),
                 "payout": float(r[2]),
                 "qty": int(r[3]),
@@ -218,14 +218,14 @@ async def get_wb_products(
     try:
         prev_result = ch.query("""
             SELECT
-                lower(vendor_code) AS vc,
+                toUInt64(external_id) AS nm_id,
                 sum(retail_amount) AS fin_revenue_prev
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
               AND event_date >= {d_prev_start:Date}
               AND event_date <= {d_prev_end:Date}
-            GROUP BY vc
+            GROUP BY nm_id
             HAVING fin_revenue_prev > 0
         """, parameters={
             "shop_id": shop_id,
@@ -233,11 +233,11 @@ async def get_wb_products(
             "d_prev_end": d_prev_end,
         })
         for r in prev_result.result_rows:
-            vc = str(r[0]).lower()
-            if vc in fees_map:
-                fees_map[vc]["fin_revenue_prev"] = float(r[1])
+            nm = int(r[0])
+            if nm in fees_map:
+                fees_map[nm]["fin_revenue_prev"] = float(r[1])
             else:
-                fees_map[vc] = {"fin_revenue_prev": float(r[1])}
+                fees_map[nm] = {"fin_revenue_prev": float(r[1])}
     except Exception as e:
         logger.warning("CH prev period query failed: %s", e)
 
@@ -262,7 +262,7 @@ async def get_wb_products(
     )
 
     # ── 5. Merge all data ────────────────────────────────────
-    all_nm_ids = set(orders_map.keys()) | set(ads_map.keys())
+    all_nm_ids = set(orders_map.keys()) | set(ads_map.keys()) | set(fees_map.keys())
     # Add catalog products even if no orders in period
     pg_rows = pg_result.fetchall()
     pg_map = {}
@@ -292,7 +292,7 @@ async def get_wb_products(
         packaging_cost = info.get("packaging_cost", 0.0)
 
         # ── WB Finance data (единый источник P&L) ────────
-        fees = fees_map.get(vendor_code.lower(), {})
+        fees = fees_map.get(nm_id, {})
 
         # Revenue & qty — из fact_finances (по дате реализации)
         revenue_7d = fees.get("fin_revenue", 0.0)
