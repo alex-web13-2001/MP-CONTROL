@@ -641,47 +641,104 @@ export default function ProductsPage() {
          ═══════════════════════════════════════════════════ */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-240px)]">
-          <table className="w-full min-w-[940px]" style={{ borderCollapse: 'collapse' }}>
+          <table className="w-full min-w-[1040px]" style={{ borderCollapse: 'collapse' }}>
             <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
               <tr className="bg-[hsl(var(--card))]">
-                <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                <th className="sticky left-0 z-40 w-[280px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   Товар
                 </th>
                 <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('price')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'price' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      Цена {sort === 'price' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Ваша цена из личного кабинета WB (до скидок площадки и СПП)</span>
+                    </span>
+                  </div>
                 </th>
-                <th className="w-[55px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('stocks')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'stocks' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Ост. {sort === 'stocks' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                <th className="w-[65px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('stocks')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'stocks' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      Ост. {sort === 'stocks' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[160px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Остатки на складах FBO и FBS</span>
+                    </span>
+                  </div>
                 </th>
-                <th className="w-[95px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('revenue_7d')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'revenue_7d' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Продажи {sort === 'revenue_7d' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                <th className="w-[90px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('revenue_7d')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'revenue_7d' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      Продажи {sort === 'revenue_7d' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Цена из ЛК × кол-во проданных штук за выбранный период</span>
+                    </span>
+                  </div>
                 </th>
-                <th className="w-[95px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  Выплата
+                <th className="w-[90px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <span>Выплата</span>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению на р/с (ppvz_for_pay). Уже за вычетом комиссии, логистики, хранения</span>
+                    </span>
+                  </div>
+                </th>
+                <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <span>Ср. цена</span>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Средняя цена для покупателя после всех скидок WB и СПП. Формула: сумма продаж для покупателей / кол-во</span>
+                    </span>
+                  </div>
+                </th>
+                <th className="w-[75px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      С/с {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Себестоимость + упаковка. Процент = маржа от выплаты</span>
+                    </span>
+                  </div>
                 </th>
                 <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('margin')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'margin' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    С/с {sort === 'margin' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('drr')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'drr' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      Реклама {sort === 'drr' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Рекламные расходы за период. ДРР = расход / выплата × 100%</span>
+                    </span>
+                  </div>
                 </th>
                 <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('drr')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'drr' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Реклама {sort === 'drr' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
-                </th>
-                <th className="w-[80px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  Услуги МП
+                  <div className="flex items-center justify-end gap-1">
+                    <span>Услуги МП</span>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Удержания WB: комиссия + логистика + хранение. Информационный столбец — уже учтено в Выплате</span>
+                    </span>
+                  </div>
                 </th>
                 <th className="w-[85px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
-                  <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
-                    Прибыль {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
-                  </button>
+                  <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
+                      Прибыль {sort === 'gross_profit' && <span>{order === 'desc' ? '↓' : '↑'}</span>}
+                    </button>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Чистая прибыль = Выплата − Себестоимость − Реклама. Процент = прибыль / выплата</span>
+                    </span>
+                  </div>
                 </th>
               </tr>
 
@@ -704,6 +761,7 @@ export default function ProductsPage() {
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.payout ?? 0)}</p>
                     </td>
+                    <td className="px-2 py-2" />
                     <td className="px-2 py-2" />
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.ad_spend)}</p>
@@ -733,12 +791,12 @@ export default function ProductsPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-[hsl(var(--border)/0.2)]">
-                    <td colSpan={9} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
+                    <td colSpan={10} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
                   </tr>
                 ))
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-16 text-center">
+                  <td colSpan={10} className="px-4 py-16 text-center">
                     <Package className="mx-auto mb-3 h-10 w-10 text-[hsl(var(--muted-foreground)/0.15)]" />
                     <p className="text-[hsl(var(--muted-foreground))]">Товары не найдены</p>
                     {search && <p className="mt-1 text-sm text-[hsl(var(--muted-foreground)/0.5)]">Попробуйте другой запрос</p>}
@@ -831,17 +889,21 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 5. ВЫПЛАТА (ppvz_for_pay + ср. цена покупателя) ── */}
+                    {/* ── 5. ВЫПЛАТА (ppvz_for_pay) ── */}
                     <td className="px-2 py-2.5 text-right">
                       {p.payout_period > 0 ? (
-                        <div>
-                          <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.payout_period)}</p>
-                          {p.orders_7d > 0 && p.revenue_7d > 0 && (
-                            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
-                              ср. {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
-                            </p>
-                          )}
-                        </div>
+                        <p className="text-[14px] font-semibold tabular-nums">{fmtMoney(p.payout_period)}</p>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 5b. СР. ЦЕНА ПОКУПАТЕЛЯ (retail_amount / qty) ── */}
+                    <td className="px-2 py-2.5 text-right">
+                      {p.orders_7d > 0 && p.revenue_7d > 0 ? (
+                        <p className="text-[13px] font-medium tabular-nums text-[hsl(var(--foreground)/0.7)]">
+                          {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
+                        </p>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
