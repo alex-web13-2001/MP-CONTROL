@@ -396,8 +396,8 @@ export default function ProductsPage() {
     setLoading(true)
     const period = periodValue.period
     const dateParams = periodValue.mode === 'custom' && periodValue.dateRange?.from && periodValue.dateRange?.to ? {
-      date_from: periodValue.dateRange.from.toISOString().slice(0, 10),
-      date_to: periodValue.dateRange.to.toISOString().slice(0, 10),
+      date_from: `${periodValue.dateRange.from.getFullYear()}-${String(periodValue.dateRange.from.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.from.getDate()).padStart(2, '0')}`,
+      date_to: `${periodValue.dateRange.to.getFullYear()}-${String(periodValue.dateRange.to.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.to.getDate()).padStart(2, '0')}`,
     } : {}
     try {
       if (isWB) {
@@ -435,8 +435,8 @@ export default function ProductsPage() {
     const nextPage = pageRef.current + 1
     const period = periodValue.period
     const dateParams = periodValue.mode === 'custom' && periodValue.dateRange?.from && periodValue.dateRange?.to ? {
-      date_from: periodValue.dateRange.from.toISOString().slice(0, 10),
-      date_to: periodValue.dateRange.to.toISOString().slice(0, 10),
+      date_from: `${periodValue.dateRange.from.getFullYear()}-${String(periodValue.dateRange.from.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.from.getDate()).padStart(2, '0')}`,
+      date_to: `${periodValue.dateRange.to.getFullYear()}-${String(periodValue.dateRange.to.getMonth() + 1).padStart(2, '0')}-${String(periodValue.dateRange.to.getDate()).padStart(2, '0')}`,
     } : {}
     try {
       let newProducts: OzonProduct[]
