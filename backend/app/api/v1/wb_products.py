@@ -172,7 +172,6 @@ async def get_wb_products(
             SELECT
                 lower(vendor_code)                          AS vc,
                 sum(retail_amount)                          AS fin_revenue,
-                sum(ppvz_for_pay)                           AS payout,
                 sum(commission_amount)                      AS commission,
                 sum(logistics_total + wb_delivery_rub)      AS logistics,
                 sum(storage_fee + wb_storage_amount)        AS storage,
@@ -185,7 +184,7 @@ async def get_wb_products(
               AND event_date >= {d_start:Date}
               AND event_date <= {d_end:Date}
             GROUP BY vc
-            HAVING fin_revenue > 0 OR payout != 0 OR commission > 0 OR logistics > 0
+            HAVING fin_revenue > 0 OR commission > 0 OR logistics > 0
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start,
@@ -196,13 +195,12 @@ async def get_wb_products(
             vc = str(r[0]).lower()
             fees_map[vc] = {
                 "fin_revenue": float(r[1]),
-                "payout": float(r[2]),
-                "commission": float(r[3]),
-                "logistics": float(r[4]),
-                "storage": float(r[5]),
-                "acceptance": float(r[6]),
-                "fines": float(r[7]),
-                "acquiring": float(r[8]),
+                "commission": float(r[2]),
+                "logistics": float(r[3]),
+                "storage": float(r[4]),
+                "acceptance": float(r[5]),
+                "fines": float(r[6]),
+                "acquiring": float(r[7]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
@@ -263,7 +261,6 @@ async def get_wb_products(
 
         # ── WB Finance fees (actual sums for the period) ───
         fees = fees_map.get(vendor_code.lower(), {})
-        fin_payout = fees.get("payout", 0.0)
 
         # Actual fee components from fact_finances
         fee_commission = fees.get("commission", 0.0)
@@ -277,6 +274,9 @@ async def get_wb_products(
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
+        # Payout = revenue minus all fees
+        payout = round(revenue_7d - mp_fees, 2)
+
         # ── DRR ───────────────────────────────────────────
         drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
@@ -289,10 +289,8 @@ async def get_wb_products(
             revenue_delta = 0.0
 
         # ── Gross profit = payout - COGS - ad_spend ──────
-        # payout from fact_finances = what seller actually receives
         gross_profit = None
         margin = None
-        payout = fin_payout if fin_payout != 0 else (revenue_7d - mp_fees)
         if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
             gross_profit = round(payout - total_cogs - ad_spend_7d, 2)
