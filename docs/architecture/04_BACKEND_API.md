@@ -324,6 +324,9 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 
 ### 2026-02-24
 
-- Гибридная формула прибыли: revenue из orders (price×qty), profit из transactions (txn_payout)
-- `mp_fees` теперь = revenue − txn_payout (ВСЕ удержания Ozon), с детализацией: `mp_fees_commission`, `mp_fees_logistics`
-- Серверные `totals` в ответе GET `/products/ozon` — итоги по всем товарам до пагинации
+- **Ozon**: Гибридная формула прибыли: revenue из orders (price×qty), profit из transactions (txn_payout)
+- **Ozon**: `mp_fees` теперь = revenue − txn_payout (ВСЕ удержания Ozon), с детализацией: `mp_fees_commission`, `mp_fees_logistics`
+- **Ozon + WB**: Серверные `totals` в ответе GET `/products/ozon` и `/products/wb` — итоги по всем товарам до пагинации
+- **WB**: `mp_fees` из `fact_finances` за текущий период (ранее — пропорция за 90д), фактические суммы
+- **WB**: Детализация fees: `mp_fees_commission`, `mp_fees_logistics`, `mp_fees_storage`, `mp_fees_other`
+- **WB**: Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`

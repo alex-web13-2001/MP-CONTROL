@@ -18,6 +18,13 @@
 - **Frontend / `products.ts` [MODIFY]:** Добавлены `mp_fees_commission`, `mp_fees_logistics`, `totals` в типы
 - **Frontend / `wb-products.ts` [MODIFY]:** Аналогичные обновления типов
 
+### Changed — WB Products: фактические mp_fees
+
+- **Backend / `wb_products.py` [MODIFY]:** `mp_fees` из `fact_finances` за текущий период (ранее — пропорция за 90д)
+- **Backend / `wb_products.py` [MODIFY]:** Детализация: `mp_fees_commission`, `mp_fees_logistics`, `mp_fees_storage`, `mp_fees_other`
+- **Backend / `wb_products.py` [MODIFY]:** Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
+- **Backend / `wb_products.py` [MODIFY]:** Серверные `totals` в ответе API
+
 ## [Unreleased] - 2026-02-22
 
 ### Added — Excel-импорт себестоимости
