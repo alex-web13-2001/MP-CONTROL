@@ -60,6 +60,7 @@ export interface OzonProduct {
   mp_fees_storage: number
   mp_fees_other: number
   sales_amount: number
+  avg_price: number
   period: number
   events: ProductEvent[]
   promotions: string[]

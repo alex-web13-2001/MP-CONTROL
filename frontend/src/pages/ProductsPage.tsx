@@ -127,6 +127,7 @@ function wbToOzon(p: WBProduct): OzonProduct {
     mp_fees_storage: p.mp_fees_storage ?? 0,
     mp_fees_other: p.mp_fees_other ?? 0,
     sales_amount: p.sales_amount ?? 0,
+    avg_price: p.avg_price ?? 0,
     period: 7,
     events: [] as ProductEvent[],
     promotions: [] as string[],
@@ -915,11 +916,11 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 5b. СР. ЦЕНА ПОКУПАТЕЛЯ (retail_amount / qty) ── */}
+                    {/* ── 5b. СР. ЦЕНА ПОКУПАТЕЛЯ ── */}
                     <td className="px-2 py-2.5 text-right">
-                      {p.orders_7d > 0 && p.revenue_7d > 0 ? (
+                      {p.orders_7d > 0 && (p.avg_price > 0 || p.revenue_7d > 0) ? (
                         <p className="text-[13px] font-medium tabular-nums text-[hsl(var(--foreground)/0.7)]">
-                          {fmtMoney(Math.round(p.revenue_7d / p.orders_7d))}
+                          {fmtMoney(Math.round(p.avg_price > 0 ? p.avg_price : p.revenue_7d / p.orders_7d))}
                         </p>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
