@@ -641,6 +641,17 @@ export default function ProductsPage() {
         </div>
       )}
 
+      {/* ─── 7-дней предупреждение ─── */}
+      {periodValue.period === 7 && !loading && products.length > 0 && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 mb-3">
+          <svg className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
+          <p className="text-[12px] leading-relaxed text-amber-200/80">
+            <span className="font-semibold text-amber-300">Данные за 7 дней могут быть неполными.</span>{' '}
+            Финансовый отчёт маркетплейса формируется с задержкой 1–3 дня. Итоговые цифры по выплатам и удержаниям могут измениться после закрытия отчётного периода.
+          </p>
+        </div>
+      )}
+
       {/* ═══════════════════════════════════════════════════
          Table — Business-priority columns:
          [Photo|Товар] sticky → Продажи → Остатки → С/с → DRR → Возвр% → Цена → Events
@@ -660,7 +671,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Ваша цена из личного кабинета WB (до скидок площадки и СПП)</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Ваша цена из личного кабинета (до скидок площадки)</span>
                     </span>
                   </div>
                 </th>
@@ -691,7 +702,7 @@ export default function ProductsPage() {
                     <span>Выплата</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению на р/с (ppvz_for_pay). Уже за вычетом комиссии, логистики, хранения</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению на ваш расчётный счёт. Уже за вычетом комиссии, логистики и хранения</span>
                     </span>
                   </div>
                 </th>
@@ -700,7 +711,7 @@ export default function ProductsPage() {
                     <span>Ср. цена</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Средняя цена для покупателя после всех скидок WB и СПП. Формула: сумма продаж для покупателей / кол-во</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Средняя цена, по которой покупатель оплатил товар (после всех скидок площадки)</span>
                     </span>
                   </div>
                 </th>
@@ -711,7 +722,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Себестоимость + упаковка. Процент = маржа от выплаты</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Себестоимость единицы + упаковка. Процент показывает изменение за период</span>
                     </span>
                   </div>
                 </th>
@@ -731,7 +742,7 @@ export default function ProductsPage() {
                     <span>Услуги МП</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Удержания WB: комиссия + логистика + хранение. Информационный столбец — уже учтено в Выплате</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Удержания маркетплейса: комиссия + логистика + хранение. Информационный столбец — уже учтено в Выплате</span>
                     </span>
                   </div>
                 </th>
@@ -742,7 +753,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Чистая прибыль = Выплата − Себестоимость − Реклама. Процент = прибыль / выплата</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Чистая прибыль = Выплата − Себестоимость × шт − Реклама. Процент от выплаты</span>
                     </span>
                   </div>
                 </th>
@@ -965,7 +976,7 @@ export default function ProductsPage() {
                           {/* Тултип */}
                           <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
                             <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[260px] text-left">
-                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания WB</p>
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания маркетплейса</p>
                               <div className="space-y-1.5">
                                 {[
                                   { label: 'Комиссия', val: p.mp_fees_commission },
