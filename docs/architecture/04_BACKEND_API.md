@@ -235,11 +235,17 @@ period: "7d" | "14d" | "30d" (default: "7d")
 
 ### Ключевая логика
 
-- 8 источников данных: PG каталог + product_costs → CH заказы/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
+- 9 источников данных: PG каталог + product_costs → CH заказы/транзакции/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
 - **Стабильная сортировка**: composite key `(primary_value, offer_id)` — гарантирует детерминированную пагинацию
-- **Формула чистой прибыли**: `payout_period − (cost_price × orders) − ad_spend`
-- **payout_period**: NET-сумма из `fact_ozon_transactions` (после комиссий Ozon, логистики, эквайринга)
+- **Гибридная формула прибыли** (revenue из заказов, profit из транзакций):
+  - `revenue_7d` = `sum(price × quantity)` из `fact_ozon_orders` — заказано на сумму (как в Ozon-админке)
+  - `txn_payout` = `sum(amount)` из `fact_ozon_transactions` — реальные выплаты после ВСЕХ удержаний
+  - `gross_profit` = `txn_payout − COGS − ad_spend` — чистая прибыль
+  - `mp_fees` = `revenue_7d − txn_payout` — ВСЕ удержания Ozon (скидки + комиссия + логистика + хранение)
+  - `mp_fees_commission` = `revenue_7d − orders.payout` — скидки + комиссия + эквайринг
+  - `mp_fees_logistics` = `orders.payout − txn_payout` — логистика + хранение + обработка возвратов
 - **marketing_price**: реальная «Ваша цена» из `/v5/product/info/prices` (с учётом скидок Ozon)
+- **Серверные `totals`**: итоги рассчитываются по ВСЕМ отфильтрованным товарам до пагинации и возвращаются в ответе API (не зависят от infinite scroll)
 
 ### PATCH `/products/ozon/cost` — защита
 
@@ -315,3 +321,9 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - PATCH `/ozon/cost`: trim() offer_id, warning при cost > price
 - POST `/ozon/cost/bulk`: warnings[] при cost > price
 - Стабильная сортировка с composite key для пагинации без дублей
+
+### 2026-02-24
+
+- Гибридная формула прибыли: revenue из orders (price×qty), profit из transactions (txn_payout)
+- `mp_fees` теперь = revenue − txn_payout (ВСЕ удержания Ozon), с детализацией: `mp_fees_commission`, `mp_fees_logistics`
+- Серверные `totals` в ответе GET `/products/ozon` — итоги по всем товарам до пагинации

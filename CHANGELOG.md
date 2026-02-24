@@ -2,6 +2,22 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-24
+
+### Changed — Гибридная формула прибыли
+
+- **Backend / `products.py` [MODIFY]:** Возвращён запрос `fact_ozon_transactions` для расчёта `txn_payout` (реальные выплаты после ВСЕХ удержаний Ozon)
+- **Backend / `products.py` [MODIFY]:** `revenue_7d` = `price × qty` (как в Ozon-админке), `gross_profit` = `txn_payout − COGS − ads`
+- **Backend / `products.py` [MODIFY]:** `mp_fees` = `revenue − txn_payout` (все удержания), детализация: `mp_fees_commission`, `mp_fees_logistics`
+- **Backend / `products.py` [MODIFY]:** Серверные `totals` в ответе API — итоги по ВСЕМ товарам до пагинации
+
+### Changed — Строка Итого и тултип Услуги МП
+
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Строка Σ использует серверные `apiTotals` — не зависит от infinite scroll
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** Hover-тултип на «Услуги МП»: детализация скидки+комиссия / логистика+прочее
+- **Frontend / `products.ts` [MODIFY]:** Добавлены `mp_fees_commission`, `mp_fees_logistics`, `totals` в типы
+- **Frontend / `wb-products.ts` [MODIFY]:** Аналогичные обновления типов
+
 ## [Unreleased] - 2026-02-22
 
 ### Added — Excel-импорт себестоимости
