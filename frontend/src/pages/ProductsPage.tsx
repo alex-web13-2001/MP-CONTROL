@@ -723,7 +723,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Себестоимость единицы + упаковка. Процент показывает изменение за период</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Себестоимость + упаковка. Процент — доля С/с в цене из ЛК</span>
                     </span>
                   </div>
                 </th>
@@ -937,11 +937,11 @@ export default function ProductsPage() {
                       {p.margin_percent !== null && p.cost_price > 0 && (
                         <p className={cn(
                           'text-[11px] font-semibold',
-                          p.margin_percent > 15 ? 'text-emerald-400'
-                            : p.margin_percent > 5 ? 'text-amber-400'
+                          p.margin_percent < 30 ? 'text-emerald-400'
+                            : p.margin_percent < 50 ? 'text-amber-400'
                             : 'text-red-400',
                         )}>
-                          {p.margin_percent > 0 ? '+' : ''}{p.margin_percent}%
+                          {p.margin_percent}%
                         </p>
                       )}
                     </td>

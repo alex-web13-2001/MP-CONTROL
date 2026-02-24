@@ -468,11 +468,9 @@ async def get_ozon_products(
     for p in products_map.values():
         cost = p["cost_price"] + p["packaging_cost"]
         if cost > 0 and p["price"] > 0:
-            commission = p["price"] * p["commission_percent"] / 100
-            logistics = p["fbo_logistics"]
-            margin = p["price"] - cost - commission - logistics
-            p["margin"] = round(margin, 2)
-            p["margin_percent"] = round(margin / p["price"] * 100, 1)
+            # margin_percent = cost as percentage of selling price (from admin)
+            p["margin"] = round(cost, 2)
+            p["margin_percent"] = round(cost / p["price"] * 100, 1)
 
         # Gross profit = txn_payout (net after ALL Ozon deductions) - COGS - ad_spend
         txn_payout = p.get("txn_payout", 0)
