@@ -173,11 +173,12 @@ async def get_wb_products(
                 lower(vendor_code)                          AS vc,
                 sum(retail_amount)                          AS fin_revenue,
                 sum(commission_amount)                      AS commission,
-                sum(logistics_total + wb_delivery_rub)      AS logistics,
-                sum(storage_fee + wb_storage_amount)        AS storage,
+                sum(logistics_total)                        AS logistics,
+                sum(storage_fee)                            AS storage,
                 sum(acceptance_fee)                         AS acceptance,
                 sum(penalty_total)                          AS fines,
-                sum(wb_acquiring)                           AS acquiring
+                sum(wb_acquiring)                           AS acquiring,
+                sum(JSONExtractFloat(raw_payload, 'deduction')) AS deduction
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
@@ -201,6 +202,7 @@ async def get_wb_products(
                 "acceptance": float(r[5]),
                 "fines": float(r[6]),
                 "acquiring": float(r[7]),
+                "deduction": float(r[8]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
@@ -270,6 +272,7 @@ async def get_wb_products(
             fees.get("acceptance", 0.0)
             + fees.get("fines", 0.0)
             + fees.get("acquiring", 0.0)
+            + fees.get("deduction", 0.0)
         )
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0

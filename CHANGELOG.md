@@ -25,6 +25,13 @@
 - **Backend / `wb_products.py` [MODIFY]:** Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
 - **Backend / `wb_products.py` [MODIFY]:** Серверные `totals` в ответе API
 
+### Fixed — WB mp_fees: двойной счёт и потерянные поля
+
+- **Backend / `wb_products.py` [FIX]:** Убран двойной счёт logistics (`logistics_total` уже содержит `delivery_rub`; `wb_delivery_rub` удалён из суммы)
+- **Backend / `wb_products.py` [FIX]:** Убран двойной счёт storage (`wb_storage_amount` = копия `storage_fee`; удалён из суммы)
+- **Backend / `wb_products.py` [FIX]:** Добавлен `deduction` (удержания WB Продвижение) через `JSONExtractFloat(raw_payload, 'deduction')`
+- **Backend / `wb_finance_loader.py` [FIX]:** Маппинг `deduction` → `penalty_total` для корректного учёта при будущих загрузках
+
 ## [Unreleased] - 2026-02-22
 
 ### Added — Excel-импорт себестоимости

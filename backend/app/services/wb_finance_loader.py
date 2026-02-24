@@ -188,8 +188,10 @@ class WBReportParser:
         rebill_logistic = self._safe_float(row.get("rebill_logistic_cost", 0))
         logistics_total = logistics_base + rebill_logistic
         
-        # Penalties
+        # Penalties + deductions (штрафы + удержания WB Продвижение)
         penalty_total = abs(self._safe_float(row.get("penalty", 0)))
+        deduction = abs(self._safe_float(row.get("deduction", 0)))
+        penalty_total = penalty_total + deduction
         
         # WB specific
         wb_gi_id = self._safe_int(row.get("gi_id", 0))
