@@ -42,6 +42,7 @@ export interface WBProductsResponse {
   page: number
   per_page: number
   cost_missing_count: number
+  totals?: Record<string, number>
 }
 
 export async function getWBProductsApi(params: {

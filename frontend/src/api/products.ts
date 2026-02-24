@@ -69,6 +69,7 @@ export interface ProductsResponse {
   per_page: number
   cost_missing_count: number
   period: number
+  totals?: Record<string, number>
 }
 
 export async function getOzonProductsApi(params: {

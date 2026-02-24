@@ -556,6 +556,49 @@ async def get_ozon_products(
     # Count cost missing
     cost_missing = sum(1 for p in products_map.values() if p["cost_price"] == 0 and not p["is_archived"])
 
+    # ── Compute totals across ALL filtered products (before pagination) ──
+    t_stocks = 0
+    t_orders = 0
+    t_revenue = 0.0
+    t_ad_spend = 0.0
+    t_mp_fees = 0.0
+    t_mp_fees_commission = 0.0
+    t_mp_fees_logistics = 0.0
+    t_profit = 0.0
+    t_profit_count = 0
+    t_returns = 0
+    t_orders_30d = 0
+    for p in products_list:
+        t_stocks += p["stocks_fbo"] + p["stocks_fbs"]
+        t_orders += p["orders_7d"]
+        t_revenue += p["revenue_7d"]
+        t_ad_spend += p["ad_spend_7d"]
+        t_mp_fees += p["mp_fees"]
+        t_mp_fees_commission += p.get("mp_fees_commission", 0)
+        t_mp_fees_logistics += p.get("mp_fees_logistics", 0)
+        t_returns += p["returns_30d"]
+        t_orders_30d += p.get("orders_30d", 0)
+        if p["gross_profit"] is not None:
+            t_profit += p["gross_profit"]
+            t_profit_count += 1
+
+    totals = {
+        "count": len(products_list),
+        "stocks": t_stocks,
+        "orders": t_orders,
+        "revenue": round(t_revenue, 2),
+        "ad_spend": round(t_ad_spend, 2),
+        "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "returns_pct": round(t_returns / t_orders_30d * 100, 1) if t_orders_30d > 0 else 0,
+        "mp_fees": round(t_mp_fees, 2),
+        "mp_fees_commission": round(t_mp_fees_commission, 2),
+        "mp_fees_logistics": round(t_mp_fees_logistics, 2),
+        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "profit": round(t_profit, 2),
+        "profit_pct": round(t_profit / t_revenue * 100, 1) if t_revenue > 0 and t_profit_count > 0 else 0,
+        "profit_count": t_profit_count,
+    }
+
     # Paginate
     total = len(products_list)
     start = (page - 1) * per_page
@@ -573,6 +616,7 @@ async def get_ozon_products(
         "per_page": per_page,
         "cost_missing_count": cost_missing,
         "period": period,
+        "totals": totals,
     }
 
 

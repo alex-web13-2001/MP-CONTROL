@@ -369,6 +369,7 @@ export default function ProductsPage() {
   const [products, setProducts] = useState<OzonProduct[]>([])
   const [total, setTotal] = useState(0)
   const [costMissing, setCostMissing] = useState(0)
+  const [apiTotals, setApiTotals] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [_page, setPage] = useState(1)
@@ -406,6 +407,7 @@ export default function ProductsPage() {
         setProducts(data.products.map(wbToOzon))
         setTotal(data.total)
         setCostMissing(data.cost_missing_count)
+        setApiTotals(data.totals || null)
       } else {
         const data = await getOzonProductsApi({
           shop_id: shopId!, page: 1, per_page: perPage, sort, order, filter, search, period, ...dateParams,
@@ -413,6 +415,7 @@ export default function ProductsPage() {
         setProducts(data.products)
         setTotal(data.total)
         setCostMissing(data.cost_missing_count)
+        setApiTotals(data.totals || null)
       }
       pageRef.current = 1
       setPage(1)
@@ -687,31 +690,20 @@ export default function ProductsPage() {
                 </th>
               </tr>
 
-              {/* ── Итого (компактная строка) ── */}
-              {!loading && products.length > 0 && (() => {
-                const t = products.reduce((acc, p) => {
-                  acc.stockFbo += p.stocks_fbo; acc.stockFbs += p.stocks_fbs
-                  acc.orders += p.orders_7d; acc.revenue += p.revenue_7d
-                  acc.adSpend += p.ad_spend_7d; acc.mpFees += p.mp_fees
-                  acc.returns += p.returns_30d; acc.orders30d += (p.orders_30d || 0)
-                  if (p.gross_profit !== null) { acc.profit += p.gross_profit; acc.profitCount++ }
-                  return acc
-                }, { stockFbo: 0, stockFbs: 0, orders: 0, revenue: 0, adSpend: 0, mpFees: 0, returns: 0, orders30d: 0, profit: 0, profitCount: 0 })
-                const totalDrr = t.revenue > 0 ? Math.round(t.adSpend / t.revenue * 1000) / 10 : 0
-                const avgReturn = t.orders30d > 0 ? Math.round(t.returns / t.orders30d * 1000) / 10 : 0
-                const mpPct = t.revenue > 0 ? Math.round(t.mpFees / t.revenue * 1000) / 10 : 0
-                const profitPct = t.revenue > 0 ? Math.round(t.profit / t.revenue * 1000) / 10 : 0
+              {/* ── Итого (данные с сервера по ВСЕМ товарам) ── */}
+              {!loading && apiTotals && (() => {
+                const t = apiTotals
                 return (
                   <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
                     {/* Товар */}
                     <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
-                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {products.length} товаров</span>
+                      <span className="text-[13px] font-bold text-[hsl(var(--foreground)/0.7)]">Σ {t.count} товаров</span>
                     </td>
                     {/* Цена */}
                     <td className="px-3 py-2.5" />
                     {/* Остатки */}
                     <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stockFbo + t.stockFbs)}</p>
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtNum(t.stocks)}</p>
                     </td>
                     {/* Продажи */}
                     <td className="px-3 py-2.5 text-right">
@@ -722,31 +714,31 @@ export default function ProductsPage() {
                     <td className="px-3 py-2.5" />
                     {/* Реклама */}
                     <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.adSpend)}</p>
-                      {totalDrr > 0 && (
-                        <p className={cn('text-[11px] font-bold mt-0.5', totalDrr > 20 ? 'text-red-400' : totalDrr > 10 ? 'text-amber-400' : 'text-emerald-400')}>
-                          ДРР {totalDrr}%
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.ad_spend)}</p>
+                      {t.drr > 0 && (
+                        <p className={cn('text-[11px] font-bold mt-0.5', t.drr > 20 ? 'text-red-400' : t.drr > 10 ? 'text-amber-400' : 'text-emerald-400')}>
+                          ДРР {t.drr}%
                         </p>
                       )}
                     </td>
                     {/* Возвраты */}
                     <td className="px-3 py-2.5 text-right">
-                      <p className={cn('text-[13px] font-bold', avgReturn > 10 ? 'text-red-400' : avgReturn > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.7)]')}>{avgReturn}%</p>
+                      <p className={cn('text-[13px] font-bold', t.returns_pct > 10 ? 'text-red-400' : t.returns_pct > 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.7)]')}>{t.returns_pct}%</p>
                     </td>
                     {/* Услуги МП */}
                     <td className="px-3 py-2.5 text-right">
-                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.mpFees)}</p>
-                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{mpPct}%</p>
+                      <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.75)]">{fmtMoney(t.mp_fees)}</p>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">{t.mp_fees_pct}%</p>
                     </td>
                     {/* Чистая прибыль */}
                     <td className="px-3 py-2.5 text-right">
-                      {t.profitCount > 0 ? (
+                      {t.profit_count > 0 ? (
                         <>
                           <p className={cn('text-[14px] font-bold tabular-nums', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>
                             {t.profit > 0 ? '+' : ''}{fmtMoney(t.profit)}
                           </p>
-                          <p className={cn('text-[11px] font-bold mt-0.5', profitPct > 0 ? 'text-emerald-400' : 'text-red-400')}>
-                            {profitPct > 0 ? '+' : ''}{profitPct}%
+                          <p className={cn('text-[11px] font-bold mt-0.5', t.profit_pct > 0 ? 'text-emerald-400' : 'text-red-400')}>
+                            {t.profit_pct > 0 ? '+' : ''}{t.profit_pct}%
                           </p>
                         </>
                       ) : <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>}
