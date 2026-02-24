@@ -315,7 +315,7 @@ async def get_wb_products(
         mp_fees_percent = round(mp_fees / payout * 100, 1) if payout > 0 else 0.0
 
         # ── DRR ───────────────────────────────────────────
-        drr = round(ad_spend_7d / payout * 100, 1) if payout > 0 else 0.0
+        drr = round(ad_spend_7d / sales_amount * 100, 1) if sales_amount > 0 else 0.0
 
         # ── Revenue delta ─────────────────────────────────
         if revenue_prev > 0:
@@ -457,7 +457,7 @@ async def get_wb_products(
         "revenue": round(t_revenue, 2),
         "payout": round(t_payout, 2),
         "ad_spend": round(t_ad_spend, 2),
-        "drr": round(t_ad_spend / t_payout * 100, 1) if t_payout > 0 else 0,
+        "drr": round(t_ad_spend / t_sales * 100, 1) if t_sales > 0 else 0,
         "returns_pct": 0,
         "mp_fees": round(t_mp_fees, 2),
         "mp_fees_commission": round(t_mp_fees_commission, 2),

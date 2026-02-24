@@ -716,7 +716,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Рекламные расходы за период. ДРР = расход / выплата × 100%</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Рекламные расходы за период. ДРР = расход / продажи × 100%</span>
                     </span>
                   </div>
                 </th>
