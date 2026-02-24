@@ -220,9 +220,8 @@ async def get_ozon_products(
             oid = r[0]
             if oid in products_map:
                 products_map[oid]["orders_7d"] = r[1]
-                products_map[oid]["revenue_7d"] = float(r[3])       # real payout as revenue
-                products_map[oid]["revenue_list"] = float(r[2])     # list price for reference
-                products_map[oid]["payout_period"] = float(r[3])    # payout from orders
+                products_map[oid]["revenue_7d"] = float(r[2])       # price × qty (list price, like Ozon admin)
+                products_map[oid]["payout_period"] = float(r[3])    # payout from orders (for profit calc)
                 products_map[oid]["payout_prev"] = float(r[5])      # prev period payout
                 prev_orders = r[4]
                 products_map[oid]["orders_prev_7d"] = prev_orders
