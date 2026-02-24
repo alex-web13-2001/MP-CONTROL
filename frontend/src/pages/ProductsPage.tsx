@@ -784,7 +784,11 @@ export default function ProductsPage() {
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.payout ?? 0)}</p>
                     </td>
-                    <td className="px-2 py-2" />
+                    <td className="px-2 py-2 text-right">
+                      {t.avg_price > 0 && (
+                        <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtMoney(Math.round(t.avg_price))}</p>
+                      )}
+                    </td>
                     <td className="px-2 py-2" />
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.ad_spend)}</p>
