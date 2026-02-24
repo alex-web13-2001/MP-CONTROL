@@ -74,8 +74,13 @@ function wbImageUrl(nmId: number): string {
 /** Convert WBProduct → OzonProduct shape for unified table rendering */
 function wbToOzon(p: WBProduct): OzonProduct {
   const grossProfit = p.gross_profit ?? null
-  const grossProfitPct = (grossProfit !== null && p.payout > 0)
-    ? Math.round(grossProfit / p.payout * 100)
+  // Profit % from sales amount (selling price × qty), not from payout
+  const grossProfitPct = (grossProfit !== null && p.sales_amount > 0)
+    ? Math.round(grossProfit / p.sales_amount * 100)
+    : null
+  // Cost % = cost / selling price × 100 (always positive)
+  const costPct = (p.cost_price > 0 && p.current_price > 0)
+    ? Math.round((p.cost_price + (p.packaging_cost || 0)) / p.current_price * 1000) / 10
     : null
   return {
     product_id: p.nm_id,
@@ -112,8 +117,8 @@ function wbToOzon(p: WBProduct): OzonProduct {
     content_rating: 0,
     commission_percent: 0,
     fbo_logistics: 0,
-    margin: p.cost_price > 0 ? (grossProfit ?? null) : null,
-    margin_percent: p.cost_price > 0 ? grossProfitPct : null,
+    margin: p.cost_price > 0 ? (p.cost_price + (p.packaging_cost || 0)) : null,
+    margin_percent: costPct,
     payout_period: p.payout ?? 0,
     payout_prev: 0,
     gross_profit: grossProfit,

@@ -334,8 +334,8 @@ async def get_wb_products(
         if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
             gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
-            if payout > 0:
-                margin = round(gross_profit / payout * 100, 1)
+            if sales_amount > 0:
+                margin = round(gross_profit / sales_amount * 100, 1)
 
         p = {
             "nm_id": nm_id,
