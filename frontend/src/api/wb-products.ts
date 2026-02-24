@@ -11,7 +11,8 @@ export interface WBProduct {
   current_price: number
   cost_price: number
   packaging_cost: number
-  // Sales
+  // P&L waterfall
+  avg_price: number
   orders_7d: number
   revenue_7d: number
   orders_prev: number

@@ -219,14 +219,14 @@ async def get_wb_products(
         prev_result = ch.query("""
             SELECT
                 toUInt64(external_id) AS nm_id,
-                sum(wb_ppvz_for_pay) AS payout_prev
+                sum(retail_amount) AS fin_revenue_prev
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
               AND event_date >= {d_prev_start:Date}
               AND event_date <= {d_prev_end:Date}
             GROUP BY nm_id
-            HAVING payout_prev > 0
+            HAVING fin_revenue_prev > 0
         """, parameters={
             "shop_id": shop_id,
             "d_prev_start": d_prev_start,
@@ -235,9 +235,9 @@ async def get_wb_products(
         for r in prev_result.result_rows:
             nm = int(r[0])
             if nm in fees_map:
-                fees_map[nm]["payout_prev"] = float(r[1])
+                fees_map[nm]["fin_revenue_prev"] = float(r[1])
             else:
-                fees_map[nm] = {"payout_prev": float(r[1])}
+                fees_map[nm] = {"fin_revenue_prev": float(r[1])}
     except Exception as e:
         logger.warning("CH prev period query failed: %s", e)
 
@@ -294,11 +294,12 @@ async def get_wb_products(
         # ── WB Finance data (единый источник P&L) ────────
         fees = fees_map.get(nm_id, {})
 
-        # Revenue = ppvz_for_pay (к перечислению от WB)
-        revenue_7d = fees.get("payout", 0.0)
-        revenue_prev = fees.get("payout_prev", 0.0)
-        orders_7d = fees.get("qty", 0)     # кол-во реализованных
-        payout = revenue_7d  # payout = revenue для WB (ppvz_for_pay)
+        # P&L водопад: Продажи → К перечислению → Услуги МП → Реклама → Прибыль
+        revenue_7d = fees.get("fin_revenue", 0.0)     # Продажи (retail_amount)
+        revenue_prev = fees.get("fin_revenue_prev", 0.0)
+        orders_7d = fees.get("qty", 0)                 # кол-во реализованных
+        payout = fees.get("payout", 0.0)               # К перечислению (ppvz_for_pay)
+        avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0  # Ср. цена
 
         # Детализация удержаний
         fee_commission = fees.get("commission", 0.0)
@@ -311,10 +312,10 @@ async def get_wb_products(
             + fees.get("deduction", 0.0)
         )
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
-        mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
+        mp_fees_percent = round(mp_fees / payout * 100, 1) if payout > 0 else 0.0
 
         # ── DRR ───────────────────────────────────────────
-        drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
+        drr = round(ad_spend_7d / payout * 100, 1) if payout > 0 else 0.0
 
         # ── Revenue delta ─────────────────────────────────
         if revenue_prev > 0:
@@ -324,14 +325,14 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit = payout - COGS - ad_spend ──────
+        # ── Gross profit = payout - mp_fees - COGS - ad_spend ──
         gross_profit = None
         margin = None
         if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
-            gross_profit = round(payout - total_cogs - ad_spend_7d, 2)
-            if revenue_7d > 0:
-                margin = round(gross_profit / revenue_7d * 100, 1)
+            gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
+            if payout > 0:
+                margin = round(gross_profit / payout * 100, 1)
 
         p = {
             "nm_id": nm_id,
@@ -341,12 +342,14 @@ async def get_wb_products(
             "current_price": info.get("current_price", 0.0),
             "cost_price": cost_price,
             "packaging_cost": packaging_cost,
-            # Sales
+            # P&L waterfall
+            "avg_price": avg_price,
             "orders_7d": orders_7d,
             "revenue_7d": revenue_7d,
-            "orders_prev": 0,  # prev qty not tracked in fact_finances
+            "orders_prev": 0,
             "revenue_prev": revenue_prev,
             "revenue_delta": revenue_delta,
+            "payout": round(payout, 2),
             # Ads
             "ad_spend_7d": ad_spend_7d,
             "ad_views": ads.get("ad_views", 0),
@@ -355,15 +358,14 @@ async def get_wb_products(
             # Stocks
             "stock_fbo": stocks.get("stock_fbo", 0),
             "stock_fbs": stocks.get("stock_fbs", 0),
-            # WB Marketplace fees (actual sums)
+            # WB Marketplace fees
             "mp_fees": mp_fees,
             "mp_fees_percent": mp_fees_percent,
             "mp_fees_commission": round(fee_commission, 2),
             "mp_fees_logistics": round(fee_logistics, 2),
             "mp_fees_storage": round(fee_storage, 2),
             "mp_fees_other": round(fee_other, 2),
-            # Payout & Profit
-            "payout": round(payout, 2),
+            # Profit
             "gross_profit": gross_profit,
             "margin": margin,
         }
@@ -413,6 +415,7 @@ async def get_wb_products(
     t_stocks = 0
     t_orders = 0
     t_revenue = 0.0
+    t_payout = 0.0
     t_ad_spend = 0.0
     t_mp_fees = 0.0
     t_mp_fees_commission = 0.0
@@ -423,6 +426,7 @@ async def get_wb_products(
         t_stocks += p["stock_fbo"] + p["stock_fbs"]
         t_orders += p["orders_7d"]
         t_revenue += p["revenue_7d"]
+        t_payout += p["payout"]
         t_ad_spend += p["ad_spend_7d"]
         t_mp_fees += p["mp_fees"]
         t_mp_fees_commission += p.get("mp_fees_commission", 0)
@@ -436,15 +440,16 @@ async def get_wb_products(
         "stocks": t_stocks,
         "orders": t_orders,
         "revenue": round(t_revenue, 2),
+        "payout": round(t_payout, 2),
         "ad_spend": round(t_ad_spend, 2),
-        "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "drr": round(t_ad_spend / t_payout * 100, 1) if t_payout > 0 else 0,
         "returns_pct": 0,
         "mp_fees": round(t_mp_fees, 2),
         "mp_fees_commission": round(t_mp_fees_commission, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
-        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "mp_fees_pct": round(t_mp_fees / t_payout * 100, 1) if t_payout > 0 else 0,
         "profit": round(t_profit, 2),
-        "profit_pct": round(t_profit / t_revenue * 100, 1) if t_revenue > 0 and t_profit_count > 0 else 0,
+        "profit_pct": round(t_profit / t_payout * 100, 1) if t_payout > 0 and t_profit_count > 0 else 0,
         "profit_count": t_profit_count,
     }
 
