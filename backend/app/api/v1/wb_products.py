@@ -164,15 +164,15 @@ async def get_wb_products(
         logger.warning("CH stocks query failed: %s", e)
         stocks_map = {}
 
-    # ── 4. WB Finance fees from fact_finances ─────────────────────────
-    # fact_finances FINAL — исходные данные финотчёта WB.
-    # По vendor_code (нижний регистр), за последние 90 дней.
-    # Ставку комиссий применяем к выручке текущего периода.
+    # ── 4. WB Finance fees from fact_finances (current period) ───────
+    # Реальные суммы удержаний за текущий период.
+    # Используем sa_name (артикул поставщика) для привязки к vendor_code.
     try:
         fees_result = ch.query("""
             SELECT
                 lower(vendor_code)                          AS vc,
                 sum(retail_amount)                          AS fin_revenue,
+                sum(ppvz_for_pay)                           AS payout,
                 sum(commission_amount)                      AS commission,
                 sum(logistics_total + wb_delivery_rub)      AS logistics,
                 sum(storage_fee + wb_storage_amount)        AS storage,
@@ -182,21 +182,27 @@ async def get_wb_products(
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
-              AND event_date >= toDate(now()) - 90
+              AND event_date >= {d_start:Date}
+              AND event_date <= {d_end:Date}
             GROUP BY vc
-            HAVING commission > 0 OR logistics > 0 OR storage > 0 OR acquiring > 0
-        """, parameters={"shop_id": shop_id})
+            HAVING fin_revenue > 0 OR payout != 0 OR commission > 0 OR logistics > 0
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start,
+            "d_end": d_end,
+        })
         fees_map = {}
         for r in fees_result.result_rows:
             vc = str(r[0]).lower()
             fees_map[vc] = {
                 "fin_revenue": float(r[1]),
-                "commission": float(r[2]),
-                "logistics": float(r[3]),
-                "storage": float(r[4]),
-                "acceptance": float(r[5]),
-                "fines": float(r[6]),
-                "acquiring": float(r[7]),
+                "payout": float(r[2]),
+                "commission": float(r[3]),
+                "logistics": float(r[4]),
+                "storage": float(r[5]),
+                "acceptance": float(r[6]),
+                "fines": float(r[7]),
+                "acquiring": float(r[8]),
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
@@ -255,26 +261,20 @@ async def get_wb_products(
         cost_price = info.get("cost_price", 0.0)
         packaging_cost = info.get("packaging_cost", 0.0)
 
-        # ── WB Finance fees (from finreport) ──────────────
+        # ── WB Finance fees (actual sums for the period) ───
         fees = fees_map.get(vendor_code.lower(), {})
-        fin_revenue = fees.get("fin_revenue", 0.0)
+        fin_payout = fees.get("payout", 0.0)
 
-        # Средняя доля каждого типа расходов от выручки (по финотчёту)
-        # Масштабируем на выручку текущего периода
-        raw_mp_fees = (
-            fees.get("commission", 0.0)    # Комиссия WB (ppvz_sales_commission)
-            + fees.get("logistics", 0.0)   # Логистика и доставка
-            + fees.get("storage", 0.0)     # Хранение
-            + fees.get("acceptance", 0.0)  # Платная приёмка
-            + fees.get("fines", 0.0)       # Штрафы
-            + fees.get("acquiring", 0.0)   # Эквайринг банка (acquiring_fee, ~4%)
+        # Actual fee components from fact_finances
+        fee_commission = fees.get("commission", 0.0)
+        fee_logistics = fees.get("logistics", 0.0)
+        fee_storage = fees.get("storage", 0.0)
+        fee_other = (
+            fees.get("acceptance", 0.0)
+            + fees.get("fines", 0.0)
+            + fees.get("acquiring", 0.0)
         )
-        if fin_revenue > 0 and raw_mp_fees > 0:
-            # Доля комиссий от выручки (из финотчёта), применяем к текущей выручке
-            mp_fees_rate = min(raw_mp_fees / fin_revenue, 0.95)  # cap 95%
-            mp_fees = round(revenue_7d * mp_fees_rate, 2) if revenue_7d > 0 else 0.0
-        else:
-            mp_fees = 0.0
+        mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
         # ── DRR ───────────────────────────────────────────
@@ -288,13 +288,14 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit = выручка - комиссии МП - себестоимость - реклама ──
-        # Строго: прибыль не может быть > выручки
+        # ── Gross profit = payout - COGS - ad_spend ──────
+        # payout from fact_finances = what seller actually receives
         gross_profit = None
         margin = None
-        if cost_price > 0:
+        payout = fin_payout if fin_payout != 0 else (revenue_7d - mp_fees)
+        if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
-            gross_profit = round(revenue_7d - mp_fees - total_cogs - ad_spend_7d, 2)
+            gross_profit = round(payout - total_cogs - ad_spend_7d, 2)
             if revenue_7d > 0:
                 margin = round(gross_profit / revenue_7d * 100, 1)
 
@@ -320,10 +321,15 @@ async def get_wb_products(
             # Stocks
             "stock_fbo": stocks.get("stock_fbo", 0),
             "stock_fbs": stocks.get("stock_fbs", 0),
-            # WB Marketplace fees
+            # WB Marketplace fees (actual sums)
             "mp_fees": mp_fees,
             "mp_fees_percent": mp_fees_percent,
-            # Profit
+            "mp_fees_commission": round(fee_commission, 2),
+            "mp_fees_logistics": round(fee_logistics, 2),
+            "mp_fees_storage": round(fee_storage, 2),
+            "mp_fees_other": round(fee_other, 2),
+            # Payout & Profit
+            "payout": round(payout, 2),
             "gross_profit": gross_profit,
             "margin": margin,
         }
@@ -369,6 +375,45 @@ async def get_wb_products(
     products.sort(key=sort_val, reverse=reverse)
 
     # ── 9. Paginate ──────────────────────────────────────────
+    # Compute totals across ALL filtered products (before pagination)
+    t_stocks = 0
+    t_orders = 0
+    t_revenue = 0.0
+    t_ad_spend = 0.0
+    t_mp_fees = 0.0
+    t_mp_fees_commission = 0.0
+    t_mp_fees_logistics = 0.0
+    t_profit = 0.0
+    t_profit_count = 0
+    for p in products:
+        t_stocks += p["stock_fbo"] + p["stock_fbs"]
+        t_orders += p["orders_7d"]
+        t_revenue += p["revenue_7d"]
+        t_ad_spend += p["ad_spend_7d"]
+        t_mp_fees += p["mp_fees"]
+        t_mp_fees_commission += p.get("mp_fees_commission", 0)
+        t_mp_fees_logistics += p.get("mp_fees_logistics", 0) + p.get("mp_fees_storage", 0) + p.get("mp_fees_other", 0)
+        if p["gross_profit"] is not None:
+            t_profit += p["gross_profit"]
+            t_profit_count += 1
+
+    totals = {
+        "count": len(products),
+        "stocks": t_stocks,
+        "orders": t_orders,
+        "revenue": round(t_revenue, 2),
+        "ad_spend": round(t_ad_spend, 2),
+        "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "returns_pct": 0,
+        "mp_fees": round(t_mp_fees, 2),
+        "mp_fees_commission": round(t_mp_fees_commission, 2),
+        "mp_fees_logistics": round(t_mp_fees_logistics, 2),
+        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "profit": round(t_profit, 2),
+        "profit_pct": round(t_profit / t_revenue * 100, 1) if t_revenue > 0 and t_profit_count > 0 else 0,
+        "profit_count": t_profit_count,
+    }
+
     total = len(products)
     offset = (page - 1) * per_page
     page_products = products[offset: offset + per_page]
@@ -381,6 +426,7 @@ async def get_wb_products(
         "per_page": per_page,
         "products": page_products,
         "cost_missing_count": cost_missing,
+        "totals": totals,
     }
 
 
