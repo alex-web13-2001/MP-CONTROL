@@ -239,14 +239,14 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | -------------- | ---------------------------------------------------------------------- |
 | Товар          | Фото + название + артикул + SKU + content rating                       |
 | Цена           | marketing_price (Ozon) или price, перечёркнутая old_price, % скидки    |
-| Остатки        | FBO + FBS                                                              |
-| Продажи        | price×qty (как в Ozon-админке) + дельта                                |
-| С/с            | Себестоимость (редактирование inline popover)                          |
-| Реклама        | DRR + расход                                                           |
-| Возвр.         | Возвраты 30д + %                                                       |
+| Остатки        | FBO + FBS (одно число + тултип)                                        |
+| Продажи        | price×qty (как в ЛК) + дельта, кол-во шт                               |
+| Выплата        | Сумма выплат за период (payout_period)                                 |
+| Ср. выпл.      | Средняя выплата за 1 единицу (payout / qty_delivered)                  |
+| С/с            | Себестоимость + `margin_percent` = cost/price×100 (доля С/с в цене)    |
+| Реклама        | Расход + DRR (ad_spend / sales_amount × 100)                           |
 | Услуги МП      | revenue − txn_payout, hover-тултип: скидки+комиссия / логистика+прочее |
-| Чистая прибыль | txn_payout − COGS − ads                                                |
-| События        | Последние 5 event_log                                                  |
+| Чистая прибыль | revenue − COGS − mp_fees − ads (Ozon), payout − COGS − ads (WB)        |
 
 **Infinite Scroll:**
 
@@ -350,3 +350,12 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Строка Σ (итого) переключена на серверные `apiTotals` — корректные суммы без зависимости от infinite scroll
 - Формула прибыли: `txn_payout − COGS − ads` (учтены ВСЕ удержания Ozon)
 - Типы `OzonProduct`, `WBProduct`: добавлены `mp_fees_commission`, `mp_fees_logistics`
+
+### 2026-02-25
+
+- **Ozon prибыль**: формула `revenue − COGS − mp_fees − ad_spend` (ранее `txn_payout − COGS − ad`)
+- **Ozon totals**: добавлены `payout` (95k вместо 0₽) и `avg_price` (средняя выплата) в строку Σ
+- **WB `wbToOzon`**: `margin_percent` = `(cost+packaging) / price × 100` (доля С/с; ранее = profit %)
+- **WB `wbToOzon`**: `grossProfitPct` = `profit / sales_amount × 100` (от продаж; ранее / payout)
+- **Ozon+WB**: `margin_percent` теперь без знака ±, цвета: зелёный <30%, жёлтый 30-50%, красный >50%
+- Тултип С/с: «Себестоимость + упаковка. Процент — доля С/с в цене из ЛК»

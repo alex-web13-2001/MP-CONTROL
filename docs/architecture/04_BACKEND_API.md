@@ -237,15 +237,17 @@ period: "7d" | "14d" | "30d" (default: "7d")
 
 - 9 источников данных: PG каталог + product_costs → CH заказы/транзакции/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
 - **Стабильная сортировка**: composite key `(primary_value, offer_id)` — гарантирует детерминированную пагинацию
-- **Гибридная формула прибыли** (revenue из заказов, profit из транзакций):
-  - `revenue_7d` = `sum(price × quantity)` из `fact_ozon_orders` — заказано на сумму (как в Ozon-админке)
-  - `txn_payout` = `sum(amount)` из `fact_ozon_transactions` — реальные выплаты после ВСЕХ удержаний
-  - `gross_profit` = `txn_payout − COGS − ad_spend` — чистая прибыль
-  - `mp_fees` = `revenue_7d − txn_payout` — ВСЕ удержания Ozon (скидки + комиссия + логистика + хранение)
-  - `mp_fees_commission` = `revenue_7d − orders.payout` — скидки + комиссия + эквайринг
-  - `mp_fees_logistics` = `orders.payout − txn_payout` — логистика + хранение + обработка возвратов
+- **Формула прибыли Ozon** (revenue-based, привязана к дате заказа):
+  - `revenue_7d` = `sum(price × quantity)` из `fact_ozon_orders` — выручка по цене из ЛК
+  - `txn_payout` = `sum(amount)` из `fact_ozon_transactions` — для расчёта удержаний
+  - `mp_fees` = `revenue_7d − txn_payout` — ВСЕ удержания Ozon (SPP + комиссия + логистика + хранение)
+  - `gross_profit` = `revenue_7d − COGS − mp_fees − ad_spend` — чистая прибыль
+  - `gross_profit_percent` = `gross_profit / revenue_7d × 100` — % от выручки
+  - ⚠ Ранее: `gross_profit = txn_payout − COGS − ad` — некорректно, т.к. `txn_payout` не привязан к периоду заказов (включает расчёты за старые заказы)
+  - Детализация `mp_fees`: `mp_fees_commission` (скидки+комиссия+эквайринг), `mp_fees_logistics` (логистика+хранение+возвраты)
+- **`margin_percent`** = `cost / price × 100` — доля себестоимости в цене из ЛК (всегда положительный)
 - **marketing_price**: реальная «Ваша цена» из `/v5/product/info/prices` (с учётом скидок Ozon)
-- **Серверные `totals`**: итоги рассчитываются по ВСЕМ отфильтрованным товарам до пагинации и возвращаются в ответе API (не зависят от infinite scroll)
+- **Серверные `totals`**: итоги по ВСЕМ товарам до пагинации, включают `payout`, `avg_price`, `profit`, `mp_fees` и их детализацию
 
 ### PATCH `/products/ozon/cost` — защита
 
@@ -330,3 +332,11 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **WB**: `mp_fees` из `fact_finances` за текущий период (ранее — пропорция за 90д), фактические суммы
 - **WB**: Детализация fees: `mp_fees_commission`, `mp_fees_logistics`, `mp_fees_storage`, `mp_fees_other`
 - **WB**: Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
+
+### 2026-02-25
+
+- **Ozon**: Формула прибыли переписана: `revenue − COGS − mp_fees − ad_spend` (ранее: `txn_payout − COGS − ad` — давала абсурд при отрицательном txn_payout за период)
+- **Ozon**: `totals` теперь содержит `payout` и `avg_price` (ранее: фронт показывал 0₽ / пустую ячейку)
+- **Ozon**: `margin_percent` = `cost / price × 100` (доля С/с в цене, всегда положительный; ранее: маржа прибыли)
+- **WB**: `margin` в backend = `gross_profit / sales_amount × 100` (ранее: / payout — % от выплаты)
+- **WB**: Frontend `wbToOzon`: `margin_percent` = `(cost + packaging) / price × 100`, `grossProfitPct` = `profit / sales_amount × 100`
