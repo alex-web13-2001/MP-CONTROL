@@ -32,6 +32,14 @@
 - **Backend / `wb_products.py` [FIX]:** Добавлен `deduction` (удержания WB Продвижение) через `JSONExtractFloat(raw_payload, 'deduction')`
 - **Backend / `wb_finance_loader.py` [FIX]:** Маппинг `deduction` → `penalty_total` для корректного учёта при будущих загрузках
 
+### Changed — WB Products: единый источник P&L (fact_finances)
+
+- **Backend / `wb_products.py` [MODIFY]:** Revenue = `retail_amount` из `fact_finances` (по дате реализации, как в WB отчёте)
+- **Backend / `wb_products.py` [MODIFY]:** Payout = `ppvz_for_pay` (к перечислению от WB)
+- **Backend / `wb_products.py` [MODIFY]:** Qty = только операции `Продажа`
+- **Backend / `wb_products.py` [MODIFY]:** Prev period revenue из отдельного запроса `fact_finances`
+- **Backend / `wb_products.py` [MODIFY]:** Данные за 05-11.01 точно совпали с WB отчётом (Revenue, Payout, Qty)
+
 ## [Unreleased] - 2026-02-22
 
 ### Added — Excel-импорт себестоимости
