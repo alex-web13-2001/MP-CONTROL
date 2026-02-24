@@ -799,27 +799,19 @@ export default function ProductsPage() {
                       <p className="text-[13px] font-semibold tabular-nums">{fmtMoney(p.marketing_price || p.price)}</p>
                     </td>
 
-                    {/* ── 3. ОСТАТКИ (одно число, FBO/FBS → тултип) ── */}
+                    {/* ── 3. ОСТАТКИ FBO / FBS ── */}
                     <td className="px-2 py-2.5 text-right">
                       {totalStock === 0 ? (
-                        <span className="text-[11px] font-semibold text-red-400">0</span>
+                        <span className="text-[11px] font-semibold text-red-400">Нет</span>
                       ) : (
-                        <div className="relative group/stock cursor-default">
-                          <span className={cn(
-                            'text-[14px] font-bold tabular-nums',
-                            totalStock < 5 ? 'text-amber-400' : 'text-[hsl(var(--foreground))]'
-                          )}>{fmtNum(totalStock)}</span>
-                          <div className="absolute right-0 bottom-full mb-1.5 z-50 hidden group-hover/stock:block">
-                            <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-3 py-2 min-w-[100px] text-right whitespace-nowrap">
-                              <div className="flex justify-between gap-3">
-                                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">FBO</span>
-                                <span className="text-[12px] font-semibold tabular-nums">{fmtNum(p.stocks_fbo)}</span>
-                              </div>
-                              <div className="flex justify-between gap-3 mt-1">
-                                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">FBS</span>
-                                <span className="text-[12px] font-semibold tabular-nums">{fmtNum(p.stocks_fbs)}</span>
-                              </div>
-                            </div>
+                        <div className="flex flex-col items-end">
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">FBO</span>
+                            <span className={cn('text-[14px] font-bold tabular-nums', p.stocks_fbo === 0 ? 'text-red-400' : '')}>{fmtNum(p.stocks_fbo)}</span>
+                          </div>
+                          <div className="flex items-baseline gap-1">
+                            <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">FBS</span>
+                            <span className={cn('text-[12px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.7)]', p.stocks_fbs === 0 && 'text-[hsl(var(--muted-foreground)/0.3)]')}>{fmtNum(p.stocks_fbs)}</span>
                           </div>
                         </div>
                       )}
