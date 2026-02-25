@@ -76,6 +76,38 @@ function formatChartDate(dateStr: string): string {
   return dateStr.slice(5)
 }
 
+/** Format "2026-02-09" to "2026-02-15" → "9 фев — 15 фев 2026 (7 дней)" */
+function formatDateRange(fromStr: string, toStr: string): string {
+  const fp = fromStr.split('-')
+  const tp = toStr.split('-')
+  if (fp.length < 3 || tp.length < 3) return `${fromStr} — ${toStr}`
+
+  const fDay = parseInt(fp[2], 10)
+  const fMonth = parseInt(fp[1], 10) - 1
+  const fYear = fp[0]
+  const tDay = parseInt(tp[2], 10)
+  const tMonth = parseInt(tp[1], 10) - 1
+  const tYear = tp[0]
+
+  // Calculate days in range
+  const d1 = new Date(parseInt(fYear), fMonth, fDay)
+  const d2 = new Date(parseInt(tYear), tMonth, tDay)
+  const days = Math.round((d2.getTime() - d1.getTime()) / 86400000) + 1
+  const dayWord = days === 1 ? 'день' : days < 5 ? 'дня' : 'дней'
+
+  // If same year, show year once at the end
+  if (fYear === tYear) {
+    if (fMonth === tMonth) {
+      // Same month: "9 — 15 фев 2026 (7 дней)"
+      return `${fDay} — ${tDay} ${MONTHS_SHORT[tMonth]} ${tYear} (${days} ${dayWord})`
+    }
+    // Different months: "26 фев — 3 мар 2026 (7 дней)"
+    return `${fDay} ${MONTHS_SHORT[fMonth]} — ${tDay} ${MONTHS_SHORT[tMonth]} ${tYear} (${days} ${dayWord})`
+  }
+  // Different years
+  return `${fDay} ${MONTHS_SHORT[fMonth]} ${fYear} — ${tDay} ${MONTHS_SHORT[tMonth]} ${tYear} (${days} ${dayWord})`
+}
+
 function formatTooltipDate(dateStr: string): string {
   const parts = dateStr.split('-')
   if (parts.length >= 3) {
@@ -747,8 +779,8 @@ export default function FinancesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Финансы</h1>
-          <p className="mt-1 text-sm text-[hsl(var(--muted-foreground))]">
-            P&L и структура расходов • {data.date_from} — {data.date_to}
+          <p className="mt-1 text-base font-medium text-[hsl(var(--muted-foreground))]">
+            {formatDateRange(data.date_from, data.date_to)}
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
