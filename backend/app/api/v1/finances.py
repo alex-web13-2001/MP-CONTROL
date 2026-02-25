@@ -687,29 +687,21 @@ async def get_wb_finances(
     try:
         fin_totals = ch.query("""
             SELECT
-                -- Revenue (retail_amount from Продажа)
-                sumIf(retail_amount,
+                -- Revenue = retail_price_withdisc_rub (розничная цена = что платит покупатель)
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS rev_cur,
-                sumIf(retail_amount,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS rev_prev,
 
-                -- Payout (ppvz_for_pay)
+                -- Payout = ppvz_for_pay (к перечислению продавцу)
                 sumIf(payout_amount,
                     operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS pay_cur,
                 sumIf(payout_amount,
                     operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS pay_prev,
-
-                -- Commission (ppvz_sales_commission)
-                sumIf(commission_amount,
-                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS comm_cur,
-                sumIf(commission_amount,
-                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS comm_prev,
 
                 -- Logistics (all operation types)
                 sumIf(logistics_total,
@@ -752,10 +744,10 @@ async def get_wb_finances(
                 ) AS acc_prev,
 
                 -- Returns
-                sumIf(retail_amount,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS ret_cur,
-                sumIf(retail_amount,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS ret_prev,
 
@@ -783,22 +775,23 @@ async def get_wb_finances(
             revenue_prev = float(r[1] or 0)
             payout_cur = float(r[2] or 0)
             payout_prev = float(r[3] or 0)
-            commission_cur = abs(float(r[4] or 0))
-            commission_prev = abs(float(r[5] or 0))
-            logistics_cur = abs(float(r[6] or 0))
-            logistics_prev = abs(float(r[7] or 0))
-            storage_cur = abs(float(r[8] or 0))
-            storage_prev = abs(float(r[9] or 0))
-            penalties_cur = abs(float(r[10] or 0))
-            penalties_prev = abs(float(r[11] or 0))
-            acquiring_cur = abs(float(r[12] or 0))
-            acquiring_prev = abs(float(r[13] or 0))
-            acceptance_cur = abs(float(r[14] or 0))
-            acceptance_prev = abs(float(r[15] or 0))
-            returns_cur = abs(float(r[16] or 0))
-            returns_prev = abs(float(r[17] or 0))
-            orders_cur = int(r[18] or 0)
-            orders_prev = int(r[19] or 0)
+            logistics_cur = abs(float(r[4] or 0))
+            logistics_prev = abs(float(r[5] or 0))
+            storage_cur = abs(float(r[6] or 0))
+            storage_prev = abs(float(r[7] or 0))
+            penalties_cur = abs(float(r[8] or 0))
+            penalties_prev = abs(float(r[9] or 0))
+            acquiring_cur = abs(float(r[10] or 0))
+            acquiring_prev = abs(float(r[11] or 0))
+            acceptance_cur = abs(float(r[12] or 0))
+            acceptance_prev = abs(float(r[13] or 0))
+            returns_cur = abs(float(r[14] or 0))
+            returns_prev = abs(float(r[15] or 0))
+            orders_cur = int(r[16] or 0)
+            orders_prev = int(r[17] or 0)
+            # Commission = Revenue - Payout (includes SPP discount + WB commission)
+            commission_cur = max(revenue_cur - payout_cur, 0)
+            commission_prev = max(revenue_prev - payout_prev, 0)
     except Exception as e:
         logger.warning("CH WB finances totals query failed: %s", e)
 
@@ -810,16 +803,15 @@ async def get_wb_finances(
         daily_result = ch.query("""
             SELECT
                 event_date AS dt,
-                sumIf(retail_amount, operation_type = 'Продажа') AS revenue,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа') AS revenue,
                 sumIf(payout_amount, operation_type = 'Продажа') AS payout,
-                sumIf(commission_amount, operation_type = 'Продажа') AS commission,
                 sum(logistics_total) AS logistics,
                 sum(storage_fee) AS storage,
                 sum(penalty_total) AS penalties,
                 sum(wb_acquiring) AS acquiring,
                 sum(acceptance_fee) AS acceptance,
                 sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS orders,
-                sumIf(retail_amount, operation_type = 'Возврат') AS returns
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS returns
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
@@ -831,17 +823,19 @@ async def get_wb_finances(
             "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
         })
         for r in daily_result.result_rows:
+            rev_d = float(r[1] or 0)
+            pay_d = float(r[2] or 0)
             daily_data[str(r[0])] = {
-                "revenue": float(r[1] or 0),
-                "payout": float(r[2] or 0),
-                "commission": abs(float(r[3] or 0)),
-                "logistics": abs(float(r[4] or 0)),
-                "storage": abs(float(r[5] or 0)),
-                "penalties": abs(float(r[6] or 0)),
-                "acquiring": abs(float(r[7] or 0)),
-                "acceptance": abs(float(r[8] or 0)),
-                "orders": int(r[9] or 0),
-                "returns": abs(float(r[10] or 0)),
+                "revenue": rev_d,
+                "payout": pay_d,
+                "commission": max(rev_d - pay_d, 0),
+                "logistics": abs(float(r[3] or 0)),
+                "storage": abs(float(r[4] or 0)),
+                "penalties": abs(float(r[5] or 0)),
+                "acquiring": abs(float(r[6] or 0)),
+                "acceptance": abs(float(r[7] or 0)),
+                "orders": int(r[8] or 0),
+                "returns": abs(float(r[9] or 0)),
             }
     except Exception as e:
         logger.warning("CH WB daily query failed: %s", e)
