@@ -135,28 +135,40 @@ async def get_ozon_finances(
         logger.warning("CH orders daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 2. TRANSACTIONS
+    # 2. TRANSACTIONS — using Ozon's built-in detail fields
     #
-    #    payout = sum(ALL amounts) — what Ozon actually transfers
-    #    (matches Excel "К перечислению" exactly)
+    #  Revenue transactions have per-order detail:
+    #    accruals_for_sale  = gross sale amount (= Excel "Σ Продажи")
+    #    sale_commission    = Ozon commission (negative)
+    #    services_total     = per-order logistics + services (negative)
+    #    amount             = accruals + commission + services (net)
     #
-    #    Revenue(txn) ≠ Revenue(orders/GMV):
-    #      Revenue(txn)  = net credited amount (after Ozon internal commission)
-    #      Revenue(GMV)  = price × qty from orders (gross)
-    #      Commission    = GMV - Revenue(txn)
+    #  Expense categories (Logistics sku=0, Storage, Acquiring, etc.)
+    #    → bulk charges NOT embedded in Revenue per-order data
     #
-    #    mp_fees = sum of: commission + |Logistics| + |Storage| + |Acquiring|
-    #              + |Refund| + |Penalty| + |Other|
-    #    profit  = GMV - mp_fees - ads(ad_daily) - cogs
-    #
-    #    NOTE: Ozon posts Logistics in batches (some weeks = 0, then big charge)
+    #  P&L formula:
+    #    revenue      = accruals_for_sale (from Revenue txns)
+    #    commission   = |sale_commission|
+    #    services     = |services_total| (per-order logistics)
+    #    bulk_charges = |Logistics| + |Storage| + |Acquiring| + |Refund| + ...
+    #    mp_fees      = commission + services + bulk_charges
+    #    payout       = sum(ALL txn amounts) = Excel "К перечислению"
+    #    profit       = revenue - mp_fees - ads(ad_daily) - cogs
     # ══════════════════════════════════════════════════════
-    payout_cur = 0.0
+
+    # Revenue transaction fields
+    accruals_cur = 0.0     # gross sale amount
+    accruals_prev = 0.0
+    commission_cur = 0.0   # |sale_commission|
+    commission_prev = 0.0
+    services_cur = 0.0     # |services_total| from Revenue
+    services_prev = 0.0
+    payout_cur = 0.0       # sum(ALL amounts)
     payout_prev = 0.0
-    txn_revenue_cur = 0.0
-    txn_revenue_prev = 0.0
-    breakdown_cur = {
-        "logistics": 0.0,
+
+    # Expense category breakdown (bulk charges)
+    bulk_cur = {
+        "logistics": 0.0,    # Crossdocking/supply (sku=0)
         "storage": 0.0,
         "acquiring": 0.0,
         "refunds": 0.0,
@@ -164,7 +176,7 @@ async def get_ozon_finances(
         "compensation": 0.0,
         "other": 0.0,
     }
-    breakdown_prev = {
+    bulk_prev = {
         "logistics": 0.0,
         "storage": 0.0,
         "acquiring": 0.0,
@@ -185,13 +197,33 @@ async def get_ozon_finances(
     }
 
     try:
-        # 2a. Payout (sum ALL) + Revenue category — current + prev
+        # 2a. Revenue transaction detail + total payout
         txn_totals = ch.query("""
             SELECT
-                sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS pay_cur,
-                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS pay_prev,
-                sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date} AND category = 'Revenue') AS rev_txn_cur,
-                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date} AND category = 'Revenue') AS rev_txn_prev
+                sumIf(accruals_for_sale,
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                    AND category = 'Revenue') AS accruals_cur,
+                sumIf(accruals_for_sale,
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                    AND category = 'Revenue') AS accruals_prev,
+                sumIf(sale_commission,
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                    AND category = 'Revenue') AS comm_cur,
+                sumIf(sale_commission,
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                    AND category = 'Revenue') AS comm_prev,
+                sumIf(services_total,
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                    AND category = 'Revenue') AS svc_cur,
+                sumIf(services_total,
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                    AND category = 'Revenue') AS svc_prev,
+                sumIf(amount,
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                    ) AS pay_cur,
+                sumIf(amount,
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                    ) AS pay_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_prev_start:Date}
@@ -202,15 +234,20 @@ async def get_ozon_finances(
             "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
         })
         if txn_totals.result_rows:
-            payout_cur = float(txn_totals.result_rows[0][0] or 0)
-            payout_prev = float(txn_totals.result_rows[0][1] or 0)
-            txn_revenue_cur = float(txn_totals.result_rows[0][2] or 0)
-            txn_revenue_prev = float(txn_totals.result_rows[0][3] or 0)
+            r = txn_totals.result_rows[0]
+            accruals_cur = float(r[0] or 0)
+            accruals_prev = float(r[1] or 0)
+            commission_cur = abs(float(r[2] or 0))
+            commission_prev = abs(float(r[3] or 0))
+            services_cur = abs(float(r[4] or 0))
+            services_prev = abs(float(r[5] or 0))
+            payout_cur = float(r[6] or 0)
+            payout_prev = float(r[7] or 0)
     except Exception as e:
         logger.warning("CH txn totals query failed: %s", e)
 
     try:
-        # 2b. Breakdown by expense category (excl Revenue & Marketing)
+        # 2b. Bulk expense categories (Logistics sku=0, Storage, Acquiring, etc.)
         cat_result = ch.query("""
             SELECT
                 category,
@@ -229,17 +266,17 @@ async def get_ozon_finances(
         })
         for r in cat_result.result_rows:
             key = CAT_MAP.get(r[0], "other")
-            if key in breakdown_cur:
-                breakdown_cur[key] = float(r[1] or 0)
-                breakdown_prev[key] = float(r[2] or 0)
+            if key in bulk_cur:
+                bulk_cur[key] = float(r[1] or 0)
+                bulk_prev[key] = float(r[2] or 0)
             else:
-                breakdown_cur["other"] += float(r[1] or 0)
-                breakdown_prev["other"] += float(r[2] or 0)
+                bulk_cur["other"] += float(r[1] or 0)
+                bulk_prev["other"] += float(r[2] or 0)
     except Exception as e:
-        logger.warning("CH transactions breakdown query failed: %s", e)
+        logger.warning("CH bulk categories query failed: %s", e)
 
     try:
-        # 2c. Daily payout (sum ALL amounts) for dynamics chart
+        # 2c. Daily payout (sum ALL) for dynamics chart
         txn_daily_result = ch.query("""
             SELECT
                 toDate(operation_date) AS dt,
@@ -361,26 +398,27 @@ async def get_ozon_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # commission = GMV(orders) - Revenue(txn category)
-    #   → Ozon embeds commission into Revenue, so it's NOT a separate category
-    # known_expenses = |Logistics| + |Storage| + |Acquiring| + |Refund| + ...
-    # mp_fees = commission + known_expenses
-    # payout = sum(ALL transactions) — exact "K perechisleniyu" from Ozon
-    # profit = GMV - mp_fees - ads(ad_daily) - cogs
+    # revenue      = accruals_for_sale (gross sale amount from txn)
+    # commission   = |sale_commission| (from Revenue txns)
+    # services     = |services_total| (per-order logistics+services)
+    # bulk_charges = |Logistics| + |Storage| + |Acquiring| + ...
+    # mp_fees      = commission + services + bulk_charges
+    # payout       = sum(ALL txn amounts) = Excel "К перечислению"
+    # profit       = revenue - mp_fees - ads(ad_daily) - cogs
     # ══════════════════════════════════════════════════════
-    # Commission = difference GMV vs txn Revenue
-    commission_cur = max(0, revenue_cur - txn_revenue_cur)
-    commission_prev = max(0, revenue_prev - txn_revenue_prev)
+    # Use accruals_for_sale as revenue (= Excel "Σ Продажи")
+    revenue_cur = accruals_cur if accruals_cur > 0 else revenue_cur
+    revenue_prev = accruals_prev if accruals_prev > 0 else revenue_prev
 
-    # Known expenses from transaction categories (all are negative in CH → abs)
-    known_expenses_cur = sum(abs(v) for v in breakdown_cur.values())
-    known_expenses_prev = sum(abs(v) for v in breakdown_prev.values())
+    # Bulk charges (negative in CH → abs)
+    bulk_charges_cur = sum(abs(v) for v in bulk_cur.values())
+    bulk_charges_prev = sum(abs(v) for v in bulk_prev.values())
 
-    # mp_fees = commission + category expenses (Logistics, Storage, Acquiring, etc.)
-    mp_fees_cur = commission_cur + known_expenses_cur
-    mp_fees_prev = commission_prev + known_expenses_prev
+    # Total MP fees = commission + services + bulk
+    mp_fees_cur = commission_cur + services_cur + bulk_charges_cur
+    mp_fees_prev = commission_prev + services_prev + bulk_charges_prev
 
-    # Profit = GMV - mp_fees - ads - cogs
+    # Profit
     profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
     profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
@@ -408,13 +446,13 @@ async def get_ozon_finances(
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
         "commission": round(commission_cur, 2),
-        "logistics": round(abs(breakdown_cur["logistics"]), 2),
-        "storage": round(abs(breakdown_cur["storage"]), 2),
-        "acquiring": round(abs(breakdown_cur["acquiring"]), 2),
+        "logistics": round(services_cur + abs(bulk_cur.get("logistics", 0)), 2),
+        "storage": round(abs(bulk_cur.get("storage", 0)), 2),
+        "acquiring": round(abs(bulk_cur.get("acquiring", 0)), 2),
         "advertising": round(ad_spend_cur, 2),
-        "refunds": round(abs(breakdown_cur["refunds"]), 2),
-        "penalties": round(abs(breakdown_cur["penalties"]), 2),
-        "compensation": round(abs(breakdown_cur.get("compensation", 0)), 2),
+        "refunds": round(abs(bulk_cur.get("refunds", 0)), 2),
+        "penalties": round(abs(bulk_cur.get("penalties", 0)), 2),
+        "compensation": round(abs(bulk_cur.get("compensation", 0)), 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
     }
@@ -477,19 +515,18 @@ async def get_ozon_finances(
         daily_final = daily_raw
 
     # ── Build comparison ──
-    # prev breakdown already populated from query 2a
     comparison = {
         "current": {
             "revenue": round(revenue_cur, 2),
             "payout": round(payout_cur, 2),
             "mp_fees": round(mp_fees_cur, 2),
-            "commission": breakdown_resp["commission"],
-            "logistics": breakdown_resp["logistics"],
-            "storage": breakdown_resp["storage"],
-            "acquiring": breakdown_resp["acquiring"],
+            "commission": round(commission_cur, 2),
+            "logistics": round(services_cur + abs(bulk_cur.get("logistics", 0)), 2),
+            "storage": round(abs(bulk_cur.get("storage", 0)), 2),
+            "acquiring": round(abs(bulk_cur.get("acquiring", 0)), 2),
             "advertising": round(ad_spend_cur, 2),
-            "refunds": breakdown_resp["refunds"],
-            "penalties": breakdown_resp["penalties"],
+            "refunds": round(abs(bulk_cur.get("refunds", 0)), 2),
+            "penalties": round(abs(bulk_cur.get("penalties", 0)), 2),
             "cogs": round(cogs_cur, 2),
             "profit": round(profit_cur, 2),
             "orders": orders_cur,
@@ -498,13 +535,13 @@ async def get_ozon_finances(
             "revenue": round(revenue_prev, 2),
             "payout": round(payout_prev, 2),
             "mp_fees": round(mp_fees_prev, 2),
-            "commission": round(abs(breakdown_prev.get("commission", 0)), 2),
-            "logistics": round(abs(breakdown_prev.get("logistics", 0)), 2),
-            "storage": round(abs(breakdown_prev.get("storage", 0)), 2),
-            "acquiring": round(abs(breakdown_prev.get("acquiring", 0)), 2),
+            "commission": round(commission_prev, 2),
+            "logistics": round(services_prev + abs(bulk_prev.get("logistics", 0)), 2),
+            "storage": round(abs(bulk_prev.get("storage", 0)), 2),
+            "acquiring": round(abs(bulk_prev.get("acquiring", 0)), 2),
             "advertising": round(ad_spend_prev, 2),
-            "refunds": round(abs(breakdown_prev.get("refunds", 0)), 2),
-            "penalties": round(abs(breakdown_prev.get("penalties", 0)), 2),
+            "refunds": round(abs(bulk_prev.get("refunds", 0)), 2),
+            "penalties": round(abs(bulk_prev.get("penalties", 0)), 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
             "orders": orders_prev,
