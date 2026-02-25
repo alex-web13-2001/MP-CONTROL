@@ -617,11 +617,17 @@ async def get_wb_finances(
     """
     WB P&L overview: KPI, expense breakdown, daily dynamics, period comparison.
 
-    Data sources:
-      - Revenue/Commission:  fact_orders_raw_latest (finished_price, price_with_disc)
-      - Expenses:            fact_finances_latest   (logistics, storage, penalties)
-      - Advertising:         fact_advert_stats_v3   (spend)
-      - COGS:                product_costs (PG) × qty from orders
+    Single data source: fact_finances FINAL (WB realization report)
+      - Revenue:    retail_amount   (operation_type = 'Продажа')
+      - Payout:     payout_amount   (ppvz_for_pay)
+      - Commission: commission_amount (ppvz_sales_commission)
+      - Logistics:  logistics_total (delivery_rub + rebill_logistic_cost)
+      - Storage:    storage_fee
+      - Acquiring:  wb_acquiring    (acquiring_fee)
+      - Penalties:  penalty_total
+    Plus:
+      - Advertising: fact_advert_stats_v3 (spend)
+      - COGS:        product_costs (PG) × qty from fact_finances
     """
 
     # ── Verify shop ownership ──
@@ -654,136 +660,169 @@ async def get_wb_finances(
     d_prev_end = d_start - timedelta(days=1)
 
     # ══════════════════════════════════════════════════════
-    # 1. ORDERS: revenue + count
-    #    finished_price = what buyer pays (after all discounts)
-    #    NOTE: price_with_disc - finished_price = SPP discount
-    #    (covered by WB, NOT a seller expense – don't include!)
+    # 1. UNIFIED P&L from fact_finances FINAL
+    #    Single source of truth: WB realization report
     # ══════════════════════════════════════════════════════
     revenue_cur = 0.0
     revenue_prev = 0.0
-    orders_cur = 0
-    orders_prev = 0
-
-    orders_daily = {}
-
-    try:
-        orders_totals = ch.query("""
-            SELECT
-                sumIf(finished_price, toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS rev_cur,
-                countIf(toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS ord_cur,
-                sumIf(finished_price, toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS rev_prev,
-                countIf(toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS ord_prev
-            FROM mms_analytics.fact_orders_raw_latest
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {d_prev_start:Date}
-              AND toDate(date) <= {d_end:Date}
-              AND is_cancel = 0
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
-        })
-        if orders_totals.result_rows:
-            r = orders_totals.result_rows[0]
-            revenue_cur = float(r[0] or 0)
-            orders_cur = int(r[1] or 0)
-            revenue_prev = float(r[2] or 0)
-            orders_prev = int(r[3] or 0)
-    except Exception as e:
-        logger.warning("CH WB orders totals query failed: %s", e)
-
-    try:
-        orders_daily_result = ch.query("""
-            SELECT
-                toDate(date) AS dt,
-                sum(finished_price) AS revenue,
-                count() AS orders_count
-            FROM mms_analytics.fact_orders_raw_latest
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {d_start:Date}
-              AND toDate(date) <= {d_end:Date}
-              AND is_cancel = 0
-            GROUP BY dt
-            ORDER BY dt
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-        })
-        for r in orders_daily_result.result_rows:
-            orders_daily[str(r[0])] = {
-                "revenue": float(r[1] or 0),
-                "orders": int(r[2] or 0),
-            }
-    except Exception as e:
-        logger.warning("CH WB orders daily query failed: %s", e)
-
-    # ══════════════════════════════════════════════════════
-    # 2. EXPENSES from fact_finances_latest
-    #    Logistics, Storage, Penalties, Other
-    # ══════════════════════════════════════════════════════
+    payout_cur = 0.0
+    payout_prev = 0.0
+    commission_cur = 0.0
+    commission_prev = 0.0
     logistics_cur = 0.0
     logistics_prev = 0.0
     storage_cur = 0.0
     storage_prev = 0.0
     penalties_cur = 0.0
     penalties_prev = 0.0
-    other_expenses_cur = 0.0
-    other_expenses_prev = 0.0
-    expenses_daily = {}
-
-    EXPENSE_MAP = {
-        "Логистика": "logistics",
-        "Хранение": "storage",
-        "Штраф": "penalties",
-    }
+    acquiring_cur = 0.0
+    acquiring_prev = 0.0
+    acceptance_cur = 0.0
+    acceptance_prev = 0.0
+    returns_cur = 0.0
+    returns_prev = 0.0
+    orders_cur = 0
+    orders_prev = 0
 
     try:
-        exp_totals = ch.query("""
+        fin_totals = ch.query("""
             SELECT
-                operation_type,
-                sumIf(logistics_total + storage_fee + penalty_total,
-                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS exp_cur,
-                sumIf(logistics_total + storage_fee + penalty_total,
-                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS exp_prev
-            FROM mms_analytics.fact_finances_latest
+                -- Revenue (retail_amount from Продажа)
+                sumIf(retail_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS rev_cur,
+                sumIf(retail_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS rev_prev,
+
+                -- Payout (ppvz_for_pay)
+                sumIf(payout_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS pay_cur,
+                sumIf(payout_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS pay_prev,
+
+                -- Commission (ppvz_sales_commission)
+                sumIf(commission_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS comm_cur,
+                sumIf(commission_amount,
+                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS comm_prev,
+
+                -- Logistics (all operation types)
+                sumIf(logistics_total,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS log_cur,
+                sumIf(logistics_total,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS log_prev,
+
+                -- Storage
+                sumIf(storage_fee,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS stor_cur,
+                sumIf(storage_fee,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS stor_prev,
+
+                -- Penalties
+                sumIf(penalty_total,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS pen_cur,
+                sumIf(penalty_total,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS pen_prev,
+
+                -- Acquiring (bank fee)
+                sumIf(wb_acquiring,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS acq_cur,
+                sumIf(wb_acquiring,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS acq_prev,
+
+                -- Acceptance (платная приёмка)
+                sumIf(acceptance_fee,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS acc_cur,
+                sumIf(acceptance_fee,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS acc_prev,
+
+                -- Returns
+                sumIf(retail_amount,
+                    operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ret_cur,
+                sumIf(retail_amount,
+                    operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ret_prev,
+
+                -- Orders count (quantity from Продажа with positive qty)
+                sumIf(quantity,
+                    operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ord_cur,
+                sumIf(quantity,
+                    operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ord_prev
+
+            FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
               AND event_date >= {d_prev_start:Date}
               AND event_date <= {d_end:Date}
-            GROUP BY operation_type
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start, "d_end": d_end,
             "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
         })
-        for r in exp_totals.result_rows:
-            op_type = r[0]
-            val_cur = abs(float(r[1] or 0))
-            val_prev = abs(float(r[2] or 0))
-            cat = EXPENSE_MAP.get(op_type, "other")
-            if cat == "logistics":
-                logistics_cur += val_cur
-                logistics_prev += val_prev
-            elif cat == "storage":
-                storage_cur += val_cur
-                storage_prev += val_prev
-            elif cat == "penalties":
-                penalties_cur += val_cur
-                penalties_prev += val_prev
-            else:
-                other_expenses_cur += val_cur
-                other_expenses_prev += val_prev
+        if fin_totals.result_rows:
+            r = fin_totals.result_rows[0]
+            revenue_cur = float(r[0] or 0)
+            revenue_prev = float(r[1] or 0)
+            payout_cur = float(r[2] or 0)
+            payout_prev = float(r[3] or 0)
+            commission_cur = abs(float(r[4] or 0))
+            commission_prev = abs(float(r[5] or 0))
+            logistics_cur = abs(float(r[6] or 0))
+            logistics_prev = abs(float(r[7] or 0))
+            storage_cur = abs(float(r[8] or 0))
+            storage_prev = abs(float(r[9] or 0))
+            penalties_cur = abs(float(r[10] or 0))
+            penalties_prev = abs(float(r[11] or 0))
+            acquiring_cur = abs(float(r[12] or 0))
+            acquiring_prev = abs(float(r[13] or 0))
+            acceptance_cur = abs(float(r[14] or 0))
+            acceptance_prev = abs(float(r[15] or 0))
+            returns_cur = abs(float(r[16] or 0))
+            returns_prev = abs(float(r[17] or 0))
+            orders_cur = int(r[18] or 0)
+            orders_prev = int(r[19] or 0)
     except Exception as e:
-        logger.warning("CH WB expenses query failed: %s", e)
+        logger.warning("CH WB finances totals query failed: %s", e)
 
+    # ══════════════════════════════════════════════════════
+    # 2. DAILY breakdown from fact_finances FINAL
+    # ══════════════════════════════════════════════════════
+    daily_data = {}
     try:
-        exp_daily_result = ch.query("""
+        daily_result = ch.query("""
             SELECT
                 event_date AS dt,
+                sumIf(retail_amount, operation_type = 'Продажа') AS revenue,
+                sumIf(payout_amount, operation_type = 'Продажа') AS payout,
+                sumIf(commission_amount, operation_type = 'Продажа') AS commission,
                 sum(logistics_total) AS logistics,
                 sum(storage_fee) AS storage,
-                sum(penalty_total) AS penalties
-            FROM mms_analytics.fact_finances_latest
+                sum(penalty_total) AS penalties,
+                sum(wb_acquiring) AS acquiring,
+                sum(acceptance_fee) AS acceptance,
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS orders,
+                sumIf(retail_amount, operation_type = 'Возврат') AS returns
+            FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
               AND event_date >= {d_start:Date}
               AND event_date <= {d_end:Date}
             GROUP BY dt
@@ -791,14 +830,21 @@ async def get_wb_finances(
         """, parameters={
             "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
         })
-        for r in exp_daily_result.result_rows:
-            expenses_daily[str(r[0])] = {
-                "logistics": abs(float(r[1] or 0)),
-                "storage": abs(float(r[2] or 0)),
-                "penalties": abs(float(r[3] or 0)),
+        for r in daily_result.result_rows:
+            daily_data[str(r[0])] = {
+                "revenue": float(r[1] or 0),
+                "payout": float(r[2] or 0),
+                "commission": abs(float(r[3] or 0)),
+                "logistics": abs(float(r[4] or 0)),
+                "storage": abs(float(r[5] or 0)),
+                "penalties": abs(float(r[6] or 0)),
+                "acquiring": abs(float(r[7] or 0)),
+                "acceptance": abs(float(r[8] or 0)),
+                "orders": int(r[9] or 0),
+                "returns": abs(float(r[10] or 0)),
             }
     except Exception as e:
-        logger.warning("CH WB expenses daily query failed: %s", e)
+        logger.warning("CH WB daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 3. ADS: fact_advert_stats_v3
@@ -845,8 +891,7 @@ async def get_wb_finances(
         logger.warning("CH WB ads daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 4. COGS: supplier_article = offer_id in product_costs
-    #    Each order in fact_orders_raw = 1 item
+    # 4. COGS: vendor_code from fact_finances → product_costs
     # ══════════════════════════════════════════════════════
     cogs_cur = 0.0
     cogs_prev = 0.0
@@ -864,17 +909,18 @@ async def get_wb_finances(
         cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
 
         if cost_map:
-            articles = list(cost_map.keys())
             cogs_ch = ch.query("""
                 SELECT
-                    toDate(date) AS dt,
-                    supplier_article AS art,
-                    count() AS qty
-                FROM mms_analytics.fact_orders_raw_latest
+                    event_date AS dt,
+                    vendor_code AS art,
+                    sum(quantity) AS qty
+                FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) >= {d_prev_start:Date}
-                  AND toDate(date) <= {d_end:Date}
-                  AND is_cancel = 0
+                  AND marketplace = 1
+                  AND operation_type = 'Продажа'
+                  AND quantity > 0
+                  AND event_date >= {d_prev_start:Date}
+                  AND event_date <= {d_end:Date}
                 GROUP BY dt, art
             """, parameters={
                 "shop_id": shop_id,
@@ -882,7 +928,7 @@ async def get_wb_finances(
             })
             for r in cogs_ch.result_rows:
                 row_date = r[0]
-                art = r[1]
+                art = str(r[1] or "")
                 qty = int(r[2] or 0)
                 # Normalize to lowercase in Python (CH lower() doesn't handle Cyrillic)
                 cost = cost_map.get(art.lower(), 0)
@@ -899,19 +945,14 @@ async def get_wb_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # WB: NO commission in our data (ppvz_for_pay not available per-order)
-    # mp_fees = logistics + storage + penalties + other (fact_finances only)
-    # payout  = revenue - mp_fees (before ads & COGS)
-    # profit  = payout - ads - cogs
+    # mp_fees = commission + logistics + storage + penalties + acquiring + acceptance
+    # profit  = payout - mp_fees - ads - cogs
     # ══════════════════════════════════════════════════════
-    mp_fees_cur = logistics_cur + storage_cur + penalties_cur + other_expenses_cur
-    mp_fees_prev = logistics_prev + storage_prev + penalties_prev + other_expenses_prev
+    mp_fees_cur = commission_cur + logistics_cur + storage_cur + penalties_cur + acquiring_cur + acceptance_cur
+    mp_fees_prev = commission_prev + logistics_prev + storage_prev + penalties_prev + acquiring_prev + acceptance_prev
 
-    payout_cur = revenue_cur - mp_fees_cur
-    payout_prev = revenue_prev - mp_fees_prev
-
-    profit_cur = payout_cur - ad_spend_cur - cogs_cur
-    profit_prev = payout_prev - ad_spend_prev - cogs_prev
+    profit_cur = payout_cur - mp_fees_cur - ad_spend_cur - cogs_cur
+    profit_prev = payout_prev - mp_fees_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
@@ -936,12 +977,14 @@ async def get_wb_finances(
     # ── Build breakdown ──
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
-        "commission": 0,
+        "commission": round(commission_cur, 2),
         "logistics": round(logistics_cur, 2),
         "storage": round(storage_cur, 2),
+        "acquiring": round(acquiring_cur, 2),
         "advertising": round(ad_spend_cur, 2),
+        "refunds": round(returns_cur, 2),
         "penalties": round(penalties_cur, 2),
-        "other": round(other_expenses_cur, 2),
+        "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
     }
@@ -955,23 +998,25 @@ async def get_wb_finances(
 
     daily_raw = []
     for ds in sorted(all_dates):
-        od = orders_daily.get(ds, {})
-        ed = expenses_daily.get(ds, {})
-        rev = od.get("revenue", 0)
-        ords = od.get("orders", 0)
-        logist_d = ed.get("logistics", 0)
-        stor_d = ed.get("storage", 0)
-        pen_d = ed.get("penalties", 0)
+        dd = daily_data.get(ds, {})
+        rev = dd.get("revenue", 0)
+        pay = dd.get("payout", 0)
+        comm_d = dd.get("commission", 0)
+        log_d = dd.get("logistics", 0)
+        stor_d = dd.get("storage", 0)
+        pen_d = dd.get("penalties", 0)
+        acq_d = dd.get("acquiring", 0)
+        acc_d = dd.get("acceptance", 0)
+        ords = dd.get("orders", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        mp_d = logist_d + stor_d + pen_d
-        payout_d = rev - mp_d
-        profit_d = payout_d - ads_d - cogs_d
+        mp_d = comm_d + log_d + stor_d + pen_d + acq_d + acc_d
+        profit_d = pay - mp_d - ads_d - cogs_d
 
         daily_raw.append({
             "date": ds,
             "revenue": round(rev, 2),
-            "payout": round(payout_d, 2),
+            "payout": round(pay, 2),
             "mp_fees": round(mp_d, 2),
             "ad_spend": round(ads_d, 2),
             "cogs": round(cogs_d, 2),
@@ -1011,12 +1056,14 @@ async def get_wb_finances(
             "revenue": round(revenue_cur, 2),
             "payout": round(payout_cur, 2),
             "mp_fees": round(mp_fees_cur, 2),
-            "commission": 0,
+            "commission": round(commission_cur, 2),
             "logistics": round(logistics_cur, 2),
             "storage": round(storage_cur, 2),
+            "acquiring": round(acquiring_cur, 2),
             "advertising": round(ad_spend_cur, 2),
+            "refunds": round(returns_cur, 2),
             "penalties": round(penalties_cur, 2),
-            "other": round(other_expenses_cur, 2),
+            "compensation": round(acceptance_cur, 2),
             "cogs": round(cogs_cur, 2),
             "profit": round(profit_cur, 2),
             "orders": orders_cur,
@@ -1025,12 +1072,14 @@ async def get_wb_finances(
             "revenue": round(revenue_prev, 2),
             "payout": round(payout_prev, 2),
             "mp_fees": round(mp_fees_prev, 2),
-            "commission": 0,
+            "commission": round(commission_prev, 2),
             "logistics": round(logistics_prev, 2),
             "storage": round(storage_prev, 2),
+            "acquiring": round(acquiring_prev, 2),
             "advertising": round(ad_spend_prev, 2),
+            "refunds": round(returns_prev, 2),
             "penalties": round(penalties_prev, 2),
-            "other": round(other_expenses_prev, 2),
+            "compensation": round(acceptance_prev, 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
             "orders": orders_prev,
@@ -1056,3 +1105,4 @@ async def get_wb_finances(
         "daily": daily_final,
         "comparison": comparison,
     }
+
