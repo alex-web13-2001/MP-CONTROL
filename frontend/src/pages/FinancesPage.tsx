@@ -244,86 +244,123 @@ function GroupBySelector({
    Waterfall Chart — Expense Breakdown
    ═══════════════════════════════════════════════════════════ */
 
-const BREAKDOWN_ITEMS = [
-  { key: 'revenue', label: 'Выручка', color: '#10b981' },
-  { key: 'commission', label: 'Комиссия + скидки', color: '#f97316' },
-  { key: 'logistics', label: 'Логистика', color: '#ef4444' },
-  { key: 'storage', label: 'Хранение', color: '#f59e0b' },
-  { key: 'acquiring', label: 'Эквайринг', color: '#ec4899' },
-  { key: 'advertising', label: 'Реклама', color: '#8b5cf6' },
-  { key: 'refunds', label: 'Возвраты', color: '#6366f1' },
-  { key: 'penalties', label: 'Штрафы', color: '#dc2626' },
-  { key: 'cogs', label: 'Себестоимость', color: '#64748b' },
-  { key: 'profit', label: 'Прибыль', color: '#10b981' },
-] as const
+const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
+  { key: 'revenue', label: 'Выручка', color: '#10b981', type: 'revenue' },
+  { key: 'commission', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
+  { key: '_payout', label: 'К перечислению', color: '#3b82f6', type: 'subtotal' },
+  { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
+  { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
+  { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
+  { key: 'deductions', label: 'Удержания', color: '#b91c1c', type: 'expense' },
+  { key: 'advertising', label: 'Реклама', color: '#8b5cf6', type: 'expense' },
+  { key: 'refunds', label: 'Возвраты', color: '#6366f1', type: 'expense' },
+  { key: 'penalties', label: 'Штрафы', color: '#dc2626', type: 'expense' },
+  { key: 'compensation', label: 'Плат. приёмка', color: '#a855f7', type: 'expense' },
+  { key: 'cogs', label: 'Себестоимость', color: '#64748b', type: 'expense' },
+  { key: 'profit', label: 'Прибыль', color: '#10b981', type: 'result' },
+]
 
 function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
   const revenue = data.revenue || 1
+  // Compute payout = revenue - commission for subtotal row
+  const payoutVal = (data.revenue || 0) - (data.commission || 0)
 
-  const items = BREAKDOWN_ITEMS.map((item) => {
-    const val = (data as any)[item.key] || 0
-    const pct = revenue > 0 ? Math.abs(val) / revenue * 100 : 0
-    return {
-      name: item.label,
-      value: Math.abs(val),
-      pct: Math.round(pct * 10) / 10,
-      color: item.key === 'profit' ? (val >= 0 ? '#10b981' : '#ef4444') : item.color,
-      isProfit: item.key === 'profit',
-      isRevenue: item.key === 'revenue',
-    }
-  })
+  const items = BREAKDOWN_ITEMS
+    .map((item) => {
+      // Virtual subtotal row for payout
+      if (item.key === '_payout') {
+        const pct = revenue > 0 ? payoutVal / revenue * 100 : 0
+        return {
+          name: item.label,
+          value: payoutVal,
+          rawValue: payoutVal,
+          pct: Math.round(pct * 10) / 10,
+          color: item.color,
+          type: item.type || 'expense' as const,
+        }
+      }
+      const val = (data as any)[item.key] || 0
+      const pct = revenue > 0 ? Math.abs(val) / revenue * 100 : 0
+      return {
+        name: item.label,
+        value: Math.abs(val),
+        rawValue: val,
+        pct: Math.round(pct * 10) / 10,
+        color: item.key === 'profit' ? (val >= 0 ? '#10b981' : '#ef4444') : item.color,
+        type: item.type || 'expense' as const,
+      }
+    })
+    // Filter out zero-value expense rows (but always show revenue, subtotal, result)
+    .filter(item => item.type !== 'expense' || item.value > 0)
 
   return (
-    <div className="space-y-2.5">
-      {items.map((item, i) => (
-        <motion.div
-          key={item.name}
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.3, delay: i * 0.04 }}
-          className="group"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-[140px] shrink-0 text-right">
-              <span className={`text-[13px] font-medium ${
-                item.isRevenue || item.isProfit
-                  ? 'text-[hsl(var(--foreground))]'
-                  : 'text-[hsl(var(--muted-foreground))]'
-              }`}>
-                {item.isRevenue ? '' : '− '}{item.name}
-              </span>
-            </div>
-            <div className="flex-1 relative h-7 rounded-md bg-[hsl(var(--muted)/0.15)] overflow-hidden">
-              <motion.div
-                initial={{ width: 0 }}
-                animate={{ width: `${Math.min(item.pct, 100)}%` }}
-                transition={{ duration: 0.6, delay: i * 0.04, ease: 'easeOut' }}
-                className="absolute inset-y-0 left-0 rounded-md"
-                style={{
-                  background: `linear-gradient(90deg, ${item.color}40, ${item.color}80)`,
-                  borderLeft: `3px solid ${item.color}`,
-                }}
-              />
-              <div className="absolute inset-y-0 left-3 flex items-center">
-                <span className="text-[12px] font-semibold text-[hsl(var(--foreground))] drop-shadow-sm">
-                  {formatMoney(item.value)}
+    <div className="space-y-2">
+      {items.map((item, i) => {
+        const isRevenue = item.type === 'revenue'
+        const isSubtotal = item.type === 'subtotal'
+        const isResult = item.type === 'result'
+        const prefix = isRevenue ? '' : isSubtotal ? '= ' : isResult ? '= ' : '− '
+
+        return (
+          <motion.div
+            key={item.name}
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3, delay: i * 0.04 }}
+            className="group"
+          >
+            {/* Separator line before subtotals and result */}
+            {isSubtotal && (
+              <div className="mb-2 mt-1 border-t border-[hsl(var(--border)/0.3)]" />
+            )}
+            {isResult && (
+              <div className="mb-2 mt-1 border-t-2 border-dashed border-[hsl(var(--border)/0.5)]" />
+            )}
+
+            <div className="flex items-center gap-3">
+              <div className="w-[150px] shrink-0 text-right">
+                <span className={`text-[13px] font-medium ${
+                  isRevenue || isResult || isSubtotal
+                    ? 'text-[hsl(var(--foreground))]'
+                    : 'text-[hsl(var(--muted-foreground))]'
+                } ${isSubtotal ? 'font-semibold' : ''}`}>
+                  {prefix}{item.name}
+                </span>
+              </div>
+              <div className="flex-1 relative h-7 rounded-md bg-[hsl(var(--muted)/0.15)] overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(item.pct, 100)}%` }}
+                  transition={{ duration: 0.6, delay: i * 0.04, ease: 'easeOut' }}
+                  className="absolute inset-y-0 left-0 rounded-md"
+                  style={{
+                    background: `linear-gradient(90deg, ${item.color}40, ${item.color}80)`,
+                    borderLeft: `3px solid ${item.color}`,
+                  }}
+                />
+                <div className="absolute inset-y-0 left-3 flex items-center">
+                  <span className={`text-[12px] font-semibold text-[hsl(var(--foreground))] drop-shadow-sm ${
+                    isSubtotal || isResult ? 'font-bold' : ''
+                  }`}>
+                    {isResult && item.rawValue < 0 ? '-' : ''}{formatMoney(item.value)}
+                  </span>
+                </div>
+              </div>
+              <div className="w-[50px] shrink-0 text-right">
+                <span className={`text-[13px] font-bold ${
+                  isResult
+                    ? (item.rawValue >= 0 ? 'text-emerald-400' : 'text-red-400')
+                    : isSubtotal
+                      ? 'text-blue-400'
+                      : 'text-[hsl(var(--muted-foreground))]'
+                }`}>
+                  {item.pct.toFixed(1)}%
                 </span>
               </div>
             </div>
-            <div className="w-[50px] shrink-0 text-right">
-              <span className={`text-[13px] font-bold ${
-                item.isProfit ? (item.value > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-[hsl(var(--muted-foreground))]'
-              }`}>
-                {item.pct.toFixed(1)}%
-              </span>
-            </div>
-          </div>
-          {/* Separator before profit */}
-          {item.name === 'Себестоимость' && (
-            <div className="mt-3 mb-1 border-t-2 border-dashed border-[hsl(var(--border)/0.5)]" />
-          )}
-        </motion.div>
-      ))}
+          </motion.div>
+        )
+      })}
     </div>
   )
 }
@@ -779,7 +816,7 @@ export default function FinancesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Финансы</h1>
-          <p className="mt-1 text-base font-medium text-[hsl(var(--muted-foreground))]">
+          <p className="mt-1 text-base font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap">
             {formatDateRange(data.date_from, data.date_to)}
           </p>
         </div>
@@ -831,6 +868,7 @@ export default function FinancesPage() {
         <KpiCard
           title="Себестоимость"
           value={formatMoney(kpi.cogs)}
+          subtitle={kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% от выручки` : undefined}
           delta={kpi.cogs_delta}
           invertDelta
           icon={Package}
