@@ -845,16 +845,23 @@ export default function FinancesPage() {
           accent="#3b82f6"
           delay={0.05}
         />
-        <KpiCard
-          title="Услуги МП"
-          value={formatMoney(kpi.mp_fees)}
-          subtitle={kpi.revenue > 0 ? `${(kpi.mp_fees / kpi.revenue * 100).toFixed(1)}% от выручки` : undefined}
-          delta={kpi.mp_fees_delta}
-          invertDelta
-          icon={Building2}
-          accent="#f97316"
-          delay={0.1}
-        />
+        {(() => {
+          // Operating = mp_fees - commission, where commission = revenue - payout
+          const operating = kpi.mp_fees - Math.max(kpi.revenue - kpi.payout, 0)
+          const operatingPct = kpi.payout > 0 ? (operating / kpi.payout * 100).toFixed(1) : '0'
+          return (
+            <KpiCard
+              title="Расходы МП"
+              value={formatMoney(operating)}
+              subtitle={`${operatingPct}% от перечисления`}
+              delta={kpi.mp_fees_delta}
+              invertDelta
+              icon={Building2}
+              accent="#f97316"
+              delay={0.1}
+            />
+          )
+        })()}
         <KpiCard
           title="Реклама"
           value={formatMoney(kpi.ad_spend)}
