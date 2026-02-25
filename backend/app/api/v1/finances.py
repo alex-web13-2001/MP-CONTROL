@@ -135,19 +135,27 @@ async def get_ozon_finances(
         logger.warning("CH orders daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 2. TRANSACTIONS: txn_payout (per-product, sku > 0)
+    # 2. TRANSACTIONS
     #
-    #    The SAME formula as products.py:
-    #    txn_payout = sum(amount) WHERE sku > 0
-    #      → includes Revenue, Commission (embedded), Logistics, etc.
-    #      → excludes Marketing (no sku) — ads from ad_daily instead
-    #    mp_fees = revenue(orders) - txn_payout
-    #    profit = revenue - mp_fees - ads - cogs
+    #    payout = sum(ALL amounts) — what Ozon actually transfers
+    #    (matches Excel "К перечислению" exactly)
+    #
+    #    Revenue(txn) ≠ Revenue(orders/GMV):
+    #      Revenue(txn)  = net credited amount (after Ozon internal commission)
+    #      Revenue(GMV)  = price × qty from orders (gross)
+    #      Commission    = GMV - Revenue(txn)
+    #
+    #    mp_fees = sum of: commission + |Logistics| + |Storage| + |Acquiring|
+    #              + |Refund| + |Penalty| + |Other|
+    #    profit  = GMV - mp_fees - ads(ad_daily) - cogs
+    #
+    #    NOTE: Ozon posts Logistics in batches (some weeks = 0, then big charge)
     # ══════════════════════════════════════════════════════
-    txn_payout_cur = 0.0
-    txn_payout_prev = 0.0
+    payout_cur = 0.0
+    payout_prev = 0.0
+    txn_revenue_cur = 0.0
+    txn_revenue_prev = 0.0
     breakdown_cur = {
-        "commission": 0.0,
         "logistics": 0.0,
         "storage": 0.0,
         "acquiring": 0.0,
@@ -157,7 +165,6 @@ async def get_ozon_finances(
         "other": 0.0,
     }
     breakdown_prev = {
-        "commission": 0.0,
         "logistics": 0.0,
         "storage": 0.0,
         "acquiring": 0.0,
@@ -178,29 +185,32 @@ async def get_ozon_finances(
     }
 
     try:
-        # 2a. Total txn_payout (per-product, sku > 0) — current + prev
+        # 2a. Payout (sum ALL) + Revenue category — current + prev
         txn_totals = ch.query("""
             SELECT
                 sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS pay_cur,
-                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS pay_prev
+                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS pay_prev,
+                sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date} AND category = 'Revenue') AS rev_txn_cur,
+                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date} AND category = 'Revenue') AS rev_txn_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_prev_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
-              AND sku > 0
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start, "d_end": d_end,
             "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
         })
         if txn_totals.result_rows:
-            txn_payout_cur = float(txn_totals.result_rows[0][0] or 0)
-            txn_payout_prev = float(txn_totals.result_rows[0][1] or 0)
+            payout_cur = float(txn_totals.result_rows[0][0] or 0)
+            payout_prev = float(txn_totals.result_rows[0][1] or 0)
+            txn_revenue_cur = float(txn_totals.result_rows[0][2] or 0)
+            txn_revenue_prev = float(txn_totals.result_rows[0][3] or 0)
     except Exception as e:
-        logger.warning("CH txn_payout query failed: %s", e)
+        logger.warning("CH txn totals query failed: %s", e)
 
     try:
-        # 2b. Breakdown by expense category (for detail display, excl Revenue & Marketing)
+        # 2b. Breakdown by expense category (excl Revenue & Marketing)
         cat_result = ch.query("""
             SELECT
                 category,
@@ -229,7 +239,7 @@ async def get_ozon_finances(
         logger.warning("CH transactions breakdown query failed: %s", e)
 
     try:
-        # 2c. Daily txn_payout (sku > 0) for dynamics chart
+        # 2c. Daily payout (sum ALL amounts) for dynamics chart
         txn_daily_result = ch.query("""
             SELECT
                 toDate(operation_date) AS dt,
@@ -238,7 +248,6 @@ async def get_ozon_finances(
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
-              AND sku > 0
             GROUP BY dt
             ORDER BY dt
         """, parameters={
@@ -350,28 +359,31 @@ async def get_ozon_finances(
         logger.warning("COGS calculation failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # Compute derived metrics (same formula as products.py)
+    # Compute derived metrics
     #
-    # mp_fees = revenue(orders) - txn_payout(sku>0)
-    #   → includes commission (embedded), logistics, storage, etc.
-    #   → excludes Marketing (no sku) — ads from ad_daily
-    # payout = txn_payout (what Ozon transfers per-product)
-    # profit = revenue - mp_fees - ad_spend - cogs
+    # commission = GMV(orders) - Revenue(txn category)
+    #   → Ozon embeds commission into Revenue, so it's NOT a separate category
+    # known_expenses = |Logistics| + |Storage| + |Acquiring| + |Refund| + ...
+    # mp_fees = commission + known_expenses
+    # payout = sum(ALL transactions) — exact "K perechisleniyu" from Ozon
+    # profit = GMV - mp_fees - ads(ad_daily) - cogs
     # ══════════════════════════════════════════════════════
-    mp_fees_cur = revenue_cur - txn_payout_cur
-    mp_fees_prev = revenue_prev - txn_payout_prev
-    payout_cur = txn_payout_cur
-    payout_prev = txn_payout_prev
+    # Commission = difference GMV vs txn Revenue
+    commission_cur = max(0, revenue_cur - txn_revenue_cur)
+    commission_prev = max(0, revenue_prev - txn_revenue_prev)
+
+    # Known expenses from transaction categories (all are negative in CH → abs)
+    known_expenses_cur = sum(abs(v) for v in breakdown_cur.values())
+    known_expenses_prev = sum(abs(v) for v in breakdown_prev.values())
+
+    # mp_fees = commission + category expenses (Logistics, Storage, Acquiring, etc.)
+    mp_fees_cur = commission_cur + known_expenses_cur
+    mp_fees_prev = commission_prev + known_expenses_prev
+
+    # Profit = GMV - mp_fees - ads - cogs
     profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
     profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
-
-    # Derive commission = mp_fees - known expense categories
-    # (Ozon embeds commission into Revenue, so it's not a separate category)
-    known_expenses_cur = sum(abs(v) for v in breakdown_cur.values())
-    known_expenses_prev = sum(abs(v) for v in breakdown_prev.values())
-    commission_cur = max(0, mp_fees_cur - known_expenses_cur)
-    commission_prev = max(0, mp_fees_prev - known_expenses_prev)
 
     # ── Build KPI ──
     kpi = {
@@ -418,17 +430,20 @@ async def get_ozon_finances(
     for ds in sorted(all_dates):
         rev = orders_daily.get(ds, {}).get("revenue", 0)
         ords = orders_daily.get(ds, {}).get("orders", 0)
-        payout_d = txn_daily.get(ds, 0)  # txn_payout for the day
+        payout_d = txn_daily.get(ds, 0)  # actual Ozon payout for the day
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        mp_d = rev - payout_d  # same formula as products.py
-        profit_d = rev - mp_d - ads_d - cogs_d
+        # NOTE: mp_fees daily is approximate (payout includes Marketing)
+        # For daily view, mp_fees_d = rev - payout_d - ads_d (since payout has Marketing deducted)
+        # profit_d = payout_d - cogs_d (payout already excludes mp_fees + Marketing)
+        profit_d = payout_d - cogs_d
+        mp_d = rev - payout_d - ads_d  # approximate mp_fees excl ads
 
         daily_raw.append({
             "date": ds,
             "revenue": round(rev, 2),
             "payout": round(payout_d, 2),
-            "mp_fees": round(mp_d, 2),
+            "mp_fees": round(max(0, mp_d), 2),
             "ad_spend": round(ads_d, 2),
             "cogs": round(cogs_d, 2),
             "orders": ords,
