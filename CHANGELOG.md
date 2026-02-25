@@ -2,6 +2,27 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-25
+
+### Added — Раздел «Финансы» (Ozon)
+
+- **Backend / `finances.py` [NEW]:** Endpoint `GET /api/v1/finances/ozon` — P&L магазина, структура расходов, динамика, сравнение периодов
+  - 5 запросов к ClickHouse (`fact_ozon_orders`, `fact_ozon_transactions`, `fact_ozon_ad_daily`) + 1 к PostgreSQL (`product_costs`)
+  - KPI: выручка, к перечислению, услуги МП, реклама, себестоимость, чистая прибыль (с дельтами)
+  - Breakdown по категориям: комиссия, логистика, хранение, эквайринг, реклама, возвраты, штрафы, себестоимость
+  - Динамика по дням/неделям/месяцам (`group_by=day|week|month`)
+  - Сравнение текущего периода с предыдущим (все метрики + delta_pct)
+- **Backend / `router.py` [MODIFY]:** Зарегистрирован `finances_router`
+- **Frontend / `finances.ts` [NEW]:** API-клиент с TypeScript типами
+- **Frontend / `FinancesPage.tsx` [NEW]:** Страница «Финансы» (~640 строк)
+  - 6 KPI-карточек (дизайн из DashboardPage)
+  - Waterfall chart «Структура расходов» (анимированные полосы)
+  - Dynamics chart с toggle-чипсами метрик (7 метрик: выручка, к перечислению, услуги МП, реклама, себестоимость, прибыль, заказы)
+  - Comparison table — таблица сравнения периодов с дельтами
+  - GroupBy selector (дни / недели / месяцы)
+  - PeriodSelector (7д / 30д / календарь) — переиспользован из DateRangePicker
+- **Frontend / `App.tsx` [MODIFY]:** Активирован маршрут `/finances`
+
 ## [Unreleased] - 2026-02-24
 
 ### Changed — Гибридная формула прибыли

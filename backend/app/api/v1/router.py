@@ -10,6 +10,7 @@ from app.api.v1.commercial import router as commercial_router
 from app.api.v1.dashboard import router as dashboard_router
 from app.api.v1.products import router as products_router
 from app.api.v1.wb_products import router as wb_products_router
+from app.api.v1.finances import router as finances_router
 
 api_router = APIRouter()
 
@@ -24,6 +25,7 @@ api_router.include_router(commercial_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(products_router)
 api_router.include_router(wb_products_router)
+api_router.include_router(finances_router)
 
 
 @api_router.get("/")

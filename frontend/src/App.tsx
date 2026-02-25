@@ -8,6 +8,7 @@ import OnboardingPage from '@/pages/OnboardingPage'
 import DashboardPage from '@/pages/DashboardPage'
 import ProductsPage from '@/pages/ProductsPage'
 import SettingsPage from '@/pages/SettingsPage'
+import FinancesPage from '@/pages/FinancesPage'
 
 export default function App() {
   return (
@@ -39,12 +40,12 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/products" element={<ProductsPage />} />
+          <Route path="/finances" element={<FinancesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/funnel" element={<FunnelPage />} />
           <Route path="/warehouses" element={<WarehousesPage />} />
-          <Route path="/finances" element={<FinancesPage />} />
           <Route path="/advertising" element={<AdvertisingPage />} />
           <Route path="/events" element={<EventsPage />} />
           */}

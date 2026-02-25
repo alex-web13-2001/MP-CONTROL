@@ -146,7 +146,7 @@ export function PeriodSelector({ value, onChange, className }: PeriodSelectorPro
       {/* ── Попап календаря ── */}
       {calOpen && (
         <div
-          className="absolute left-0 top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4"
+          className="absolute right-0 top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4"
           style={{ animation: 'dpPop 160ms ease-out' }}
         >
           <style>{`
