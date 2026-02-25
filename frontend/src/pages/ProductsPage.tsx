@@ -17,13 +17,7 @@ import {
   Search,
   Package,
   AlertTriangle,
-  Camera,
-  Pencil,
-  TrendingUp,
-  TrendingDown,
-  Megaphone,
-  XCircle,
-  Tag,
+
   Loader2,
   Check,
   X,
@@ -153,20 +147,7 @@ type FilterKey = typeof FILTERS[number]['key']
 
 
 
-/* ═══════════════════════════════════════════════════════════
-   Event Badges
-   ═══════════════════════════════════════════════════════════ */
 
-const EV_MAP: Record<string, { icon: React.ElementType; color: string; label: string }> = {
-  OZON_PHOTO_CHANGE: { icon: Camera, color: '#3b82f6', label: 'Фото' },
-  OZON_SEO_CHANGE: { icon: Pencil, color: '#8b5cf6', label: 'SEO' },
-  PRICE_UP: { icon: TrendingUp, color: '#ef4444', label: '↑ Цена' },
-  PRICE_DOWN: { icon: TrendingDown, color: '#10b981', label: '↓ Цена' },
-  ITEM_ADD: { icon: Megaphone, color: '#f97316', label: 'Реклама вкл' },
-  ITEM_REMOVE: { icon: XCircle, color: '#6b7280', label: 'Реклама выкл' },
-  BID_CHANGE: { icon: TrendingUp, color: '#eab308', label: 'Ставка' },
-  STATUS_CHANGE: { icon: AlertTriangle, color: '#f59e0b', label: 'Статус' },
-}
 
 
 
