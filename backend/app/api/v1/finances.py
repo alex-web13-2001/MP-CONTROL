@@ -679,6 +679,8 @@ async def get_wb_finances(
     acquiring_prev = 0.0
     acceptance_cur = 0.0
     acceptance_prev = 0.0
+    deductions_cur = 0.0
+    deductions_prev = 0.0
     returns_cur = 0.0
     returns_prev = 0.0
     orders_cur = 0
@@ -719,7 +721,7 @@ async def get_wb_finances(
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS stor_prev,
 
-                -- Penalties
+                -- Penalties (only actual penalties, not deductions)
                 sumIf(penalty_total,
                     event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS pen_cur,
@@ -742,6 +744,14 @@ async def get_wb_finances(
                 sumIf(acceptance_fee,
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS acc_prev,
+
+                -- Deductions (удержания)
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ded_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ded_prev,
 
                 -- Returns
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
@@ -785,10 +795,12 @@ async def get_wb_finances(
             acquiring_prev = abs(float(r[11] or 0))
             acceptance_cur = abs(float(r[12] or 0))
             acceptance_prev = abs(float(r[13] or 0))
-            returns_cur = abs(float(r[14] or 0))
-            returns_prev = abs(float(r[15] or 0))
-            orders_cur = int(r[16] or 0)
-            orders_prev = int(r[17] or 0)
+            deductions_cur = abs(float(r[14] or 0))
+            deductions_prev = abs(float(r[15] or 0))
+            returns_cur = abs(float(r[16] or 0))
+            returns_prev = abs(float(r[17] or 0))
+            orders_cur = int(r[18] or 0)
+            orders_prev = int(r[19] or 0)
             # Commission = Revenue - Payout (includes SPP discount + WB commission)
             commission_cur = max(revenue_cur - payout_cur, 0)
             commission_prev = max(revenue_prev - payout_prev, 0)
@@ -810,6 +822,7 @@ async def get_wb_finances(
                 sum(penalty_total) AS penalties,
                 sum(wb_acquiring) AS acquiring,
                 sum(acceptance_fee) AS acceptance,
+                sum(JSONExtractFloat(raw_payload, 'deduction')) AS deductions,
                 sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS orders,
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS returns
             FROM mms_analytics.fact_finances FINAL
@@ -834,8 +847,9 @@ async def get_wb_finances(
                 "penalties": abs(float(r[5] or 0)),
                 "acquiring": abs(float(r[6] or 0)),
                 "acceptance": abs(float(r[7] or 0)),
-                "orders": int(r[8] or 0),
-                "returns": abs(float(r[9] or 0)),
+                "deductions": abs(float(r[8] or 0)),
+                "orders": int(r[9] or 0),
+                "returns": abs(float(r[10] or 0)),
             }
     except Exception as e:
         logger.warning("CH WB daily query failed: %s", e)
@@ -939,14 +953,22 @@ async def get_wb_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # mp_fees = commission + logistics + storage + penalties + acquiring + acceptance
-    # profit  = payout - mp_fees - ads - cogs
+    # Waterfall:  Revenue → -Commission → Payout → -Expenses → -Ads → -COGS → Profit
+    #
+    # mp_fees (display) = commission + logistics + storage + penalties + acquiring + acceptance + deductions
+    # operating_expenses = logistics + storage + penalties + acquiring + acceptance + deductions
+    # profit = payout - operating_expenses - ads - cogs
+    #
+    # NOTE: commission is NOT subtracted from payout (it's already excluded!)
     # ══════════════════════════════════════════════════════
-    mp_fees_cur = commission_cur + logistics_cur + storage_cur + penalties_cur + acquiring_cur + acceptance_cur
-    mp_fees_prev = commission_prev + logistics_prev + storage_prev + penalties_prev + acquiring_prev + acceptance_prev
+    operating_cur = logistics_cur + storage_cur + penalties_cur + acquiring_cur + acceptance_cur + deductions_cur
+    operating_prev = logistics_prev + storage_prev + penalties_prev + acquiring_prev + acceptance_prev + deductions_prev
 
-    profit_cur = payout_cur - mp_fees_cur - ad_spend_cur - cogs_cur
-    profit_prev = payout_prev - mp_fees_prev - ad_spend_prev - cogs_prev
+    mp_fees_cur = commission_cur + operating_cur
+    mp_fees_prev = commission_prev + operating_prev
+
+    profit_cur = payout_cur - operating_cur - ad_spend_cur - cogs_cur
+    profit_prev = payout_prev - operating_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
@@ -978,6 +1000,7 @@ async def get_wb_finances(
         "advertising": round(ad_spend_cur, 2),
         "refunds": round(returns_cur, 2),
         "penalties": round(penalties_cur, 2),
+        "deductions": round(deductions_cur, 2),
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
@@ -1001,11 +1024,13 @@ async def get_wb_finances(
         pen_d = dd.get("penalties", 0)
         acq_d = dd.get("acquiring", 0)
         acc_d = dd.get("acceptance", 0)
+        ded_d = dd.get("deductions", 0)
         ords = dd.get("orders", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        mp_d = comm_d + log_d + stor_d + pen_d + acq_d + acc_d
-        profit_d = pay - mp_d - ads_d - cogs_d
+        op_d = log_d + stor_d + pen_d + acq_d + acc_d + ded_d
+        mp_d = comm_d + op_d
+        profit_d = pay - op_d - ads_d - cogs_d
 
         daily_raw.append({
             "date": ds,
@@ -1057,6 +1082,7 @@ async def get_wb_finances(
             "advertising": round(ad_spend_cur, 2),
             "refunds": round(returns_cur, 2),
             "penalties": round(penalties_cur, 2),
+            "deductions": round(deductions_cur, 2),
             "compensation": round(acceptance_cur, 2),
             "cogs": round(cogs_cur, 2),
             "profit": round(profit_cur, 2),
@@ -1073,6 +1099,7 @@ async def get_wb_finances(
             "advertising": round(ad_spend_prev, 2),
             "refunds": round(returns_prev, 2),
             "penalties": round(penalties_prev, 2),
+            "deductions": round(deductions_prev, 2),
             "compensation": round(acceptance_prev, 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
