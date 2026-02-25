@@ -716,29 +716,6 @@ export default function FinancesPage() {
     fetchData()
   }, [fetchData])
 
-  // Check if shop is Ozon
-  const isOzon = currentShop?.marketplace === 'ozon'
-
-  if (!shopId) {
-    return (
-      <div className="flex h-[60vh] items-center justify-center">
-        <p className="text-[hsl(var(--muted-foreground))]">Выберите магазин</p>
-      </div>
-    )
-  }
-
-  if (!isOzon) {
-    return (
-      <div className="flex h-[60vh] flex-col items-center justify-center gap-3">
-        <p className="text-lg font-medium text-[hsl(var(--foreground))]">
-          Раздел «Финансы» пока доступен только для Ozon
-        </p>
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Поддержка Wildberries появится в следующем обновлении
-        </p>
-      </div>
-    )
-  }
 
   if (loading && !data) {
     return <FinancesSkeleton />
