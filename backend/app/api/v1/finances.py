@@ -276,7 +276,7 @@ async def get_ozon_finances(
         logger.warning("CH bulk categories query failed: %s", e)
 
     try:
-        # 2c. Daily payout (sum ALL) for dynamics chart
+        # 2c. Daily payout (excl Marketing) for dynamics chart
         txn_daily_result = ch.query("""
             SELECT
                 toDate(operation_date) AS dt,
@@ -285,6 +285,7 @@ async def get_ozon_finances(
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
+              AND category != 'Marketing'
             GROUP BY dt
             ORDER BY dt
         """, parameters={
@@ -403,7 +404,7 @@ async def get_ozon_finances(
     # services     = |services_total| (per-order logistics+services)
     # bulk_charges = |Logistics| + |Storage| + |Acquiring| + ...
     # mp_fees      = commission + services + bulk_charges
-    # payout       = sum(ALL txn amounts) = Excel "К перечислению"
+    # payout       = revenue - mp_fees (before ads & COGS)
     # profit       = revenue - mp_fees - ads(ad_daily) - cogs
     # ══════════════════════════════════════════════════════
     # Use accruals_for_sale as revenue (= Excel "Σ Продажи")
@@ -418,9 +419,13 @@ async def get_ozon_finances(
     mp_fees_cur = commission_cur + services_cur + bulk_charges_cur
     mp_fees_prev = commission_prev + services_prev + bulk_charges_prev
 
+    # Payout = revenue - mp_fees (what Ozon transfers before ads & COGS)
+    payout_cur = revenue_cur - mp_fees_cur
+    payout_prev = revenue_prev - mp_fees_prev
+
     # Profit
-    profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
-    profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
+    profit_cur = payout_cur - ad_spend_cur - cogs_cur
+    profit_prev = payout_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
@@ -468,20 +473,23 @@ async def get_ozon_finances(
     for ds in sorted(all_dates):
         rev = orders_daily.get(ds, {}).get("revenue", 0)
         ords = orders_daily.get(ds, {}).get("orders", 0)
-        payout_d = txn_daily.get(ds, 0)  # actual Ozon payout for the day
+        txn_d = txn_daily.get(ds, 0)  # sum(txn excl Marketing) for day
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        # NOTE: mp_fees daily is approximate (payout includes Marketing)
-        # For daily view, mp_fees_d = rev - payout_d - ads_d (since payout has Marketing deducted)
-        # profit_d = payout_d - cogs_d (payout already excludes mp_fees + Marketing)
-        profit_d = payout_d - cogs_d
-        mp_d = rev - payout_d - ads_d  # approximate mp_fees excl ads
+        # mp_fees = rev - txn_d (since txn_d = rev_txn_net + expenses)
+        # payout = rev - mp_fees = txn_d + (rev - rev) approximately
+        # Simpler: use accruals-based approach for daily is complex,
+        # so just derive: payout_d = txn_d, mp_d = rev - txn_d
+        # NOTE: txn_d already excludes Marketing
+        payout_d = txn_d
+        mp_d = max(0, rev - txn_d) if rev > 0 else 0
+        profit_d = payout_d - ads_d - cogs_d
 
         daily_raw.append({
             "date": ds,
             "revenue": round(rev, 2),
             "payout": round(payout_d, 2),
-            "mp_fees": round(max(0, mp_d), 2),
+            "mp_fees": round(mp_d, 2),
             "ad_spend": round(ads_d, 2),
             "cogs": round(cogs_d, 2),
             "orders": ords,
