@@ -1,7 +1,8 @@
 """
 Finances API endpoints.
 
-GET /finances/ozon?shop_id=X&period=7&group_by=day  — P&L, breakdown, daily dynamics
+GET /finances/ozon?shop_id=X&period=7&group_by=day  — Ozon P&L
+GET /finances/wb?shop_id=X&period=7&group_by=day    — WB P&L
 """
 import logging
 from datetime import date, timedelta
@@ -573,6 +574,471 @@ async def get_ozon_finances(
             "advertising": round(ad_spend_prev, 2),
             "refunds": round(abs(bulk_prev.get("refunds", 0)), 2),
             "penalties": round(abs(bulk_prev.get("penalties", 0)), 2),
+            "cogs": round(cogs_prev, 2),
+            "profit": round(profit_prev, 2),
+            "orders": orders_prev,
+        },
+    }
+
+    # Add delta percentages
+    delta_pct = {}
+    for key in comparison["current"]:
+        cur_val = comparison["current"][key]
+        prev_val = comparison["previous"].get(key, 0)
+        delta_pct[key] = _safe_delta(cur_val, prev_val)
+    comparison["delta_pct"] = delta_pct
+
+    return {
+        "shop_id": shop_id,
+        "period": period,
+        "date_from": str(d_start),
+        "date_to": str(d_end),
+        "group_by": group_by,
+        "kpi": kpi,
+        "breakdown": breakdown_resp,
+        "daily": daily_final,
+        "comparison": comparison,
+    }
+
+
+# ── WB Finances ─────────────────────────────────────────
+
+
+@router.get("/wb")
+async def get_wb_finances(
+    shop_id: int = Query(..., description="Shop ID"),
+    period: int = Query(7, ge=1, le=366, description="Period in days"),
+    date_from: Optional[date] = Query(None, description="Custom range start"),
+    date_to: Optional[date] = Query(None, description="Custom range end"),
+    group_by: str = Query("day", description="Grouping: day, week, month"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    WB P&L overview: KPI, expense breakdown, daily dynamics, period comparison.
+
+    Data sources:
+      - Revenue/Commission:  fact_orders_raw_latest (finished_price, price_with_disc)
+      - Expenses:            fact_finances_latest   (logistics, storage, penalties)
+      - Advertising:         fact_advert_stats_v3   (spend)
+      - COGS:                product_costs (PG) × qty from orders
+    """
+
+    # ── Verify shop ownership ──
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wb":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
+
+    # ── Date ranges ──
+    today = date.today()
+    if date_from and date_to:
+        d_start = date_from
+        d_end = date_to
+    else:
+        d_end = today
+        d_start = today - timedelta(days=period - 1)
+
+    span = (d_end - d_start).days + 1
+    d_prev_start = d_start - timedelta(days=span)
+    d_prev_end = d_start - timedelta(days=1)
+
+    # ══════════════════════════════════════════════════════
+    # 1. ORDERS: revenue, commission, orders count
+    #    fact_orders_raw_latest: finished_price = what seller gets
+    #    price_with_disc = customer price after discount
+    #    commission ≈ price_with_disc - finished_price
+    # ══════════════════════════════════════════════════════
+    revenue_cur = 0.0
+    revenue_prev = 0.0
+    commission_cur = 0.0
+    commission_prev = 0.0
+    orders_cur = 0
+    orders_prev = 0
+
+    orders_daily = {}
+
+    try:
+        orders_totals = ch.query("""
+            SELECT
+                sumIf(finished_price, toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS rev_cur,
+                countIf(toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS ord_cur,
+                sumIf(price_with_disc - finished_price, toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS comm_cur,
+                sumIf(finished_price, toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS rev_prev,
+                countIf(toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS ord_prev,
+                sumIf(price_with_disc - finished_price, toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS comm_prev
+            FROM mms_analytics.fact_orders_raw_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {d_prev_start:Date}
+              AND toDate(date) <= {d_end:Date}
+              AND is_cancel = 0
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if orders_totals.result_rows:
+            r = orders_totals.result_rows[0]
+            revenue_cur = float(r[0] or 0)
+            orders_cur = int(r[1] or 0)
+            commission_cur = float(r[2] or 0)
+            revenue_prev = float(r[3] or 0)
+            orders_prev = int(r[4] or 0)
+            commission_prev = float(r[5] or 0)
+    except Exception as e:
+        logger.warning("CH WB orders totals query failed: %s", e)
+
+    try:
+        orders_daily_result = ch.query("""
+            SELECT
+                toDate(date) AS dt,
+                sum(finished_price) AS revenue,
+                count() AS orders_count,
+                sum(price_with_disc - finished_price) AS commission
+            FROM mms_analytics.fact_orders_raw_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {d_start:Date}
+              AND toDate(date) <= {d_end:Date}
+              AND is_cancel = 0
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+        })
+        for r in orders_daily_result.result_rows:
+            orders_daily[str(r[0])] = {
+                "revenue": float(r[1] or 0),
+                "orders": int(r[2] or 0),
+                "commission": float(r[3] or 0),
+            }
+    except Exception as e:
+        logger.warning("CH WB orders daily query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 2. EXPENSES from fact_finances_latest
+    #    Logistics, Storage, Penalties, Other
+    # ══════════════════════════════════════════════════════
+    logistics_cur = 0.0
+    logistics_prev = 0.0
+    storage_cur = 0.0
+    storage_prev = 0.0
+    penalties_cur = 0.0
+    penalties_prev = 0.0
+    other_expenses_cur = 0.0
+    other_expenses_prev = 0.0
+    expenses_daily = {}
+
+    EXPENSE_MAP = {
+        "Логистика": "logistics",
+        "Хранение": "storage",
+        "Штраф": "penalties",
+    }
+
+    try:
+        exp_totals = ch.query("""
+            SELECT
+                operation_type,
+                sumIf(logistics_total + storage_fee + penalty_total,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS exp_cur,
+                sumIf(logistics_total + storage_fee + penalty_total,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS exp_prev
+            FROM mms_analytics.fact_finances_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND event_date >= {d_prev_start:Date}
+              AND event_date <= {d_end:Date}
+            GROUP BY operation_type
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        for r in exp_totals.result_rows:
+            op_type = r[0]
+            val_cur = abs(float(r[1] or 0))
+            val_prev = abs(float(r[2] or 0))
+            cat = EXPENSE_MAP.get(op_type, "other")
+            if cat == "logistics":
+                logistics_cur += val_cur
+                logistics_prev += val_prev
+            elif cat == "storage":
+                storage_cur += val_cur
+                storage_prev += val_prev
+            elif cat == "penalties":
+                penalties_cur += val_cur
+                penalties_prev += val_prev
+            else:
+                other_expenses_cur += val_cur
+                other_expenses_prev += val_prev
+    except Exception as e:
+        logger.warning("CH WB expenses query failed: %s", e)
+
+    try:
+        exp_daily_result = ch.query("""
+            SELECT
+                event_date AS dt,
+                sum(logistics_total) AS logistics,
+                sum(storage_fee) AS storage,
+                sum(penalty_total) AS penalties
+            FROM mms_analytics.fact_finances_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND event_date >= {d_start:Date}
+              AND event_date <= {d_end:Date}
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters={
+            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
+        })
+        for r in exp_daily_result.result_rows:
+            expenses_daily[str(r[0])] = {
+                "logistics": abs(float(r[1] or 0)),
+                "storage": abs(float(r[2] or 0)),
+                "penalties": abs(float(r[3] or 0)),
+            }
+    except Exception as e:
+        logger.warning("CH WB expenses daily query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 3. ADS: fact_advert_stats_v3
+    # ══════════════════════════════════════════════════════
+    ad_spend_cur = 0.0
+    ad_spend_prev = 0.0
+    ads_daily = {}
+
+    try:
+        ads_totals = ch.query("""
+            SELECT
+                sumIf(spend, date >= {d_start:Date} AND date <= {d_end:Date}) AS ads_cur,
+                sumIf(spend, date >= {d_prev_start:Date} AND date <= {d_prev_end:Date}) AS ads_prev
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_prev_start:Date}
+              AND date <= {d_end:Date}
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if ads_totals.result_rows:
+            ad_spend_cur = float(ads_totals.result_rows[0][0] or 0)
+            ad_spend_prev = float(ads_totals.result_rows[0][1] or 0)
+    except Exception as e:
+        logger.warning("CH WB ads totals query failed: %s", e)
+
+    try:
+        ads_daily_result = ch.query("""
+            SELECT date, sum(spend) AS ad_spend
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND date <= {d_end:Date}
+            GROUP BY date
+            ORDER BY date
+        """, parameters={
+            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
+        })
+        for r in ads_daily_result.result_rows:
+            ads_daily[str(r[0])] = float(r[1] or 0)
+    except Exception as e:
+        logger.warning("CH WB ads daily query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 4. COGS: supplier_article = offer_id in product_costs
+    #    Each order in fact_orders_raw = 1 item
+    # ══════════════════════════════════════════════════════
+    cogs_cur = 0.0
+    cogs_prev = 0.0
+    cogs_daily = {}
+
+    try:
+        cost_result = await db.execute(
+            text("""
+                SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                FROM product_costs
+                WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+            """),
+            {"shop_id": shop_id},
+        )
+        cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+
+        if cost_map:
+            articles = list(cost_map.keys())
+            cogs_ch = ch.query("""
+                SELECT
+                    toDate(date) AS dt,
+                    supplier_article AS art,
+                    count() AS qty
+                FROM mms_analytics.fact_orders_raw_latest
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) >= {d_prev_start:Date}
+                  AND toDate(date) <= {d_end:Date}
+                  AND is_cancel = 0
+                GROUP BY dt, art
+            """, parameters={
+                "shop_id": shop_id,
+                "d_prev_start": d_prev_start, "d_end": d_end,
+            })
+            for r in cogs_ch.result_rows:
+                row_date = r[0]
+                art = r[1]
+                qty = int(r[2] or 0)
+                # Normalize to lowercase in Python (CH lower() doesn't handle Cyrillic)
+                cost = cost_map.get(art.lower(), 0)
+                cogs_val = cost * qty
+                if d_start <= row_date <= d_end:
+                    cogs_cur += cogs_val
+                    key = str(row_date)
+                    cogs_daily[key] = cogs_daily.get(key, 0) + cogs_val
+                elif d_prev_start <= row_date <= d_prev_end:
+                    cogs_prev += cogs_val
+    except Exception as e:
+        logger.warning("WB COGS calculation failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # Compute derived metrics
+    #
+    # mp_fees = commission + logistics + storage + penalties + other
+    # payout  = revenue - mp_fees (before ads & COGS)
+    # profit  = payout - ads - cogs
+    # ══════════════════════════════════════════════════════
+    mp_fees_cur = commission_cur + logistics_cur + storage_cur + penalties_cur + other_expenses_cur
+    mp_fees_prev = commission_prev + logistics_prev + storage_prev + penalties_prev + other_expenses_prev
+
+    payout_cur = revenue_cur - mp_fees_cur
+    payout_prev = revenue_prev - mp_fees_prev
+
+    profit_cur = payout_cur - ad_spend_cur - cogs_cur
+    profit_prev = payout_prev - ad_spend_prev - cogs_prev
+    profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
+
+    # ── Build KPI ──
+    kpi = {
+        "revenue": round(revenue_cur, 2),
+        "revenue_delta": _safe_delta(revenue_cur, revenue_prev),
+        "payout": round(payout_cur, 2),
+        "payout_delta": _safe_delta(payout_cur, payout_prev),
+        "mp_fees": round(mp_fees_cur, 2),
+        "mp_fees_delta": _safe_delta(mp_fees_cur, mp_fees_prev),
+        "ad_spend": round(ad_spend_cur, 2),
+        "ad_spend_delta": _safe_delta(ad_spend_cur, ad_spend_prev),
+        "cogs": round(cogs_cur, 2),
+        "cogs_delta": _safe_delta(cogs_cur, cogs_prev),
+        "profit": round(profit_cur, 2),
+        "profit_delta": _safe_delta(profit_cur, profit_prev),
+        "profit_pct": profit_pct,
+        "orders": orders_cur,
+        "orders_delta": _safe_delta(orders_cur, orders_prev),
+    }
+
+    # ── Build breakdown ──
+    breakdown_resp = {
+        "revenue": round(revenue_cur, 2),
+        "commission": round(commission_cur, 2),
+        "logistics": round(logistics_cur, 2),
+        "storage": round(storage_cur, 2),
+        "advertising": round(ad_spend_cur, 2),
+        "penalties": round(penalties_cur, 2),
+        "other": round(other_expenses_cur, 2),
+        "cogs": round(cogs_cur, 2),
+        "profit": round(profit_cur, 2),
+    }
+
+    # ── Build daily dynamics ──
+    all_dates = set()
+    d = d_start
+    while d <= d_end:
+        all_dates.add(str(d))
+        d += timedelta(days=1)
+
+    daily_raw = []
+    for ds in sorted(all_dates):
+        od = orders_daily.get(ds, {})
+        ed = expenses_daily.get(ds, {})
+        rev = od.get("revenue", 0)
+        ords = od.get("orders", 0)
+        comm_d = od.get("commission", 0)
+        logist_d = ed.get("logistics", 0)
+        stor_d = ed.get("storage", 0)
+        pen_d = ed.get("penalties", 0)
+        ads_d = ads_daily.get(ds, 0)
+        cogs_d = cogs_daily.get(ds, 0)
+        mp_d = comm_d + logist_d + stor_d + pen_d
+        payout_d = rev - mp_d
+        profit_d = payout_d - ads_d - cogs_d
+
+        daily_raw.append({
+            "date": ds,
+            "revenue": round(rev, 2),
+            "payout": round(payout_d, 2),
+            "mp_fees": round(mp_d, 2),
+            "ad_spend": round(ads_d, 2),
+            "cogs": round(cogs_d, 2),
+            "orders": ords,
+            "profit": round(profit_d, 2),
+        })
+
+    # Apply grouping if week/month
+    if group_by in ("week", "month"):
+        from collections import defaultdict
+        grouped = defaultdict(lambda: {
+            "revenue": 0, "payout": 0, "mp_fees": 0, "ad_spend": 0,
+            "cogs": 0, "orders": 0, "profit": 0,
+        })
+        for pt in daily_raw:
+            d_obj = date.fromisoformat(pt["date"])
+            if group_by == "week":
+                key = str(d_obj - timedelta(days=d_obj.weekday()))
+            else:
+                key = str(d_obj.replace(day=1))
+            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
+                grouped[key][field] += pt[field]
+
+        daily_final = []
+        for k in sorted(grouped.keys()):
+            entry = {"date": k}
+            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
+                val = grouped[k][field]
+                entry[field] = round(val, 2) if isinstance(val, float) else val
+            daily_final.append(entry)
+    else:
+        daily_final = daily_raw
+
+    # ── Build comparison ──
+    comparison = {
+        "current": {
+            "revenue": round(revenue_cur, 2),
+            "payout": round(payout_cur, 2),
+            "mp_fees": round(mp_fees_cur, 2),
+            "commission": round(commission_cur, 2),
+            "logistics": round(logistics_cur, 2),
+            "storage": round(storage_cur, 2),
+            "advertising": round(ad_spend_cur, 2),
+            "penalties": round(penalties_cur, 2),
+            "other": round(other_expenses_cur, 2),
+            "cogs": round(cogs_cur, 2),
+            "profit": round(profit_cur, 2),
+            "orders": orders_cur,
+        },
+        "previous": {
+            "revenue": round(revenue_prev, 2),
+            "payout": round(payout_prev, 2),
+            "mp_fees": round(mp_fees_prev, 2),
+            "commission": round(commission_prev, 2),
+            "logistics": round(logistics_prev, 2),
+            "storage": round(storage_prev, 2),
+            "advertising": round(ad_spend_prev, 2),
+            "penalties": round(penalties_prev, 2),
+            "other": round(other_expenses_prev, 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
             "orders": orders_prev,
