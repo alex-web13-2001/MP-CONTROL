@@ -168,41 +168,9 @@ const EV_MAP: Record<string, { icon: React.ElementType; color: string; label: st
   STATUS_CHANGE: { icon: AlertTriangle, color: '#f59e0b', label: 'Статус' },
 }
 
-function EvBadge({ event }: { event: ProductEvent }) {
-  const m = EV_MAP[event.type]
-  if (!m) return null
-  const Icon = m.icon
-  const dateStr = event.date ? new Date(event.date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) : ''
-  let detail = m.label
-  if (event.type === 'PRICE_UP' || event.type === 'PRICE_DOWN') {
-    detail = `${event.old_value} → ${event.new_value} ₽`
-  }
 
-  return (
-    <div className="group/ev relative inline-flex" title={detail}>
-      <div
-        className="flex h-7 w-7 items-center justify-center rounded-lg transition-colors hover:bg-white/5"
-        style={{ color: m.color }}
-      >
-        <Icon className="h-3.5 w-3.5" />
-      </div>
-      <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 whitespace-nowrap rounded-xl bg-[hsl(var(--card))] px-3 py-2 text-xs shadow-2xl border border-[hsl(var(--border))] opacity-0 transition-opacity group-hover/ev:opacity-100">
-        <span className="font-medium" style={{ color: m.color }}>{detail}</span>
-        {dateStr && <span className="ml-2 text-[hsl(var(--muted-foreground)/0.6)]">{dateStr}</span>}
-      </div>
-    </div>
-  )
-}
 
-function PromoBadge({ type }: { type: string }) {
-  return (
-    <div className="group/ev relative inline-flex" title={`Акция: ${type}`}>
-      <div className="flex h-7 w-7 items-center justify-center rounded-lg text-[#ec4899] hover:bg-white/5">
-        <Tag className="h-3.5 w-3.5" />
-      </div>
-    </div>
-  )
-}
+
 
 /* ═══════════════════════════════════════════════════════════
    Content Rating
@@ -348,22 +316,7 @@ function CostEdit({ product, shopId, onSaved }: {
   )
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Delta Badge (reusable)
-   ═══════════════════════════════════════════════════════════ */
 
-function DeltaBadge({ value, suffix = '%' }: { value: number; suffix?: string }) {
-  if (value === 0) return null
-  const positive = value > 0
-  return (
-    <span className={cn(
-      'inline-flex items-center rounded px-1 py-[1px] text-[10px] font-bold leading-tight',
-      positive ? 'bg-emerald-500/12 text-emerald-400' : 'bg-red-500/12 text-red-400',
-    )}>
-      {positive ? '+' : ''}{value}{suffix}
-    </span>
-  )
-}
 
 /* ═══════════════════════════════════════════════════════════
    Main Page Component
