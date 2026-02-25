@@ -654,15 +654,13 @@ async def get_wb_finances(
     d_prev_end = d_start - timedelta(days=1)
 
     # ══════════════════════════════════════════════════════
-    # 1. ORDERS: revenue, commission, orders count
-    #    fact_orders_raw_latest: finished_price = what seller gets
-    #    price_with_disc = customer price after discount
-    #    commission ≈ price_with_disc - finished_price
+    # 1. ORDERS: revenue + count
+    #    finished_price = what buyer pays (after all discounts)
+    #    NOTE: price_with_disc - finished_price = SPP discount
+    #    (covered by WB, NOT a seller expense – don't include!)
     # ══════════════════════════════════════════════════════
     revenue_cur = 0.0
     revenue_prev = 0.0
-    commission_cur = 0.0
-    commission_prev = 0.0
     orders_cur = 0
     orders_prev = 0
 
@@ -673,10 +671,8 @@ async def get_wb_finances(
             SELECT
                 sumIf(finished_price, toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS rev_cur,
                 countIf(toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS ord_cur,
-                sumIf(price_with_disc - finished_price, toDate(date) >= {d_start:Date} AND toDate(date) <= {d_end:Date}) AS comm_cur,
                 sumIf(finished_price, toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS rev_prev,
-                countIf(toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS ord_prev,
-                sumIf(price_with_disc - finished_price, toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS comm_prev
+                countIf(toDate(date) >= {d_prev_start:Date} AND toDate(date) <= {d_prev_end:Date}) AS ord_prev
             FROM mms_analytics.fact_orders_raw_latest
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(date) >= {d_prev_start:Date}
@@ -691,10 +687,8 @@ async def get_wb_finances(
             r = orders_totals.result_rows[0]
             revenue_cur = float(r[0] or 0)
             orders_cur = int(r[1] or 0)
-            commission_cur = float(r[2] or 0)
-            revenue_prev = float(r[3] or 0)
-            orders_prev = int(r[4] or 0)
-            commission_prev = float(r[5] or 0)
+            revenue_prev = float(r[2] or 0)
+            orders_prev = int(r[3] or 0)
     except Exception as e:
         logger.warning("CH WB orders totals query failed: %s", e)
 
@@ -703,8 +697,7 @@ async def get_wb_finances(
             SELECT
                 toDate(date) AS dt,
                 sum(finished_price) AS revenue,
-                count() AS orders_count,
-                sum(price_with_disc - finished_price) AS commission
+                count() AS orders_count
             FROM mms_analytics.fact_orders_raw_latest
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(date) >= {d_start:Date}
@@ -720,7 +713,6 @@ async def get_wb_finances(
             orders_daily[str(r[0])] = {
                 "revenue": float(r[1] or 0),
                 "orders": int(r[2] or 0),
-                "commission": float(r[3] or 0),
             }
     except Exception as e:
         logger.warning("CH WB orders daily query failed: %s", e)
@@ -907,12 +899,13 @@ async def get_wb_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # mp_fees = commission + logistics + storage + penalties + other
+    # WB: NO commission in our data (ppvz_for_pay not available per-order)
+    # mp_fees = logistics + storage + penalties + other (fact_finances only)
     # payout  = revenue - mp_fees (before ads & COGS)
     # profit  = payout - ads - cogs
     # ══════════════════════════════════════════════════════
-    mp_fees_cur = commission_cur + logistics_cur + storage_cur + penalties_cur + other_expenses_cur
-    mp_fees_prev = commission_prev + logistics_prev + storage_prev + penalties_prev + other_expenses_prev
+    mp_fees_cur = logistics_cur + storage_cur + penalties_cur + other_expenses_cur
+    mp_fees_prev = logistics_prev + storage_prev + penalties_prev + other_expenses_prev
 
     payout_cur = revenue_cur - mp_fees_cur
     payout_prev = revenue_prev - mp_fees_prev
@@ -943,7 +936,7 @@ async def get_wb_finances(
     # ── Build breakdown ──
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
-        "commission": round(commission_cur, 2),
+        "commission": 0,
         "logistics": round(logistics_cur, 2),
         "storage": round(storage_cur, 2),
         "advertising": round(ad_spend_cur, 2),
@@ -966,13 +959,12 @@ async def get_wb_finances(
         ed = expenses_daily.get(ds, {})
         rev = od.get("revenue", 0)
         ords = od.get("orders", 0)
-        comm_d = od.get("commission", 0)
         logist_d = ed.get("logistics", 0)
         stor_d = ed.get("storage", 0)
         pen_d = ed.get("penalties", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        mp_d = comm_d + logist_d + stor_d + pen_d
+        mp_d = logist_d + stor_d + pen_d
         payout_d = rev - mp_d
         profit_d = payout_d - ads_d - cogs_d
 
@@ -1019,7 +1011,7 @@ async def get_wb_finances(
             "revenue": round(revenue_cur, 2),
             "payout": round(payout_cur, 2),
             "mp_fees": round(mp_fees_cur, 2),
-            "commission": round(commission_cur, 2),
+            "commission": 0,
             "logistics": round(logistics_cur, 2),
             "storage": round(storage_cur, 2),
             "advertising": round(ad_spend_cur, 2),
@@ -1033,7 +1025,7 @@ async def get_wb_finances(
             "revenue": round(revenue_prev, 2),
             "payout": round(payout_prev, 2),
             "mp_fees": round(mp_fees_prev, 2),
-            "commission": round(commission_prev, 2),
+            "commission": 0,
             "logistics": round(logistics_prev, 2),
             "storage": round(storage_prev, 2),
             "advertising": round(ad_spend_prev, 2),
