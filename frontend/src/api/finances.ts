@@ -78,3 +78,14 @@ export async function getOzonFinancesApi(params: {
   const { data } = await apiClient.get<FinancesResponse>('/finances/ozon', { params })
   return data
 }
+
+export async function getWbFinancesApi(params: {
+  shop_id: number
+  period?: number
+  group_by?: string
+  date_from?: string
+  date_to?: string
+}): Promise<FinancesResponse> {
+  const { data } = await apiClient.get<FinancesResponse>('/finances/wb', { params })
+  return data
+}

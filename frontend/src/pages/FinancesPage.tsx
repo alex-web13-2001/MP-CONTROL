@@ -30,6 +30,7 @@ import { useAppStore } from '@/stores/appStore'
 import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 import {
   getOzonFinancesApi,
+  getWbFinancesApi,
   type FinancesResponse,
   type FinancesDailyPoint,
 } from '@/api/finances'
@@ -700,7 +701,8 @@ export default function FinancesPage() {
         params.period = periodValue.period
       }
 
-      const result = await getOzonFinancesApi(params)
+      const fetchFn = currentShop?.marketplace === 'wildberries' ? getWbFinancesApi : getOzonFinancesApi
+      const result = await fetchFn(params)
       setData(result)
     } catch (e: any) {
       console.error('Finances fetch error:', e)
