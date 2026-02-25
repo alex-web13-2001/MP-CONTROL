@@ -340,3 +340,15 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **Ozon**: `margin_percent` = `cost / price × 100` (доля С/с в цене, всегда положительный; ранее: маржа прибыли)
 - **WB**: `margin` в backend = `gross_profit / sales_amount × 100` (ранее: / payout — % от выплаты)
 - **WB**: Frontend `wbToOzon`: `margin_percent` = `(cost + packaging) / price × 100`, `grossProfitPct` = `profit / sales_amount × 100`
+
+### 2026-02-26
+
+- **WB Финансы — полный пересмотр P&L расчёта:**
+  - **Source of truth:** `fact_finances FINAL` — единственный источник для P&L WB
+  - **Revenue:** `retail_price_withdisc_rub` из `raw_payload` (розничная цена до скидок, ранее: `retail_amount`)
+  - **Commission:** `revenue − payout` (включает SPP скидку + комиссию WB, ранее: только `commission_amount` = двойной счёт)
+  - **Deductions:** извлекаются из `raw_payload.deduction` (ранее: не учитывались, потеря до 25K/нед)
+  - **Operating expenses:** `logistics + storage + penalties + acquiring + acceptance + deductions`
+  - **Формула прибыли:** `payout − operating − ads − cogs` (ранее: `payout − mp_fees`, где mp_fees включал комиссию → двойной счёт)
+  - **Marketplace filter:** `marketplace = 1` (Enum8, ранее: `marketplace = 'wildberries'` — не работало)
+  - **Breakdown response:** добавлены `deductions`, `compensation` (приёмка)

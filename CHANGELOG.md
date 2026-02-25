@@ -2,6 +2,22 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-02-26
+
+### Fixed — WB P&L: полный пересмотр расчёта прибыли
+
+- **Backend / `finances.py` [MODIFY]:** Исправлен расчёт WB P&L из `fact_finances FINAL`
+  - Revenue = `retail_price_withdisc_rub` (розничная цена, ранее: `retail_amount` — заниженная)
+  - Commission = `revenue − payout` (включает SPP + комиссию WB, ранее: двойной счёт)
+  - Добавлены deductions из `raw_payload.deduction` (до 25K/неделю — ранее не учитывались)
+  - Формула: `payout − operating − ads − cogs` (ранее: двойной вычет комиссии)
+  - Marketplace filter: `marketplace = 1` (Enum8, ранее: строка — не работало)
+- **Frontend / `FinancesPage.tsx` [MODIFY]:** UI улучшения страницы Финансов
+  - Формат дат: `formatDateRange()` — «9 — 15 фев 2026 (7 дней)»
+  - Waterfall: подытог «К перечислению», строки Удержания и Плат.приёмка, минус при убытке
+  - KPI «Расходы МП»: operating without commission (ранее: mp_fees с комиссией — не сходилось)
+  - Нулевые строки скрываются, разделители перед подытогами
+
 ## [Unreleased] - 2026-02-25
 
 ### Added — Раздел «Финансы» (Ozon)
