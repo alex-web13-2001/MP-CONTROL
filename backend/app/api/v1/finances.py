@@ -629,7 +629,7 @@ async def get_wb_finances(
         select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
     )
     shop = shop_result.scalar_one_or_none()
-    if not shop or shop.marketplace != "wb":
+    if not shop or shop.marketplace != "wildberries":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
 
     from app.core.clickhouse import get_clickhouse_client
