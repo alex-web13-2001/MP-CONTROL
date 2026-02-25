@@ -342,14 +342,30 @@ async def get_ozon_finances(
         logger.warning("CH ads daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 4. COGS: cost_price × qty from PG + CH
+    # 4. COGS: cost_price × qty from Revenue TRANSACTIONS
+    #    (same items as revenue/commission/logistics)
+    #
+    #    Revenue txn has SKU → map to offer_id via dim_ozon_products
+    #    → then get cost from product_costs
+    #    This ensures COGS counts the same delivered items as revenue
     # ══════════════════════════════════════════════════════
     cogs_cur = 0.0
     cogs_prev = 0.0
     cogs_daily = {}
 
     try:
-        # Get cost prices from PostgreSQL
+        # Get SKU→offer_id from dim_ozon_products
+        sku_map_result = await db.execute(
+            text("""
+                SELECT sku, offer_id
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND sku > 0
+            """),
+            {"shop_id": shop_id},
+        )
+        sku_to_offer = {int(r[0]): r[1] for r in sku_map_result.fetchall()}
+
+        # Get cost prices from product_costs
         cost_result = await db.execute(
             text("""
                 SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
@@ -360,39 +376,46 @@ async def get_ozon_finances(
         )
         cost_map = {r[0]: float(r[1]) for r in cost_result.fetchall()}
 
-        if cost_map:
-            offer_ids = list(cost_map.keys())
-            # Get quantities for cur + prev, grouped by date + offer_id
-            cogs_ch = ch.query("""
-                SELECT
-                    toDate(order_date) AS dt,
-                    offer_id,
-                    sum(quantity) AS qty
-                FROM mms_analytics.fact_ozon_orders FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(order_date) >= {d_prev_start:Date}
-                  AND toDate(order_date) <= {d_end:Date}
-                  AND status NOT IN ('cancelled', 'canceled')
-                  AND offer_id IN {offer_ids:Array(String)}
-                GROUP BY dt, offer_id
-            """, parameters={
-                "shop_id": shop_id,
-                "d_prev_start": d_prev_start, "d_end": d_end,
-                "offer_ids": offer_ids,
-            })
-            for r in cogs_ch.result_rows:
-                row_date = r[0]  # now it's a date from toDate()
-                oid = r[1]
-                qty = int(r[2] or 0)
-                cost = cost_map.get(oid, 0)
-                cogs_val = cost * qty
-                # row_date is now date type from toDate()
-                if d_start <= row_date <= d_end:
-                    cogs_cur += cogs_val
-                    key = str(row_date)
-                    cogs_daily[key] = cogs_daily.get(key, 0) + cogs_val
-                elif d_prev_start <= row_date <= d_prev_end:
-                    cogs_prev += cogs_val
+        if cost_map and sku_to_offer:
+            # Build SKU→cost map
+            sku_cost_map = {}
+            for sku, offer_id in sku_to_offer.items():
+                cost = cost_map.get(offer_id, 0)
+                if cost > 0:
+                    sku_cost_map[sku] = cost
+
+            if sku_cost_map:
+                sku_list = list(sku_cost_map.keys())
+                # Get qty per SKU per day from Revenue transactions
+                cogs_ch = ch.query("""
+                    SELECT
+                        toDate(operation_date) AS dt,
+                        sku,
+                        count() AS qty
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(operation_date) >= {d_prev_start:Date}
+                      AND toDate(operation_date) <= {d_end:Date}
+                      AND category = 'Revenue'
+                      AND sku IN {skus:Array(UInt64)}
+                    GROUP BY dt, sku
+                """, parameters={
+                    "shop_id": shop_id,
+                    "d_prev_start": d_prev_start, "d_end": d_end,
+                    "skus": sku_list,
+                })
+                for r in cogs_ch.result_rows:
+                    row_date = r[0]
+                    sku = int(r[1])
+                    qty = int(r[2] or 0)
+                    cost = sku_cost_map.get(sku, 0)
+                    cogs_val = cost * qty
+                    if d_start <= row_date <= d_end:
+                        cogs_cur += cogs_val
+                        key = str(row_date)
+                        cogs_daily[key] = cogs_daily.get(key, 0) + cogs_val
+                    elif d_prev_start <= row_date <= d_prev_end:
+                        cogs_prev += cogs_val
     except Exception as e:
         logger.warning("COGS calculation failed: %s", e)
 
