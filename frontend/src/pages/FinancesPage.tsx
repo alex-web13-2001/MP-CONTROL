@@ -693,8 +693,9 @@ export default function FinancesPage() {
       if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
         const from = periodValue.dateRange.from
         const to = periodValue.dateRange.to ?? from
-        params.date_from = from.toISOString().split('T')[0]
-        params.date_to = to.toISOString().split('T')[0]
+        const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+        params.date_from = fmtDate(from)
+        params.date_to = fmtDate(to)
       } else {
         params.period = periodValue.period
       }
