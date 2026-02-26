@@ -846,8 +846,14 @@ export default function FinancesPage() {
           delay={0.05}
         />
         {(() => {
-          // Operating = mp_fees - commission, where commission = revenue - payout
-          const operating = kpi.mp_fees - Math.max(kpi.revenue - kpi.payout, 0)
+          // WB: payout comes from ppvz_for_pay (independent), so commission = revenue - payout
+          //     operating = mp_fees - commission = mp_fees - (revenue - payout)
+          // Ozon: payout = revenue - mp_fees (derived), so the WB formula gives 0.
+          //     Use breakdown components instead: logistics + storage + acquiring
+          const isWb = currentShop?.marketplace === 'wildberries'
+          const operating = isWb
+            ? kpi.mp_fees - Math.max(kpi.revenue - kpi.payout, 0)
+            : (data.breakdown?.logistics ?? 0) + (data.breakdown?.storage ?? 0) + (data.breakdown?.acquiring ?? 0)
           const operatingPct = kpi.payout > 0 ? (operating / kpi.payout * 100).toFixed(1) : '0'
           return (
             <KpiCard
