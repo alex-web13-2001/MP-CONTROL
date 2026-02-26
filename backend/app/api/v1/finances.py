@@ -1593,25 +1593,46 @@ async def get_ozon_products_finance(
         pass
 
     try:
-        # 2a. Per-product commission + services from Revenue transactions
+        # 2a. Commission percentage from fact_ozon_commissions
+        #     sales_percent is the Ozon commission rate per offer_id
+        #     Much more reliable than sale_commission from transactions
+        #     (transactions only contain settled orders, not all)
+        comm_pct = {}  # offer_id -> sales_percent
+        comm_result = ch.query("""
+            SELECT offer_id, argMax(sales_percent, dt) AS pct
+            FROM mms_analytics.fact_ozon_commissions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+            GROUP BY offer_id
+        """, parameters={"shop_id": shop_id})
+        for r in comm_result.result_rows:
+            oid = str(r[0] or "").strip()
+            if oid:
+                comm_pct[oid] = float(r[1] or 0)
+
+        # Apply commission = revenue × sales_percent / 100
+        for oid, p in products.items():
+            pct = comm_pct.get(oid, 0)
+            if pct > 0:
+                p["cur"]["commission"] = round(p["cur"]["revenue"] * pct / 100, 2)
+                p["prev"]["commission"] = round(p["prev"]["revenue"] * pct / 100, 2)
+    except Exception as e:
+        logger.warning("CH Ozon commissions per product query failed: %s", e)
+
+    try:
+        # 2a-bis. Per-order logistics from Revenue transactions (where available)
         txn_result = ch.query("""
             SELECT
                 sku,
-                sumIf(abs(sale_commission),
-                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
-                ) AS comm_cur,
                 sumIf(abs(services_total),
                     toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
                 ) AS svc_cur,
-                sumIf(abs(sale_commission),
-                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
-                ) AS comm_prev,
                 sumIf(abs(services_total),
                     toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
                 ) AS svc_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND category = 'Revenue'
+              AND sku > 0
               AND toDate(operation_date) >= {d_prev_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
             GROUP BY sku
@@ -1624,14 +1645,10 @@ async def get_ozon_products_finance(
         for r in txn_result.result_rows:
             sku = int(r[0] or 0)
             oid = sku_to_offer.get(sku, str(sku))
-            comm_cur = float(r[1] or 0)
-            svc_cur = float(r[2] or 0)
-            comm_prev = float(r[3] or 0)
-            svc_prev = float(r[4] or 0)
+            svc_cur = float(r[1] or 0)
+            svc_prev = float(r[2] or 0)
             if oid in products:
-                products[oid]["cur"]["commission"] += comm_cur
-                products[oid]["cur"]["logistics"] += svc_cur  # services_total ≈ per-order logistics
-                products[oid]["prev"]["commission"] += comm_prev
+                products[oid]["cur"]["logistics"] += svc_cur
                 products[oid]["prev"]["logistics"] += svc_prev
     except Exception as e:
         logger.warning("CH Ozon txn per product query failed: %s", e)
