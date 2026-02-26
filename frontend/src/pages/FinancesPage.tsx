@@ -31,9 +31,13 @@ import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 import {
   getOzonFinancesApi,
   getWbFinancesApi,
+  getWbProductsFinanceApi,
+  getOzonProductsFinanceApi,
   type FinancesResponse,
   type FinancesDailyPoint,
+  type ProductFinanceResponse,
 } from '@/api/finances'
+import ProductFinanceTable from '@/components/ProductFinanceTable'
 
 /* ═══════════════════════════════════════════════════════════
    Constants & Helpers
@@ -739,6 +743,7 @@ export default function FinancesPage() {
   const shopId = currentShop?.id
 
   const [data, setData] = useState<FinancesResponse | null>(null)
+  const [productData, setProductData] = useState<ProductFinanceResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [groupBy, setGroupBy] = useState('day')
@@ -771,8 +776,18 @@ export default function FinancesPage() {
       }
 
       const fetchFn = currentShop?.marketplace === 'wildberries' ? getWbFinancesApi : getOzonFinancesApi
-      const result = await fetchFn(params)
+      const productFetchFn = currentShop?.marketplace === 'wildberries' ? getWbProductsFinanceApi : getOzonProductsFinanceApi
+
+      const [result, productResult] = await Promise.all([
+        fetchFn(params),
+        productFetchFn({
+          shop_id: params.shop_id,
+          ...(params.period ? { period: params.period } : {}),
+          ...(params.date_from ? { date_from: params.date_from, date_to: params.date_to } : {}),
+        }),
+      ])
       setData(result)
+      setProductData(productResult)
     } catch (e: any) {
       console.error('Finances fetch error:', e)
       setError(e.response?.data?.detail || 'Ошибка загрузки данных')
@@ -917,6 +932,15 @@ export default function FinancesPage() {
           </CardContent>
         </Card>
       </motion.div>
+
+      {/* ── Product P&L Table ── */}
+      {productData && productData.products.length > 0 && (
+        <ProductFinanceTable
+          products={productData.products}
+          totals={productData.totals}
+          marketplace={currentShop?.marketplace as 'wildberries' | 'ozon'}
+        />
+      )}
 
       {/* ── Dynamics Chart ── */}
       <motion.div

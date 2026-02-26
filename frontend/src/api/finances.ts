@@ -89,3 +89,46 @@ export async function getWbFinancesApi(params: {
   const { data } = await apiClient.get<FinancesResponse>('/finances/wb', { params })
   return data
 }
+
+// ── Product-level P&L ────────────────────────────────────────
+
+export interface ProductFinanceItem {
+  vendor_code: string
+  nm_id?: number
+  current: Record<string, number>
+  previous: Record<string, number>
+  delta_pct: Record<string, number>
+  pct_of_revenue: Record<string, number>
+}
+
+export interface ProductFinanceResponse {
+  shop_id: number
+  date_from: string
+  date_to: string
+  products: ProductFinanceItem[]
+  totals: {
+    current: Record<string, number>
+    previous: Record<string, number>
+    delta_pct: Record<string, number>
+  }
+}
+
+export async function getWbProductsFinanceApi(params: {
+  shop_id: number
+  period?: number
+  date_from?: string
+  date_to?: string
+}): Promise<ProductFinanceResponse> {
+  const { data } = await apiClient.get<ProductFinanceResponse>('/finances/wb/products', { params })
+  return data
+}
+
+export async function getOzonProductsFinanceApi(params: {
+  shop_id: number
+  period?: number
+  date_from?: string
+  date_to?: string
+}): Promise<ProductFinanceResponse> {
+  const { data } = await apiClient.get<ProductFinanceResponse>('/finances/ozon/products', { params })
+  return data
+}
