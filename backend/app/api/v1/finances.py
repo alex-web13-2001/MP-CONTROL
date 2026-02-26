@@ -1574,25 +1574,47 @@ async def get_ozon_products_finance(
         logger.warning("CH Ozon orders per product query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 2. Transaction details from fact_ozon_finances
+    # 2. Transaction details from fact_ozon_transactions
+    #    Revenue txns: per-order commission + services (by sku)
+    #    Bulk charges: Logistics/Storage/etc — NOT per-product
     # ══════════════════════════════════════════════════════
+
+    # Build sku → offer_id mapping
+    sku_to_offer = {}
     try:
+        sku_map = ch.query("""
+            SELECT DISTINCT sku, offer_id
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+        """, parameters={"shop_id": shop_id})
+        for r in sku_map.result_rows:
+            sku_to_offer[int(r[0])] = str(r[1])
+    except Exception:
+        pass
+
+    try:
+        # 2a. Per-product commission + services from Revenue transactions
         txn_result = ch.query("""
             SELECT
-                offer_id,
-                sumIf(commission, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS comm_cur,
-                sumIf(services_total, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS svc_cur,
-                sumIf(acquiring, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS acq_cur,
-                sumIf(last_mile, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS lm_cur,
-                sumIf(commission, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS comm_prev,
-                sumIf(services_total, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS svc_prev,
-                sumIf(acquiring, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS acq_prev,
-                sumIf(last_mile, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS lm_prev
-            FROM mms_analytics.fact_ozon_finances FINAL
+                sku,
+                sumIf(abs(sale_commission),
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                ) AS comm_cur,
+                sumIf(abs(services_total),
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                ) AS svc_cur,
+                sumIf(abs(sale_commission),
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                ) AS comm_prev,
+                sumIf(abs(services_total),
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                ) AS svc_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND event_date >= {d_prev_start:Date}
-              AND event_date <= {d_end:Date}
-            GROUP BY offer_id
+              AND category = 'Revenue'
+              AND toDate(operation_date) >= {d_prev_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+            GROUP BY sku
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start, "d_end": d_end,
@@ -1600,28 +1622,66 @@ async def get_ozon_products_finance(
         })
 
         for r in txn_result.result_rows:
-            oid = str(r[0] or "").strip()
-            if not oid:
-                oid = "__unknown__"
-            if oid not in products:
-                products[oid] = {
-                    "offer_id": oid,
-                    "cur": {"revenue": 0, "sales": 0, "commission": 0, "logistics": 0,
-                            "storage": 0, "acquiring": 0, "penalties": 0, "returns": 0,
-                            "ad_spend": 0, "cogs": 0},
-                    "prev": {"revenue": 0, "sales": 0, "commission": 0, "logistics": 0,
-                             "storage": 0, "acquiring": 0, "penalties": 0, "returns": 0,
-                             "ad_spend": 0, "cogs": 0},
-                }
-            p = products[oid]
-            p["cur"]["commission"] += abs(float(r[1] or 0))
-            p["cur"]["logistics"] += abs(float(r[2] or 0)) + abs(float(r[4] or 0))
-            p["cur"]["acquiring"] += abs(float(r[3] or 0))
-            p["prev"]["commission"] += abs(float(r[5] or 0))
-            p["prev"]["logistics"] += abs(float(r[6] or 0)) + abs(float(r[8] or 0))
-            p["prev"]["acquiring"] += abs(float(r[7] or 0))
+            sku = int(r[0] or 0)
+            oid = sku_to_offer.get(sku, str(sku))
+            comm_cur = float(r[1] or 0)
+            svc_cur = float(r[2] or 0)
+            comm_prev = float(r[3] or 0)
+            svc_prev = float(r[4] or 0)
+            if oid in products:
+                products[oid]["cur"]["commission"] += comm_cur
+                products[oid]["cur"]["logistics"] += svc_cur  # services_total ≈ per-order logistics
+                products[oid]["prev"]["commission"] += comm_prev
+                products[oid]["prev"]["logistics"] += svc_prev
     except Exception as e:
         logger.warning("CH Ozon txn per product query failed: %s", e)
+
+    # 2b. Bulk charges (Logistics, Storage, Acquiring)
+    #     These are NOT per-product — distribute proportionally by revenue share
+    CAT_MAP = {
+        "Logistics": "logistics",
+        "Storage": "storage",
+        "Acquiring": "acquiring",
+    }
+    bulk_cur_total = {}
+    bulk_prev_total = {}
+    try:
+        cat_result = ch.query("""
+            SELECT
+                category,
+                sumIf(abs(amount), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS total_cur,
+                sumIf(abs(amount), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS total_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(operation_date) >= {d_prev_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+              AND category IN ('Logistics', 'Storage', 'Acquiring')
+            GROUP BY category
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+
+        for r in cat_result.result_rows:
+            key = CAT_MAP.get(r[0], "other")
+            bulk_cur_total[key] = float(r[1] or 0)
+            bulk_prev_total[key] = float(r[2] or 0)
+
+        # Distribute bulk charges proportionally by revenue
+        total_rev_cur = sum(p["cur"]["revenue"] for p in products.values())
+        total_rev_prev = sum(p["prev"]["revenue"] for p in products.values())
+
+        for oid, p in products.items():
+            for bkey in ("logistics", "storage", "acquiring"):
+                if bkey in bulk_cur_total and total_rev_cur > 0:
+                    share = p["cur"]["revenue"] / total_rev_cur
+                    p["cur"][bkey] += round(bulk_cur_total[bkey] * share, 2)
+                if bkey in bulk_prev_total and total_rev_prev > 0:
+                    share = p["prev"]["revenue"] / total_rev_prev
+                    p["prev"][bkey] += round(bulk_prev_total[bkey] * share, 2)
+    except Exception as e:
+        logger.warning("CH Ozon bulk charges query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 3. Ad spend from fact_ozon_ad_daily
@@ -1643,24 +1703,12 @@ async def get_ozon_products_finance(
             "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
         })
 
-        # Need sku_id → offer_id mapping
-        sku_to_offer = {}
-        try:
-            sku_map = ch.query("""
-                SELECT DISTINCT toString(sku) AS sku_id, offer_id
-                FROM mms_analytics.fact_ozon_orders FINAL
-                WHERE shop_id = {shop_id:UInt32}
-            """, parameters={"shop_id": shop_id})
-            for r in sku_map.result_rows:
-                sku_to_offer[str(r[0])] = str(r[1])
-        except Exception:
-            pass
-
+        # sku_to_offer already built in section 2
         for r in ads_result.result_rows:
-            sku = str(r[0] or "")
+            sku = int(r[0] or 0)
             ads_c = float(r[1] or 0)
             ads_p = float(r[2] or 0)
-            oid = sku_to_offer.get(sku, sku)
+            oid = sku_to_offer.get(sku, str(sku))
             if oid in products:
                 products[oid]["cur"]["ad_spend"] += ads_c
                 products[oid]["prev"]["ad_spend"] += ads_p
