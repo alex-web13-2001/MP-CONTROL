@@ -1,3 +1,19 @@
+## 2026-02-26
+
+### feat(finances): товарная P&L таблица — детализация по товарам
+
+- `GET /finances/wb/products` — WB P&L по vendor_code (fact_finances + ads + COGS)
+- `GET /finances/ozon/products` — Ozon P&L по offer_id (orders + transactions + ads + COGS)
+- Фронтенд: `ProductFinanceTable` — сортировка, delta %, цвет маржи, sticky итого
+- Колонки WB: Продажи | Выручка | Логистика | Хранение | Реклама | С/с | Прибыль | Маржа
+- Колонки Ozon: Продажи | Выручка | Комиссия | Логистика | Реклама | С/с | Прибыль | Маржа
+
+### fix(finances): Ozon — правильные таблицы и поля
+
+- `fact_ozon_finances` (не существует) → `fact_ozon_transactions`
+- `sku_id` → `sku`, `spend` → `money_spent` в fact_ozon_ad_daily
+- Bulk charges (Логистика/Хранение/Эквайринг) — распределение пропорционально выручке
+
 ## 2026-02-24
 
 ### feat(wb): P&L водопад — новые столбцы
