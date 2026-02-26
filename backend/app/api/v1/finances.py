@@ -745,12 +745,14 @@ async def get_wb_finances(
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS acc_prev,
 
-                -- Deductions (удержания)
+                -- Deductions (удержания, ИСКЛЮЧАЯ рекламу во избежание двойного учёта с fact_advert_stats)
                 sumIf(JSONExtractFloat(raw_payload, 'deduction'),
-                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date} 
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
                 ) AS ded_cur,
                 sumIf(JSONExtractFloat(raw_payload, 'deduction'),
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
                 ) AS ded_prev,
 
                 -- Returns
@@ -822,7 +824,7 @@ async def get_wb_finances(
                 sum(penalty_total) AS penalties,
                 sum(wb_acquiring) AS acquiring,
                 sum(acceptance_fee) AS acceptance,
-                sum(JSONExtractFloat(raw_payload, 'deduction')) AS deductions,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'), positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0) AS deductions,
                 sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS orders,
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS returns
             FROM mms_analytics.fact_finances FINAL
