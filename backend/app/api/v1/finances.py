@@ -1685,18 +1685,19 @@ async def get_ozon_products_finance(
 
     # ══════════════════════════════════════════════════════
     # 3. Ad spend from fact_ozon_ad_daily
+    #    Fields: sku (not sku_id!), money_spent (not spend!)
     # ══════════════════════════════════════════════════════
     try:
         ads_result = ch.query("""
             SELECT
-                sku_id,
-                sumIf(spend, dt >= {d_start:Date} AND dt <= {d_end:Date}) AS ads_cur,
-                sumIf(spend, dt >= {d_prev_start:Date} AND dt <= {d_prev_end:Date}) AS ads_prev
+                sku,
+                sumIf(money_spent, dt >= {d_start:Date} AND dt <= {d_end:Date}) AS ads_cur,
+                sumIf(money_spent, dt >= {d_prev_start:Date} AND dt <= {d_prev_end:Date}) AS ads_prev
             FROM mms_analytics.fact_ozon_ad_daily FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND dt >= {d_prev_start:Date}
               AND dt <= {d_end:Date}
-            GROUP BY sku_id
+            GROUP BY sku
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start, "d_end": d_end,
