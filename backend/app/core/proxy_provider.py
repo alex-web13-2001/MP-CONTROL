@@ -5,9 +5,11 @@ IMPROVEMENTS:
 1. Quarantine: Proxies get 15-30 min timeout on 403/429
 2. Sticky Sessions: Same proxy for same shop during a task
 3. Health tracking: Immediate success_rate updates
+4. Dead proxy detection: Auto-fallback to direct if all proxies are dead
 """
 
 import asyncio
+import logging
 import random
 import time
 from dataclasses import dataclass
@@ -19,11 +21,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encryption import decrypt_api_key
 
+logger = logging.getLogger(__name__)
 
 # Quarantine settings
 QUARANTINE_DURATION_403 = timedelta(minutes=30)  # Banned
 QUARANTINE_DURATION_429 = timedelta(minutes=15)  # Rate limited
 QUARANTINE_DURATION_ERROR = timedelta(minutes=5)  # Connection errors
+
+# Dead proxy threshold: proxy with ≥ this many failures and 0% success is skipped
+MIN_FAILURES_FOR_DEAD = 10
 
 
 @dataclass
@@ -101,7 +107,7 @@ class ProxyProvider:
             sticky: If True, use sticky sessions for shop_id
             
         Returns:
-            ProxyConfig if proxy available, None otherwise
+            ProxyConfig if proxy available, None otherwise (fallback to direct)
         """
         # Check sticky session first
         if sticky and shop_id:
@@ -149,18 +155,35 @@ class ProxyProvider:
         if not available_proxies:
             return None
         
-        # Select proxy
+        # Filter out dead proxies (high failure count, zero success rate)
+        alive_proxies = [
+            p for p in available_proxies
+            if not (p.failure_count >= MIN_FAILURES_FOR_DEAD and p.success_rate == 0)
+        ]
+        
+        if not alive_proxies:
+            # All proxies are dead → fallback to direct
+            dead_ids = [p.id for p in available_proxies]
+            logger.warning(
+                "All proxies are dead (failure_count≥%d, success_rate=0): %s. "
+                "Falling back to DIRECT requests. "
+                "Fix: add new proxies or reset dead ones.",
+                MIN_FAILURES_FOR_DEAD, dead_ids,
+            )
+            return None
+        
+        # Select proxy from alive ones
         if strategy == "random":
-            proxy = random.choice(available_proxies)
+            proxy = random.choice(alive_proxies)
         elif strategy == "round_robin":
-            proxy = available_proxies[self._round_robin_index % len(available_proxies)]
+            proxy = alive_proxies[self._round_robin_index % len(alive_proxies)]
             self._round_robin_index += 1
         else:  # weighted
-            top_proxies = [p for p in available_proxies if p.success_rate >= 0.9]
+            top_proxies = [p for p in alive_proxies if p.success_rate >= 0.9]
             if top_proxies:
                 proxy = random.choice(top_proxies)
             else:
-                proxy = available_proxies[0]
+                proxy = alive_proxies[0]
         
         # Decrypt password
         password = None
