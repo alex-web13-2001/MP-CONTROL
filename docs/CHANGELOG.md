@@ -166,3 +166,18 @@
 
 - `04_BACKEND_API.md`: формула прибыли Ozon, totals schema, margin_percent
 - `06_FRONTEND.md`: столбцы таблицы, wbToOzon маппинг, тултипы С/с
+
+## 2026-02-28 — WB Sales Overview (Обзор продаж для Wildberries)
+
+### Backend
+- `GET /api/v1/sales/wb` — KPI (заказы, выручка, ср. чек, отмены), дневной график, география (top-20 регионов), top-20 товаров с органической воронкой из `fact_sales_funnel`
+- `GET /api/v1/sales/wb/product-daily` — дневная динамика по конкретным товарам (для оверлея на графике)
+
+### Frontend
+- `sales.ts`: добавлены `getWbSalesApi()` и `getWbProductDailyApi()`
+- `SalesPage.tsx`: адаптирован для обоих маркетплейсов:
+  - Автоопределение маркетплейса → вызов нужного API
+  - KPI: «Отмены» (XCircle) для WB, «Возвраты» (RotateCcw) для Ozon
+  - График: легенда показывает «Отмены» для WB
+  - Таблица: «Воронка» для WB (органическая), «Рекл. воронка» для Ozon
+  - Блок «Причины возвратов» скрыт для WB (нет данных)
