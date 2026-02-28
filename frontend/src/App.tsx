@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import ForecastPage from '@/pages/ForecastPage'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { AuthGuard } from '@/components/auth/AuthGuard'
 import OnboardingGuard from '@/components/OnboardingGuard'
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/abc-xyz" element={<AbcXyzPage />} />
+          <Route path="/sales/forecast" element={<ForecastPage />} />
           <Route path="/finances" element={<FinancesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:

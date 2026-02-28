@@ -16,6 +16,7 @@ import {
   Package,
   TrendingUp,
   Grid3X3,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -52,6 +53,7 @@ const navSections: NavSection[] = [
         children: [
           { path: '/sales', label: 'Обзор продаж', icon: TrendingUp },
           { path: '/sales/abc-xyz', label: 'ABC/XYZ анализ', icon: Grid3X3 },
+          { path: '/sales/forecast', label: 'Прогноз', icon: Sparkles },
         ],
       },
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },

@@ -1739,3 +1739,347 @@ async def get_wb_abc_xyz(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка ABC/XYZ анализа WB: {e}",
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+# Ozon Sales Forecast + Simulator
+# ═══════════════════════════════════════════════════════════════
+
+
+def _linear_regression(xs: list[float], ys: list[float]):
+    """Simple least-squares linear regression. Returns (slope, intercept)."""
+    n = len(xs)
+    if n < 2:
+        return 0.0, (ys[0] if ys else 0.0)
+    sum_x = sum(xs)
+    sum_y = sum(ys)
+    sum_xx = sum(x * x for x in xs)
+    sum_xy = sum(x * y for x, y in zip(xs, ys))
+    denom = n * sum_xx - sum_x * sum_x
+    if denom == 0:
+        return 0.0, sum_y / n
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+    intercept = (sum_y - slope * sum_x) / n
+    return slope, intercept
+
+
+def _residual_std(xs: list[float], ys: list[float], slope: float, intercept: float) -> float:
+    """Standard deviation of residuals for confidence band."""
+    if len(xs) < 3:
+        return 0.0
+    residuals = [y - (slope * x + intercept) for x, y in zip(xs, ys)]
+    mean_r = sum(residuals) / len(residuals)
+    var_r = sum((r - mean_r) ** 2 for r in residuals) / (len(residuals) - 1)
+    return math.sqrt(var_r)
+
+
+@router.get("/ozon/forecast")
+async def get_ozon_forecast(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=14, le=365),
+    forecast_days: int = Query(14, ge=7, le=60),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sales forecast for Ozon: trend forecast + per-product unit economics.
+
+    Trend: linear regression on daily revenue/orders with ±1σ confidence band.
+    Products: unit economics for what-if simulator (CPO, CPC, CTR, CR, ROI).
+    """
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+
+        cur_end = date.today()
+        cur_start = cur_end - timedelta(days=period)
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": str(cur_start),
+            "cur_end": str(cur_end),
+        }
+
+        # ── 1. Daily revenue + orders history ──
+        daily_rows = ch.query("""
+            SELECT
+                toDate(addHours(in_process_at, 3)) AS dt,
+                sum(price * quantity) AS revenue,
+                count() AS orders
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters=params).result_rows
+
+        history = []
+        rev_values = []
+        ord_values = []
+        day_indices = []
+
+        for i, r in enumerate(daily_rows):
+            dt_str = str(r[0])
+            rev = float(r[1] or 0)
+            ords = int(r[2] or 0)
+            history.append({"date": dt_str, "revenue": round(rev), "orders": ords})
+            rev_values.append(rev)
+            ord_values.append(float(ords))
+            day_indices.append(float(i))
+
+        # ── 2. Linear regression for forecast ──
+        rev_slope, rev_intercept = _linear_regression(day_indices, rev_values)
+        ord_slope, ord_intercept = _linear_regression(day_indices, ord_values)
+
+        rev_std = _residual_std(day_indices, rev_values, rev_slope, rev_intercept)
+        ord_std = _residual_std(day_indices, ord_values, ord_slope, ord_intercept)
+
+        # Trend percentage (slope as % of mean)
+        mean_rev = sum(rev_values) / len(rev_values) if rev_values else 1
+        mean_ord = sum(ord_values) / len(ord_values) if ord_values else 1
+        rev_trend_pct = round(rev_slope / mean_rev * 100, 1) if mean_rev > 0 else 0
+        ord_trend_pct = round(ord_slope / mean_ord * 100, 1) if mean_ord > 0 else 0
+
+        # Generate forecast points
+        forecast = []
+        n = len(day_indices)
+        last_date = date.fromisoformat(history[-1]["date"]) if history else cur_end
+
+        for d in range(1, forecast_days + 1):
+            x = float(n - 1 + d)
+            forecast_date = last_date + timedelta(days=d)
+            f_rev = max(rev_slope * x + rev_intercept, 0)
+            f_ord = max(ord_slope * x + ord_intercept, 0)
+            # Confidence widens with distance
+            confidence_mult = 1 + (d - 1) * 0.05
+            rev_band = rev_std * confidence_mult
+            ord_band = ord_std * confidence_mult
+
+            forecast.append({
+                "date": str(forecast_date),
+                "revenue": round(f_rev),
+                "revenue_low": round(max(f_rev - rev_band, 0)),
+                "revenue_high": round(f_rev + rev_band),
+                "orders": round(f_ord),
+                "orders_low": round(max(f_ord - ord_band, 0)),
+                "orders_high": round(f_ord + ord_band),
+            })
+
+        # Summary forecast totals
+        total_forecast_rev = sum(f["revenue"] for f in forecast)
+        total_forecast_ord = sum(f["orders"] for f in forecast)
+
+        trend = {
+            "revenue_slope_pct": rev_trend_pct,
+            "orders_slope_pct": ord_trend_pct,
+            "direction": "up" if rev_slope > 0 else "down" if rev_slope < 0 else "flat",
+            "forecast_revenue": total_forecast_rev,
+            "forecast_orders": total_forecast_ord,
+        }
+
+        # ── 3. SKU → offer_id mapping ──
+        sku_to_offer: dict[int, str] = {}
+        try:
+            sku_map_result = await db.execute(
+                text("""
+                    SELECT sku, offer_id
+                    FROM dim_ozon_products
+                    WHERE shop_id = :shop_id AND sku > 0
+                """),
+                {"shop_id": shop_id},
+            )
+            for r in sku_map_result.fetchall():
+                sku_to_offer[int(r[0])] = r[1]
+        except Exception:
+            pass
+
+        # ── 4. Per-product orders & revenue ──
+        prod_data: dict[int, dict] = {}  # sku -> {...}
+
+        prod_rows = ch.query("""
+            SELECT
+                sku,
+                sum(price * quantity) AS revenue,
+                count() AS orders
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY sku
+            ORDER BY revenue DESC
+            LIMIT 50
+        """, parameters=params).result_rows
+
+        for r in prod_rows:
+            sku = int(r[0] or 0)
+            prod_data[sku] = {
+                "sku": sku,
+                "offer_id": sku_to_offer.get(sku, str(sku)),
+                "revenue": float(r[1] or 0),
+                "orders": int(r[2] or 0),
+                "ad_spend": 0.0,
+                "ad_views": 0,
+                "ad_clicks": 0,
+            }
+
+        # ── 5. Ad metrics per SKU ──
+        try:
+            ad_rows = ch.query("""
+                SELECT
+                    sku,
+                    sum(money_spent) AS spend,
+                    sum(views) AS views,
+                    sum(clicks) AS clicks
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= {cur_start:Date}
+                  AND dt <= {cur_end:Date}
+                GROUP BY sku
+            """, parameters=params).result_rows
+
+            for r in ad_rows:
+                sku = int(r[0] or 0)
+                if sku in prod_data:
+                    prod_data[sku]["ad_spend"] = float(r[1] or 0)
+                    prod_data[sku]["ad_views"] = int(r[2] or 0)
+                    prod_data[sku]["ad_clicks"] = int(r[3] or 0)
+        except Exception as e:
+            logger.warning("Forecast ads error: %s", e)
+
+        # ── 6. Per-product costs (commission, logistics) ──
+        try:
+            cost_rows = ch.query("""
+                SELECT
+                    sku,
+                    sum(abs(sale_commission)) AS commission,
+                    sum(abs(services_total)) AS logistics
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND category = 'Revenue'
+                  AND sku > 0
+                  AND toDate(operation_date) >= {cur_start:Date}
+                  AND toDate(operation_date) <= {cur_end:Date}
+                GROUP BY sku
+            """, parameters=params).result_rows
+
+            for r in cost_rows:
+                sku = int(r[0] or 0)
+                if sku in prod_data:
+                    prod_data[sku]["commission"] = float(r[1] or 0)
+                    prod_data[sku]["logistics"] = float(r[2] or 0)
+        except Exception as e:
+            logger.warning("Forecast costs error: %s", e)
+
+        # ── 7. COGS ──
+        cost_map: dict[str, float] = {}
+        try:
+            cost_result = await db.execute(
+                text("""
+                    SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                    FROM product_costs
+                    WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+                """),
+                {"shop_id": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception:
+            pass
+
+        # ── 8. Product names + images ──
+        sku_to_name: dict[int, str] = {}
+        sku_to_image: dict[int, str] = {}
+        sku_list = list(prod_data.keys())
+        if sku_list:
+            try:
+                placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
+                bind_params = {f"sku_{i}": sku for i, sku in enumerate(sku_list)}
+                bind_params["sid"] = shop_id
+                pg_products = await db.execute(
+                    text(f"""
+                        SELECT sku, name,
+                               COALESCE(NULLIF(primary_image_url, ''), '') AS image_url
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND sku IN ({placeholders})
+                    """),
+                    bind_params,
+                )
+                for row in pg_products.fetchall():
+                    sku_to_name[row[0]] = row[1]
+                    sku_to_image[row[0]] = row[2]
+            except Exception as e:
+                logger.warning("Forecast product names error: %s", e)
+
+        # ── 9. Build product list with unit economics ──
+        products_list = []
+        for sku, p in prod_data.items():
+            revenue = round(p["revenue"])
+            orders = p["orders"]
+            ad_spend = round(p.get("ad_spend", 0))
+            ad_views = p.get("ad_views", 0)
+            ad_clicks = p.get("ad_clicks", 0)
+            commission = round(p.get("commission", 0))
+            logistics = round(p.get("logistics", 0))
+            oid = p["offer_id"]
+            cogs_unit = cost_map.get(oid.lower(), 0)
+            cogs_total = round(cogs_unit * orders)
+
+            avg_price = round(revenue / orders) if orders > 0 else 0
+            profit = revenue - commission - logistics - ad_spend - cogs_total
+            margin_pct = round(profit / revenue * 100, 1) if revenue > 0 else 0
+
+            # Unit economics
+            ctr = round(ad_clicks / ad_views * 100, 2) if ad_views > 0 else 0
+            cpc = round(ad_spend / ad_clicks, 1) if ad_clicks > 0 else 0
+            cpo = round(ad_spend / orders, 1) if orders > 0 else 0
+            cr = round(orders / ad_clicks * 100, 2) if ad_clicks > 0 else 0
+            roi = round((revenue - ad_spend) / ad_spend * 100, 1) if ad_spend > 0 else 0
+
+            products_list.append({
+                "sku": sku,
+                "offer_id": oid,
+                "name": sku_to_name.get(sku, ""),
+                "image_url": sku_to_image.get(sku, ""),
+                "orders": orders,
+                "revenue": revenue,
+                "avg_price": avg_price,
+                "ad_spend": ad_spend,
+                "ad_views": ad_views,
+                "ad_clicks": ad_clicks,
+                "commission": commission,
+                "logistics": logistics,
+                "cogs": cogs_total,
+                "profit": profit,
+                "margin_pct": margin_pct,
+                "ctr": ctr,
+                "cpc": cpc,
+                "cpo": cpo,
+                "cr": cr,
+                "roi": roi,
+            })
+
+        products_list.sort(key=lambda x: x["revenue"], reverse=True)
+
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "forecast_days": forecast_days,
+            "history": history,
+            "forecast": forecast,
+            "trend": trend,
+            "products": products_list,
+        }
+
+    except Exception as e:
+        logger.exception("Ozon forecast error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка прогноза: {e}",
+        )
