@@ -3,48 +3,63 @@ import { fetchAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-
 import { useAppStore } from '@/stores/appStore'
 
 /* ── helpers ── */
-const formatMoney = (v: number) =>
+const fmtMoney = (v: number) =>
   v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
-const formatNumber = (v: number) => v.toLocaleString('ru-RU')
+const fmtNum = (v: number) => v.toLocaleString('ru-RU')
+const fmtPct = (v: number) => v.toFixed(1) + '%'
 
-/* ── ABC / XYZ color maps ── */
-const abcColors: Record<string, { bg: string; text: string; label: string }> = {
-  A: { bg: 'bg-emerald-500/15', text: 'text-emerald-400', label: 'Лидеры — 80% дохода' },
-  B: { bg: 'bg-amber-500/15', text: 'text-amber-400', label: 'Средние — 15% дохода' },
-  C: { bg: 'bg-red-500/15', text: 'text-red-400', label: 'Аутсайдеры — 5% дохода' },
-}
-const xyzColors: Record<string, { bg: string; text: string; label: string }> = {
-  X: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'Стабильный спрос' },
-  Y: { bg: 'bg-violet-500/15', text: 'text-violet-400', label: 'Умеренная колебания' },
-  Z: { bg: 'bg-orange-500/15', text: 'text-orange-400', label: 'Непредсказуемый спрос' },
-}
-
-/* ── Matrix cell colors ── */
-const matrixCellColor: Record<string, string> = {
-  AX: 'bg-emerald-500/25 text-emerald-300',
-  AY: 'bg-emerald-500/15 text-emerald-400',
-  AZ: 'bg-amber-500/15 text-amber-400',
-  BX: 'bg-emerald-500/15 text-emerald-400',
-  BY: 'bg-amber-500/15 text-amber-400',
-  BZ: 'bg-orange-500/15 text-orange-400',
-  CX: 'bg-amber-500/15 text-amber-400',
-  CY: 'bg-orange-500/15 text-orange-400',
-  CZ: 'bg-red-500/20 text-red-400',
+/** Русское склонение: 1 товар, 2 товара, 5 товаров */
+function pluralize(n: number, one: string, few: string, many: string) {
+  const abs = Math.abs(n) % 100
+  const last = abs % 10
+  if (abs > 10 && abs < 20) return `${n} ${many}`
+  if (last > 1 && last < 5) return `${n} ${few}`
+  if (last === 1) return `${n} ${one}`
+  return `${n} ${many}`
 }
 
-const matrixDescriptions: Record<string, string> = {
-  AX: 'Топ — высокий доход, стабильный спрос',
-  AY: 'Высокий доход, колеблющийся спрос',
+/* ── color config ── */
+const ABC_CFG = {
+  A: { gradient: 'from-emerald-500/20 to-emerald-600/5', border: 'border-emerald-500/30', badge: 'bg-emerald-500/20 text-emerald-400', ring: 'ring-emerald-500/40', label: 'Лидеры', desc: '80% дохода' },
+  B: { gradient: 'from-amber-500/20 to-amber-600/5', border: 'border-amber-500/30', badge: 'bg-amber-500/20 text-amber-400', ring: 'ring-amber-500/40', label: 'Средние', desc: '15% дохода' },
+  C: { gradient: 'from-red-500/20 to-red-600/5', border: 'border-red-500/30', badge: 'bg-red-500/20 text-red-400', ring: 'ring-red-500/40', label: 'Аутсайдеры', desc: '5% дохода' },
+} as const
+
+const XYZ_CFG = {
+  X: { gradient: 'from-blue-500/20 to-blue-600/5', border: 'border-blue-500/30', badge: 'bg-blue-500/20 text-blue-400', label: 'Стабильные', desc: 'CV < 10%' },
+  Y: { gradient: 'from-violet-500/20 to-violet-600/5', border: 'border-violet-500/30', badge: 'bg-violet-500/20 text-violet-400', label: 'Колеблющиеся', desc: 'CV 10–25%' },
+  Z: { gradient: 'from-orange-500/20 to-orange-600/5', border: 'border-orange-500/30', badge: 'bg-orange-500/20 text-orange-400', label: 'Хаотичные', desc: 'CV > 25%' },
+} as const
+
+/* Matrix cell gradient — green for best, red for worst */
+const MATRIX_CELL: Record<string, { bg: string; text: string; emoji: string }> = {
+  AX: { bg: 'bg-gradient-to-br from-emerald-500/30 to-emerald-600/10', text: 'text-emerald-300', emoji: '🌟' },
+  AY: { bg: 'bg-gradient-to-br from-emerald-500/20 to-amber-500/10', text: 'text-emerald-400', emoji: '📈' },
+  AZ: { bg: 'bg-gradient-to-br from-amber-500/20 to-orange-500/10', text: 'text-amber-400', emoji: '⚡' },
+  BX: { bg: 'bg-gradient-to-br from-blue-500/20 to-emerald-500/10', text: 'text-blue-400', emoji: '✅' },
+  BY: { bg: 'bg-gradient-to-br from-amber-500/20 to-amber-600/10', text: 'text-amber-400', emoji: '📊' },
+  BZ: { bg: 'bg-gradient-to-br from-orange-500/20 to-red-500/10', text: 'text-orange-400', emoji: '⚠️' },
+  CX: { bg: 'bg-gradient-to-br from-blue-500/15 to-blue-600/5', text: 'text-blue-400', emoji: '💤' },
+  CY: { bg: 'bg-gradient-to-br from-orange-500/15 to-orange-600/5', text: 'text-orange-400', emoji: '📉' },
+  CZ: { bg: 'bg-gradient-to-br from-red-500/25 to-red-600/10', text: 'text-red-400', emoji: '🚫' },
+}
+
+const MATRIX_DESC: Record<string, string> = {
+  AX: 'Звёзды — высокий доход, стабильный спрос',
+  AY: 'Высокий доход, умеренные колебания',
   AZ: 'Высокий доход, непредсказуемый спрос',
-  BX: 'Средний доход, стабильный спрос',
-  BY: 'Средний доход, колеблющийся спрос',
-  BZ: 'Средний доход, непредсказуемый спрос',
-  CX: 'Низкий доход, стабильный спрос',
-  CY: 'Низкий доход, колеблющийся спрос',
-  CZ: 'Проблемные — низкий доход, хаотичный спрос',
+  BX: 'Стабильный спрос, средний доход',
+  BY: 'Средний доход, умеренные колебания',
+  BZ: 'Средний доход, хаотичный спрос',
+  CX: 'Стабильные, но малый доход',
+  CY: 'Слабые с колебаниями',
+  CZ: 'Проблемные — малый доход и хаос',
 }
 
-/* ── Page Component ── */
+/* ═══════════════════════════════════════ */
+/*              PAGE COMPONENT            */
+/* ═══════════════════════════════════════ */
+
 export default function AbcXyzPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const [data, setData] = useState<AbcXyzResponse | null>(null)
@@ -68,7 +83,6 @@ export default function AbcXyzPage() {
 
   useEffect(() => { load() }, [load])
 
-  /* Filter by matrix cell */
   const filteredProducts = useMemo(() => {
     if (!data) return []
     if (!selectedCell) return data.products
@@ -85,27 +99,30 @@ export default function AbcXyzPage() {
   }
 
   return (
-    <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-8 p-6 lg:p-8 max-w-[1600px] mx-auto">
+
+      {/* ═══ HEADER ═══ */}
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">ABC / XYZ Анализ</h1>
-          <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-            Классификация товаров по вкладу в доход и стабильности спроса
+          <h1 className="text-3xl font-bold text-[hsl(var(--foreground))] tracking-tight">
+            ABC / XYZ Анализ
+          </h1>
+          <p className="text-[15px] text-[hsl(var(--muted-foreground))] mt-2 leading-relaxed">
+            Классификация товаров по вкладу в {useProfit ? 'прибыль' : 'выручку'} и стабильности спроса
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Period selector */}
-          <div className="flex rounded-xl border border-[hsl(var(--border))] overflow-hidden">
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Period picker */}
+          <div className="flex rounded-xl overflow-hidden border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
             {[30, 60, 90].map((p) => (
               <button
                 key={p}
-                onClick={() => setPeriod(p)}
-                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                onClick={() => { setPeriod(p); setSelectedCell(null) }}
+                className={`px-5 py-2.5 text-sm font-semibold transition-all ${
                   period === p
-                    ? 'bg-[hsl(var(--primary))] text-white'
-                    : 'bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                    ? 'bg-[hsl(var(--primary))] text-white shadow-lg shadow-[hsl(var(--primary)/0.3)]'
+                    : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.5)]'
                 }`}
               >
                 {p} дн.
@@ -113,13 +130,13 @@ export default function AbcXyzPage() {
             ))}
           </div>
 
-          {/* Profit/Revenue toggle */}
+          {/* Profit / Revenue toggle */}
           <button
-            onClick={() => setUseProfit(!useProfit)}
-            className={`px-4 py-2 text-sm font-medium rounded-xl border transition-colors ${
+            onClick={() => { setUseProfit(!useProfit); setSelectedCell(null) }}
+            className={`px-5 py-2.5 text-sm font-semibold rounded-xl border-2 transition-all ${
               useProfit
-                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400'
-                : 'border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted))]'
+                ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-400 shadow-lg shadow-emerald-500/10'
+                : 'border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.5)]'
             }`}
           >
             {useProfit ? '📊 По прибыли' : '💰 По выручке'}
@@ -128,104 +145,183 @@ export default function AbcXyzPage() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-8 w-8 border-2 border-[hsl(var(--primary))] border-t-transparent" />
+        <div className="flex items-center justify-center h-80">
+          <div className="flex flex-col items-center gap-3">
+            <div className="animate-spin rounded-full h-10 w-10 border-[3px] border-[hsl(var(--primary))] border-t-transparent" />
+            <span className="text-sm text-[hsl(var(--muted-foreground))]">Загрузка данных…</span>
+          </div>
         </div>
       ) : data && data.products.length > 0 ? (
         <>
-          {/* ── Summary Cards ── */}
-          <div className="grid grid-cols-6 gap-3">
-            {['A', 'B', 'C'].map((g) => {
-              const s = data.summary[g]
-              const c = abcColors[g]
-              return (
-                <div key={g} className={`rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg ${c.bg} ${c.text} font-bold text-lg`}>{g}</span>
-                    <span className="text-xs text-[hsl(var(--muted-foreground))]">{c.label}</span>
-                  </div>
-                  <div className="text-2xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
-                  <div className="text-xs text-[hsl(var(--muted-foreground))]">{s?.revenue_share || 0}% выручки</div>
-                </div>
-              )
-            })}
-            {['X', 'Y', 'Z'].map((g) => {
-              const s = data.summary[g]
-              const c = xyzColors[g]
-              return (
-                <div key={g} className={`rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4`}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-lg ${c.bg} ${c.text} font-bold text-lg`}>{g}</span>
-                    <span className="text-xs text-[hsl(var(--muted-foreground))]">{c.label}</span>
-                  </div>
-                  <div className="text-2xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
-                  <div className="text-xs text-[hsl(var(--muted-foreground))]">{s?.count || 0} товаров</div>
-                </div>
-              )
-            })}
-          </div>
+          {/* ═══ SUMMARY CARDS ═══ */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-          {/* ── Matrix 3x3 ── */}
-          <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6">
-            <h2 className="text-lg font-semibold text-[hsl(var(--foreground))] mb-4">Матрица ABC × XYZ</h2>
-            <p className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Нажмите на ячейку для фильтрации таблицы товаров</p>
-
-            <div className="flex gap-6">
-              {/* Matrix grid */}
-              <div className="flex-1">
-                <div className="grid grid-cols-4 gap-1">
-                  {/* Header row */}
-                  <div />
-                  {['X', 'Y', 'Z'].map((x) => (
-                    <div key={x} className="text-center py-2">
-                      <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${xyzColors[x].bg} ${xyzColors[x].text} font-bold text-sm`}>{x}</span>
-                    </div>
-                  ))}
-
-                  {/* Data rows */}
-                  {['A', 'B', 'C'].map((a) => (
-                    <>
-                      <div key={`label-${a}`} className="flex items-center justify-center py-2">
-                        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${abcColors[a].bg} ${abcColors[a].text} font-bold text-sm`}>{a}</span>
-                      </div>
-                      {['X', 'Y', 'Z'].map((x) => {
-                        const key = `${a}${x}` as keyof typeof data.matrix
-                        const count = data.matrix[key] || 0
-                        const isSelected = selectedCell === `${a}${x}`
-                        return (
-                          <button
-                            key={key}
-                            onClick={() => setSelectedCell(isSelected ? null : `${a}${x}`)}
-                            className={`rounded-xl p-4 text-center transition-all duration-200 cursor-pointer border-2 ${
-                              isSelected
-                                ? 'border-[hsl(var(--primary))] ring-2 ring-[hsl(var(--primary)/0.3)]'
-                                : 'border-transparent hover:border-[hsl(var(--border))]'
-                            } ${matrixCellColor[key] || 'bg-[hsl(var(--muted)/0.3)]'}`}
-                          >
-                            <div className="text-2xl font-bold">{count}</div>
-                            <div className="text-[10px] opacity-70 mt-0.5">товаров</div>
-                          </button>
-                        )
-                      })}
-                    </>
-                  ))}
-                </div>
+            {/* ABC group */}
+            <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <span className="text-lg font-bold text-[hsl(var(--foreground))]">ABC</span>
+                <span className="text-sm text-[hsl(var(--muted-foreground))]">— вклад в {useProfit ? 'прибыль' : 'выручку'}</span>
               </div>
+              <div className="grid grid-cols-3 gap-4">
+                {(['A', 'B', 'C'] as const).map((g) => {
+                  const s = data.summary[g]
+                  const c = ABC_CFG[g]
+                  return (
+                    <div
+                      key={g}
+                      className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}
+                    >
+                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>
+                        {g}
+                      </span>
+                      <div className="text-3xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
+                      <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1">{c.label}</div>
+                      <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">
+                        {fmtPct(s?.revenue_share || 0)} {useProfit ? 'прибыли' : 'выручки'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
 
-              {/* Legend */}
-              <div className="w-64 space-y-2 text-xs">
-                <div className="font-semibold text-[hsl(var(--foreground))] mb-2">Легенда</div>
-                {Object.entries(matrixDescriptions).map(([key, desc]) => (
-                  <div key={key} className="flex items-start gap-2">
-                    <span className={`shrink-0 inline-flex items-center justify-center w-7 h-5 rounded ${matrixCellColor[key]} text-[10px] font-bold`}>{key}</span>
-                    <span className="text-[hsl(var(--muted-foreground))]">{desc}</span>
-                  </div>
-                ))}
+            {/* XYZ group */}
+            <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6">
+              <div className="flex items-center gap-2 mb-5">
+                <span className="text-lg font-bold text-[hsl(var(--foreground))]">XYZ</span>
+                <span className="text-sm text-[hsl(var(--muted-foreground))]">— стабильность спроса</span>
+              </div>
+              <div className="grid grid-cols-3 gap-4">
+                {(['X', 'Y', 'Z'] as const).map((g) => {
+                  const s = data.summary[g]
+                  const c = XYZ_CFG[g]
+                  return (
+                    <div
+                      key={g}
+                      className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}
+                    >
+                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>
+                        {g}
+                      </span>
+                      <div className="text-3xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
+                      <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1">{c.label}</div>
+                      <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">{c.desc}</div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           </div>
 
-          {/* ── Products Table ── */}
+          {/* ═══ MATRIX 3×3 ═══ */}
+          <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 lg:p-8">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Матрица ABC × XYZ</h2>
+                <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
+                  Нажмите на ячейку для фильтрации таблицы
+                </p>
+              </div>
+              {selectedCell && (
+                <button
+                  onClick={() => setSelectedCell(null)}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.6)] transition-all"
+                >
+                  ✕ Сбросить фильтр
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-8">
+              {/* Grid */}
+              <div>
+                {/* Column headers */}
+                <div className="grid grid-cols-[60px_1fr_1fr_1fr] gap-2 mb-2">
+                  <div />
+                  {(['X', 'Y', 'Z'] as const).map((x) => (
+                    <div key={x} className="text-center">
+                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${XYZ_CFG[x].badge} font-bold text-base`}>
+                        {x}
+                      </span>
+                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">{XYZ_CFG[x].label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Rows */}
+                {(['A', 'B', 'C'] as const).map((a) => (
+                  <div key={a} className="grid grid-cols-[60px_1fr_1fr_1fr] gap-2 mb-2">
+                    {/* Row header */}
+                    <div className="flex flex-col items-center justify-center">
+                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${ABC_CFG[a].badge} font-bold text-base`}>
+                        {a}
+                      </span>
+                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">{ABC_CFG[a].label}</div>
+                    </div>
+                    {/* Cells */}
+                    {(['X', 'Y', 'Z'] as const).map((x) => {
+                      const key = `${a}${x}`
+                      const count = data.matrix[key] || 0
+                      const cell = MATRIX_CELL[key]
+                      const isSelected = selectedCell === key
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setSelectedCell(isSelected ? null : key)}
+                          title={MATRIX_DESC[key]}
+                          className={`
+                            relative rounded-2xl py-5 px-4 text-center transition-all duration-200 cursor-pointer
+                            border-2 ${cell.bg}
+                            ${isSelected
+                              ? 'border-[hsl(var(--primary))] ring-2 ring-[hsl(var(--primary)/0.3)] scale-[1.02] shadow-lg'
+                              : 'border-transparent hover:border-[hsl(var(--border))] hover:scale-[1.01] hover:shadow-md'
+                            }
+                          `}
+                        >
+                          <div className={`text-3xl font-bold ${cell.text}`}>{count}</div>
+                          <div className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                            {pluralize(count, 'товар', 'товара', 'товаров')}
+                          </div>
+                          {count > 0 && (
+                            <div className="text-sm mt-1 opacity-50">{cell.emoji}</div>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              {/* Legend */}
+              <div className="space-y-2.5">
+                <div className="text-sm font-bold text-[hsl(var(--foreground))] mb-3">Легенда</div>
+                {Object.entries(MATRIX_DESC).map(([key, desc]) => {
+                  const cell = MATRIX_CELL[key]
+                  const count = data.matrix[key] || 0
+                  return (
+                    <div
+                      key={key}
+                      className={`flex items-center gap-3 p-2 rounded-lg transition-colors ${
+                        selectedCell === key ? 'bg-[hsl(var(--muted)/0.5)]' : 'hover:bg-[hsl(var(--muted)/0.2)]'
+                      }`}
+                    >
+                      <span className={`shrink-0 inline-flex items-center justify-center w-10 h-7 rounded-lg ${cell.bg} ${cell.text} text-xs font-bold`}>
+                        {key}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm text-[hsl(var(--foreground))] leading-tight">{desc}</div>
+                        <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                          {pluralize(count, 'товар', 'товара', 'товаров')}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* ═══ PRODUCTS TABLE ═══ */}
           <ProductsTable
             products={filteredProducts}
             selectedCell={selectedCell}
@@ -233,15 +329,20 @@ export default function AbcXyzPage() {
           />
         </>
       ) : (
-        <div className="flex items-center justify-center h-64 text-[hsl(var(--muted-foreground))]">
-          Нет данных за выбранный период
+        <div className="flex flex-col items-center justify-center h-64 gap-2">
+          <div className="text-4xl">📦</div>
+          <div className="text-lg text-[hsl(var(--muted-foreground))]">Нет данных за выбранный период</div>
+          <div className="text-sm text-[hsl(var(--muted-foreground))] opacity-60">Попробуйте увеличить период или переключить магазин</div>
         </div>
       )}
     </div>
   )
 }
 
-/* ── Products Table ── */
+/* ═══════════════════════════════════════ */
+/*           PRODUCTS TABLE               */
+/* ═══════════════════════════════════════ */
+
 type SortKey = keyof AbcXyzProduct
 
 function ProductsTable({
@@ -273,19 +374,19 @@ function ProductsTable({
     })
   }, [products, sortKey, sortDir])
 
-  const thBase = 'px-3 py-2.5 text-right text-[12px] font-medium whitespace-nowrap select-none'
-
-  const SortTh = ({ k, children, className = '' }: { k: SortKey; children: React.ReactNode; className?: string }) => (
+  const SortTh = ({ k, children, align = 'right' }: { k: SortKey; children: React.ReactNode; align?: 'left' | 'right' | 'center' }) => (
     <th
-      className={`${thBase} ${className} cursor-pointer hover:text-[hsl(var(--foreground))] transition-colors ${
-        sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'
-      }`}
+      className={`
+        px-4 py-3.5 text-[13px] font-semibold whitespace-nowrap select-none cursor-pointer
+        transition-colors text-${align}
+        ${sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}
+      `}
       onClick={() => toggleSort(k)}
     >
-      <span className="inline-flex items-center gap-1 justify-end">
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : ''}`}>
         {children}
         {sortKey === k && (
-          <span className="text-[10px] opacity-70">{sortDir === 'desc' ? '▼' : '▲'}</span>
+          <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>
         )}
       </span>
     </th>
@@ -293,96 +394,127 @@ function ProductsTable({
 
   return (
     <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[hsl(var(--border))]">
-        <h2 className="text-lg font-semibold text-[hsl(var(--foreground))]">
-          Товары
+      {/* Table header */}
+      <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Товары</h2>
           {selectedCell && (
-            <span className="ml-2 text-sm font-normal text-[hsl(var(--muted-foreground))]">
-              — группа {selectedCell}
+            <span className="flex items-center gap-2">
+              <span className={`inline-flex items-center px-3 py-1 rounded-lg text-sm font-semibold ${MATRIX_CELL[selectedCell]?.bg} ${MATRIX_CELL[selectedCell]?.text}`}>
+                {selectedCell}
+              </span>
               <button
                 onClick={onClearFilter}
-                className="ml-2 text-[hsl(var(--primary))] hover:underline"
+                className="text-sm text-[hsl(var(--primary))] hover:underline font-medium"
               >
-                Сбросить
+                ✕ Сбросить
               </button>
             </span>
           )}
-        </h2>
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">{products.length} товаров</span>
+        </div>
+        <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">
+          {pluralize(products.length, 'товар', 'товара', 'товаров')}
+        </span>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full">
           <thead>
-            <tr className="border-b border-[hsl(var(--border))]">
-              <th className="px-4 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] w-[280px]">Товар</th>
+            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)]">
+              <th className="px-5 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] min-w-[320px]">
+                Товар
+              </th>
               <SortTh k="revenue">Выручка</SortTh>
               <SortTh k="profit">Прибыль</SortTh>
+              <SortTh k="margin_pct">Маржа</SortTh>
               <SortTh k="orders">Заказы</SortTh>
               <SortTh k="avg_price">Ср. цена</SortTh>
               <SortTh k="cost_price">С/с</SortTh>
-              <th className={`${thBase} text-center text-[hsl(var(--muted-foreground))]`}>ABC</th>
+              <SortTh k="mp_fees">МП расх.</SortTh>
+              <SortTh k="ad_spend">Реклама</SortTh>
+              <th className="px-4 py-3.5 text-center text-[13px] font-semibold text-[hsl(var(--muted-foreground))]">ABC</th>
               <SortTh k="abc_share">Доля</SortTh>
-              <SortTh k="abc_cumulative">Кумул.</SortTh>
-              <th className={`${thBase} text-center text-[hsl(var(--muted-foreground))]`}>XYZ</th>
+              <th className="px-4 py-3.5 text-center text-[13px] font-semibold text-[hsl(var(--muted-foreground))]">XYZ</th>
               <SortTh k="xyz_cv">CV%</SortTh>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((p) => {
-              const abc = abcColors[p.abc_group]
-              const xyz = xyzColors[p.xyz_group]
+            {sorted.map((p, idx) => {
+              const abc = ABC_CFG[p.abc_group as keyof typeof ABC_CFG]
+              const xyz = XYZ_CFG[p.xyz_group as keyof typeof XYZ_CFG]
+              const marginColor = p.margin_pct > 20 ? 'text-emerald-400' : p.margin_pct > 0 ? 'text-amber-400' : 'text-red-400'
+
               return (
                 <tr
                   key={p.sku}
-                  className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors"
+                  className={`
+                    border-b border-[hsl(var(--border)/0.2)] transition-colors
+                    ${idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.06)]'}
+                    hover:bg-[hsl(var(--muted)/0.2)]
+                  `}
                 >
                   {/* Product */}
-                  <td className="px-4 py-3">
+                  <td className="px-5 py-3.5">
                     <div className="flex items-center gap-3">
                       {p.image_url ? (
-                        <img src={p.image_url} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0" />
+                        <img src={p.image_url} alt="" className="w-11 h-11 rounded-xl object-cover shrink-0 border border-[hsl(var(--border)/0.3)]" />
                       ) : (
-                        <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted))] shrink-0" />
+                        <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-[hsl(var(--muted-foreground))] text-lg">
+                          📦
+                        </div>
                       )}
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium text-[hsl(var(--foreground))] truncate max-w-[200px]">{p.name || p.offer_id}</div>
-                        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{p.offer_id}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] font-medium text-[hsl(var(--foreground))] truncate" title={p.name || p.offer_id}>
+                          {p.name || p.offer_id}
+                        </div>
+                        <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">{p.offer_id}</div>
                       </div>
                     </div>
                   </td>
                   {/* Revenue */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px] font-medium">{formatMoney(p.revenue)}</td>
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] font-semibold text-[hsl(var(--foreground))]">
+                    {fmtMoney(p.revenue)}
+                  </td>
                   {/* Profit */}
-                  <td className={`px-3 py-3 text-right tabular-nums text-[13px] font-medium ${p.profit > 0 ? 'text-emerald-400' : p.profit < 0 ? 'text-red-400' : ''}`}>
-                    {formatMoney(p.profit)}
+                  <td className={`px-4 py-3.5 text-right tabular-nums text-[14px] font-semibold ${p.profit > 0 ? 'text-emerald-400' : p.profit < 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                    {fmtMoney(p.profit)}
+                  </td>
+                  {/* Margin */}
+                  <td className={`px-4 py-3.5 text-right tabular-nums text-[13px] font-semibold ${marginColor}`}>
+                    {fmtPct(p.margin_pct)}
                   </td>
                   {/* Orders */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px]">{formatNumber(p.orders)}</td>
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px]">{fmtNum(p.orders)}</td>
                   {/* Avg Price */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px]">{formatMoney(p.avg_price)}</td>
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] text-[hsl(var(--muted-foreground))]">{fmtMoney(p.avg_price)}</td>
                   {/* Cost */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px]">
-                    {p.cost_price > 0 ? formatMoney(p.cost_price) : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] text-[hsl(var(--muted-foreground))]">
+                    {p.cost_price > 0 ? fmtMoney(p.cost_price) : <span className="opacity-40">—</span>}
                   </td>
-                  {/* ABC */}
-                  <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${abc.bg} ${abc.text} font-bold text-sm`}>
+                  {/* MP fees */}
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                    {(p.mp_fees ?? 0) > 0 ? fmtMoney(p.mp_fees ?? 0) : <span className="opacity-40">—</span>}
+                  </td>
+                  {/* Ads */}
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                    {(p.ad_spend ?? 0) > 0 ? fmtMoney(p.ad_spend ?? 0) : <span className="opacity-40">—</span>}
+                  </td>
+                  {/* ABC badge */}
+                  <td className="px-4 py-3.5 text-center">
+                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-xl ${abc.badge} font-bold text-sm`}>
                       {p.abc_group}
                     </span>
                   </td>
                   {/* Share */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px]">{p.abc_share}%</td>
-                  {/* Cumulative */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">{p.abc_cumulative}%</td>
-                  {/* XYZ */}
-                  <td className="px-3 py-3 text-center">
-                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${xyz.bg} ${xyz.text} font-bold text-sm`}>
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px]">{fmtPct(p.abc_share)}</td>
+                  {/* XYZ badge */}
+                  <td className="px-4 py-3.5 text-center">
+                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-xl ${xyz.badge} font-bold text-sm`}>
                       {p.xyz_group}
                     </span>
                   </td>
                   {/* CV */}
-                  <td className="px-3 py-3 text-right tabular-nums text-[13px]">{p.xyz_cv}%</td>
+                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px]">{fmtPct(p.xyz_cv)}</td>
                 </tr>
               )
             })}

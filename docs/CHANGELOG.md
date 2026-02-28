@@ -1,5 +1,14 @@
 ## 2026-02-28
 
+### fix(sales): ABC/XYZ — чистая прибыль вместо валовой
+
+- **Было**: `profit = revenue - cogs` (только себестоимость)
+- **Стало**: `profit = revenue - commission - logistics - storage - acquiring - ad_spend - cogs`
+- Источники: `fact_ozon_transactions`, `fact_ozon_ad_daily`, `product_costs`
+- Bulk charges (Storage/Acquiring) распределяются пропорционально выручке
+
+## 2026-02-28
+
 ### feat(sales): подменю «Продажи» + ABC/XYZ анализ
 
 - **Sidebar рефакторинг**: «Продажи» → collapsible группа с подпунктами:

@@ -10,6 +10,14 @@ export interface AbcXyzProduct {
   orders: number
   avg_price: number
   cost_price: number
+  commission: number
+  logistics: number
+  storage: number
+  acquiring: number
+  mp_fees: number
+  ad_spend: number
+  cogs: number
+  margin_pct: number
   weekly_data: number[]
   abc_group: 'A' | 'B' | 'C'
   abc_share: number
@@ -17,6 +25,7 @@ export interface AbcXyzProduct {
   xyz_group: 'X' | 'Y' | 'Z'
   xyz_cv: number
 }
+
 
 export interface AbcXyzSummary {
   [key: string]: {
@@ -26,6 +35,7 @@ export interface AbcXyzSummary {
 }
 
 export interface AbcXyzMatrix {
+  [key: string]: number
   AX: number; AY: number; AZ: number
   BX: number; BY: number; BZ: number
   CX: number; CY: number; CZ: number
