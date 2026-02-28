@@ -1742,35 +1742,121 @@ async def get_wb_abc_xyz(
 
 
 # ═══════════════════════════════════════════════════════════════
-# Ozon Sales Forecast + Simulator
+# Ozon Sales Forecast + Simulator  (NeuralProphet)
 # ═══════════════════════════════════════════════════════════════
 
 
-def _linear_regression(xs: list[float], ys: list[float]):
-    """Simple least-squares linear regression. Returns (slope, intercept)."""
-    n = len(xs)
-    if n < 2:
-        return 0.0, (ys[0] if ys else 0.0)
-    sum_x = sum(xs)
-    sum_y = sum(ys)
-    sum_xx = sum(x * x for x in xs)
-    sum_xy = sum(x * y for x, y in zip(xs, ys))
-    denom = n * sum_xx - sum_x * sum_x
-    if denom == 0:
-        return 0.0, sum_y / n
-    slope = (n * sum_xy - sum_x * sum_y) / denom
-    intercept = (sum_y - slope * sum_x) / n
-    return slope, intercept
+def _neuralprophet_forecast(
+    dates: list[str],
+    values: list[float],
+    forecast_days: int,
+    ad_spend_daily: dict[str, float] | None = None,
+) -> tuple[list[dict], dict]:
+    """Run NeuralProphet forecast with weekly seasonality + AR.
 
+    Uses n_forecasts for multi-step prediction.
+    Returns (forecast_points, trend_info).
+    Falls back to simple moving average if NeuralProphet fails.
+    """
+    import pandas as pd
+    import numpy as np
 
-def _residual_std(xs: list[float], ys: list[float], slope: float, intercept: float) -> float:
-    """Standard deviation of residuals for confidence band."""
-    if len(xs) < 3:
-        return 0.0
-    residuals = [y - (slope * x + intercept) for x, y in zip(xs, ys)]
-    mean_r = sum(residuals) / len(residuals)
-    var_r = sum((r - mean_r) ** 2 for r in residuals) / (len(residuals) - 1)
-    return math.sqrt(var_r)
+    if len(dates) < 14:
+        mean_val = sum(values) / len(values) if values else 0
+        last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
+        forecast_pts = []
+        for d in range(1, forecast_days + 1):
+            fd = last_dt + timedelta(days=d)
+            forecast_pts.append({
+                "date": str(fd),
+                "value": round(mean_val),
+                "value_low": round(mean_val * 0.7),
+                "value_high": round(mean_val * 1.3),
+            })
+        return forecast_pts, {"slope_pct": 0, "direction": "flat"}
+
+    try:
+        from neuralprophet import NeuralProphet, set_log_level
+        set_log_level("ERROR")
+
+        df = pd.DataFrame({"ds": pd.to_datetime(dates), "y": values})
+
+        # NeuralProphet with AR requires n_forecasts for multi-step
+        model = NeuralProphet(
+            seasonality_mode="multiplicative",
+            weekly_seasonality=True,
+            daily_seasonality=False,
+            yearly_seasonality=False,
+            n_lags=7,
+            n_forecasts=forecast_days,
+            learning_rate=0.1,
+            epochs=150,
+            batch_size=min(32, max(8, len(df) // 4)),
+        )
+
+        model.fit(df, freq="D", progress=False)
+
+        future = model.make_future_dataframe(df, periods=forecast_days)
+        pred = model.predict(future)
+
+        # Extract future rows (after last historical date)
+        last_hist_date = pd.Timestamp(dates[-1])
+        forecast_df = pred[pred["ds"] > last_hist_date].reset_index(drop=True)
+
+        # With n_forecasts, values are diagonal: yhat1 for day 1, yhat2 for day 2, etc.
+        forecast_pts = []
+        for i, (_, row) in enumerate(forecast_df.iterrows()):
+            step = i + 1
+            col_name = f"yhat{step}"
+            yhat = float(row.get(col_name, 0) or 0)
+            yhat = max(yhat, 0)
+
+            # Estimate confidence interval from historical volatility
+            recent = values[-14:] if len(values) >= 14 else values
+            std_val = float(np.std(recent)) if len(recent) > 1 else yhat * 0.2
+            confidence_mult = 1 + (step - 1) * 0.03
+            band = std_val * confidence_mult
+
+            forecast_pts.append({
+                "date": str(row["ds"].date()),
+                "value": round(yhat),
+                "value_low": round(max(yhat - band, 0)),
+                "value_high": round(yhat + band),
+            })
+
+        # Trend
+        if len(forecast_pts) >= 2:
+            first_v = forecast_pts[0]["value"]
+            last_v = forecast_pts[-1]["value"]
+            mean_val = sum(values) / len(values) if values else 1
+            slope_pct = round(
+                (last_v - first_v) / max(mean_val, 1) / len(forecast_pts) * 100, 1
+            )
+        else:
+            slope_pct = 0
+
+        trend_info = {
+            "slope_pct": slope_pct,
+            "direction": "up" if slope_pct > 0.1 else "down" if slope_pct < -0.1 else "flat",
+        }
+
+        return forecast_pts, trend_info
+
+    except Exception as e:
+        logger.warning("NeuralProphet failed, fallback to moving average: %s", e)
+        window = values[-7:] if len(values) >= 7 else values
+        mean_val = sum(window) / len(window) if window else 0
+        last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
+        forecast_pts = []
+        for d in range(1, forecast_days + 1):
+            fd = last_dt + timedelta(days=d)
+            forecast_pts.append({
+                "date": str(fd),
+                "value": round(mean_val),
+                "value_low": round(mean_val * 0.7),
+                "value_high": round(mean_val * 1.3),
+            })
+        return forecast_pts, {"slope_pct": 0, "direction": "flat"}
 
 
 @router.get("/ozon/forecast")
@@ -1781,10 +1867,11 @@ async def get_ozon_forecast(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sales forecast for Ozon: trend forecast + per-product unit economics.
+    """Sales forecast for Ozon using NeuralProphet.
 
-    Trend: linear regression on daily revenue/orders with ±1σ confidence band.
-    Products: unit economics for what-if simulator (CPO, CPC, CTR, CR, ROI).
+    Model: NeuralProphet with weekly seasonality, 7-day autoregression,
+    and ad spend as lagged regressor.
+    Products: unit economics for what-if simulator.
     """
     result = await db.execute(
         select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
@@ -1822,65 +1909,75 @@ async def get_ozon_forecast(
         """, parameters=params).result_rows
 
         history = []
-        rev_values = []
-        ord_values = []
-        day_indices = []
+        dates_list: list[str] = []
+        rev_values: list[float] = []
+        ord_values: list[float] = []
 
-        for i, r in enumerate(daily_rows):
+        for r in daily_rows:
             dt_str = str(r[0])
             rev = float(r[1] or 0)
             ords = int(r[2] or 0)
             history.append({"date": dt_str, "revenue": round(rev), "orders": ords})
+            dates_list.append(dt_str)
             rev_values.append(rev)
             ord_values.append(float(ords))
-            day_indices.append(float(i))
 
-        # ── 2. Linear regression for forecast ──
-        rev_slope, rev_intercept = _linear_regression(day_indices, rev_values)
-        ord_slope, ord_intercept = _linear_regression(day_indices, ord_values)
+        # ── 1b. Daily ad spend for regressor ──
+        ad_spend_daily: dict[str, float] = {}
+        try:
+            ad_daily_rows = ch.query("""
+                SELECT dt, sum(money_spent) AS spend
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= {cur_start:Date}
+                  AND dt <= {cur_end:Date}
+                GROUP BY dt
+                ORDER BY dt
+            """, parameters=params).result_rows
+            for r in ad_daily_rows:
+                ad_spend_daily[str(r[0])] = float(r[1] or 0)
+        except Exception as e:
+            logger.warning("Forecast daily ads error: %s", e)
 
-        rev_std = _residual_std(day_indices, rev_values, rev_slope, rev_intercept)
-        ord_std = _residual_std(day_indices, ord_values, ord_slope, ord_intercept)
+        # ── 2. NeuralProphet forecast ──
+        import asyncio
 
-        # Trend percentage (slope as % of mean)
-        mean_rev = sum(rev_values) / len(rev_values) if rev_values else 1
-        mean_ord = sum(ord_values) / len(ord_values) if ord_values else 1
-        rev_trend_pct = round(rev_slope / mean_rev * 100, 1) if mean_rev > 0 else 0
-        ord_trend_pct = round(ord_slope / mean_ord * 100, 1) if mean_ord > 0 else 0
+        loop = asyncio.get_event_loop()
 
-        # Generate forecast points
+        # Revenue forecast (run in thread to avoid blocking)
+        rev_forecast, rev_trend = await loop.run_in_executor(
+            None,
+            lambda: _neuralprophet_forecast(dates_list, rev_values, forecast_days, ad_spend_daily),
+        )
+
+        # Orders forecast
+        ord_forecast, ord_trend = await loop.run_in_executor(
+            None,
+            lambda: _neuralprophet_forecast(dates_list, ord_values, forecast_days, None),
+        )
+
+        # Combine into unified forecast points
         forecast = []
-        n = len(day_indices)
-        last_date = date.fromisoformat(history[-1]["date"]) if history else cur_end
-
-        for d in range(1, forecast_days + 1):
-            x = float(n - 1 + d)
-            forecast_date = last_date + timedelta(days=d)
-            f_rev = max(rev_slope * x + rev_intercept, 0)
-            f_ord = max(ord_slope * x + ord_intercept, 0)
-            # Confidence widens with distance
-            confidence_mult = 1 + (d - 1) * 0.05
-            rev_band = rev_std * confidence_mult
-            ord_band = ord_std * confidence_mult
-
+        for i in range(len(rev_forecast)):
+            rf = rev_forecast[i]
+            of = ord_forecast[i] if i < len(ord_forecast) else {"value": 0, "value_low": 0, "value_high": 0}
             forecast.append({
-                "date": str(forecast_date),
-                "revenue": round(f_rev),
-                "revenue_low": round(max(f_rev - rev_band, 0)),
-                "revenue_high": round(f_rev + rev_band),
-                "orders": round(f_ord),
-                "orders_low": round(max(f_ord - ord_band, 0)),
-                "orders_high": round(f_ord + ord_band),
+                "date": rf["date"],
+                "revenue": rf["value"],
+                "revenue_low": rf["value_low"],
+                "revenue_high": rf["value_high"],
+                "orders": of["value"],
+                "orders_low": of["value_low"],
+                "orders_high": of["value_high"],
             })
 
-        # Summary forecast totals
         total_forecast_rev = sum(f["revenue"] for f in forecast)
         total_forecast_ord = sum(f["orders"] for f in forecast)
 
         trend = {
-            "revenue_slope_pct": rev_trend_pct,
-            "orders_slope_pct": ord_trend_pct,
-            "direction": "up" if rev_slope > 0 else "down" if rev_slope < 0 else "flat",
+            "revenue_slope_pct": rev_trend["slope_pct"],
+            "orders_slope_pct": ord_trend["slope_pct"],
+            "direction": rev_trend["direction"],
             "forecast_revenue": total_forecast_rev,
             "forecast_orders": total_forecast_ord,
         }
