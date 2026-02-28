@@ -71,3 +71,59 @@ export async function fetchOzonForecast(
   })
   return data
 }
+
+/* ── SKU Forecast (LightGBM) ── */
+
+export interface SkuForecastPoint {
+  date: string
+  orders: number
+  revenue: number
+  orders_low: number
+  orders_high: number
+  profit?: number
+  commission?: number
+  logistics?: number
+  ad_spend_est?: number
+  cogs?: number
+}
+
+export interface SkuHistoryPoint {
+  ds: string
+  orders: number
+  revenue: number
+  views: number
+  clicks: number
+  carts: number
+  ad_spend: number
+}
+
+export interface SkuForecast {
+  sku: number
+  offer_id: string
+  name: string
+  image_url: string
+  history: SkuHistoryPoint[]
+  forecast: SkuForecastPoint[]
+  trend: { slope_pct: number; direction: 'up' | 'down' | 'flat' }
+  feature_importance: Record<string, number>
+  totals: { orders: number; revenue: number; profit: number }
+}
+
+export interface SkuForecastResponse {
+  shop_id: number
+  period: number
+  forecast_days: number
+  sku_forecasts: SkuForecast[]
+}
+
+export async function fetchOzonSkuForecast(
+  shopId: number,
+  period: number = 90,
+  forecastDays: number = 14,
+  sku?: number,
+): Promise<SkuForecastResponse> {
+  const params: Record<string, unknown> = { shop_id: shopId, period, forecast_days: forecastDays }
+  if (sku) params.sku = sku
+  const { data } = await apiClient.get<SkuForecastResponse>('/sales/ozon/forecast/sku', { params, timeout: 120000 })
+  return data
+}

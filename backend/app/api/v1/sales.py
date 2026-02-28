@@ -2180,3 +2180,508 @@ async def get_ozon_forecast(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка прогноза: {e}",
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+# LightGBM Per-SKU Forecast
+# ═══════════════════════════════════════════════════════════════
+
+
+def _build_sku_features(df):
+    """Build lagged features from daily SKU data for LightGBM."""
+    import pandas as pd
+
+    df = df.sort_values("ds").copy()
+
+    # Lag features — orders
+    for lag in [1, 2, 3, 7]:
+        df[f"orders_lag{lag}"] = df["orders"].shift(lag)
+    # Moving averages
+    df["orders_ma7"] = df["orders"].rolling(7, min_periods=1).mean()
+    df["orders_ma3"] = df["orders"].rolling(3, min_periods=1).mean()
+
+    # Lag features — revenue
+    for lag in [1, 7]:
+        df[f"revenue_lag{lag}"] = df["revenue"].shift(lag)
+
+    # Lag features — funnel
+    for lag in [1, 2, 3]:
+        df[f"views_lag{lag}"] = df["views"].shift(lag)
+    for lag in [1, 2]:
+        df[f"clicks_lag{lag}"] = df["clicks"].shift(lag)
+    for lag in [1, 2]:
+        df[f"carts_lag{lag}"] = df["carts"].shift(lag)
+    for lag in [1, 2]:
+        df[f"ad_spend_lag{lag}"] = df["ad_spend"].shift(lag)
+
+    # Calendar features
+    df["day_of_week"] = df["ds"].dt.dayofweek
+    df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+
+    # Conversion ratios (lagged)
+    df["ctr_lag1"] = (df["clicks_lag1"] / df["views_lag1"].replace(0, 1)).fillna(0)
+    df["cart_rate_lag1"] = (df["carts_lag1"] / df["clicks_lag1"].replace(0, 1)).fillna(0)
+
+    return df
+
+
+FEATURE_COLS = [
+    "orders_lag1", "orders_lag2", "orders_lag3", "orders_lag7",
+    "orders_ma7", "orders_ma3",
+    "revenue_lag1", "revenue_lag7",
+    "views_lag1", "views_lag2", "views_lag3",
+    "clicks_lag1", "clicks_lag2",
+    "carts_lag1", "carts_lag2",
+    "ad_spend_lag1", "ad_spend_lag2",
+    "day_of_week", "is_weekend",
+    "ctr_lag1", "cart_rate_lag1",
+]
+
+
+def _lightgbm_sku_forecast(
+    daily_data: list[dict],
+    forecast_days: int = 14,
+) -> tuple[list[dict], dict, dict]:
+    """Per-SKU forecast using LightGBM with funnel lagged features.
+
+    Args:
+        daily_data: [{ds, orders, revenue, views, clicks, carts, ad_spend}]
+        forecast_days: horizon
+
+    Returns:
+        (forecast_points, trend_info, feature_importance)
+    """
+    import pandas as pd
+    import numpy as np
+
+    df = pd.DataFrame(daily_data)
+    df["ds"] = pd.to_datetime(df["ds"])
+
+    if len(df) < 14:
+        mean_orders = df["orders"].mean() if len(df) > 0 else 0
+        mean_revenue = df["revenue"].mean() if len(df) > 0 else 0
+        last_dt = df["ds"].max() if len(df) > 0 else pd.Timestamp.today()
+        pts = []
+        for d in range(1, forecast_days + 1):
+            fd = last_dt + pd.Timedelta(days=d)
+            pts.append({
+                "date": str(fd.date()),
+                "orders": round(mean_orders),
+                "revenue": round(mean_revenue),
+                "orders_low": round(mean_orders * 0.7),
+                "orders_high": round(mean_orders * 1.3),
+            })
+        return pts, {"slope_pct": 0, "direction": "flat"}, {}
+
+    try:
+        import lightgbm as lgb
+
+        # Build features
+        feat_df = _build_sku_features(df)
+        train_df = feat_df.dropna(subset=["orders_lag7"]).copy()
+
+        if len(train_df) < 7:
+            raise ValueError("Not enough training data after lag creation")
+
+        X_train = train_df[FEATURE_COLS].fillna(0)
+        y_train = train_df["orders"]
+
+        # Train LightGBM
+        model = lgb.LGBMRegressor(
+            objective="regression",
+            n_estimators=150,
+            num_leaves=31,
+            learning_rate=0.05,
+            min_child_samples=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            verbose=-1,
+        )
+        model.fit(X_train, y_train)
+
+        # Feature importance
+        importances = model.feature_importances_
+        feat_imp = {
+            FEATURE_COLS[i]: round(float(importances[i]) / max(importances.sum(), 1) * 100, 1)
+            for i in range(len(FEATURE_COLS))
+            if importances[i] > 0
+        }
+        feat_imp = dict(sorted(feat_imp.items(), key=lambda x: -x[1]))
+
+        # Revenue model
+        X_rev = train_df[FEATURE_COLS].fillna(0)
+        y_rev = train_df["revenue"]
+        model_rev = lgb.LGBMRegressor(
+            objective="regression",
+            n_estimators=150,
+            num_leaves=31,
+            learning_rate=0.05,
+            min_child_samples=3,
+            verbose=-1,
+        )
+        model_rev.fit(X_rev, y_rev)
+
+        # Multi-step iterative forecast
+        last_row = feat_df.iloc[-1].copy()
+        forecast_pts = []
+        recent_orders = df["orders"].tail(14).tolist()
+        std_orders = float(np.std(recent_orders)) if len(recent_orders) > 1 else 1
+
+        for step in range(1, forecast_days + 1):
+            next_date = df["ds"].max() + pd.Timedelta(days=step)
+
+            # Build feature row for prediction
+            feat_row = {}
+            feat_row["day_of_week"] = next_date.dayofweek
+            feat_row["is_weekend"] = 1 if next_date.dayofweek >= 5 else 0
+
+            # Use last known values shifted
+            feat_row["orders_lag1"] = last_row.get("orders_lag1", 0)
+            feat_row["orders_lag2"] = last_row.get("orders_lag2", 0)
+            feat_row["orders_lag3"] = last_row.get("orders_lag3", 0)
+            feat_row["orders_lag7"] = last_row.get("orders_lag7", 0)
+            feat_row["orders_ma7"] = last_row.get("orders_ma7", 0)
+            feat_row["orders_ma3"] = last_row.get("orders_ma3", 0)
+            feat_row["revenue_lag1"] = last_row.get("revenue_lag1", 0)
+            feat_row["revenue_lag7"] = last_row.get("revenue_lag7", 0)
+            feat_row["views_lag1"] = last_row.get("views_lag1", 0)
+            feat_row["views_lag2"] = last_row.get("views_lag2", 0)
+            feat_row["views_lag3"] = last_row.get("views_lag3", 0)
+            feat_row["clicks_lag1"] = last_row.get("clicks_lag1", 0)
+            feat_row["clicks_lag2"] = last_row.get("clicks_lag2", 0)
+            feat_row["carts_lag1"] = last_row.get("carts_lag1", 0)
+            feat_row["carts_lag2"] = last_row.get("carts_lag2", 0)
+            feat_row["ad_spend_lag1"] = last_row.get("ad_spend_lag1", 0)
+            feat_row["ad_spend_lag2"] = last_row.get("ad_spend_lag2", 0)
+            feat_row["ctr_lag1"] = last_row.get("ctr_lag1", 0)
+            feat_row["cart_rate_lag1"] = last_row.get("cart_rate_lag1", 0)
+
+            X_pred = pd.DataFrame([feat_row])[FEATURE_COLS].fillna(0)
+            pred_orders = max(float(model.predict(X_pred)[0]), 0)
+            pred_revenue = max(float(model_rev.predict(X_pred)[0]), 0)
+
+            # Confidence band grows with step
+            band = std_orders * (1 + (step - 1) * 0.05)
+
+            forecast_pts.append({
+                "date": str(next_date.date()),
+                "orders": round(pred_orders),
+                "revenue": round(pred_revenue),
+                "orders_low": round(max(pred_orders - band, 0)),
+                "orders_high": round(pred_orders + band),
+            })
+
+            # Shift lags for next iteration
+            last_row["orders_lag3"] = last_row.get("orders_lag2", 0)
+            last_row["orders_lag2"] = last_row.get("orders_lag1", 0)
+            last_row["orders_lag1"] = pred_orders
+            last_row["revenue_lag1"] = pred_revenue
+            # Keep views/clicks/carts from recent averages (we don't predict them)
+            last_row["views_lag3"] = last_row.get("views_lag2", 0)
+            last_row["views_lag2"] = last_row.get("views_lag1", 0)
+            last_row["clicks_lag2"] = last_row.get("clicks_lag1", 0)
+            last_row["carts_lag2"] = last_row.get("carts_lag1", 0)
+            last_row["ad_spend_lag2"] = last_row.get("ad_spend_lag1", 0)
+            # Update MA
+            recent_orders.append(pred_orders)
+            if len(recent_orders) > 7:
+                recent_orders = recent_orders[-7:]
+            last_row["orders_ma7"] = np.mean(recent_orders[-7:])
+            last_row["orders_ma3"] = np.mean(recent_orders[-3:])
+
+        # Trend
+        if len(forecast_pts) >= 2:
+            first_v = forecast_pts[0]["orders"]
+            last_v = forecast_pts[-1]["orders"]
+            avg = df["orders"].mean() or 1
+            slope_pct = round((last_v - first_v) / avg / len(forecast_pts) * 100, 1)
+        else:
+            slope_pct = 0
+
+        trend_info = {
+            "slope_pct": slope_pct,
+            "direction": "up" if slope_pct > 0.1 else "down" if slope_pct < -0.1 else "flat",
+        }
+
+        return forecast_pts, trend_info, feat_imp
+
+    except Exception as e:
+        logger.warning("LightGBM SKU forecast failed: %s", e)
+        mean_orders = df["orders"].mean() if len(df) > 0 else 0
+        mean_revenue = df["revenue"].mean() if len(df) > 0 else 0
+        last_dt = df["ds"].max() if len(df) > 0 else pd.Timestamp.today()
+        pts = []
+        for d in range(1, forecast_days + 1):
+            fd = last_dt + pd.Timedelta(days=d)
+            pts.append({
+                "date": str(fd.date()),
+                "orders": round(mean_orders),
+                "revenue": round(mean_revenue),
+                "orders_low": round(mean_orders * 0.7),
+                "orders_high": round(mean_orders * 1.3),
+            })
+        return pts, {"slope_pct": 0, "direction": "flat"}, {}
+
+
+@router.get("/ozon/forecast/sku")
+async def get_ozon_sku_forecast(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=30, le=365),
+    forecast_days: int = Query(14, ge=7, le=30),
+    sku: Optional[int] = Query(None, description="Specific SKU, or top-20 by revenue"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-SKU forecast using LightGBM with funnel lagged features.
+
+    Predicts orders, revenue, profit per SKU using:
+    views, clicks, add_to_cart, ad_spend (lagged 1-3 days).
+    """
+    try:
+        result = await db.execute(
+            select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
+        )
+        shop = result.scalar_one_or_none()
+        if not shop:
+            raise HTTPException(status_code=404, detail="Магазин не найден")
+
+        from app.core.clickhouse import get_clickhouse_client
+        ch = get_clickhouse_client()
+
+        cur_end = date.today() - timedelta(days=1)
+        cur_start = cur_end - timedelta(days=period - 1)
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": str(cur_start),
+            "cur_end": str(cur_end),
+        }
+
+        # ── 1. Get top SKUs by revenue ──
+        if sku:
+            sku_list = [sku]
+        else:
+            top_rows = ch.query("""
+                SELECT sku, sum(price * quantity) AS revenue
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+                GROUP BY sku
+                ORDER BY revenue DESC
+                LIMIT 5
+            """, parameters=params).result_rows
+            sku_list = [int(r[0]) for r in top_rows]
+
+        if not sku_list:
+            return {"shop_id": shop_id, "sku_forecasts": []}
+
+        sku_str = ",".join(str(s) for s in sku_list)
+
+        # ── 2. Daily orders per SKU ──
+        orders_rows = ch.query(f"""
+            SELECT
+                sku,
+                toDate(addHours(in_process_at, 3)) AS dt,
+                sum(price * quantity) AS revenue,
+                count() AS orders
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND toDate(addHours(in_process_at, 3)) >= {{cur_start:Date}}
+              AND toDate(addHours(in_process_at, 3)) <= {{cur_end:Date}}
+              AND sku IN ({sku_str})
+            GROUP BY sku, dt
+            ORDER BY sku, dt
+        """, parameters=params).result_rows
+
+        # ── 3. Daily ad funnel per SKU ──
+        funnel_rows = ch.query(f"""
+            SELECT
+                sku,
+                dt,
+                sum(views) AS views,
+                sum(clicks) AS clicks,
+                sum(add_to_cart) AS carts,
+                sum(money_spent) AS ad_spend
+            FROM mms_analytics.fact_ozon_ad_daily FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND dt >= {{cur_start:Date}}
+              AND dt <= {{cur_end:Date}}
+              AND sku IN ({sku_str})
+            GROUP BY sku, dt
+            ORDER BY sku, dt
+        """, parameters=params).result_rows
+
+        # ── 4. Build per-SKU daily DataFrames ──
+        import pandas as pd
+
+        # Generate all dates in range
+        all_dates = pd.date_range(cur_start, cur_end, freq="D")
+
+        # Orders per sku per day
+        sku_orders: dict[int, dict[str, dict]] = {}
+        for r in orders_rows:
+            s = int(r[0])
+            dt_str = str(r[1])
+            if s not in sku_orders:
+                sku_orders[s] = {}
+            sku_orders[s][dt_str] = {"revenue": float(r[2] or 0), "orders": int(r[3] or 0)}
+
+        # Funnel per sku per day
+        sku_funnel: dict[int, dict[str, dict]] = {}
+        for r in funnel_rows:
+            s = int(r[0])
+            dt_str = str(r[1])
+            if s not in sku_funnel:
+                sku_funnel[s] = {}
+            sku_funnel[s][dt_str] = {
+                "views": int(r[2] or 0),
+                "clicks": int(r[3] or 0),
+                "carts": int(r[4] or 0),
+                "ad_spend": float(r[5] or 0),
+            }
+
+        # ── 5. COGS + product info ──
+        cost_map: dict[str, float] = {}
+        sku_to_offer: dict[int, str] = {}
+        sku_to_name: dict[int, str] = {}
+        sku_to_image: dict[int, str] = {}
+        try:
+            placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
+            bind_params = {f"sku_{i}": s for i, s in enumerate(sku_list)}
+            bind_params["sid"] = shop_id
+            pg_products = await db.execute(
+                text(f"""
+                    SELECT sku, name, offer_id,
+                           COALESCE(NULLIF(primary_image_url, ''), '') AS image_url
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({placeholders})
+                """),
+                bind_params,
+            )
+            for row in pg_products.fetchall():
+                sku_to_name[row[0]] = row[1]
+                sku_to_offer[row[0]] = row[2] or str(row[0])
+                sku_to_image[row[0]] = row[3]
+
+            cost_result = await db.execute(
+                text("""
+                    SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                    FROM product_costs
+                    WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+                """),
+                {"shop_id": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception as e:
+            logger.warning("SKU forecast product info error: %s", e)
+
+        # ── 6. Commission rates per SKU ──
+        commission_rates: dict[int, float] = {}
+        try:
+            comm_rows = ch.query(f"""
+                SELECT
+                    sku,
+                    sum(abs(sale_commission)) / nullIf(sum(abs(accruals_for_sale)), 0) AS commission_rate
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND category = 'Revenue'
+                  AND sku IN ({sku_str})
+                  AND toDate(operation_date) >= {{cur_start:Date}}
+                  AND toDate(operation_date) <= {{cur_end:Date}}
+                GROUP BY sku
+            """, parameters=params).result_rows
+            for r in comm_rows:
+                commission_rates[int(r[0])] = min(float(r[1] or 0), 1.0)
+        except Exception:
+            pass
+
+        # ── 7. Run LightGBM per SKU ──
+        import asyncio
+
+        sku_forecasts = []
+
+        for s in sku_list:
+            # Build daily data for this SKU
+            daily_data = []
+            for dt in all_dates:
+                dt_str = str(dt.date())
+                o_data = sku_orders.get(s, {}).get(dt_str, {"revenue": 0, "orders": 0})
+                f_data = sku_funnel.get(s, {}).get(dt_str, {"views": 0, "clicks": 0, "carts": 0, "ad_spend": 0})
+                daily_data.append({
+                    "ds": dt_str,
+                    "orders": o_data["orders"],
+                    "revenue": o_data["revenue"],
+                    "views": f_data["views"],
+                    "clicks": f_data["clicks"],
+                    "carts": f_data["carts"],
+                    "ad_spend": f_data["ad_spend"],
+                })
+
+            # Run forecast
+            forecast_pts, trend_info, feat_imp = _lightgbm_sku_forecast(
+                daily_data, forecast_days
+            )
+
+            # Calculate profit for forecast
+            oid = sku_to_offer.get(s, str(s))
+            cogs_unit = cost_map.get(oid.lower(), 0)
+            comm_rate = commission_rates.get(s, 0.15)  # default 15%
+
+            for pt in forecast_pts:
+                rev = pt["revenue"]
+                ords = pt["orders"]
+                commission = round(rev * comm_rate)
+                logistics_per_order = 100  # rough estimate
+                logistics = round(ords * logistics_per_order)
+                cogs = round(cogs_unit * ords)
+                # Use recent avg ad spend for future
+                recent_ad = sum(
+                    sku_funnel.get(s, {}).get(str(d.date()), {}).get("ad_spend", 0)
+                    for d in all_dates[-7:]
+                ) / 7
+                ad_est = round(recent_ad)
+                pt["profit"] = round(rev - commission - logistics - ad_est - cogs)
+                pt["commission"] = commission
+                pt["logistics"] = logistics
+                pt["ad_spend_est"] = ad_est
+                pt["cogs"] = cogs
+
+            # History for chart (last 30 days)
+            history = daily_data[-30:]
+
+            total_forecast_orders = sum(p["orders"] for p in forecast_pts)
+            total_forecast_revenue = sum(p["revenue"] for p in forecast_pts)
+            total_forecast_profit = sum(p["profit"] for p in forecast_pts)
+
+            sku_forecasts.append({
+                "sku": s,
+                "offer_id": oid,
+                "name": sku_to_name.get(s, ""),
+                "image_url": sku_to_image.get(s, ""),
+                "history": history,
+                "forecast": forecast_pts,
+                "trend": trend_info,
+                "feature_importance": feat_imp,
+                "totals": {
+                    "orders": total_forecast_orders,
+                    "revenue": total_forecast_revenue,
+                    "profit": total_forecast_profit,
+                },
+            })
+
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "forecast_days": forecast_days,
+            "sku_forecasts": sku_forecasts,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ozon SKU forecast error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка SKU прогноза: {e}",
+        )
