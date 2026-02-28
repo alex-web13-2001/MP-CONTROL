@@ -11,6 +11,7 @@ import {
   TrendingDown,
   ChevronDown,
   Check,
+  XCircle,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -30,6 +31,8 @@ import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 import {
   getOzonSalesApi,
   getOzonProductDailyApi,
+  getWbSalesApi,
+  getWbProductDailyApi,
   type SalesResponse,
   type SalesDailyPoint,
   type SalesGeoItem,
@@ -701,6 +704,7 @@ function SalesSkeleton() {
 export default function SalesPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const isOzon = currentShop?.marketplace === 'ozon'
+  const isWb = currentShop?.marketplace === 'wildberries'
 
   const [data, setData] = useState<SalesResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -719,7 +723,7 @@ export default function SalesPage() {
   const selectedSkus = useMemo(() => new Set(selectedProducts.map(p => p.sku)), [selectedProducts])
 
   const fetchData = useCallback(async () => {
-    if (!currentShop || !isOzon) return
+    if (!currentShop || (!isOzon && !isWb)) return
     setLoading(true)
     setError(null)
     try {
@@ -733,14 +737,15 @@ export default function SalesPage() {
       } else {
         params.period = periodValue.period
       }
-      const result = await getOzonSalesApi(params)
+      const apiFn = isOzon ? getOzonSalesApi : getWbSalesApi
+      const result = await apiFn(params)
       setData(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки')
     } finally {
       setLoading(false)
     }
-  }, [currentShop, isOzon, periodValue])
+  }, [currentShop, isOzon, isWb, periodValue])
 
   useEffect(() => {
     fetchData()
@@ -760,14 +765,12 @@ export default function SalesPage() {
       setProductDailyData({})
       return
     }
-
+    const abortController = new AbortController()
     const fetchProductDaily = async () => {
       setProductDailyLoading(true)
       try {
-        const params: any = {
-          shop_id: currentShop.id,
-          skus: selectedProducts.map(p => p.sku).join(','),
-        }
+        const skuStr = selectedProducts.map(p => p.sku).join(',')
+        const params: any = { shop_id: currentShop.id, skus: skuStr }
         if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
           const from = periodValue.dateRange.from
           const to = periodValue.dateRange.to ?? from
@@ -777,17 +780,21 @@ export default function SalesPage() {
         } else {
           params.period = periodValue.period
         }
-        const result = await getOzonProductDailyApi(params)
-        setProductDailyData(result.products)
-      } catch {
-        // Silently fail — product overlay is non-critical
+        const dailyApiFn = isOzon ? getOzonProductDailyApi : getWbProductDailyApi
+        const result = await dailyApiFn(params)
+        if (!abortController.signal.aborted) {
+          setProductDailyData(result.products)
+        }
+      } catch (e) {
+        console.error('Product daily fetch error:', e)
       } finally {
-        setProductDailyLoading(false)
+        if (!abortController.signal.aborted) {
+          setProductDailyLoading(false)
+        }
       }
     }
-
     fetchProductDaily()
-  }, [selectedProducts, currentShop, periodValue])
+  }, [selectedProducts, currentShop, periodValue, isOzon, isWb])
 
   const handleToggleProduct = useCallback((product: SalesTopProduct) => {
     setSelectedProducts(prev => {
@@ -814,13 +821,12 @@ export default function SalesPage() {
     )
   }
 
-  if (!isOzon) {
+  if (!isOzon && !isWb) {
     return (
       <div className="flex h-[60vh] items-center justify-center text-[hsl(var(--muted-foreground))]">
         <div className="text-center space-y-2">
           <ShoppingCart className="h-12 w-12 mx-auto opacity-30" />
-          <p className="text-lg font-medium">Раздел «Продажи» пока доступен только для Ozon</p>
-          <p className="text-sm">Для WB используйте раздел «Обзор»</p>
+          <p className="text-lg font-medium">Маркетплейс не поддерживается</p>
         </div>
       </div>
     )
@@ -833,7 +839,7 @@ export default function SalesPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Продажи</h1>
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            {currentShop.name} • Ozon
+            {currentShop.name} • {isOzon ? 'Ozon' : 'Wildberries'}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -882,12 +888,12 @@ export default function SalesPage() {
               delay={0.05}
             />
             <KpiCard
-              title="Возвраты"
-              value={formatNumber(data.kpi.returns_count)}
-              subtitle={`${data.kpi.returns_pct}% от заказов`}
-              delta={data.kpi.returns_delta}
+              title={isWb ? 'Отмены' : 'Возвраты'}
+              value={formatNumber(isWb ? (data.kpi as any).cancels_count ?? 0 : data.kpi.returns_count)}
+              subtitle={`${isWb ? (data.kpi as any).cancels_pct ?? 0 : data.kpi.returns_pct}% от заказов`}
+              delta={isWb ? (data.kpi as any).cancels_delta ?? 0 : data.kpi.returns_delta}
               invertDelta
-              icon={RotateCcw}
+              icon={isWb ? XCircle : RotateCcw}
               accent="from-red-500 to-rose-600"
               delay={0.1}
             />
@@ -974,28 +980,30 @@ export default function SalesPage() {
               </Card>
             </motion.div>
 
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 }}
-            >
-              <Card className="h-full">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <TrendingDown className="h-4 w-4 text-red-400" />
-                    Причины возвратов
-                  </CardTitle>
-                  {data.returns.total > 0 && (
-                    <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                      Всего: {formatNumber(data.returns.total)}
-                    </p>
-                  )}
-                </CardHeader>
-                <CardContent>
-                  <ReturnReasons data={data.returns.by_reason} total={data.returns.total} />
-                </CardContent>
-              </Card>
-            </motion.div>
+            {isOzon && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+              >
+                <Card className="h-full">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base font-semibold flex items-center gap-2">
+                      <TrendingDown className="h-4 w-4 text-red-400" />
+                      Причины возвратов
+                    </CardTitle>
+                    {data.returns.total > 0 && (
+                      <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                        Всего: {formatNumber(data.returns.total)}
+                      </p>
+                    )}
+                  </CardHeader>
+                  <CardContent>
+                    <ReturnReasons data={data.returns.by_reason} total={data.returns.total} />
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
           </div>
         </>
       )}

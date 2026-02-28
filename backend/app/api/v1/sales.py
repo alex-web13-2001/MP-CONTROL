@@ -596,6 +596,468 @@ async def get_ozon_product_daily(
         )
 
 
+# ══════════════════════════════════════════════════════════════
+# WB Sales Overview
+# ══════════════════════════════════════════════════════════════
+
+
+@router.get("/wb")
+async def get_wb_sales(
+    shop_id: int = Query(..., description="Shop ID"),
+    period: int = Query(7, ge=1, le=366, description="Period in days"),
+    date_from: Optional[date] = Query(None, description="Custom range start"),
+    date_to: Optional[date] = Query(None, description="Custom range end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    WB sales analytics: KPI, daily chart, geography, top products.
+
+    Sources:
+      - fact_orders_raw FINAL: orders, revenue, geography, cancels
+      - fact_sales_funnel: organic funnel (views, carts, orders)
+      - dim_products (PG): product names + images
+    """
+    # ── Verify shop ownership ──────────────────────────
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "wildberries",
+        )
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WB магазин не найден",
+        )
+
+    # ── Dates ──────────────────────────────────────────
+    cur_start, cur_end, prev_start, prev_end = _parse_dates(period, date_from, date_to)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": cur_start,
+            "cur_end": cur_end,
+            "prev_start": prev_start,
+            "prev_end": prev_end,
+        }
+
+        # ══════════════════════════════════════════════
+        # 1. KPI — Orders + Revenue + Cancels
+        # ══════════════════════════════════════════════
+        orders_kpi = ch.query("""
+            SELECT
+                period,
+                count() AS orders_count,
+                sum(price_with_disc) AS revenue,
+                sum(price_with_disc) / nullIf(count(), 0) AS avg_check,
+                countIf(is_cancel = 1) AS cancel_count
+            FROM (
+                SELECT
+                    CASE
+                        WHEN toDate(date) >= {cur_start:Date} AND toDate(date) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(date) >= {prev_start:Date} AND toDate(date) <= {prev_end:Date} THEN 'previous'
+                    END AS period,
+                    price_with_disc, is_cancel
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) >= {prev_start:Date}
+                  AND toDate(date) <= {cur_end:Date}
+            )
+            WHERE period != ''
+            GROUP BY period
+        """, parameters=params).result_rows
+
+        orders_map = {
+            row[0]: {
+                "count": int(row[1]),
+                "revenue": float(row[2]),
+                "avg_check": float(row[3] or 0),
+                "cancels": int(row[4]),
+            }
+            for row in orders_kpi
+        }
+        cur_o = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
+        prev_o = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
+
+        cancel_pct = round(cur_o["cancels"] / cur_o["count"] * 100, 1) if cur_o["count"] > 0 else 0
+
+        kpi = {
+            "orders_count": cur_o["count"],
+            "orders_delta": _safe_delta(cur_o["count"], prev_o["count"]),
+            "revenue": round(cur_o["revenue"]),
+            "revenue_delta": _safe_delta(cur_o["revenue"], prev_o["revenue"]),
+            "avg_check": round(cur_o["avg_check"]),
+            "cancels_count": cur_o["cancels"],
+            "cancels_delta": _safe_delta(cur_o["cancels"], prev_o["cancels"]),
+            "cancels_pct": cancel_pct,
+        }
+
+        # ══════════════════════════════════════════════
+        # 2. Daily Chart — orders + revenue + cancels
+        # ══════════════════════════════════════════════
+        daily_rows = ch.query("""
+            SELECT
+                toDate(date) AS dt,
+                count() AS orders,
+                sum(price_with_disc) AS revenue,
+                countIf(is_cancel = 1) AS cancels
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {cur_start:Date}
+              AND toDate(date) <= {cur_end:Date}
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters=params).result_rows
+
+        daily = []
+        for row in daily_rows:
+            daily.append({
+                "date": str(row[0]),
+                "orders": int(row[1]),
+                "revenue": round(float(row[2])),
+                "returns": int(row[3]),  # "returns" key for frontend compatibility
+            })
+
+        # ══════════════════════════════════════════════
+        # 3. Geography — orders by region
+        # ══════════════════════════════════════════════
+        geo_rows = ch.query("""
+            SELECT
+                region_name,
+                count() AS orders,
+                sum(price_with_disc) AS revenue,
+                sum(price_with_disc) / nullIf(count(), 0) AS avg_check
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {cur_start:Date}
+              AND toDate(date) <= {cur_end:Date}
+              AND region_name != ''
+              AND is_cancel = 0
+            GROUP BY region_name
+            ORDER BY revenue DESC
+            LIMIT 20
+        """, parameters=params).result_rows
+
+        total_orders_geo = sum(int(r[1]) for r in geo_rows)
+        geo = []
+        for row in geo_rows:
+            orders_count = int(row[1])
+            geo.append({
+                "region": row[0],
+                "orders": orders_count,
+                "revenue": round(float(row[2])),
+                "pct": round(orders_count / total_orders_geo * 100, 1) if total_orders_geo > 0 else 0,
+                "avg_check": round(float(row[3] or 0)),
+            })
+
+        # ══════════════════════════════════════════════
+        # 4. Top Products — by revenue
+        # ══════════════════════════════════════════════
+        top_products_rows = ch.query("""
+            SELECT
+                nm_id,
+                any(supplier_article) AS supplier_article,
+                count() AS orders,
+                sum(price_with_disc) AS revenue,
+                round(avg(price_with_disc), 0) AS avg_price,
+                countIf(is_cancel = 1) AS cancels
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {cur_start:Date}
+              AND toDate(date) <= {cur_end:Date}
+            GROUP BY nm_id
+            ORDER BY revenue DESC
+            LIMIT 20
+        """, parameters=params).result_rows
+
+        nm_list = [int(row[0]) for row in top_products_rows]
+
+        # Funnel from fact_sales_funnel (latest snapshot per day)
+        funnel_by_nm: dict[int, dict] = {}
+        if nm_list:
+            nm_str = ",".join(str(n) for n in nm_list)
+            funnel_rows = ch.query(f"""
+                SELECT
+                    nm_id,
+                    sum(open_count) AS views,
+                    sum(cart_count) AS carts,
+                    sum(order_count) AS funnel_orders
+                FROM (
+                    SELECT nm_id, event_date, open_count, cart_count, order_count
+                    FROM mms_analytics.fact_sales_funnel
+                    WHERE shop_id = {{shop_id:UInt32}}
+                      AND event_date >= {{cur_start:Date}}
+                      AND event_date <= {{cur_end:Date}}
+                      AND nm_id IN ({nm_str})
+                    ORDER BY fetched_at DESC
+                    LIMIT 1 BY nm_id, event_date
+                )
+                GROUP BY nm_id
+            """, parameters=params).result_rows
+            for fr in funnel_rows:
+                funnel_by_nm[int(fr[0])] = {
+                    "views": int(fr[1]),
+                    "carts": int(fr[2]),
+                    "funnel_orders": int(fr[3]),
+                }
+
+        # Previous period orders
+        prev_orders_by_nm: dict[int, dict] = {}
+        if nm_list:
+            nm_str = ",".join(str(n) for n in nm_list)
+            prev_rows = ch.query(f"""
+                SELECT nm_id, count() AS orders, sum(price_with_disc) AS revenue,
+                       round(avg(price_with_disc), 0) AS avg_price
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND toDate(date) >= {{prev_start:Date}}
+                  AND toDate(date) <= {{prev_end:Date}}
+                  AND nm_id IN ({nm_str})
+                GROUP BY nm_id
+            """, parameters=params).result_rows
+            for pr in prev_rows:
+                prev_orders_by_nm[int(pr[0])] = {
+                    "orders": int(pr[1]),
+                    "revenue": round(float(pr[2])),
+                    "avg_price": round(float(pr[3])),
+                }
+
+        # Previous funnel
+        prev_funnel_by_nm: dict[int, dict] = {}
+        if nm_list:
+            nm_str = ",".join(str(n) for n in nm_list)
+            prev_funnel_rows = ch.query(f"""
+                SELECT
+                    nm_id,
+                    sum(open_count) AS views,
+                    sum(cart_count) AS carts,
+                    sum(order_count) AS funnel_orders
+                FROM (
+                    SELECT nm_id, event_date, open_count, cart_count, order_count
+                    FROM mms_analytics.fact_sales_funnel
+                    WHERE shop_id = {{shop_id:UInt32}}
+                      AND event_date >= {{prev_start:Date}}
+                      AND event_date <= {{prev_end:Date}}
+                      AND nm_id IN ({nm_str})
+                    ORDER BY fetched_at DESC
+                    LIMIT 1 BY nm_id, event_date
+                )
+                GROUP BY nm_id
+            """, parameters=params).result_rows
+            for pf in prev_funnel_rows:
+                prev_funnel_by_nm[int(pf[0])] = {
+                    "views": int(pf[1]),
+                    "carts": int(pf[2]),
+                    "funnel_orders": int(pf[3]),
+                }
+
+        # Product names + images from PG
+        nm_to_name: dict[int, str] = {}
+        nm_to_image: dict[int, str] = {}
+        nm_to_vendor: dict[int, str] = {}
+        if nm_list:
+            placeholders = ",".join(f":nm_{i}" for i in range(len(nm_list)))
+            bind_params = {f"nm_{i}": nm for i, nm in enumerate(nm_list)}
+            bind_params["sid"] = shop_id
+            pg_products = await db.execute(
+                text(f"""
+                    SELECT nm_id, COALESCE(name, ''), COALESCE(main_image_url, ''),
+                           COALESCE(vendor_code, '')
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({placeholders})
+                """),
+                bind_params,
+            )
+            for row in pg_products.fetchall():
+                nm_to_name[row[0]] = row[1]
+                nm_to_image[row[0]] = row[2]
+                nm_to_vendor[row[0]] = row[3]
+
+        top_products = []
+        for row in top_products_rows:
+            nm_id = int(row[0])
+            vendor = row[1] or nm_to_vendor.get(nm_id, "")
+            orders_count = int(row[2])
+            revenue = round(float(row[3]))
+            avg_price = round(float(row[4]))
+            cancels = int(row[5])
+
+            funnel = funnel_by_nm.get(nm_id, {})
+            views = funnel.get("views", 0)
+            carts = funnel.get("carts", 0)
+
+            prev = prev_orders_by_nm.get(nm_id, {})
+            prev_orders = prev.get("orders", 0)
+            prev_revenue = prev.get("revenue", 0)
+            prev_avg_price = prev.get("avg_price", 0)
+
+            prev_f = prev_funnel_by_nm.get(nm_id, {})
+            prev_views = prev_f.get("views", 0)
+            prev_carts = prev_f.get("carts", 0)
+
+            # Rates
+            cart_rate = round(carts / views * 100, 2) if views > 0 else 0
+            order_rate = round(orders_count / carts * 100, 2) if carts > 0 else 0
+
+            prev_cart_rate = round(prev_carts / prev_views * 100, 2) if prev_views > 0 else 0
+            prev_order_rate = round(prev_orders / prev_carts * 100, 2) if prev_carts > 0 else 0
+
+            top_products.append({
+                "sku": nm_id,
+                "offer_id": vendor,
+                "name": nm_to_name.get(nm_id, ""),
+                "image_url": nm_to_image.get(nm_id, ""),
+                "orders": orders_count,
+                "revenue": revenue,
+                "avg_price": avg_price,
+                "returns": cancels,  # "returns" for frontend compat
+                "return_pct": round(cancels / orders_count * 100, 1) if orders_count > 0 else 0,
+                # Deltas
+                "orders_delta": _safe_delta(orders_count, prev_orders),
+                "revenue_delta": _safe_delta(revenue, prev_revenue),
+                "avg_price_delta": _safe_delta(avg_price, prev_avg_price),
+                # Funnel (organic)
+                "ad_views": views,
+                "ad_clicks": carts,  # "clicks" = carts for WB
+                "ad_add_to_cart": carts,
+                "ad_ctr": cart_rate,  # cart rate instead of CTR
+                "ad_cart_rate": cart_rate,
+                "ad_order_rate": order_rate,
+                # Funnel deltas
+                "ad_views_delta": _safe_delta(views, prev_views),
+                "ad_clicks_delta": _safe_delta(carts, prev_carts),
+                "ad_add_to_cart_delta": _safe_delta(carts, prev_carts),
+                "ad_ctr_delta": round(cart_rate - prev_cart_rate, 2),
+                "ad_cart_rate_delta": round(cart_rate - prev_cart_rate, 2),
+                "ad_order_rate_delta": round(order_rate - prev_order_rate, 2),
+            })
+
+        return {
+            "shop_id": shop_id,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
+            "kpi": kpi,
+            "daily": daily,
+            "geo": geo,
+            "top_products": top_products,
+            "returns": {"total": cur_o["cancels"], "by_reason": []},
+        }
+
+    except Exception as e:
+        logger.exception("WB sales error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки данных продаж WB: {e}",
+        )
+
+
+# ══════════════════════════════════════════════════════════════
+# WB Per-Product Daily Dynamics
+# ══════════════════════════════════════════════════════════════
+
+
+@router.get("/wb/product-daily")
+async def get_wb_product_daily(
+    shop_id: int = Query(..., description="Shop ID"),
+    skus: str = Query(..., description="Comma-separated nm_id list"),
+    period: int = Query(7, ge=1, le=366, description="Period in days"),
+    date_from: Optional[date] = Query(None, description="Custom range start"),
+    date_to: Optional[date] = Query(None, description="Custom range end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Daily orders + revenue per WB product (by nm_id list).
+    Used to overlay individual product lines on the sales chart.
+    """
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "wildberries",
+        )
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="WB магазин не найден",
+        )
+
+    try:
+        nm_list = [int(s.strip()) for s in skus.split(",") if s.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректный формат nm_id",
+        )
+
+    if not nm_list or len(nm_list) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите от 1 до 10 nm_id",
+        )
+
+    cur_start, cur_end, _, _ = _parse_dates(period, date_from, date_to)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+        nm_csv = ",".join(str(n) for n in nm_list)
+        rows = ch.query(f"""
+            SELECT
+                nm_id,
+                toDate(date) AS dt,
+                count() AS orders,
+                sum(price_with_disc) AS revenue
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND toDate(date) >= {{cur_start:Date}}
+              AND toDate(date) <= {{cur_end:Date}}
+              AND nm_id IN ({nm_csv})
+            GROUP BY nm_id, dt
+            ORDER BY nm_id, dt
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start,
+            "cur_end": cur_end,
+        }).result_rows
+
+        products: dict[int, list] = {}
+        for row in rows:
+            nm_id = int(row[0])
+            if nm_id not in products:
+                products[nm_id] = []
+            products[nm_id].append({
+                "date": str(row[1]),
+                "orders": int(row[2]),
+                "revenue": round(float(row[3])),
+            })
+
+        return {
+            "shop_id": shop_id,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
+            "products": products,
+        }
+
+    except Exception as e:
+        logger.exception("WB product daily error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки динамики товаров WB: {e}",
+        )
+
+
 # ═══════════════════════════════════════════════════════════════
 # ABC / XYZ Analysis
 # ═══════════════════════════════════════════════════════════════

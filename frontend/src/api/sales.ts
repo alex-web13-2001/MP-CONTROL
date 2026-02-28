@@ -119,3 +119,27 @@ export async function getOzonProductDailyApi(params: {
   const { data } = await apiClient.get<ProductDailyResponse>('/sales/ozon/product-daily', { params })
   return data
 }
+
+// ── WB Sales API ────────────────────────────────────────────
+
+export async function getWbSalesApi(params: {
+  shop_id: number
+  period?: number
+  date_from?: string
+  date_to?: string
+}): Promise<SalesResponse> {
+  const { data } = await apiClient.get<SalesResponse>('/sales/wb', { params })
+  return data
+}
+
+export async function getWbProductDailyApi(params: {
+  shop_id: number
+  skus: string
+  period?: number
+  date_from?: string
+  date_to?: string
+}): Promise<ProductDailyResponse> {
+  const { data } = await apiClient.get<ProductDailyResponse>('/sales/wb/product-daily', { params })
+  return data
+}
+
