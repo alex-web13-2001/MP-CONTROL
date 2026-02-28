@@ -7,9 +7,10 @@
 ### Added — Раздел «Продажи» (Ozon)
 
 - **Backend / `sales.py` [NEW]:** Endpoint `GET /api/v1/sales/ozon` — 5 SQL-запросов к ClickHouse: KPI (заказы, выручка, ср. чек, возвраты + дельты), динамика по дням (МСК), география по городам, ТОП-20 товаров с возвратами, ТОП-10 причин возвратов. Обогащение товаров из `dim_ozon_products` (PG).
+- **Backend / `sales.py` [NEW]:** Endpoint `GET /api/v1/sales/ozon/product-daily` — дневная динамика (заказы + выручка) по конкретным товарам (до 10 SKU). Используется для overlay линий на графике.
 - **Backend / `router.py` [MODIFY]:** Зарегистрирован `sales_router`.
-- **Frontend / `sales.ts` [NEW]:** TypeScript типы и API-клиент для endpoint Sales.
-- **Frontend / `SalesPage.tsx` [NEW]:** Полная страница: KPI-карточки (4 шт.), ComposedChart (бары заказы + линия продажи + пунктир возвраты), таблица географии с прогресс-барами, таблица ТОП товаров с фото и % возвратов, горизонтальный бар-чарт причин возвратов. Единая дизайн-система (framer-motion, recharts, Card, PeriodSelector).
+- **Frontend / `sales.ts` [NEW]:** TypeScript типы и API-клиент для Sales + ProductDaily endpoints.
+- **Frontend / `SalesPage.tsx` [NEW]:** Страница: 3 KPI-карточки равной высоты, ComposedChart с overlay линиями по товарам, collapsible география (ТОП-5 → развернуть), таблица ТОП товаров с чекбоксами для выбора на график, компактные причины возвратов (inline-бары). 10 цветов для товарных линий, кнопка «Сбросить», приглушение базового графика при выборе.
 - **Frontend / `App.tsx` [MODIFY]:** Роут `/sales` активирован, import `SalesPage`.
 
 ## [Unreleased] - 2026-02-28
