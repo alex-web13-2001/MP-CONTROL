@@ -263,7 +263,7 @@ async def get_ozon_sales(
             LIMIT 20
         """, parameters=params).result_rows
 
-        # Get returns per SKU
+        # Get returns per SKU (current period)
         sku_list = [int(row[0]) for row in top_products_rows]
         returns_by_sku: dict[int, int] = {}
         if sku_list:
@@ -279,7 +279,7 @@ async def get_ozon_sales(
             """, parameters=params).result_rows
             returns_by_sku = {int(row[0]): int(row[1]) for row in returns_per_sku}
 
-        # Get ad funnel per SKU (views, clicks, add_to_cart from ads)
+        # Get ad funnel per SKU (current period)
         funnel_by_sku: dict[int, dict] = {}
         if sku_list:
             sku_str = ",".join(str(s) for s in sku_list)
@@ -301,6 +301,59 @@ async def get_ozon_sales(
                     "views": int(fr[1]),
                     "clicks": int(fr[2]),
                     "add_to_cart": int(fr[3]),
+                }
+
+        # ── Previous period data for deltas ──
+        prev_orders_by_sku: dict[int, dict] = {}
+        prev_returns_by_sku: dict[int, int] = {}
+        prev_funnel_by_sku: dict[int, dict] = {}
+
+        if sku_list:
+            sku_str = ",".join(str(s) for s in sku_list)
+
+            # Previous orders + revenue
+            prev_orders_rows = ch.query(f"""
+                SELECT sku, count() AS orders, sum(price * quantity) AS revenue
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND toDate(addHours(in_process_at, 3)) >= {{prev_start:Date}}
+                  AND toDate(addHours(in_process_at, 3)) <= {{prev_end:Date}}
+                  AND sku IN ({sku_str})
+                GROUP BY sku
+            """, parameters=params).result_rows
+            for pr in prev_orders_rows:
+                prev_orders_by_sku[int(pr[0])] = {
+                    "orders": int(pr[1]),
+                    "revenue": round(float(pr[2])),
+                }
+
+            # Previous returns
+            prev_ret_rows = ch.query(f"""
+                SELECT sku, count() AS returns
+                FROM mms_analytics.fact_ozon_returns FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND dt >= {{prev_start:Date}}
+                  AND dt <= {{prev_end:Date}}
+                  AND sku IN ({sku_str})
+                GROUP BY sku
+            """, parameters=params).result_rows
+            prev_returns_by_sku = {int(r[0]): int(r[1]) for r in prev_ret_rows}
+
+            # Previous ad funnel
+            prev_funnel_rows = ch.query(f"""
+                SELECT sku, sum(views), sum(clicks), sum(add_to_cart)
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND dt >= {{prev_start:Date}}
+                  AND dt <= {{prev_end:Date}}
+                  AND sku IN ({sku_str})
+                GROUP BY sku
+            """, parameters=params).result_rows
+            for pf in prev_funnel_rows:
+                prev_funnel_by_sku[int(pf[0])] = {
+                    "views": int(pf[1]),
+                    "clicks": int(pf[2]),
+                    "add_to_cart": int(pf[3]),
                 }
 
         # Enrich with product images from PG
@@ -327,27 +380,59 @@ async def get_ozon_sales(
         for row in top_products_rows:
             sku = int(row[0])
             orders_count = int(row[3])
+            revenue = round(float(row[4]))
             ret_count = returns_by_sku.get(sku, 0)
             funnel = funnel_by_sku.get(sku, {})
             views = funnel.get("views", 0)
             clicks = funnel.get("clicks", 0)
             add_to_cart = funnel.get("add_to_cart", 0)
+
+            # Previous period
+            prev = prev_orders_by_sku.get(sku, {})
+            prev_orders = prev.get("orders", 0)
+            prev_revenue = prev.get("revenue", 0)
+            prev_ret = prev_returns_by_sku.get(sku, 0)
+            prev_f = prev_funnel_by_sku.get(sku, {})
+            prev_views = prev_f.get("views", 0)
+            prev_clicks = prev_f.get("clicks", 0)
+            prev_atc = prev_f.get("add_to_cart", 0)
+
+            # Current rates
+            ctr = round(clicks / views * 100, 2) if views > 0 else 0
+            cart_rate = round(add_to_cart / clicks * 100, 2) if clicks > 0 else 0
+            order_rate = round(orders_count / add_to_cart * 100, 2) if add_to_cart > 0 else 0
+
+            # Previous rates
+            prev_ctr = round(prev_clicks / prev_views * 100, 2) if prev_views > 0 else 0
+            prev_cart_rate = round(prev_atc / prev_clicks * 100, 2) if prev_clicks > 0 else 0
+            prev_order_rate = round(prev_orders / prev_atc * 100, 2) if prev_atc > 0 else 0
+
             top_products.append({
                 "sku": sku,
                 "offer_id": row[1],
                 "name": sku_to_name.get(sku, row[2] or ""),
                 "image_url": sku_to_image.get(sku, ""),
                 "orders": orders_count,
-                "revenue": round(float(row[4])),
+                "revenue": revenue,
                 "returns": ret_count,
                 "return_pct": round(ret_count / orders_count * 100, 1) if orders_count > 0 else 0,
+                # Deltas (sales)
+                "orders_delta": _safe_delta(orders_count, prev_orders),
+                "revenue_delta": _safe_delta(revenue, prev_revenue),
                 # Ad funnel metrics
                 "ad_views": views,
                 "ad_clicks": clicks,
                 "ad_add_to_cart": add_to_cart,
-                "ad_ctr": round(clicks / views * 100, 2) if views > 0 else 0,
-                "ad_cart_rate": round(add_to_cart / clicks * 100, 2) if clicks > 0 else 0,
-                "ad_order_rate": round(orders_count / add_to_cart * 100, 2) if add_to_cart > 0 else 0,
+                "ad_ctr": ctr,
+                "ad_cart_rate": cart_rate,
+                "ad_order_rate": order_rate,
+                # Deltas (ad funnel)
+                "ad_views_delta": _safe_delta(views, prev_views),
+                "ad_clicks_delta": _safe_delta(clicks, prev_clicks),
+                "ad_add_to_cart_delta": _safe_delta(add_to_cart, prev_atc),
+                "ad_ctr_delta": round(ctr - prev_ctr, 2),
+                "ad_cart_rate_delta": round(cart_rate - prev_cart_rate, 2),
+                "ad_order_rate_delta": round(order_rate - prev_order_rate, 2),
             })
 
         # ══════════════════════════════════════════════

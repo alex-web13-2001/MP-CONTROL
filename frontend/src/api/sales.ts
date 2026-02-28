@@ -40,6 +40,8 @@ export interface SalesTopProduct {
   revenue: number
   returns: number
   return_pct: number
+  orders_delta: number
+  revenue_delta: number
   // Ad funnel
   ad_views: number
   ad_clicks: number
@@ -47,6 +49,13 @@ export interface SalesTopProduct {
   ad_ctr: number
   ad_cart_rate: number
   ad_order_rate: number
+  // Ad funnel deltas
+  ad_views_delta: number
+  ad_clicks_delta: number
+  ad_add_to_cart_delta: number
+  ad_ctr_delta: number
+  ad_cart_rate_delta: number
+  ad_order_rate_delta: number
 }
 
 export interface SalesReturnReason {

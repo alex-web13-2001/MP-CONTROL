@@ -344,9 +344,19 @@ function GeoSection({ data }: { data: SalesGeoItem[] }) {
   )
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Top Products Table — with checkboxes for chart overlay
-   ═══════════════════════════════════════════════════════════ */
+/* ─── Delta indicator ─── */
+function Delta({ value, suffix = '%', invert = false }: { value: number; suffix?: string; invert?: boolean }) {
+  if (value === 0) return null
+  const isPositive = invert ? value < 0 : value > 0
+  return (
+    <span className={`inline-flex items-center gap-0.5 text-[10px] font-medium leading-none ${
+      isPositive ? 'text-emerald-400' : 'text-red-400'
+    }`}>
+      {value > 0 ? '↑' : '↓'}
+      {Math.abs(value).toFixed(suffix === 'pp' ? 2 : 1)}{suffix === 'pp' ? 'pp' : '%'}
+    </span>
+  )
+}
 
 function TopProductsTable({
   data,
@@ -361,13 +371,12 @@ function TopProductsTable({
   const hasAdData = data.some(p => p.ad_views > 0)
 
   const thCls = "px-3 py-2 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap"
-  const tdCls = "px-3 py-2.5 text-right tabular-nums text-[13px]"
+  const tdCls = "px-3 py-2 text-right tabular-nums text-[13px]"
 
   return (
     <div className="overflow-x-auto relative">
       <table className="w-full text-sm" style={{ minWidth: hasAdData ? 1100 : undefined }}>
         <thead>
-          {/* Column group headers */}
           {hasAdData && (
             <tr className="border-b border-[hsl(var(--border)/0.15)]">
               <th colSpan={2}></th>
@@ -461,9 +470,23 @@ function TopProductsTable({
                     </div>
                   </div>
                 </td>
-                <td className={`${tdCls} font-medium`}>{formatNumber(p.orders)}</td>
-                <td className={`${tdCls} font-medium`}>{formatMoney(p.revenue)}</td>
+                {/* Orders */}
+                <td className={`${tdCls} font-medium`}>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <span>{formatNumber(p.orders)}</span>
+                    <Delta value={p.orders_delta} />
+                  </div>
+                </td>
+                {/* Revenue */}
+                <td className={`${tdCls} font-medium`}>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <span>{formatMoney(p.revenue)}</span>
+                    <Delta value={p.revenue_delta} />
+                  </div>
+                </td>
+                {/* Returns */}
                 <td className={tdCls}>{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
+                {/* Return % */}
                 <td className={tdCls}>
                   {p.return_pct > 0 ? (
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
@@ -477,46 +500,76 @@ function TopProductsTable({
                 </td>
                 {hasAdData && (
                   <>
+                    {/* Ad Views */}
                     <td className={`${tdCls} border-l border-[hsl(var(--border)/0.15)]`}>
-                      {p.ad_views > 0 ? formatNumber(p.ad_views) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                      {p.ad_views > 0 ? (
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span>{formatNumber(p.ad_views)}</span>
+                          <Delta value={p.ad_views_delta} />
+                        </div>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
+                    {/* Ad Clicks */}
                     <td className={tdCls}>
-                      {p.ad_clicks > 0 ? formatNumber(p.ad_clicks) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                      {p.ad_clicks > 0 ? (
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span>{formatNumber(p.ad_clicks)}</span>
+                          <Delta value={p.ad_clicks_delta} />
+                        </div>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
+                    {/* Add to cart */}
                     <td className={tdCls}>
-                      {p.ad_add_to_cart > 0 ? formatNumber(p.ad_add_to_cart) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                      {p.ad_add_to_cart > 0 ? (
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span>{formatNumber(p.ad_add_to_cart)}</span>
+                          <Delta value={p.ad_add_to_cart_delta} />
+                        </div>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
+                    {/* CTR */}
                     <td className={tdCls}>
                       {p.ad_ctr > 0 ? (
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          p.ad_ctr >= 3 ? 'bg-emerald-500/15 text-emerald-400' :
-                          p.ad_ctr >= 1 ? 'bg-amber-500/15 text-amber-400' :
-                          'bg-red-500/15 text-red-400'
-                        }`}>
-                          {p.ad_ctr}%
-                        </span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            p.ad_ctr >= 3 ? 'bg-emerald-500/15 text-emerald-400' :
+                            p.ad_ctr >= 1 ? 'bg-amber-500/15 text-amber-400' :
+                            'bg-red-500/15 text-red-400'
+                          }`}>
+                            {p.ad_ctr}%
+                          </span>
+                          <Delta value={p.ad_ctr_delta} suffix="pp" />
+                        </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
+                    {/* CR → cart */}
                     <td className={tdCls}>
                       {p.ad_cart_rate > 0 ? (
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          p.ad_cart_rate >= 15 ? 'bg-emerald-500/15 text-emerald-400' :
-                          p.ad_cart_rate >= 5 ? 'bg-amber-500/15 text-amber-400' :
-                          'bg-red-500/15 text-red-400'
-                        }`}>
-                          {p.ad_cart_rate}%
-                        </span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            p.ad_cart_rate >= 15 ? 'bg-emerald-500/15 text-emerald-400' :
+                            p.ad_cart_rate >= 5 ? 'bg-amber-500/15 text-amber-400' :
+                            'bg-red-500/15 text-red-400'
+                          }`}>
+                            {p.ad_cart_rate}%
+                          </span>
+                          <Delta value={p.ad_cart_rate_delta} suffix="pp" />
+                        </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
+                    {/* CR → order */}
                     <td className={tdCls}>
                       {p.ad_order_rate > 0 ? (
-                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          p.ad_order_rate >= 30 ? 'bg-emerald-500/15 text-emerald-400' :
-                          p.ad_order_rate >= 10 ? 'bg-amber-500/15 text-amber-400' :
-                          'bg-red-500/15 text-red-400'
-                        }`}>
-                          {p.ad_order_rate}%
-                        </span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                            p.ad_order_rate >= 30 ? 'bg-emerald-500/15 text-emerald-400' :
+                            p.ad_order_rate >= 10 ? 'bg-amber-500/15 text-amber-400' :
+                            'bg-red-500/15 text-red-400'
+                          }`}>
+                            {p.ad_order_rate}%
+                          </span>
+                          <Delta value={p.ad_order_rate_delta} suffix="pp" />
+                        </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
                   </>
