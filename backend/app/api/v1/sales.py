@@ -279,6 +279,30 @@ async def get_ozon_sales(
             """, parameters=params).result_rows
             returns_by_sku = {int(row[0]): int(row[1]) for row in returns_per_sku}
 
+        # Get ad funnel per SKU (views, clicks, add_to_cart from ads)
+        funnel_by_sku: dict[int, dict] = {}
+        if sku_list:
+            sku_str = ",".join(str(s) for s in sku_list)
+            funnel_rows = ch.query(f"""
+                SELECT
+                    sku,
+                    sum(views) AS views,
+                    sum(clicks) AS clicks,
+                    sum(add_to_cart) AS atbs
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND dt >= {{cur_start:Date}}
+                  AND dt <= {{cur_end:Date}}
+                  AND sku IN ({sku_str})
+                GROUP BY sku
+            """, parameters=params).result_rows
+            for fr in funnel_rows:
+                funnel_by_sku[int(fr[0])] = {
+                    "views": int(fr[1]),
+                    "clicks": int(fr[2]),
+                    "add_to_cart": int(fr[3]),
+                }
+
         # Enrich with product images from PG
         sku_to_image: dict[int, str] = {}
         sku_to_name: dict[int, str] = {}
@@ -304,6 +328,10 @@ async def get_ozon_sales(
             sku = int(row[0])
             orders_count = int(row[3])
             ret_count = returns_by_sku.get(sku, 0)
+            funnel = funnel_by_sku.get(sku, {})
+            views = funnel.get("views", 0)
+            clicks = funnel.get("clicks", 0)
+            add_to_cart = funnel.get("add_to_cart", 0)
             top_products.append({
                 "sku": sku,
                 "offer_id": row[1],
@@ -313,6 +341,13 @@ async def get_ozon_sales(
                 "revenue": round(float(row[4])),
                 "returns": ret_count,
                 "return_pct": round(ret_count / orders_count * 100, 1) if orders_count > 0 else 0,
+                # Ad funnel metrics
+                "ad_views": views,
+                "ad_clicks": clicks,
+                "ad_add_to_cart": add_to_cart,
+                "ad_ctr": round(clicks / views * 100, 2) if views > 0 else 0,
+                "ad_cart_rate": round(add_to_cart / clicks * 100, 2) if clicks > 0 else 0,
+                "ad_order_rate": round(orders_count / add_to_cart * 100, 2) if add_to_cart > 0 else 0,
             })
 
         # ══════════════════════════════════════════════

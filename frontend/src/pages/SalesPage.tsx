@@ -358,20 +358,46 @@ function TopProductsTable({
   onToggle: (product: SalesTopProduct) => void
 }) {
   const [hoveredImg, setHoveredImg] = useState<{ url: string; x: number; y: number } | null>(null)
+  const hasAdData = data.some(p => p.ad_views > 0)
+
+  const thCls = "px-3 py-2 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+  const tdCls = "px-3 py-2.5 text-right tabular-nums text-[13px]"
 
   return (
     <div className="overflow-x-auto relative">
-      <table className="w-full text-sm">
+      <table className="w-full text-sm" style={{ minWidth: hasAdData ? 1100 : undefined }}>
         <thead>
+          {/* Column group headers */}
+          {hasAdData && (
+            <tr className="border-b border-[hsl(var(--border)/0.15)]">
+              <th colSpan={2}></th>
+              <th colSpan={4} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-1.5 tracking-wide uppercase">
+                Продажи
+              </th>
+              <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                Рекл. воронка
+              </th>
+            </tr>
+          )}
           <tr className="border-b border-[hsl(var(--border))]">
-            <th className="px-2 py-2.5 w-[40px]">
+            <th className="px-2 py-2 w-[36px]">
               <span className="text-[11px] text-[hsl(var(--muted-foreground))]">📊</span>
             </th>
-            <th className="px-3 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
-            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Возвраты</th>
-            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">% возвр.</th>
+            <th className="px-3 py-2 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
+            <th className={thCls}>Заказы</th>
+            <th className={thCls}>Продажи</th>
+            <th className={thCls}>Возвр.</th>
+            <th className={thCls}>% возвр.</th>
+            {hasAdData && (
+              <>
+                <th className={`${thCls} border-l border-[hsl(var(--border)/0.2)]`}>Показы</th>
+                <th className={thCls}>Клики</th>
+                <th className={thCls}>Корзины</th>
+                <th className={thCls}>CTR</th>
+                <th className={thCls}>CR→корз.</th>
+                <th className={thCls}>CR→заказ</th>
+              </>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -385,7 +411,7 @@ function TopProductsTable({
                 }`}
                 onClick={() => onToggle(p)}
               >
-                <td className="px-2 py-2.5 text-center">
+                <td className="px-2 py-2 text-center">
                   <div className={`
                     h-5 w-5 rounded border-2 flex items-center justify-center mx-auto transition-all
                     ${isSelected
@@ -396,7 +422,7 @@ function TopProductsTable({
                     {isSelected && <Check className="h-3 w-3 text-white" />}
                   </div>
                 </td>
-                <td className="px-3 py-2.5">
+                <td className="px-3 py-2">
                   <div className="flex items-center gap-3">
                     {p.image_url ? (
                       <div
@@ -429,16 +455,16 @@ function TopProductsTable({
                             ] }}
                           />
                         )}
-                        <p className="text-[13px] font-medium truncate max-w-[260px]">{p.name || p.offer_id}</p>
+                        <p className="text-[13px] font-medium truncate max-w-[220px]">{p.name || p.offer_id}</p>
                       </div>
                       <p className="text-[11px] text-[hsl(var(--muted-foreground))] truncate">{p.offer_id}</p>
                     </div>
                   </div>
                 </td>
-                <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatNumber(p.orders)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatMoney(p.revenue)}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
-                <td className="px-3 py-2.5 text-right tabular-nums">
+                <td className={`${tdCls} font-medium`}>{formatNumber(p.orders)}</td>
+                <td className={`${tdCls} font-medium`}>{formatMoney(p.revenue)}</td>
+                <td className={tdCls}>{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
+                <td className={tdCls}>
                   {p.return_pct > 0 ? (
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
                       p.return_pct > 10 ? 'bg-red-500/15 text-red-400' :
@@ -449,6 +475,52 @@ function TopProductsTable({
                     </span>
                   ) : '—'}
                 </td>
+                {hasAdData && (
+                  <>
+                    <td className={`${tdCls} border-l border-[hsl(var(--border)/0.15)]`}>
+                      {p.ad_views > 0 ? formatNumber(p.ad_views) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                    <td className={tdCls}>
+                      {p.ad_clicks > 0 ? formatNumber(p.ad_clicks) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                    <td className={tdCls}>
+                      {p.ad_add_to_cart > 0 ? formatNumber(p.ad_add_to_cart) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                    <td className={tdCls}>
+                      {p.ad_ctr > 0 ? (
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          p.ad_ctr >= 3 ? 'bg-emerald-500/15 text-emerald-400' :
+                          p.ad_ctr >= 1 ? 'bg-amber-500/15 text-amber-400' :
+                          'bg-red-500/15 text-red-400'
+                        }`}>
+                          {p.ad_ctr}%
+                        </span>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                    <td className={tdCls}>
+                      {p.ad_cart_rate > 0 ? (
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          p.ad_cart_rate >= 15 ? 'bg-emerald-500/15 text-emerald-400' :
+                          p.ad_cart_rate >= 5 ? 'bg-amber-500/15 text-amber-400' :
+                          'bg-red-500/15 text-red-400'
+                        }`}>
+                          {p.ad_cart_rate}%
+                        </span>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                    <td className={tdCls}>
+                      {p.ad_order_rate > 0 ? (
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                          p.ad_order_rate >= 30 ? 'bg-emerald-500/15 text-emerald-400' :
+                          p.ad_order_rate >= 10 ? 'bg-amber-500/15 text-amber-400' :
+                          'bg-red-500/15 text-red-400'
+                        }`}>
+                          {p.ad_order_rate}%
+                        </span>
+                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
+                    </td>
+                  </>
+                )}
               </tr>
             )
           })}

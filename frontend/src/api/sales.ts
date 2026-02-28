@@ -40,6 +40,13 @@ export interface SalesTopProduct {
   revenue: number
   returns: number
   return_pct: number
+  // Ad funnel
+  ad_views: number
+  ad_clicks: number
+  ad_add_to_cart: number
+  ad_ctr: number
+  ad_cart_rate: number
+  ad_order_rate: number
 }
 
 export interface SalesReturnReason {
