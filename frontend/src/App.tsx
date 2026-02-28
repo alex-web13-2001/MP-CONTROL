@@ -10,6 +10,7 @@ import ProductsPage from '@/pages/ProductsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import FinancesPage from '@/pages/FinancesPage'
 import SalesPage from '@/pages/SalesPage'
+import AbcXyzPage from '@/pages/AbcXyzPage'
 
 export default function App() {
   return (
@@ -42,6 +43,7 @@ export default function App() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/sales" element={<SalesPage />} />
+          <Route path="/sales/abc-xyz" element={<AbcXyzPage />} />
           <Route path="/finances" element={<FinancesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:

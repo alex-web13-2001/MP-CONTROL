@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -10,19 +11,49 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   BarChart3,
   Package,
+  TrendingUp,
+  Grid3X3,
+  type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
 
-const navSections = [
+interface NavChild {
+  path: string
+  label: string
+  icon: LucideIcon
+}
+
+interface NavItem {
+  path: string
+  label: string
+  icon: LucideIcon
+  children?: NavChild[]
+}
+
+interface NavSection {
+  title: string
+  items: NavItem[]
+}
+
+const navSections: NavSection[] = [
   {
     title: 'Аналитика',
     items: [
       { path: '/', label: 'Обзор', icon: LayoutDashboard },
       { path: '/products', label: 'Товары', icon: Package },
-      { path: '/sales', label: 'Продажи', icon: ShoppingCart },
+      {
+        path: '/sales',
+        label: 'Продажи',
+        icon: ShoppingCart,
+        children: [
+          { path: '/sales', label: 'Обзор продаж', icon: TrendingUp },
+          { path: '/sales/abc-xyz', label: 'ABC/XYZ анализ', icon: Grid3X3 },
+        ],
+      },
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse },
       { path: '/finances', label: 'Финансы', icon: DollarSign },
@@ -43,10 +74,61 @@ const navSections = [
   },
 ]
 
+/* ── Shared link styles ── */
+const linkBase = 'group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200'
+const linkActive = 'bg-[hsl(var(--sidebar-accent)/0.12)] text-[hsl(var(--sidebar-accent))]'
+const linkInactive = 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--sidebar-muted)/0.5)] hover:text-[hsl(var(--sidebar-foreground))]'
+
+/* ── Active indicator bar ── */
+function ActiveBar() {
+  return (
+    <motion.div
+      layoutId="activeNav"
+      className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-[hsl(var(--sidebar-accent))]"
+      transition={{ duration: 0.2, ease: 'easeInOut' }}
+    />
+  )
+}
+
+/* ── Animated label (hides when sidebar collapsed) ── */
+function AnimatedLabel({ label, collapsed }: { label: string; collapsed: boolean }) {
+  return (
+    <AnimatePresence>
+      {!collapsed && (
+        <motion.span
+          initial={{ opacity: 0, width: 0 }}
+          animate={{ opacity: 1, width: 'auto' }}
+          exit={{ opacity: 0, width: 0 }}
+          transition={{ duration: 0.15 }}
+          className="overflow-hidden whitespace-nowrap"
+        >
+          {label}
+        </motion.span>
+      )}
+    </AnimatePresence>
+  )
+}
+
 export function Sidebar() {
   const collapsed = useAppStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
   const location = useLocation()
+
+  /* Track which parent groups are expanded */
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  /* Auto-expand group if current path matches */
+  const isGroupActive = (item: NavItem) =>
+    item.path === '/'
+      ? location.pathname === '/'
+      : location.pathname.startsWith(item.path)
+
+  const toggleExpand = (path: string) => {
+    setExpanded((prev) => ({ ...prev, [path]: !prev[path] }))
+  }
+
+  const isExpanded = (item: NavItem) =>
+    expanded[item.path] !== undefined ? expanded[item.path] : isGroupActive(item)
 
   return (
     <motion.aside
@@ -100,6 +182,93 @@ export function Sidebar() {
 
             <div className="space-y-0.5">
               {section.items.map((item) => {
+                const hasChildren = item.children && item.children.length > 0
+                const groupActive = isGroupActive(item)
+
+                /* ── Item WITH children (collapsible group) ── */
+                if (hasChildren) {
+                  const open = isExpanded(item)
+
+                  return (
+                    <div key={item.path}>
+                      {/* Parent button */}
+                      <button
+                        onClick={() => toggleExpand(item.path)}
+                        className={cn(
+                          linkBase, 'w-full',
+                          groupActive ? linkActive : linkInactive,
+                        )}
+                      >
+                        {groupActive && <ActiveBar />}
+
+                        <item.icon className={cn(
+                          'h-[18px] w-[18px] shrink-0 transition-colors',
+                          groupActive
+                            ? 'text-[hsl(var(--sidebar-accent))]'
+                            : 'text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--sidebar-foreground))]',
+                        )} />
+
+                        <AnimatedLabel label={item.label} collapsed={collapsed} />
+
+                        {/* Chevron */}
+                        {!collapsed && (
+                          <motion.div
+                            animate={{ rotate: open ? 180 : 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="ml-auto"
+                          >
+                            <ChevronDown className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+                          </motion.div>
+                        )}
+                      </button>
+
+                      {/* Children */}
+                      <AnimatePresence initial={false}>
+                        {open && !collapsed && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: 'easeInOut' }}
+                            className="overflow-hidden"
+                          >
+                            <div className="ml-4 mt-0.5 space-y-0.5 border-l border-[hsl(var(--sidebar-border))] pl-3">
+                              {item.children!.map((child) => {
+                                const childActive =
+                                  child.path === '/sales'
+                                    ? location.pathname === '/sales'
+                                    : location.pathname === child.path
+
+                                return (
+                                  <NavLink
+                                    key={child.path}
+                                    to={child.path}
+                                    className={cn(
+                                      'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-all duration-200',
+                                      childActive
+                                        ? 'bg-[hsl(var(--sidebar-accent)/0.1)] text-[hsl(var(--sidebar-accent))]'
+                                        : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--sidebar-muted)/0.5)] hover:text-[hsl(var(--sidebar-foreground))]',
+                                    )}
+                                  >
+                                    <child.icon className={cn(
+                                      'h-4 w-4 shrink-0',
+                                      childActive
+                                        ? 'text-[hsl(var(--sidebar-accent))]'
+                                        : 'text-[hsl(var(--muted-foreground))]',
+                                    )} />
+                                    {child.label}
+                                  </NavLink>
+                                )
+                              })}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )
+                }
+
+                /* ── Simple item (no children) ── */
                 const isActive = item.path === '/'
                   ? location.pathname === '/'
                   : location.pathname.startsWith(item.path)
@@ -108,40 +277,18 @@ export function Sidebar() {
                   <NavLink
                     key={item.path}
                     to={item.path}
-                    className={cn(
-                      'group relative flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-200',
-                      isActive
-                        ? 'bg-[hsl(var(--sidebar-accent)/0.12)] text-[hsl(var(--sidebar-accent))]'
-                        : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--sidebar-muted)/0.5)] hover:text-[hsl(var(--sidebar-foreground))]',
-                    )}
+                    className={cn(linkBase, isActive ? linkActive : linkInactive)}
                   >
-                    {/* Active indicator bar */}
-                    {isActive && (
-                      <motion.div
-                        layoutId="activeNav"
-                        className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-[hsl(var(--sidebar-accent))]"
-                        transition={{ duration: 0.2, ease: 'easeInOut' }}
-                      />
-                    )}
+                    {isActive && <ActiveBar />}
 
                     <item.icon className={cn(
                       'h-[18px] w-[18px] shrink-0 transition-colors',
-                      isActive ? 'text-[hsl(var(--sidebar-accent))]' : 'text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--sidebar-foreground))]'
+                      isActive
+                        ? 'text-[hsl(var(--sidebar-accent))]'
+                        : 'text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--sidebar-foreground))]',
                     )} />
 
-                    <AnimatePresence>
-                      {!collapsed && (
-                        <motion.span
-                          initial={{ opacity: 0, width: 0 }}
-                          animate={{ opacity: 1, width: 'auto' }}
-                          exit={{ opacity: 0, width: 0 }}
-                          transition={{ duration: 0.15 }}
-                          className="overflow-hidden whitespace-nowrap"
-                        >
-                          {item.label}
-                        </motion.span>
-                      )}
-                    </AnimatePresence>
+                    <AnimatedLabel label={item.label} collapsed={collapsed} />
                   </NavLink>
                 )
               })}

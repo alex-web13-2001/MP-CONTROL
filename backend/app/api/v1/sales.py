@@ -594,3 +594,246 @@ async def get_ozon_product_daily(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки динамики товаров: {e}",
         )
+
+
+# ═══════════════════════════════════════════════════════════════
+# ABC / XYZ Analysis
+# ═══════════════════════════════════════════════════════════════
+
+import math
+import statistics
+
+
+def _abc_group(cumulative_pct: float) -> str:
+    if cumulative_pct <= 80:
+        return "A"
+    elif cumulative_pct <= 95:
+        return "B"
+    return "C"
+
+
+def _xyz_group(cv: float) -> str:
+    if cv < 10:
+        return "X"
+    elif cv < 25:
+        return "Y"
+    return "Z"
+
+
+@router.get("/ozon/abc-xyz")
+async def get_ozon_abc_xyz(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=14, le=365),
+    use_profit: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ABC/XYZ analysis for Ozon products."""
+    # Verify shop
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+
+        cur_end = date.today()
+        cur_start = cur_end - timedelta(days=period)
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": str(cur_start),
+            "cur_end": str(cur_end),
+        }
+
+        # ── 1. Revenue per SKU ──
+        revenue_rows = ch.query("""
+            SELECT
+                sku,
+                any(offer_id) AS offer_id,
+                any(product_name) AS product_name,
+                count() AS orders,
+                sum(price * quantity) AS revenue,
+                round(avg(price), 0) AS avg_price
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY sku
+            ORDER BY revenue DESC
+        """, parameters=params).result_rows
+
+        if not revenue_rows:
+            return {"products": [], "summary": {}, "matrix": {}}
+
+        sku_list = [int(r[0]) for r in revenue_rows]
+
+        # ── 2. Cost prices from PG ──
+        cost_map: dict[str, float] = {}
+        if sku_list:
+            # Get offer_ids for SKU list
+            sku_to_offer = {int(r[0]): r[1] for r in revenue_rows}
+            offer_ids = list(set(sku_to_offer.values()))
+            if offer_ids:
+                placeholders = ",".join(f":o_{i}" for i in range(len(offer_ids)))
+                bind = {f"o_{i}": oid for i, oid in enumerate(offer_ids)}
+                bind["sid"] = shop_id
+                cost_result = await db.execute(
+                    text(f"""
+                        SELECT offer_id, cost_price
+                        FROM product_costs
+                        WHERE shop_id = :sid AND offer_id IN ({placeholders})
+                    """),
+                    bind,
+                )
+                for row in cost_result.fetchall():
+                    cost_map[row[0]] = float(row[1])
+
+        # ── 3. Weekly revenue per SKU (for XYZ) ──
+        weeks = max(1, period // 7)
+        weekly_rows = ch.query("""
+            SELECT
+                sku,
+                toStartOfWeek(toDate(addHours(in_process_at, 3)), 1) AS week,
+                sum(price * quantity) AS revenue
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY sku, week
+            ORDER BY sku, week
+        """, parameters=params).result_rows
+
+        # Build {sku: [weekly_revenues]}
+        weekly_by_sku: dict[int, list[float]] = {s: [] for s in sku_list}
+        all_weeks: set[str] = set()
+        for row in weekly_rows:
+            s = int(row[0])
+            w = str(row[1])
+            all_weeks.add(w)
+            if s in weekly_by_sku:
+                weekly_by_sku[s].append(float(row[2]))
+
+        # Fill zero weeks for SKUs that had no sales certain weeks
+        num_weeks = max(len(all_weeks), 1)
+        for s in sku_list:
+            while len(weekly_by_sku[s]) < num_weeks:
+                weekly_by_sku[s].append(0.0)
+
+        # ── 4. Product images from PG ──
+        sku_to_image: dict[int, str] = {}
+        sku_to_name: dict[int, str] = {}
+        if sku_list:
+            placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
+            bind_params = {f"sku_{i}": sku for i, sku in enumerate(sku_list)}
+            bind_params["sid"] = shop_id
+            pg_products = await db.execute(
+                text(f"""
+                    SELECT sku, name,
+                           COALESCE(NULLIF(primary_image_url, ''), '') AS image_url
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({placeholders})
+                """),
+                bind_params,
+            )
+            for row in pg_products.fetchall():
+                sku_to_image[row[0]] = row[2]
+                sku_to_name[row[0]] = row[1]
+
+        # ── 5. Compute ABC ──
+        products = []
+        for row in revenue_rows:
+            sku = int(row[0])
+            offer_id = row[1]
+            revenue = round(float(row[4]))
+            orders = int(row[3])
+            cost_price = cost_map.get(offer_id, 0)
+            cogs = round(cost_price * orders)
+            profit = revenue - cogs
+
+            products.append({
+                "sku": sku,
+                "offer_id": offer_id,
+                "name": sku_to_name.get(sku, row[2] or ""),
+                "image_url": sku_to_image.get(sku, ""),
+                "revenue": revenue,
+                "profit": profit,
+                "orders": orders,
+                "avg_price": round(float(row[5])),
+                "cost_price": round(cost_price),
+                "weekly_data": weekly_by_sku.get(sku, []),
+            })
+
+        # Sort by metric for ABC
+        metric_key = "profit" if use_profit else "revenue"
+        products.sort(key=lambda p: p[metric_key], reverse=True)
+
+        total_metric = sum(max(p[metric_key], 0) for p in products)
+
+        cumulative = 0.0
+        for p in products:
+            share = (max(p[metric_key], 0) / total_metric * 100) if total_metric > 0 else 0
+            cumulative += share
+            p["abc_share"] = round(share, 1)
+            p["abc_cumulative"] = round(cumulative, 1)
+            p["abc_group"] = _abc_group(cumulative)
+
+        # ── 6. Compute XYZ ──
+        for p in products:
+            weekly = p.get("weekly_data", [])
+            if len(weekly) < 2:
+                p["xyz_cv"] = 0
+                p["xyz_group"] = "X"
+                continue
+            mean_val = statistics.mean(weekly)
+            if mean_val == 0:
+                p["xyz_cv"] = 100.0
+                p["xyz_group"] = "Z"
+                continue
+            stdev = statistics.stdev(weekly)
+            cv = round(stdev / mean_val * 100, 1)
+            p["xyz_cv"] = cv
+            p["xyz_group"] = _xyz_group(cv)
+
+        # ── 7. Summary & Matrix ──
+        summary: dict[str, dict] = {}
+        for g in ["A", "B", "C", "X", "Y", "Z"]:
+            summary[g] = {"count": 0, "revenue_share": 0}
+
+        matrix: dict[str, int] = {}
+        for a in ["A", "B", "C"]:
+            for x in ["X", "Y", "Z"]:
+                matrix[f"{a}{x}"] = 0
+
+        for p in products:
+            abc = p["abc_group"]
+            xyz = p["xyz_group"]
+            summary[abc]["count"] += 1
+            summary[abc]["revenue_share"] += p["abc_share"]
+            summary[xyz]["count"] += 1
+            matrix[f"{abc}{xyz}"] += 1
+
+        # Round revenue shares
+        for g in summary.values():
+            g["revenue_share"] = round(g["revenue_share"], 1)
+
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "use_profit": use_profit,
+            "products": products,
+            "summary": summary,
+            "matrix": matrix,
+        }
+
+    except Exception as e:
+        logger.exception("ABC/XYZ error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка ABC/XYZ анализа: {e}",
+        )
