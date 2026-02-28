@@ -1,0 +1,366 @@
+"""
+Sales API endpoints.
+
+GET /sales/ozon?shop_id=X&period=7  — Ozon sales analytics
+"""
+import logging
+from datetime import date, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.models.shop import Shop
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/sales", tags=["Sales"])
+
+
+# ── Helpers ────────────────────────────────────────────────────
+
+
+def _safe_delta(current: float, previous: float) -> float:
+    """Percentage change, safe for zero division."""
+    if previous == 0:
+        return 0.0 if current == 0 else 100.0
+    return round((current - previous) / abs(previous) * 100, 1)
+
+
+def _parse_dates(
+    period: int,
+    date_from: Optional[date],
+    date_to: Optional[date],
+) -> tuple[date, date, date, date]:
+    """Return (cur_start, cur_end, prev_start, prev_end)."""
+    today = date.today()
+    if date_from and date_to:
+        cur_start = date_from
+        cur_end = date_to
+        days = (cur_end - cur_start).days + 1
+    else:
+        days = period
+        cur_end = today
+        cur_start = today - timedelta(days=days - 1)
+    prev_end = cur_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+    return cur_start, cur_end, prev_start, prev_end
+
+
+# ══════════════════════════════════════════════════════════════
+# Ozon Sales
+# ══════════════════════════════════════════════════════════════
+
+
+@router.get("/ozon")
+async def get_ozon_sales(
+    shop_id: int = Query(..., description="Shop ID"),
+    period: int = Query(7, ge=1, le=366, description="Period in days"),
+    date_from: Optional[date] = Query(None, description="Custom range start"),
+    date_to: Optional[date] = Query(None, description="Custom range end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Ozon sales analytics: KPI, daily chart, geography, top products, returns.
+
+    Sources:
+      - fact_ozon_orders FINAL: orders, revenue, geography, top products
+      - fact_ozon_returns FINAL: returns count, reasons
+      - dim_ozon_products (PG): product names + images
+    """
+    # ── Verify shop ownership ──────────────────────────
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "ozon",
+        )
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ozon магазин не найден",
+        )
+
+    # ── Dates ──────────────────────────────────────────
+    cur_start, cur_end, prev_start, prev_end = _parse_dates(period, date_from, date_to)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": cur_start,
+            "cur_end": cur_end,
+            "prev_start": prev_start,
+            "prev_end": prev_end,
+        }
+
+        # ══════════════════════════════════════════════
+        # 1. KPI — Orders + Revenue (current vs previous)
+        # ══════════════════════════════════════════════
+        orders_kpi = ch.query("""
+            SELECT
+                period,
+                count() AS orders_count,
+                sum(price * quantity) AS revenue,
+                sum(price * quantity) / nullIf(count(), 0) AS avg_check
+            FROM (
+                SELECT
+                    CASE
+                        WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
+                    END AS period,
+                    price, quantity
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            )
+            WHERE period != ''
+            GROUP BY period
+        """, parameters=params).result_rows
+
+        orders_map = {
+            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0)}
+            for row in orders_kpi
+        }
+        cur_o = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0})
+        prev_o = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0})
+
+        # Returns KPI (current vs previous)
+        returns_kpi = ch.query("""
+            SELECT
+                period,
+                count() AS returns_count
+            FROM (
+                SELECT
+                    CASE
+                        WHEN dt >= {cur_start:Date} AND dt <= {cur_end:Date} THEN 'current'
+                        WHEN dt >= {prev_start:Date} AND dt <= {prev_end:Date} THEN 'previous'
+                    END AS period
+                FROM mms_analytics.fact_ozon_returns FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= {prev_start:Date}
+                  AND dt <= {cur_end:Date}
+            )
+            WHERE period != ''
+            GROUP BY period
+        """, parameters=params).result_rows
+
+        returns_map = {row[0]: int(row[1]) for row in returns_kpi}
+        cur_returns = returns_map.get("current", 0)
+        prev_returns = returns_map.get("previous", 0)
+
+        returns_pct = round(cur_returns / cur_o["count"] * 100, 1) if cur_o["count"] > 0 else 0
+
+        kpi = {
+            "orders_count": cur_o["count"],
+            "orders_delta": _safe_delta(cur_o["count"], prev_o["count"]),
+            "revenue": round(cur_o["revenue"]),
+            "revenue_delta": _safe_delta(cur_o["revenue"], prev_o["revenue"]),
+            "avg_check": round(cur_o["avg_check"]),
+            "returns_count": cur_returns,
+            "returns_delta": _safe_delta(cur_returns, prev_returns),
+            "returns_pct": returns_pct,
+        }
+
+        # ══════════════════════════════════════════════
+        # 2. Daily Chart — orders + revenue + returns per day
+        # ══════════════════════════════════════════════
+        daily_orders = ch.query("""
+            SELECT
+                toDate(addHours(in_process_at, 3)) AS dt,
+                count() AS orders,
+                sum(price * quantity) AS revenue
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters=params).result_rows
+
+        daily_returns = ch.query("""
+            SELECT
+                dt,
+                count() AS returns
+            FROM mms_analytics.fact_ozon_returns FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {cur_start:Date}
+              AND dt <= {cur_end:Date}
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters=params).result_rows
+
+        returns_by_date = {str(row[0]): int(row[1]) for row in daily_returns}
+
+        daily = []
+        for row in daily_orders:
+            dt_str = str(row[0])
+            daily.append({
+                "date": dt_str,
+                "orders": int(row[1]),
+                "revenue": round(float(row[2])),
+                "returns": returns_by_date.get(dt_str, 0),
+            })
+
+        # ══════════════════════════════════════════════
+        # 3. Geography — orders by region
+        # ══════════════════════════════════════════════
+        geo_rows = ch.query("""
+            SELECT
+                city,
+                count() AS orders,
+                sum(price * quantity) AS revenue,
+                sum(price * quantity) / nullIf(count(), 0) AS avg_check
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+              AND city != ''
+            GROUP BY city
+            ORDER BY revenue DESC
+            LIMIT 20
+        """, parameters=params).result_rows
+
+        total_orders_geo = sum(int(r[1]) for r in geo_rows)
+        geo = []
+        for row in geo_rows:
+            orders_count = int(row[1])
+            geo.append({
+                "region": row[0],
+                "orders": orders_count,
+                "revenue": round(float(row[2])),
+                "pct": round(orders_count / total_orders_geo * 100, 1) if total_orders_geo > 0 else 0,
+                "avg_check": round(float(row[3] or 0)),
+            })
+
+        # ══════════════════════════════════════════════
+        # 4. Top Products — by revenue with returns
+        # ══════════════════════════════════════════════
+        top_products_rows = ch.query("""
+            SELECT
+                sku,
+                any(offer_id) AS offer_id,
+                any(product_name) AS product_name,
+                count() AS orders,
+                sum(price * quantity) AS revenue
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+            GROUP BY sku
+            ORDER BY revenue DESC
+            LIMIT 20
+        """, parameters=params).result_rows
+
+        # Get returns per SKU
+        sku_list = [int(row[0]) for row in top_products_rows]
+        returns_by_sku: dict[int, int] = {}
+        if sku_list:
+            sku_str = ",".join(str(s) for s in sku_list)
+            returns_per_sku = ch.query(f"""
+                SELECT sku, count() AS returns
+                FROM mms_analytics.fact_ozon_returns FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND dt >= {{cur_start:Date}}
+                  AND dt <= {{cur_end:Date}}
+                  AND sku IN ({sku_str})
+                GROUP BY sku
+            """, parameters=params).result_rows
+            returns_by_sku = {int(row[0]): int(row[1]) for row in returns_per_sku}
+
+        # Enrich with product images from PG
+        sku_to_image: dict[int, str] = {}
+        sku_to_name: dict[int, str] = {}
+        if sku_list:
+            placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
+            bind_params = {f"sku_{i}": sku for i, sku in enumerate(sku_list)}
+            bind_params["sid"] = shop_id
+            pg_products = await db.execute(
+                text(f"""
+                    SELECT sku, name,
+                           COALESCE(NULLIF(primary_image_url, ''), '') AS image_url
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({placeholders})
+                """),
+                bind_params,
+            )
+            for row in pg_products.fetchall():
+                sku_to_image[row[0]] = row[2]
+                sku_to_name[row[0]] = row[1]
+
+        top_products = []
+        for row in top_products_rows:
+            sku = int(row[0])
+            orders_count = int(row[3])
+            ret_count = returns_by_sku.get(sku, 0)
+            top_products.append({
+                "sku": sku,
+                "offer_id": row[1],
+                "name": sku_to_name.get(sku, row[2] or ""),
+                "image_url": sku_to_image.get(sku, ""),
+                "orders": orders_count,
+                "revenue": round(float(row[4])),
+                "returns": ret_count,
+                "return_pct": round(ret_count / orders_count * 100, 1) if orders_count > 0 else 0,
+            })
+
+        # ══════════════════════════════════════════════
+        # 5. Returns — by reason
+        # ══════════════════════════════════════════════
+        returns_reasons_rows = ch.query("""
+            SELECT
+                return_reason,
+                count() AS cnt
+            FROM mms_analytics.fact_ozon_returns FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {cur_start:Date}
+              AND dt <= {cur_end:Date}
+              AND return_reason != ''
+            GROUP BY return_reason
+            ORDER BY cnt DESC
+            LIMIT 10
+        """, parameters=params).result_rows
+
+        total_reasons = sum(int(r[1]) for r in returns_reasons_rows)
+        by_reason = []
+        for row in returns_reasons_rows:
+            cnt = int(row[1])
+            by_reason.append({
+                "reason": row[0],
+                "count": cnt,
+                "pct": round(cnt / total_reasons * 100, 1) if total_reasons > 0 else 0,
+            })
+
+        returns_data = {
+            "total": cur_returns,
+            "by_reason": by_reason,
+        }
+
+        return {
+            "shop_id": shop_id,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
+            "kpi": kpi,
+            "daily": daily,
+            "geo": geo,
+            "top_products": top_products,
+            "returns": returns_data,
+        }
+
+    except Exception as e:
+        logger.exception("Ozon sales error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки данных продаж: {e}",
+        )
