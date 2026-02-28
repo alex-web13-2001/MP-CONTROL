@@ -428,8 +428,8 @@ function TopProductsTable({
               <th colSpan={5} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-1.5 tracking-wide uppercase">
                 Продажи
               </th>
-              <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={isWb ? 4 : 6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
-                {isWb ? 'Воронка' : 'Рекл. воронка'}
+              <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
+                Рекл. воронка
               </th>
             </tr>
           )}
@@ -446,9 +446,9 @@ function TopProductsTable({
             {hasAdData && (
               <>
                 <SortTh k="ad_views" className="border-l border-[hsl(var(--border)/0.2)]">Показы</SortTh>
-                {!isWb && <SortTh k="ad_clicks">Клики</SortTh>}
+                <SortTh k="ad_clicks">Клики</SortTh>
                 <SortTh k="ad_add_to_cart">Корзины</SortTh>
-                {!isWb && <SortTh k="ad_ctr">CTR</SortTh>}
+                <SortTh k="ad_ctr">CTR</SortTh>
                 <SortTh k="ad_cart_rate">CR→корз.</SortTh>
                 <SortTh k="ad_order_rate">CR→заказ</SortTh>
               </>
@@ -562,8 +562,7 @@ function TopProductsTable({
                         </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
-                    {/* Ad Clicks — only for Ozon */}
-                    {!isWb && (
+                    {/* Ad Clicks */}
                     <td className={tdCls}>
                       {p.ad_clicks > 0 ? (
                         <div className="flex flex-col items-end gap-0.5">
@@ -572,7 +571,6 @@ function TopProductsTable({
                         </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
-                    )}
                     {/* Add to cart */}
                     <td className={tdCls}>
                       {p.ad_add_to_cart > 0 ? (
@@ -582,8 +580,7 @@ function TopProductsTable({
                         </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
-                    {/* CTR — only for Ozon */}
-                    {!isWb && (
+                    {/* CTR */}
                     <td className={tdCls}>
                       {p.ad_ctr > 0 ? (
                         <div className="flex flex-col items-end gap-0.5">
@@ -598,7 +595,6 @@ function TopProductsTable({
                         </div>
                       ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                     </td>
-                    )}
                     {/* CR → cart */}
                     <td className={tdCls}>
                       {p.ad_cart_rate > 0 ? (

@@ -780,33 +780,32 @@ async def get_wb_sales(
 
         nm_list = [int(row[0]) for row in top_products_rows]
 
-        # Funnel from fact_sales_funnel (latest snapshot per day)
+        # Ad funnel from fact_advert_stats_v3 (ReplacingMergeTree)
         funnel_by_nm: dict[int, dict] = {}
         if nm_list:
             nm_str = ",".join(str(n) for n in nm_list)
             funnel_rows = ch.query(f"""
                 SELECT
                     nm_id,
-                    sum(open_count) AS views,
-                    sum(cart_count) AS carts,
-                    sum(order_count) AS funnel_orders
-                FROM (
-                    SELECT nm_id, event_date, open_count, cart_count, order_count
-                    FROM mms_analytics.fact_sales_funnel
-                    WHERE shop_id = {{shop_id:UInt32}}
-                      AND event_date >= {{cur_start:Date}}
-                      AND event_date <= {{cur_end:Date}}
-                      AND nm_id IN ({nm_str})
-                    ORDER BY fetched_at DESC
-                    LIMIT 1 BY nm_id, event_date
-                )
+                    sum(views) AS ad_views,
+                    sum(clicks) AS ad_clicks,
+                    sum(atbs) AS ad_carts,
+                    sum(orders) AS ad_orders,
+                    sum(spend) AS ad_spend
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND date >= {{cur_start:Date}}
+                  AND date <= {{cur_end:Date}}
+                  AND nm_id IN ({nm_str})
                 GROUP BY nm_id
             """, parameters=params).result_rows
             for fr in funnel_rows:
                 funnel_by_nm[int(fr[0])] = {
                     "views": int(fr[1]),
-                    "carts": int(fr[2]),
-                    "funnel_orders": int(fr[3]),
+                    "clicks": int(fr[2]),
+                    "carts": int(fr[3]),
+                    "orders": int(fr[4]),
+                    "spend": float(fr[5]),
                 }
 
         # Previous period orders
@@ -830,33 +829,30 @@ async def get_wb_sales(
                     "avg_price": round(float(pr[3])),
                 }
 
-        # Previous funnel
+        # Previous ad funnel
         prev_funnel_by_nm: dict[int, dict] = {}
         if nm_list:
             nm_str = ",".join(str(n) for n in nm_list)
             prev_funnel_rows = ch.query(f"""
                 SELECT
                     nm_id,
-                    sum(open_count) AS views,
-                    sum(cart_count) AS carts,
-                    sum(order_count) AS funnel_orders
-                FROM (
-                    SELECT nm_id, event_date, open_count, cart_count, order_count
-                    FROM mms_analytics.fact_sales_funnel
-                    WHERE shop_id = {{shop_id:UInt32}}
-                      AND event_date >= {{prev_start:Date}}
-                      AND event_date <= {{prev_end:Date}}
-                      AND nm_id IN ({nm_str})
-                    ORDER BY fetched_at DESC
-                    LIMIT 1 BY nm_id, event_date
-                )
+                    sum(views) AS ad_views,
+                    sum(clicks) AS ad_clicks,
+                    sum(atbs) AS ad_carts,
+                    sum(orders) AS ad_orders
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND date >= {{prev_start:Date}}
+                  AND date <= {{prev_end:Date}}
+                  AND nm_id IN ({nm_str})
                 GROUP BY nm_id
             """, parameters=params).result_rows
             for pf in prev_funnel_rows:
                 prev_funnel_by_nm[int(pf[0])] = {
                     "views": int(pf[1]),
-                    "carts": int(pf[2]),
-                    "funnel_orders": int(pf[3]),
+                    "clicks": int(pf[2]),
+                    "carts": int(pf[3]),
+                    "orders": int(pf[4]),
                 }
 
         # Product names + images from PG
@@ -891,8 +887,9 @@ async def get_wb_sales(
             cancels = int(row[5])
 
             funnel = funnel_by_nm.get(nm_id, {})
-            views = funnel.get("views", 0)
-            carts = funnel.get("carts", 0)
+            ad_views = funnel.get("views", 0)
+            ad_clicks = funnel.get("clicks", 0)
+            ad_carts = funnel.get("carts", 0)
 
             prev = prev_orders_by_nm.get(nm_id, {})
             prev_orders = prev.get("orders", 0)
@@ -901,13 +898,16 @@ async def get_wb_sales(
 
             prev_f = prev_funnel_by_nm.get(nm_id, {})
             prev_views = prev_f.get("views", 0)
+            prev_clicks = prev_f.get("clicks", 0)
             prev_carts = prev_f.get("carts", 0)
 
-            # Rates
-            cart_rate = round(carts / views * 100, 2) if views > 0 else 0
-            order_rate = round(orders_count / carts * 100, 2) if carts > 0 else 0
+            # Real ad rates
+            ctr = round(ad_clicks / ad_views * 100, 2) if ad_views > 0 else 0
+            cart_rate = round(ad_carts / ad_clicks * 100, 2) if ad_clicks > 0 else 0
+            order_rate = round(orders_count / ad_carts * 100, 2) if ad_carts > 0 else 0
 
-            prev_cart_rate = round(prev_carts / prev_views * 100, 2) if prev_views > 0 else 0
+            prev_ctr = round(prev_clicks / prev_views * 100, 2) if prev_views > 0 else 0
+            prev_cart_rate = round(prev_carts / prev_clicks * 100, 2) if prev_clicks > 0 else 0
             prev_order_rate = round(prev_orders / prev_carts * 100, 2) if prev_carts > 0 else 0
 
             top_products.append({
@@ -924,18 +924,18 @@ async def get_wb_sales(
                 "orders_delta": _safe_delta(orders_count, prev_orders),
                 "revenue_delta": _safe_delta(revenue, prev_revenue),
                 "avg_price_delta": _safe_delta(avg_price, prev_avg_price),
-                # Funnel (organic)
-                "ad_views": views,
-                "ad_clicks": carts,  # "clicks" = carts for WB
-                "ad_add_to_cart": carts,
-                "ad_ctr": cart_rate,  # cart rate instead of CTR
+                # Ad funnel
+                "ad_views": ad_views,
+                "ad_clicks": ad_clicks,
+                "ad_add_to_cart": ad_carts,
+                "ad_ctr": ctr,
                 "ad_cart_rate": cart_rate,
                 "ad_order_rate": order_rate,
                 # Funnel deltas
-                "ad_views_delta": _safe_delta(views, prev_views),
-                "ad_clicks_delta": _safe_delta(carts, prev_carts),
-                "ad_add_to_cart_delta": _safe_delta(carts, prev_carts),
-                "ad_ctr_delta": round(cart_rate - prev_cart_rate, 2),
+                "ad_views_delta": _safe_delta(ad_views, prev_views),
+                "ad_clicks_delta": _safe_delta(ad_clicks, prev_clicks),
+                "ad_add_to_cart_delta": _safe_delta(ad_carts, prev_carts),
+                "ad_ctr_delta": round(ctr - prev_ctr, 2),
                 "ad_cart_rate_delta": round(cart_rate - prev_cart_rate, 2),
                 "ad_order_rate_delta": round(order_rate - prev_order_rate, 2),
             })
