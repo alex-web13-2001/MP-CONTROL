@@ -236,10 +236,12 @@ export default function ForecastPage() {
                 borderRadius: 8,
                 fontSize: 12,
               }}
-              formatter={(value: number, name: string) => {
-                if (name === 'forecastHigh' || name === 'forecastLow') return [null, null]
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              formatter={(value: any, name: string) => {
+                if (value == null || name === 'forecastBand' || name === 'forecastLow') return [null, null]
+                const v = Number(value)
                 const label = name === 'revenue' ? 'Выручка' : name === 'orders' ? 'Заказы' : 'Прогноз'
-                return [chartMetric === 'revenue' ? fmtMoney(value) : fmtNum(value), label]
+                return [chartMetric === 'revenue' ? fmtMoney(v) : fmtNum(v), label]
               }}
               labelFormatter={(label: string) => label}
             />
