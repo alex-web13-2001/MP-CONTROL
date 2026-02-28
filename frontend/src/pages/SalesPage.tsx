@@ -145,10 +145,12 @@ function SalesChart({
   data,
   selectedProducts,
   productDailyData,
+  isWb = false,
 }: {
   data: SalesDailyPoint[]
   selectedProducts: SelectedProduct[]
   productDailyData: Record<string, ProductDailyPoint[]>
+  isWb?: boolean
 }) {
   // Merge per-product revenue into daily data
   const enrichedData = useMemo(() => {
@@ -204,7 +206,7 @@ function SalesChart({
           formatter={(value: number, name: string) => {
             if (name === 'revenue') return [formatMoney(value), 'Продажи (все)']
             if (name === 'orders') return [formatNumber(value), 'Заказы (все)']
-            if (name === 'returns') return [formatNumber(value), 'Возвраты']
+            if (name === 'returns') return [formatNumber(value), isWb ? 'Отмены' : 'Возвраты']
             // Per-product lines
             const sp = selectedProducts.find(p => name === `product_${p.sku}_revenue`)
             if (sp) return [formatMoney(value), sp.name]
@@ -215,7 +217,7 @@ function SalesChart({
           formatter={(value: string) => {
             if (value === 'orders') return 'Заказы'
             if (value === 'revenue') return 'Продажи'
-            if (value === 'returns') return 'Возвраты'
+            if (value === 'returns') return isWb ? 'Отмены' : 'Возвраты'
             const sp = selectedProducts.find(p => value === `product_${p.sku}_revenue`)
             if (sp) return sp.name.length > 25 ? sp.name.slice(0, 23) + '…' : sp.name
             return value
@@ -368,10 +370,12 @@ function TopProductsTable({
   data,
   selectedSkus,
   onToggle,
+  isWb = false,
 }: {
   data: SalesTopProduct[]
   selectedSkus: Set<number>
   onToggle: (product: SalesTopProduct) => void
+  isWb?: boolean
 }) {
   const [hoveredImg, setHoveredImg] = useState<{ url: string; x: number; y: number } | null>(null)
   const hasAdData = data.some(p => p.ad_views > 0)
@@ -425,7 +429,7 @@ function TopProductsTable({
                 Продажи
               </th>
               <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
-                Рекл. воронка
+                {isWb ? 'Воронка' : 'Рекл. воронка'}
               </th>
             </tr>
           )}
@@ -437,8 +441,8 @@ function TopProductsTable({
             <SortTh k="orders">Заказы</SortTh>
             <SortTh k="revenue">Продажи</SortTh>
             <SortTh k="avg_price">Цена</SortTh>
-            <SortTh k="returns">Возвр.</SortTh>
-            <SortTh k="return_pct">% возвр.</SortTh>
+            <SortTh k="returns">{isWb ? 'Отм.' : 'Возвр.'}</SortTh>
+            <SortTh k="return_pct">{isWb ? '% отм.' : '% возвр.'}</SortTh>
             {hasAdData && (
               <>
                 <SortTh k="ad_views" className="border-l border-[hsl(var(--border)/0.2)]">Показы</SortTh>
@@ -933,6 +937,7 @@ export default function SalesPage() {
                   data={data.daily}
                   selectedProducts={selectedProducts}
                   productDailyData={productDailyData}
+                  isWb={isWb}
                 />
               </CardContent>
             </Card>
@@ -954,6 +959,7 @@ export default function SalesPage() {
                   data={data.top_products}
                   selectedSkus={selectedSkus}
                   onToggle={handleToggleProduct}
+                  isWb={isWb}
                 />
               </CardContent>
             </Card>
