@@ -62,3 +62,4 @@ htmlcov/
 # Misc
 *.bak
 *.tmp
+backend/lightning_logs/
