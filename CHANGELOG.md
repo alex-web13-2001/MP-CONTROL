@@ -4,6 +4,16 @@
 
 ## [Unreleased] - 2026-02-28
 
+### Added — Раздел «Продажи» (Ozon)
+
+- **Backend / `sales.py` [NEW]:** Endpoint `GET /api/v1/sales/ozon` — 5 SQL-запросов к ClickHouse: KPI (заказы, выручка, ср. чек, возвраты + дельты), динамика по дням (МСК), география по городам, ТОП-20 товаров с возвратами, ТОП-10 причин возвратов. Обогащение товаров из `dim_ozon_products` (PG).
+- **Backend / `router.py` [MODIFY]:** Зарегистрирован `sales_router`.
+- **Frontend / `sales.ts` [NEW]:** TypeScript типы и API-клиент для endpoint Sales.
+- **Frontend / `SalesPage.tsx` [NEW]:** Полная страница: KPI-карточки (4 шт.), ComposedChart (бары заказы + линия продажи + пунктир возвраты), таблица географии с прогресс-барами, таблица ТОП товаров с фото и % возвратов, горизонтальный бар-чарт причин возвратов. Единая дизайн-система (framer-motion, recharts, Card, PeriodSelector).
+- **Frontend / `App.tsx` [MODIFY]:** Роут `/sales` активирован, import `SalesPage`.
+
+## [Unreleased] - 2026-02-28
+
 ### Changed — Дашборд: терминология и период по умолчанию
 
 - **Frontend / `DashboardPage.tsx` [MODIFY]:** KPI-карточка «Выручка» переименована в «Продажи» (отображается сумма заказов × цена, а не выручка после возвратов). Переименовано в 5 местах: KPI, тултип графика, легенда, таблица топ-товаров.
