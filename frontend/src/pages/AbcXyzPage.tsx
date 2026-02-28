@@ -3,18 +3,10 @@ import { fetchAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-
 import { useAppStore } from '@/stores/appStore'
 
 /* Sticky cell styles — must be opaque to hide content scrolling behind */
-const stickyHeaderStyle: React.CSSProperties = {
+const stickyBase: React.CSSProperties = {
   position: 'sticky',
   left: 0,
-  zIndex: 30,
-  background: 'hsl(224 15% 11%)',
-  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.4)',
-}
-const stickyCellStyle: React.CSSProperties = {
-  position: 'sticky',
-  left: 0,
-  zIndex: 10,
-  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.4)',
+  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.15)',
 }
 
 /* ── helpers ── */
@@ -406,10 +398,10 @@ function ProductsTable({
       <div className="overflow-auto max-h-[600px] relative">
         <table className="w-full border-collapse">
           <thead className="sticky top-0 z-20">
-            <tr className="border-b border-[hsl(var(--border))]" style={{ background: 'hsl(224 15% 11%)' }}>
+            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
               <th
-                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[220px] min-w-[220px] max-w-[220px]"
-                style={stickyHeaderStyle}
+                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--card))]"
+                style={{ ...stickyBase, zIndex: 30 }}
               >
                 Товар
               </th>
@@ -441,8 +433,8 @@ function ProductsTable({
                 >
                   {/* Product — sticky left */}
                   <td
-                    className="px-4 py-3 w-[220px] min-w-[220px] max-w-[220px] group-hover:!bg-[hsl(var(--muted)/0.2)]"
-                    style={{ ...stickyCellStyle, background: idx % 2 === 0 ? 'hsl(224 15% 11%)' : 'hsl(224 15% 12%)' }}
+                    className={`px-4 py-3 w-[220px] min-w-[220px] max-w-[220px] ${rowBg} group-hover:bg-[hsl(var(--muted)/0.2)]`}
+                    style={{ ...stickyBase, zIndex: 10 }}
                   >
                     <div className="flex items-center gap-2.5">
                       {p.image_url ? (
