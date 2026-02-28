@@ -60,3 +60,14 @@ export async function fetchAbcXyz(
   })
   return data
 }
+
+export async function fetchWbAbcXyz(
+  shopId: number,
+  period: number = 90,
+  useProfit: boolean = false,
+): Promise<AbcXyzResponse> {
+  const { data } = await apiClient.get<AbcXyzResponse>('/sales/wb/abc-xyz', {
+    params: { shop_id: shopId, period, use_profit: useProfit },
+  })
+  return data
+}

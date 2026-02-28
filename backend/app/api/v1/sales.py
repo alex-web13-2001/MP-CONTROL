@@ -1418,3 +1418,324 @@ async def get_ozon_abc_xyz(
             detail=f"Ошибка ABC/XYZ анализа: {e}",
         )
 
+
+# ═══════════════════════════════════════════════════════════════
+# WB ABC / XYZ Analysis
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.get("/wb/abc-xyz")
+async def get_wb_abc_xyz(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=14, le=365),
+    use_profit: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """ABC/XYZ analysis for WB products.
+
+    Data sources:
+      - fact_finances FINAL: revenue, logistics, storage, acquiring, penalties, commission (rev-payout)
+      - fact_advert_stats_v3 FINAL: ad spend per nm_id
+      - product_costs (PG): COGS per vendor_code
+      - dim_products (PG): product names + images
+      - fact_orders_raw FINAL: weekly revenue per nm_id (for XYZ)
+    """
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+
+        cur_end = date.today()
+        cur_start = cur_end - timedelta(days=period)
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": str(cur_start),
+            "cur_end": str(cur_end),
+        }
+
+        # ── 1. Per-product financials from fact_finances FINAL ──
+        products: dict[str, dict] = {}
+
+        fin_rows = ch.query("""
+            SELECT
+                vendor_code,
+                JSONExtractUInt(raw_payload, 'nm_id') AS nm_id,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                    operation_type = 'Продажа') AS revenue,
+                sumIf(payout_amount, operation_type = 'Продажа')
+                    - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                sum(abs(wb_delivery_rub)) AS logistics,
+                sum(abs(storage_fee)) AS storage,
+                sum(abs(wb_acquiring)) AS acquiring,
+                sum(abs(penalty_total)) AS penalties,
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS sales
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {cur_start:Date}
+              AND event_date <= {cur_end:Date}
+            GROUP BY vendor_code, nm_id
+        """, parameters=params).result_rows
+
+        for r in fin_rows:
+            vc = str(r[0] or "").strip()
+            if not vc:
+                continue
+            nm_id = int(r[1] or 0)
+            revenue = float(r[2] or 0)
+            payout = float(r[3] or 0)
+            logistics = abs(float(r[4] or 0))
+            storage = abs(float(r[5] or 0))
+            acquiring = abs(float(r[6] or 0))
+            penalties = abs(float(r[7] or 0))
+            sales = int(r[8] or 0)
+            commission = max(revenue - payout, 0)
+
+            if vc not in products:
+                products[vc] = {
+                    "sku": nm_id,
+                    "offer_id": vc,
+                    "revenue": 0.0,
+                    "orders": 0,
+                    "commission": 0.0,
+                    "logistics": 0.0,
+                    "storage": 0.0,
+                    "acquiring": 0.0,
+                    "penalties": 0.0,
+                    "ad_spend": 0.0,
+                    "cogs": 0.0,
+                }
+            p = products[vc]
+            if nm_id and not p["sku"]:
+                p["sku"] = nm_id
+            p["revenue"] += revenue
+            p["orders"] += sales
+            p["commission"] += commission
+            p["logistics"] += logistics
+            p["storage"] += storage
+            p["acquiring"] += acquiring
+            p["penalties"] += penalties
+
+        if not products:
+            return {"shop_id": shop_id, "period": period, "use_profit": use_profit,
+                    "products": [], "summary": {}, "matrix": {}}
+
+        # ── 2. Ad spend from fact_advert_stats_v3 ──
+        nm_to_vc: dict[int, str] = {}
+        for vc, p in products.items():
+            if p["sku"]:
+                nm_to_vc[p["sku"]] = vc
+
+        try:
+            ad_rows = ch.query("""
+                SELECT nm_id, sum(spend) AS ad_spend
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND date >= {cur_start:Date}
+                  AND date <= {cur_end:Date}
+                GROUP BY nm_id
+            """, parameters=params).result_rows
+
+            total_rev = sum(p["revenue"] for p in products.values())
+            for r in ad_rows:
+                nm_id = int(r[0] or 0)
+                ads = float(r[1] or 0)
+                vc = nm_to_vc.get(nm_id)
+                if vc and vc in products:
+                    products[vc]["ad_spend"] += ads
+                elif total_rev > 0:
+                    for p in products.values():
+                        p["ad_spend"] += round(ads * p["revenue"] / total_rev, 2)
+        except Exception as e:
+            logger.warning("WB ABC/XYZ ads error: %s", e)
+
+        # ── 3. COGS from product_costs (PG) ──
+        cost_map: dict[str, float] = {}
+        try:
+            cost_result = await db.execute(
+                text("""
+                    SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                    FROM product_costs
+                    WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+                """),
+                {"shop_id": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception as e:
+            logger.warning("WB ABC/XYZ cogs error: %s", e)
+
+        for vc, p in products.items():
+            unit_cost = cost_map.get(vc.lower(), 0)
+            if unit_cost > 0:
+                p["cogs"] = round(unit_cost * p["orders"], 2)
+
+        # ── 4. Product images & names from dim_products (PG) ──
+        nm_to_name: dict[int, str] = {}
+        nm_to_image: dict[int, str] = {}
+        nm_list = [p["sku"] for p in products.values() if p["sku"]]
+        if nm_list:
+            try:
+                placeholders = ",".join(f":nm_{i}" for i in range(len(nm_list)))
+                bind_params = {f"nm_{i}": nm for i, nm in enumerate(nm_list)}
+                bind_params["sid"] = shop_id
+                pg_products = await db.execute(
+                    text(f"""
+                        SELECT nm_id, COALESCE(name, ''), COALESCE(main_image_url, '')
+                        FROM dim_products
+                        WHERE shop_id = :sid AND nm_id IN ({placeholders})
+                    """),
+                    bind_params,
+                )
+                for row in pg_products.fetchall():
+                    nm_to_name[row[0]] = row[1]
+                    nm_to_image[row[0]] = row[2]
+            except Exception as e:
+                logger.warning("WB ABC/XYZ product names error: %s", e)
+
+        # ── 5. Weekly revenue per nm_id (for XYZ) ──
+        weekly_by_vc: dict[str, list[float]] = {vc: [] for vc in products}
+        try:
+            weekly_rows = ch.query("""
+                SELECT
+                    nm_id,
+                    toStartOfWeek(toDate(date), 1) AS week,
+                    sum(price_with_disc) AS revenue
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) >= {cur_start:Date}
+                  AND toDate(date) <= {cur_end:Date}
+                  AND is_cancel = 0
+                GROUP BY nm_id, week
+                ORDER BY nm_id, week
+            """, parameters=params).result_rows
+
+            all_weeks: set[str] = set()
+            for row in weekly_rows:
+                nm_id = int(row[0])
+                vc = nm_to_vc.get(nm_id)
+                w = str(row[1])
+                all_weeks.add(w)
+                if vc and vc in weekly_by_vc:
+                    weekly_by_vc[vc].append(float(row[2]))
+
+            num_weeks = max(len(all_weeks), 1)
+            for vc in weekly_by_vc:
+                while len(weekly_by_vc[vc]) < num_weeks:
+                    weekly_by_vc[vc].append(0.0)
+        except Exception as e:
+            logger.warning("WB ABC/XYZ weekly data error: %s", e)
+
+        # ── 6. Build product list with NET profit ──
+        product_list = []
+        for vc, p in products.items():
+            sku = p["sku"]
+            revenue = round(p["revenue"])
+            commission = round(p["commission"])
+            logistics = round(p["logistics"])
+            storage = round(p["storage"])
+            acquiring = round(p["acquiring"])
+            penalties = round(p["penalties"])
+            ad_spend = round(p["ad_spend"])
+            cogs = round(p["cogs"])
+
+            profit = revenue - commission - logistics - storage - acquiring - penalties - ad_spend - cogs
+            mp_fees = commission + logistics + storage + acquiring + penalties
+
+            avg_price = round(revenue / p["orders"]) if p["orders"] > 0 else 0
+
+            product_list.append({
+                "sku": sku,
+                "offer_id": vc,
+                "name": nm_to_name.get(sku, ""),
+                "image_url": nm_to_image.get(sku, ""),
+                "revenue": revenue,
+                "profit": profit,
+                "orders": p["orders"],
+                "avg_price": avg_price,
+                "cost_price": round(cost_map.get(vc.lower(), 0)),
+                "commission": commission,
+                "logistics": logistics,
+                "storage": storage,
+                "acquiring": acquiring,
+                "mp_fees": mp_fees,
+                "ad_spend": ad_spend,
+                "cogs": cogs,
+                "margin_pct": round(profit / revenue * 100, 1) if revenue > 0 else 0,
+                "weekly_data": weekly_by_vc.get(vc, []),
+            })
+
+        # ── 7. Compute ABC ──
+        metric_key = "profit" if use_profit else "revenue"
+        product_list.sort(key=lambda p: p[metric_key], reverse=True)
+        total_metric = sum(max(p[metric_key], 0) for p in product_list)
+
+        cumulative = 0.0
+        for p in product_list:
+            share = (max(p[metric_key], 0) / total_metric * 100) if total_metric > 0 else 0
+            cumulative += share
+            p["abc_share"] = round(share, 1)
+            p["abc_cumulative"] = round(cumulative, 1)
+            p["abc_group"] = _abc_group(cumulative)
+
+        # ── 8. Compute XYZ ──
+        for p in product_list:
+            weekly = p.get("weekly_data", [])
+            if len(weekly) < 2:
+                p["xyz_cv"] = 0
+                p["xyz_group"] = "X"
+                continue
+            mean_val = statistics.mean(weekly)
+            if mean_val == 0:
+                p["xyz_cv"] = 100.0
+                p["xyz_group"] = "Z"
+                continue
+            stdev = statistics.stdev(weekly)
+            cv = round(stdev / mean_val * 100, 1)
+            p["xyz_cv"] = cv
+            p["xyz_group"] = _xyz_group(cv)
+
+        # ── 9. Summary & Matrix ──
+        summary: dict[str, dict] = {}
+        for g in ["A", "B", "C", "X", "Y", "Z"]:
+            summary[g] = {"count": 0, "revenue_share": 0}
+
+        matrix: dict[str, int] = {}
+        for a in ["A", "B", "C"]:
+            for x in ["X", "Y", "Z"]:
+                matrix[f"{a}{x}"] = 0
+
+        for p in product_list:
+            abc = p["abc_group"]
+            xyz = p["xyz_group"]
+            summary[abc]["count"] += 1
+            summary[abc]["revenue_share"] += p["abc_share"]
+            summary[xyz]["count"] += 1
+            matrix[f"{abc}{xyz}"] += 1
+
+        for g in summary.values():
+            g["revenue_share"] = round(g["revenue_share"], 1)
+
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "use_profit": use_profit,
+            "products": product_list,
+            "summary": summary,
+            "matrix": matrix,
+        }
+
+    except Exception as e:
+        logger.exception("WB ABC/XYZ error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка ABC/XYZ анализа WB: {e}",
+        )

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { fetchAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-xyz'
+import { fetchAbcXyz, fetchWbAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-xyz'
 import { useAppStore } from '@/stores/appStore'
 
 /* Sticky cell styles — must be opaque to hide content scrolling behind */
@@ -75,18 +75,23 @@ export default function AbcXyzPage() {
   const [useProfit, setUseProfit] = useState(false)
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
 
+  const isWb = currentShop?.marketplace === 'wildberries'
+  const isOzon = currentShop?.marketplace === 'ozon'
+
   const load = useCallback(async () => {
     if (!currentShop) return
+    if (!isOzon && !isWb) return
     setLoading(true)
     try {
-      const res = await fetchAbcXyz(currentShop.id, period, useProfit)
+      const apiFn = isWb ? fetchWbAbcXyz : fetchAbcXyz
+      const res = await apiFn(currentShop.id, period, useProfit)
       setData(res)
     } catch (e) {
       console.error('ABC/XYZ fetch error', e)
     } finally {
       setLoading(false)
     }
-  }, [currentShop, period, useProfit])
+  }, [currentShop, period, useProfit, isOzon, isWb])
 
   useEffect(() => { load() }, [load])
 
