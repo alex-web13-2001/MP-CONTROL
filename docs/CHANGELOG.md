@@ -187,3 +187,18 @@
 - Теперь корректные значения: views (рекл. показы), clicks (клики), atbs (корзины), orders (заказы), spend (расходы)
 - CTR = clicks/views, CR→корз. = atbs/clicks, CR→заказ = orders/atbs
 - Столбцы «Клики» и «CTR» отображаются для WB (ранее ошибочно скрывались)
+
+## 2026-02-28 — WB ABC/XYZ анализ
+
+### Backend
+- `GET /api/v1/sales/wb/abc-xyz` — полный ABC/XYZ анализ для товаров WB
+  - Revenue/costs: `fact_finances FINAL` (per vendor_code/nm_id)
+  - Ad spend: `fact_advert_stats_v3 FINAL` (per nm_id)
+  - COGS: `product_costs` (PG, per vendor_code)
+  - Product info: `dim_products` (PG, per nm_id)
+  - Weekly: `fact_orders_raw FINAL` для XYZ (per nm_id)
+  - Commission = revenue - payout (модель WB)
+
+### Frontend
+- `abc-xyz.ts`: добавлена `fetchWbAbcXyz()`
+- `AbcXyzPage.tsx`: авто-определение маркетплейса → вызов нужного API
