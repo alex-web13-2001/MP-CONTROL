@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ShoppingCart,
@@ -10,6 +10,7 @@ import {
   MapPin,
   TrendingDown,
   ChevronDown,
+  Check,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -21,7 +22,6 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  BarChart,
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -29,11 +29,13 @@ import { useAppStore } from '@/stores/appStore'
 import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 import {
   getOzonSalesApi,
+  getOzonProductDailyApi,
   type SalesResponse,
   type SalesDailyPoint,
   type SalesGeoItem,
   type SalesTopProduct,
   type SalesReturnReason,
+  type ProductDailyPoint,
 } from '@/api/sales'
 
 /* ═══════════════════════════════════════════════════════════
@@ -41,6 +43,12 @@ import {
    ═══════════════════════════════════════════════════════════ */
 
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+
+// 10 visually distinct product line colors
+const PRODUCT_COLORS = [
+  '#f97316', '#06b6d4', '#a855f7', '#f43f5e', '#14b8a6',
+  '#eab308', '#ec4899', '#3b82f6', '#84cc16', '#6366f1',
+]
 
 function formatMoney(value: number): string {
   return Math.round(value).toLocaleString('ru-RU') + ' ₽'
@@ -56,7 +64,7 @@ function formatChartDate(dateStr: string): string {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   KPI Card — fixed height, no optional subtitle variance
+   KPI Card — fixed height
    ═══════════════════════════════════════════════════════════ */
 
 function KpiCard({
@@ -121,13 +129,43 @@ function KpiCard({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Sales Chart
+   Sales Chart — with optional per-product overlay lines
    ═══════════════════════════════════════════════════════════ */
 
-function SalesChart({ data }: { data: SalesDailyPoint[] }) {
+interface SelectedProduct {
+  sku: number
+  name: string
+  color: string
+}
+
+function SalesChart({
+  data,
+  selectedProducts,
+  productDailyData,
+}: {
+  data: SalesDailyPoint[]
+  selectedProducts: SelectedProduct[]
+  productDailyData: Record<string, ProductDailyPoint[]>
+}) {
+  // Merge per-product revenue into daily data
+  const enrichedData = useMemo(() => {
+    if (selectedProducts.length === 0) return data
+
+    return data.map(point => {
+      const enriched: Record<string, any> = { ...point }
+      for (const sp of selectedProducts) {
+        const productData = productDailyData[String(sp.sku)]
+        const dayPoint = productData?.find(d => d.date === point.date)
+        enriched[`product_${sp.sku}_revenue`] = dayPoint?.revenue ?? 0
+        enriched[`product_${sp.sku}_orders`] = dayPoint?.orders ?? 0
+      }
+      return enriched
+    })
+  }, [data, selectedProducts, productDailyData])
+
   return (
     <ResponsiveContainer width="100%" height={340}>
-      <ComposedChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+      <ComposedChart data={enrichedData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} />
         <XAxis
           dataKey="date"
@@ -160,29 +198,41 @@ function SalesChart({ data }: { data: SalesDailyPoint[] }) {
             fontSize: 13,
           }}
           labelFormatter={formatChartDate}
-          formatter={(value: number, name: string) => [
-            name === 'revenue' ? formatMoney(value) : formatNumber(value),
-            name === 'revenue' ? 'Продажи' : name === 'orders' ? 'Заказы' : 'Возвраты',
-          ]}
+          formatter={(value: number, name: string) => {
+            if (name === 'revenue') return [formatMoney(value), 'Продажи (все)']
+            if (name === 'orders') return [formatNumber(value), 'Заказы (все)']
+            if (name === 'returns') return [formatNumber(value), 'Возвраты']
+            // Per-product lines
+            const sp = selectedProducts.find(p => name === `product_${p.sku}_revenue`)
+            if (sp) return [formatMoney(value), sp.name]
+            return [formatNumber(value), name]
+          }}
         />
         <Legend
-          formatter={(value: string) =>
-            value === 'orders' ? 'Заказы' : value === 'revenue' ? 'Продажи' : 'Возвраты'
-          }
+          formatter={(value: string) => {
+            if (value === 'orders') return 'Заказы'
+            if (value === 'revenue') return 'Продажи'
+            if (value === 'returns') return 'Возвраты'
+            const sp = selectedProducts.find(p => value === `product_${p.sku}_revenue`)
+            if (sp) return sp.name.length > 25 ? sp.name.slice(0, 23) + '…' : sp.name
+            return value
+          }}
         />
+        {/* Base bars & lines */}
         <Bar
           yAxisId="left"
           dataKey="orders"
           fill="hsl(var(--primary))"
           radius={[4, 4, 0, 0]}
-          opacity={0.85}
+          opacity={selectedProducts.length > 0 ? 0.3 : 0.85}
         />
         <Line
           yAxisId="right"
           type="monotone"
           dataKey="revenue"
           stroke="#10b981"
-          strokeWidth={2.5}
+          strokeWidth={selectedProducts.length > 0 ? 1.5 : 2.5}
+          strokeOpacity={selectedProducts.length > 0 ? 0.4 : 1}
           dot={false}
         />
         <Line
@@ -194,13 +244,27 @@ function SalesChart({ data }: { data: SalesDailyPoint[] }) {
           strokeDasharray="5 5"
           dot={false}
         />
+
+        {/* Per-product overlay lines */}
+        {selectedProducts.map((sp) => (
+          <Line
+            key={sp.sku}
+            yAxisId="right"
+            type="monotone"
+            dataKey={`product_${sp.sku}_revenue`}
+            stroke={sp.color}
+            strokeWidth={2.5}
+            dot={{ r: 3, fill: sp.color }}
+            activeDot={{ r: 5 }}
+          />
+        ))}
       </ComposedChart>
     </ResponsiveContainer>
   )
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Geography — full-width, collapsible, compact
+   Geography — full-width, collapsible
    ═══════════════════════════════════════════════════════════ */
 
 const GEO_COLLAPSED_COUNT = 5
@@ -281,10 +345,18 @@ function GeoSection({ data }: { data: SalesGeoItem[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Top Products Table
+   Top Products Table — with checkboxes for chart overlay
    ═══════════════════════════════════════════════════════════ */
 
-function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
+function TopProductsTable({
+  data,
+  selectedSkus,
+  onToggle,
+}: {
+  data: SalesTopProduct[]
+  selectedSkus: Set<number>
+  onToggle: (product: SalesTopProduct) => void
+}) {
   const [hoveredImg, setHoveredImg] = useState<{ url: string; x: number; y: number } | null>(null)
 
   return (
@@ -292,6 +364,9 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[hsl(var(--border))]">
+            <th className="px-2 py-2.5 w-[40px]">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">📊</span>
+            </th>
             <th className="px-3 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
             <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
             <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
@@ -300,53 +375,83 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
           </tr>
         </thead>
         <tbody>
-          {data.map((p) => (
-            <tr key={p.sku} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors">
-              <td className="px-3 py-2.5">
-                <div className="flex items-center gap-3">
-                  {p.image_url ? (
-                    <div
-                      className="relative"
-                      onMouseEnter={(e) => {
-                        const rect = (e.target as HTMLElement).getBoundingClientRect()
-                        setHoveredImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
-                      }}
-                      onMouseLeave={() => setHoveredImg(null)}
-                    >
-                      <img
-                        src={p.image_url}
-                        alt=""
-                        className="h-10 w-[30px] rounded object-cover bg-[hsl(var(--muted))]"
-                        loading="lazy"
-                      />
-                    </div>
-                  ) : (
-                    <div className="h-10 w-[30px] rounded bg-[hsl(var(--muted))] flex items-center justify-center">
-                      <ShoppingCart className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-medium truncate max-w-[280px]">{p.name || p.offer_id}</p>
-                    <p className="text-[11px] text-[hsl(var(--muted-foreground))] truncate">{p.offer_id}</p>
+          {data.map((p) => {
+            const isSelected = selectedSkus.has(p.sku)
+            return (
+              <tr
+                key={p.sku}
+                className={`border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors cursor-pointer ${
+                  isSelected ? 'bg-[hsl(var(--primary)/0.08)]' : ''
+                }`}
+                onClick={() => onToggle(p)}
+              >
+                <td className="px-2 py-2.5 text-center">
+                  <div className={`
+                    h-5 w-5 rounded border-2 flex items-center justify-center mx-auto transition-all
+                    ${isSelected
+                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]'
+                      : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary)/0.5)]'
+                    }
+                  `}>
+                    {isSelected && <Check className="h-3 w-3 text-white" />}
                   </div>
-                </div>
-              </td>
-              <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatNumber(p.orders)}</td>
-              <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatMoney(p.revenue)}</td>
-              <td className="px-3 py-2.5 text-right tabular-nums">{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
-              <td className="px-3 py-2.5 text-right tabular-nums">
-                {p.return_pct > 0 ? (
-                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                    p.return_pct > 10 ? 'bg-red-500/15 text-red-400' :
-                    p.return_pct > 5 ? 'bg-amber-500/15 text-amber-400' :
-                    'bg-emerald-500/15 text-emerald-400'
-                  }`}>
-                    {p.return_pct}%
-                  </span>
-                ) : '—'}
-              </td>
-            </tr>
-          ))}
+                </td>
+                <td className="px-3 py-2.5">
+                  <div className="flex items-center gap-3">
+                    {p.image_url ? (
+                      <div
+                        className="relative"
+                        onMouseEnter={(e) => {
+                          const rect = (e.target as HTMLElement).getBoundingClientRect()
+                          setHoveredImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
+                        }}
+                        onMouseLeave={() => setHoveredImg(null)}
+                      >
+                        <img
+                          src={p.image_url}
+                          alt=""
+                          className="h-10 w-[30px] rounded object-cover bg-[hsl(var(--muted))]"
+                          loading="lazy"
+                        />
+                      </div>
+                    ) : (
+                      <div className="h-10 w-[30px] rounded bg-[hsl(var(--muted))] flex items-center justify-center">
+                        <ShoppingCart className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
+                      </div>
+                    )}
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        {isSelected && (
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: PRODUCT_COLORS[
+                              data.filter(d => selectedSkus.has(d.sku)).findIndex(d => d.sku === p.sku) % PRODUCT_COLORS.length
+                            ] }}
+                          />
+                        )}
+                        <p className="text-[13px] font-medium truncate max-w-[260px]">{p.name || p.offer_id}</p>
+                      </div>
+                      <p className="text-[11px] text-[hsl(var(--muted-foreground))] truncate">{p.offer_id}</p>
+                    </div>
+                  </div>
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatNumber(p.orders)}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatMoney(p.revenue)}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {p.return_pct > 0 ? (
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      p.return_pct > 10 ? 'bg-red-500/15 text-red-400' :
+                      p.return_pct > 5 ? 'bg-amber-500/15 text-amber-400' :
+                      'bg-emerald-500/15 text-emerald-400'
+                    }`}>
+                      {p.return_pct}%
+                    </span>
+                  ) : '—'}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
 
@@ -364,7 +469,7 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Return Reasons — compact inline bars (no recharts)
+   Return Reasons — compact inline bars
    ═══════════════════════════════════════════════════════════ */
 
 function ReturnReasons({ data, total }: { data: SalesReturnReason[]; total: number }) {
@@ -435,6 +540,13 @@ export default function SalesPage() {
     dateRange: null,
   })
 
+  // Per-product chart overlay
+  const [selectedProducts, setSelectedProducts] = useState<SelectedProduct[]>([])
+  const [productDailyData, setProductDailyData] = useState<Record<string, ProductDailyPoint[]>>({})
+  const [productDailyLoading, setProductDailyLoading] = useState(false)
+
+  const selectedSkus = useMemo(() => new Set(selectedProducts.map(p => p.sku)), [selectedProducts])
+
   const fetchData = useCallback(async () => {
     if (!currentShop || !isOzon) return
     setLoading(true)
@@ -461,12 +573,67 @@ export default function SalesPage() {
 
   useEffect(() => {
     fetchData()
+    // Clear product selections when period changes
+    setSelectedProducts([])
+    setProductDailyData({})
   }, [fetchData])
 
   useEffect(() => {
     const interval = setInterval(fetchData, 120_000)
     return () => clearInterval(interval)
   }, [fetchData])
+
+  // Fetch per-product daily data when selection changes
+  useEffect(() => {
+    if (selectedProducts.length === 0 || !currentShop) {
+      setProductDailyData({})
+      return
+    }
+
+    const fetchProductDaily = async () => {
+      setProductDailyLoading(true)
+      try {
+        const params: any = {
+          shop_id: currentShop.id,
+          skus: selectedProducts.map(p => p.sku).join(','),
+        }
+        if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
+          const from = periodValue.dateRange.from
+          const to = periodValue.dateRange.to ?? from
+          const fmtDate = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+          params.date_from = fmtDate(from)
+          params.date_to = fmtDate(to)
+        } else {
+          params.period = periodValue.period
+        }
+        const result = await getOzonProductDailyApi(params)
+        setProductDailyData(result.products)
+      } catch {
+        // Silently fail — product overlay is non-critical
+      } finally {
+        setProductDailyLoading(false)
+      }
+    }
+
+    fetchProductDaily()
+  }, [selectedProducts, currentShop, periodValue])
+
+  const handleToggleProduct = useCallback((product: SalesTopProduct) => {
+    setSelectedProducts(prev => {
+      const exists = prev.find(p => p.sku === product.sku)
+      if (exists) {
+        return prev.filter(p => p.sku !== product.sku)
+      }
+      if (prev.length >= 10) return prev // Max 10
+      const usedColors = new Set(prev.map(p => p.color))
+      const nextColor = PRODUCT_COLORS.find(c => !usedColors.has(c)) || PRODUCT_COLORS[prev.length % PRODUCT_COLORS.length]
+      return [...prev, {
+        sku: product.sku,
+        name: product.name || product.offer_id,
+        color: nextColor,
+      }]
+    })
+  }, [])
 
   if (!currentShop) {
     return (
@@ -523,7 +690,7 @@ export default function SalesPage() {
       {/* ── Content ── */}
       {data && (
         <>
-          {/* ── KPI Cards — 3 cards, equal height ── */}
+          {/* ── KPI Cards ── */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <KpiCard
               title="Заказы"
@@ -559,29 +726,64 @@ export default function SalesPage() {
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base font-semibold">Динамика продаж</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base font-semibold">Динамика продаж</CardTitle>
+                  {selectedProducts.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      {productDailyLoading && (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin text-[hsl(var(--muted-foreground))]" />
+                      )}
+                      <button
+                        onClick={() => {
+                          setSelectedProducts([])
+                          setProductDailyData({})
+                        }}
+                        className="text-xs text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors px-2 py-1 rounded border border-[hsl(var(--border))]"
+                      >
+                        Сбросить ({selectedProducts.length})
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {selectedProducts.length > 0 && (
+                  <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
+                    Выбрано товаров: {selectedProducts.length} — их продажи отображены на графике
+                  </p>
+                )}
               </CardHeader>
               <CardContent>
-                <SalesChart data={data.daily} />
+                <SalesChart
+                  data={data.daily}
+                  selectedProducts={selectedProducts}
+                  productDailyData={productDailyData}
+                />
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* ── Top Products (full width) ── */}
+          {/* ── Top Products with checkboxes ── */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base font-semibold">Топ товаров по продажам</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base font-semibold">Топ товаров по продажам</CardTitle>
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                    Нажмите на товар чтобы вывести его на график
+                  </p>
+                </div>
               </CardHeader>
               <CardContent>
-                <TopProductsTable data={data.top_products} />
+                <TopProductsTable
+                  data={data.top_products}
+                  selectedSkus={selectedSkus}
+                  onToggle={handleToggleProduct}
+                />
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* ── Geography (full width, collapsible) + Returns side by side ── */}
+          {/* ── Geography + Returns ── */}
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-            {/* Geography — 2/3 width */}
             <motion.div
               className="xl:col-span-2"
               initial={{ opacity: 0, y: 20 }}
@@ -601,7 +803,6 @@ export default function SalesPage() {
               </Card>
             </motion.div>
 
-            {/* Returns — 1/3 width */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}

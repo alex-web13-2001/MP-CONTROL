@@ -364,3 +364,106 @@ async def get_ozon_sales(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки данных продаж: {e}",
         )
+
+
+# ══════════════════════════════════════════════════════════════
+# Per-Product Daily Dynamics
+# ══════════════════════════════════════════════════════════════
+
+
+@router.get("/ozon/product-daily")
+async def get_ozon_product_daily(
+    shop_id: int = Query(..., description="Shop ID"),
+    skus: str = Query(..., description="Comma-separated SKU list"),
+    period: int = Query(7, ge=1, le=366, description="Period in days"),
+    date_from: Optional[date] = Query(None, description="Custom range start"),
+    date_to: Optional[date] = Query(None, description="Custom range end"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Daily orders + revenue per product (by SKU list).
+    Used to overlay individual product lines on the sales chart.
+    """
+    # Verify shop ownership
+    result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "ozon",
+        )
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Ozon магазин не найден",
+        )
+
+    # Parse SKUs
+    try:
+        sku_list = [int(s.strip()) for s in skus.split(",") if s.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректный формат SKU",
+        )
+
+    if not sku_list or len(sku_list) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Укажите от 1 до 10 SKU",
+        )
+
+    cur_start, cur_end, _, _ = _parse_dates(period, date_from, date_to)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+
+        sku_csv = ",".join(str(s) for s in sku_list)
+        rows = ch.query(f"""
+            SELECT
+                sku,
+                toDate(addHours(in_process_at, 3)) AS dt,
+                count() AS orders,
+                sum(price * quantity) AS revenue
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND toDate(addHours(in_process_at, 3)) >= {{cur_start:Date}}
+              AND toDate(addHours(in_process_at, 3)) <= {{cur_end:Date}}
+              AND sku IN ({sku_csv})
+            GROUP BY sku, dt
+            ORDER BY sku, dt
+        """, parameters={
+            "shop_id": shop_id,
+            "cur_start": cur_start,
+            "cur_end": cur_end,
+        }).result_rows
+
+        # Group by SKU
+        products: dict[int, list] = {}
+        for row in rows:
+            sku = int(row[0])
+            if sku not in products:
+                products[sku] = []
+            products[sku].append({
+                "date": str(row[1]),
+                "orders": int(row[2]),
+                "revenue": round(float(row[3])),
+            })
+
+        return {
+            "shop_id": shop_id,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
+            "products": products,
+        }
+
+    except Exception as e:
+        logger.exception("Ozon product daily error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка загрузки динамики товаров: {e}",
+        )

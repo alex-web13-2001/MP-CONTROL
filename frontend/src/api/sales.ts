@@ -75,3 +75,29 @@ export async function getOzonSalesApi(params: {
   const { data } = await apiClient.get<SalesResponse>('/sales/ozon', { params })
   return data
 }
+
+// ── Per-product daily dynamics ───────────────────────────────
+
+export interface ProductDailyPoint {
+  date: string
+  orders: number
+  revenue: number
+}
+
+export interface ProductDailyResponse {
+  shop_id: number
+  date_from: string
+  date_to: string
+  products: Record<string, ProductDailyPoint[]>
+}
+
+export async function getOzonProductDailyApi(params: {
+  shop_id: number
+  skus: string
+  period?: number
+  date_from?: string
+  date_to?: string
+}): Promise<ProductDailyResponse> {
+  const { data } = await apiClient.get<ProductDailyResponse>('/sales/ozon/product-daily', { params })
+  return data
+}
