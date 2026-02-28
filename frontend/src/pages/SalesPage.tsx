@@ -380,7 +380,7 @@ function TopProductsTable({
           {hasAdData && (
             <tr className="border-b border-[hsl(var(--border)/0.15)]">
               <th colSpan={2}></th>
-              <th colSpan={4} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-1.5 tracking-wide uppercase">
+              <th colSpan={5} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-1.5 tracking-wide uppercase">
                 Продажи
               </th>
               <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
@@ -395,6 +395,7 @@ function TopProductsTable({
             <th className="px-3 py-2 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
             <th className={thCls}>Заказы</th>
             <th className={thCls}>Продажи</th>
+            <th className={thCls}>Цена</th>
             <th className={thCls}>Возвр.</th>
             <th className={thCls}>% возвр.</th>
             {hasAdData && (
@@ -482,6 +483,13 @@ function TopProductsTable({
                   <div className="flex flex-col items-end gap-0.5">
                     <span>{formatMoney(p.revenue)}</span>
                     <Delta value={p.revenue_delta} />
+                  </div>
+                </td>
+                {/* Avg Price */}
+                <td className={tdCls}>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <span>{formatMoney(p.avg_price)}</span>
+                    <Delta value={p.avg_price_delta} />
                   </div>
                 </td>
                 {/* Returns */}

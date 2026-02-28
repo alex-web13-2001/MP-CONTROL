@@ -253,7 +253,8 @@ async def get_ozon_sales(
                 any(offer_id) AS offer_id,
                 any(product_name) AS product_name,
                 count() AS orders,
-                sum(price * quantity) AS revenue
+                sum(price * quantity) AS revenue,
+                round(avg(price), 0) AS avg_price
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
@@ -311,9 +312,10 @@ async def get_ozon_sales(
         if sku_list:
             sku_str = ",".join(str(s) for s in sku_list)
 
-            # Previous orders + revenue
+            # Previous orders + revenue + avg_price
             prev_orders_rows = ch.query(f"""
-                SELECT sku, count() AS orders, sum(price * quantity) AS revenue
+                SELECT sku, count() AS orders, sum(price * quantity) AS revenue,
+                       round(avg(price), 0) AS avg_price
                 FROM mms_analytics.fact_ozon_orders FINAL
                 WHERE shop_id = {{shop_id:UInt32}}
                   AND toDate(addHours(in_process_at, 3)) >= {{prev_start:Date}}
@@ -325,6 +327,7 @@ async def get_ozon_sales(
                 prev_orders_by_sku[int(pr[0])] = {
                     "orders": int(pr[1]),
                     "revenue": round(float(pr[2])),
+                    "avg_price": round(float(pr[3])),
                 }
 
             # Previous returns
@@ -381,6 +384,7 @@ async def get_ozon_sales(
             sku = int(row[0])
             orders_count = int(row[3])
             revenue = round(float(row[4]))
+            avg_price = round(float(row[5]))
             ret_count = returns_by_sku.get(sku, 0)
             funnel = funnel_by_sku.get(sku, {})
             views = funnel.get("views", 0)
@@ -391,6 +395,7 @@ async def get_ozon_sales(
             prev = prev_orders_by_sku.get(sku, {})
             prev_orders = prev.get("orders", 0)
             prev_revenue = prev.get("revenue", 0)
+            prev_avg_price = prev.get("avg_price", 0)
             prev_ret = prev_returns_by_sku.get(sku, 0)
             prev_f = prev_funnel_by_sku.get(sku, {})
             prev_views = prev_f.get("views", 0)
@@ -414,11 +419,13 @@ async def get_ozon_sales(
                 "image_url": sku_to_image.get(sku, ""),
                 "orders": orders_count,
                 "revenue": revenue,
+                "avg_price": avg_price,
                 "returns": ret_count,
                 "return_pct": round(ret_count / orders_count * 100, 1) if orders_count > 0 else 0,
                 # Deltas (sales)
                 "orders_delta": _safe_delta(orders_count, prev_orders),
                 "revenue_delta": _safe_delta(revenue, prev_revenue),
+                "avg_price_delta": _safe_delta(avg_price, prev_avg_price),
                 # Ad funnel metrics
                 "ad_views": views,
                 "ad_clicks": clicks,

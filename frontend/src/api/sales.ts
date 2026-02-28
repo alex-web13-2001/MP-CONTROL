@@ -38,10 +38,12 @@ export interface SalesTopProduct {
   image_url: string
   orders: number
   revenue: number
+  avg_price: number
   returns: number
   return_pct: number
   orders_delta: number
   revenue_delta: number
+  avg_price_delta: number
   // Ad funnel
   ad_views: number
   ad_clicks: number
