@@ -21,6 +21,7 @@ interface PeriodSelectorProps {
   value: PeriodValue
   onChange: (v: PeriodValue) => void
   className?: string
+  popupAlign?: 'left' | 'right'
 }
 
 function fmt(d: Date) {
@@ -30,7 +31,7 @@ function isSameDay(a: Date, b: Date) {
   return a.toDateString() === b.toDateString()
 }
 
-export function PeriodSelector({ value, onChange, className }: PeriodSelectorProps) {
+export function PeriodSelector({ value, onChange, className, popupAlign = 'right' }: PeriodSelectorProps) {
   const [calOpen, setCalOpen] = useState(false)
   const [draft, setDraft] = useState<DateRange | undefined>(undefined)
   const popRef = useRef<HTMLDivElement>(null)
@@ -146,12 +147,12 @@ export function PeriodSelector({ value, onChange, className }: PeriodSelectorPro
       {/* ── Попап календаря ── */}
       {calOpen && (
         <div
-          className="absolute right-0 top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4"
-          style={{ animation: 'dpPop 160ms ease-out' }}
+          className={`absolute ${popupAlign === 'left' ? 'left-0' : 'right-0'} top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4`}
+          style={{ animation: 'dpPop 160ms ease-out', minWidth: 580 }}
         >
           <style>{`
             .rdp-root { --rdp-accent-color: hsl(var(--primary)); font-family: inherit; }
-            .rdp-months { display: flex; gap: 24px; }
+            .rdp-months { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 24px; }
             .rdp-month { }
             .rdp-month_caption { display: flex; align-items: center; justify-content: center; padding-bottom: 10px; }
             .rdp-caption_label { font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); text-transform: capitalize; }

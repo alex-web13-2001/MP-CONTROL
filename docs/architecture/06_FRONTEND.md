@@ -167,14 +167,15 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 Универсальный дашборд для Ozon и WB. Автоматически определяет маркетплейс по выбранному магазину.
 
-- Ozon → `GET /api/v1/dashboard/ozon?shop_id=X&period=7d`
-- WB → `GET /api/v1/dashboard/wb?shop_id=X&period=7d`
+- Ozon → `GET /api/v1/dashboard/ozon?shop_id=X&period=today`
+- WB → `GET /api/v1/dashboard/wb?shop_id=X&period=today`
 - Auto-refresh каждые 2 мин.
+- **Период по умолчанию:** `today` (ранее: `7d`)
 
 **6 KPI-карточек** (Framer Motion анимация, delta к предыдущему периоду):
 
 - Заказы (orders_count)
-- Выручка (revenue + avg_check)
+- Продажи (revenue + avg_check) — сумма заказов × цена, не выручка после возвратов
 - Показы рекламы (views)
 - Клики рекламы (clicks)
 - Расход рекламы (ad_spend, invertDelta)
@@ -182,14 +183,14 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **Компоненты:**
 
-| Компонент           | Описание                                                                    |
-| ------------------- | --------------------------------------------------------------------------- |
-| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent                    |
-| `PeriodSelector`    | Сегодня / 7д / 30д                                                          |
-| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y, Legend)                  |
-| `AdsChart`          | ComposedChart рекламной аналитики: 8 метрик, toggle chips, 3 оси Y          |
-| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото 3:4, hover preview, артикул |
-| `DashboardSkeleton` | Skeleton loader                                                             |
+| Компонент           | Описание                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------ |
+| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent                             |
+| `PeriodSelector`    | Сегодня / 7д / 30д + календарь произвольного диапазона (2 месяца, `popupAlign` проп) |
+| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y, Legend)                           |
+| `AdsChart`          | ComposedChart рекламной аналитики: 8 метрик, toggle chips, 3 оси Y                   |
+| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото 3:4, hover preview, артикул          |
+| `DashboardSkeleton` | Skeleton loader                                                                      |
 
 **Рекламная аналитика (AdsChart) — метрики:**
 
@@ -371,4 +372,15 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
   - **Waterfall:** разделительные линии перед подытогом и результатом
   - **KPI:** «Услуги МП» → «Расходы МП» = operating only (без комиссии), % от перечисления
   - **KPI:** «Себестоимость» — добавлен subtitle `% от выручки`
-  - **BREAKDOWN_ITEMS:** типизация `type: 'revenue' | 'expense' | 'subtotal' | 'result'`
+
+### 2026-02-27
+
+- **FinancesPage (Ozon):** В `ProductFinanceTable` вместо технических идентификаторов (например, 1С кодов для FBS) теперь выводится полное название товара Ozon из базы (`name`). Технический артикул отображается серым цветом под ним.
+- **`DateRangePicker.tsx`:** Добавлен проп `popupAlign: 'left' | 'right'` (default `'right'`). Решает проблему обрезки календаря на страницах, где кнопка слева.
+- **`DateRangePicker.tsx`:** CSS `.rdp-months`: явный `flex-direction: row; flex-wrap: nowrap` + `minWidth: 580px` — гарантирует 2 месяца рядом (ранее стакались вертикально).
+- **`ProductsPage.tsx`:** `PeriodSelector` получает `popupAlign="left"` — календарь открывается вправо от кнопки.
+
+### 2026-02-28
+
+- **`DashboardPage.tsx`:** KPI-карточка «Выручка» переименована в «Продажи» (там отображается сумма заказов, не выручка после возвратов). Переименовано во всех 5 местах: KPI, тултип, легенда, таблица топ-товаров.
+- **`DashboardPage.tsx`:** Период по умолчанию изменён с `'7d'` на `'today'`.

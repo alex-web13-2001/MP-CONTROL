@@ -183,10 +183,11 @@ class WBReportParser:
         acceptance_fee = self._safe_float(row.get("acceptance", 0)) # 'acceptance' is often the field name
         bonus_amount = self._safe_float(row.get("bonus", 0)) # 'bonus_type_name'? No, monetary bonus.
         
-        # Logistics from 'delivery_rub'
+        # Logistics from 'delivery_rub' only
+        # NOTE: rebill_logistic_cost is "Возмещение издержек по перевозке" — a SEPARATE line
+        # in WB Admin, NOT part of "Стоимость логистики" (which is delivery_rub only)
         logistics_base = self._safe_float(row.get("delivery_rub", 0))
-        rebill_logistic = self._safe_float(row.get("rebill_logistic_cost", 0))
-        logistics_total = logistics_base + rebill_logistic
+        logistics_total = logistics_base
         
         # Penalties + deductions (штрафы + удержания WB Продвижение)
         penalty_total = abs(self._safe_float(row.get("penalty", 0)))

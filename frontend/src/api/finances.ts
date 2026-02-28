@@ -12,6 +12,8 @@ export interface FinancesKpi {
   payout_delta: number
   mp_fees: number
   mp_fees_delta: number
+  operating: number
+  operating_delta: number
   ad_spend: number
   ad_spend_delta: number
   cogs: number
@@ -33,6 +35,7 @@ export interface FinancesBreakdown {
   refunds: number
   penalties: number
   compensation: number
+  operating: number
   cogs: number
   profit: number
 }
@@ -42,6 +45,7 @@ export interface FinancesDailyPoint {
   revenue: number
   payout: number
   mp_fees: number
+  operating: number
   ad_spend: number
   cogs: number
   orders: number
@@ -94,6 +98,7 @@ export async function getWbFinancesApi(params: {
 
 export interface ProductFinanceItem {
   vendor_code: string
+  name?: string
   nm_id?: number
   current: Record<string, number>
   previous: Record<string, number>

@@ -166,15 +166,14 @@ async def get_ozon_dashboard(
             FROM (
                 SELECT
                     CASE
-                        WHEN toDate(in_process_at) >= {cur_start:Date} AND toDate(in_process_at) <= {cur_end:Date} THEN 'current'
-                        WHEN toDate(in_process_at) >= {prev_start:Date} AND toDate(in_process_at) <= {prev_end:Date} THEN 'previous'
+                        WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
                     END AS period,
                     price, quantity
                 FROM mms_analytics.fact_ozon_orders FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(in_process_at) >= {prev_start:Date}
-                  AND toDate(in_process_at) <= {cur_end:Date}
-                  AND status NOT IN ('cancelled')
+                  AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
             )
             WHERE period != ''
             GROUP BY period
@@ -241,14 +240,13 @@ async def get_ozon_dashboard(
         chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
         sales_daily = ch.query("""
             SELECT
-                toDate(in_process_at) AS day,
+                toDate(addHours(in_process_at, 3)) AS day,
                 count() AS orders_count,
                 sum(price * quantity) AS revenue
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(in_process_at) >= {start:Date}
-              AND toDate(in_process_at) <= {end:Date}
-              AND status NOT IN ('cancelled')
+              AND toDate(addHours(in_process_at, 3)) >= {start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {end:Date}
             GROUP BY day
             ORDER BY day
         """, parameters={
@@ -275,9 +273,8 @@ async def get_ozon_dashboard(
                         sum(price * quantity) AS revenue
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(in_process_at) >= {cur_start:Date}
-                      AND toDate(in_process_at) <= {cur_end:Date}
-                      AND status NOT IN ('cancelled')
+                      AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+                      AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
                       AND sku > 0
                     GROUP BY sku
                 ),
@@ -287,9 +284,8 @@ async def get_ozon_dashboard(
                         count() AS orders_count
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(in_process_at) >= {prev_start:Date}
-                      AND toDate(in_process_at) <= {prev_end:Date}
-                      AND status NOT IN ('cancelled')
+                      AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
+                      AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date}
                       AND sku > 0
                     GROUP BY sku
                 ),
@@ -415,13 +411,12 @@ async def get_ozon_dashboard(
             ),
             daily_orders AS (
                 SELECT
-                    toDate(in_process_at) AS day,
+                    toDate(addHours(in_process_at, 3)) AS day,
                     sum(price * quantity) AS total_revenue
                 FROM mms_analytics.fact_ozon_orders FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(in_process_at) >= {start:Date}
-                  AND toDate(in_process_at) <= {end:Date}
-                  AND status NOT IN ('cancelled')
+                  AND toDate(addHours(in_process_at, 3)) >= {start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {end:Date}
                 GROUP BY day
             )
             SELECT
@@ -554,15 +549,14 @@ async def get_wb_dashboard(
             FROM (
                 SELECT
                     CASE
-                        WHEN toDate(date) >= {cur_start:Date} AND toDate(date) <= {cur_end:Date} THEN 'current'
-                        WHEN toDate(date) >= {prev_start:Date} AND toDate(date) <= {prev_end:Date} THEN 'previous'
+                        WHEN toDate(addHours(date, 3)) >= {cur_start:Date} AND toDate(addHours(date, 3)) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} THEN 'previous'
                     END AS period,
                     price_with_disc
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) >= {prev_start:Date}
-                  AND toDate(date) <= {cur_end:Date}
-                  AND is_cancel = 0
+                  AND toDate(addHours(date, 3)) >= {prev_start:Date}
+                  AND toDate(addHours(date, 3)) <= {cur_end:Date}
             )
             WHERE period != ''
             GROUP BY period
@@ -630,14 +624,13 @@ async def get_wb_dashboard(
         chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
         sales_daily = ch.query("""
             SELECT
-                toDate(date) AS day,
+                toDate(addHours(date, 3)) AS day,
                 count() AS orders_count,
                 sum(price_with_disc) AS revenue
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {start:Date}
-              AND toDate(date) <= {end:Date}
-              AND is_cancel = 0
+              AND toDate(addHours(date, 3)) >= {start:Date}
+              AND toDate(addHours(date, 3)) <= {end:Date}
             GROUP BY day
             ORDER BY day
         """, parameters={
@@ -672,13 +665,12 @@ async def get_wb_dashboard(
             ),
             daily_orders AS (
                 SELECT
-                    toDate(date) AS day,
+                    toDate(addHours(date, 3)) AS day,
                     sum(price_with_disc) AS total_revenue
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) >= {start:Date}
-                  AND toDate(date) <= {end:Date}
-                  AND is_cancel = 0
+                  AND toDate(addHours(date, 3)) >= {start:Date}
+                  AND toDate(addHours(date, 3)) <= {end:Date}
                 GROUP BY day
             )
             SELECT
@@ -730,9 +722,8 @@ async def get_wb_dashboard(
                         sum(price_with_disc) AS revenue
                     FROM mms_analytics.fact_orders_raw FINAL
                     WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(date) >= {cur_start:Date}
-                      AND toDate(date) <= {cur_end:Date}
-                      AND is_cancel = 0
+                      AND toDate(addHours(date, 3)) >= {cur_start:Date}
+                      AND toDate(addHours(date, 3)) <= {cur_end:Date}
                     GROUP BY nm_id, supplier_article
                 ),
                 orders_prev AS (
@@ -741,9 +732,8 @@ async def get_wb_dashboard(
                         count() AS orders_count
                     FROM mms_analytics.fact_orders_raw FINAL
                     WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(date) >= {prev_start:Date}
-                      AND toDate(date) <= {prev_end:Date}
-                      AND is_cancel = 0
+                      AND toDate(addHours(date, 3)) >= {prev_start:Date}
+                      AND toDate(addHours(date, 3)) <= {prev_end:Date}
                     GROUP BY nm_id
                 ),
                 latest_stocks AS (

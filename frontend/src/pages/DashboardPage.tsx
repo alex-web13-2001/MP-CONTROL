@@ -267,14 +267,14 @@ function SalesChart({ data }: { data: DashboardResponse['charts']['sales_daily']
           }}
           formatter={(value: number, name: string) => [
             name === 'revenue' ? formatMoney(value) : formatNumber(value),
-            name === 'revenue' ? 'Выручка' : 'Заказы',
+            name === 'revenue' ? 'Продажи' : 'Заказы',
           ]}
           labelFormatter={formatTooltipDate}
         />
         <Legend
           verticalAlign="top"
           height={30}
-          formatter={(value: string) => value === 'orders' ? 'Заказы' : value === 'revenue' ? 'Выручка' : value}
+          formatter={(value: string) => value === 'orders' ? 'Заказы' : value === 'revenue' ? 'Продажи' : value}
           wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
         />
         <Bar yAxisId="left" dataKey="orders" fill="url(#barGrad)" radius={[4, 4, 0, 0]} barSize={20} />
@@ -678,7 +678,7 @@ function TopProductsTable({ products }: { products: DashboardResponse['top_produ
                 <tr className="border-b border-[hsl(var(--border)/0.5)]">
                   <th className="px-5 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
                   <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Выручка</th>
+                  <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
                   <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Δ</th>
                   <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">FBO</th>
                   <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">FBS</th>
@@ -799,7 +799,7 @@ function DashboardSkeleton() {
 
 export default function DashboardPage() {
   const currentShop = useAppStore((s) => s.currentShop)
-  const [period, setPeriod] = useState('7d')
+  const [period, setPeriod] = useState('today')
   const [data, setData] = useState<DashboardResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -898,7 +898,7 @@ export default function DashboardPage() {
       accent: '#6366f1',
     },
     {
-      title: 'Выручка',
+      title: 'Продажи',
       value: formatMoney(kpi.revenue),
       subtitle: `ø${formatMoney(kpi.avg_check)}`,
       delta: kpi.revenue_delta,

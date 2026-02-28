@@ -76,79 +76,20 @@ async def get_ozon_finances(
     d_prev_end = d_start - timedelta(days=1)
 
     # ══════════════════════════════════════════════════════
-    # 1. ORDERS: revenue (price × qty) current + prev period
-    #    Using sumIf to split cur/prev entirely in SQL
-    #    toDate(order_date) because order_date is DateTime
-    # ══════════════════════════════════════════════════════
-    revenue_cur = 0.0
-    revenue_prev = 0.0
-    orders_cur = 0
-    orders_prev = 0
-
-    try:
-        orders_totals = ch.query("""
-            SELECT
-                sumIf(price * quantity, toDate(order_date) >= {d_start:Date} AND toDate(order_date) <= {d_end:Date}) AS rev_cur,
-                sumIf(quantity, toDate(order_date) >= {d_start:Date} AND toDate(order_date) <= {d_end:Date}) AS ord_cur,
-                sumIf(price * quantity, toDate(order_date) >= {d_prev_start:Date} AND toDate(order_date) <= {d_prev_end:Date}) AS rev_prev,
-                sumIf(quantity, toDate(order_date) >= {d_prev_start:Date} AND toDate(order_date) <= {d_prev_end:Date}) AS ord_prev
-            FROM mms_analytics.fact_ozon_orders FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(order_date) >= {d_prev_start:Date}
-              AND toDate(order_date) <= {d_end:Date}
-              AND status NOT IN ('cancelled', 'canceled')
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
-        })
-        if orders_totals.result_rows:
-            r = orders_totals.result_rows[0]
-            revenue_cur = float(r[0] or 0)
-            orders_cur = int(r[1] or 0)
-            revenue_prev = float(r[2] or 0)
-            orders_prev = int(r[3] or 0)
-    except Exception as e:
-        logger.warning("CH orders totals query failed: %s", e)
-
-    # Daily orders for chart
-    orders_daily = {}
-    try:
-        orders_daily_result = ch.query("""
-            SELECT
-                toDate(order_date) AS dt,
-                sum(price * quantity) AS revenue,
-                sum(quantity) AS orders_count
-            FROM mms_analytics.fact_ozon_orders FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(order_date) >= {d_start:Date}
-              AND toDate(order_date) <= {d_end:Date}
-              AND status NOT IN ('cancelled', 'canceled')
-            GROUP BY dt
-            ORDER BY dt
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-        })
-        for r in orders_daily_result.result_rows:
-            orders_daily[str(r[0])] = {"revenue": float(r[1] or 0), "orders": int(r[2] or 0)}
-    except Exception as e:
-        logger.warning("CH orders daily query failed: %s", e)
-
-    # ══════════════════════════════════════════════════════
-    # 2. TRANSACTIONS — using Ozon's built-in detail fields
+    # 1. TRANSACTIONS — using Ozon's built-in detail fields
     #
-    #  Revenue transactions have per-order detail:
+    #  Revenue transactions have per-item detail (category = 'Revenue'):
     #    accruals_for_sale  = gross sale amount (= Excel "Σ Продажи")
     #    sale_commission    = Ozon commission (negative)
-    #    services_total     = per-order logistics + services (negative)
+    #    services_total     = per-item logistics + services (negative)
     #    amount             = accruals + commission + services (net)
     #
     #  Expense categories (Logistics sku=0, Storage, Acquiring, etc.)
     #    → bulk charges NOT embedded in Revenue per-order data
     #
-    #  P&L formula:
+    #  P&L formula (Transaction-based):
     #    revenue      = accruals_for_sale (from Revenue txns)
+    #    orders       = count() of Revenue txns
     #    commission   = |sale_commission|
     #    services     = |services_total| (per-order logistics)
     #    bulk_charges = |Logistics| + |Storage| + |Acquiring| + |Refund| + ...
@@ -158,8 +99,10 @@ async def get_ozon_finances(
     # ══════════════════════════════════════════════════════
 
     # Revenue transaction fields
-    accruals_cur = 0.0     # gross sale amount
-    accruals_prev = 0.0
+    revenue_cur = 0.0      # sum(accruals_for_sale)
+    revenue_prev = 0.0
+    orders_cur = 0         # count() of Revenue txns
+    orders_prev = 0
     commission_cur = 0.0   # |sale_commission|
     commission_prev = 0.0
     services_cur = 0.0     # |services_total| from Revenue
@@ -175,6 +118,7 @@ async def get_ozon_finances(
         "refunds": 0.0,
         "penalties": 0.0,
         "compensation": 0.0,
+        "marketing": 0.0,
         "other": 0.0,
     }
     bulk_prev = {
@@ -184,6 +128,7 @@ async def get_ozon_finances(
         "refunds": 0.0,
         "penalties": 0.0,
         "compensation": 0.0,
+        "marketing": 0.0,
         "other": 0.0,
     }
     txn_daily = {}
@@ -195,10 +140,11 @@ async def get_ozon_finances(
         "Refund": "refunds",
         "Penalty": "penalties",
         "Compensation": "compensation",
+        "Marketing": "marketing",
     }
 
     try:
-        # 2a. Revenue transaction detail + total payout
+        # 1a. Revenue transaction detail + total payout
         txn_totals = ch.query("""
             SELECT
                 sumIf(accruals_for_sale,
@@ -224,7 +170,13 @@ async def get_ozon_finances(
                     ) AS pay_cur,
                 sumIf(amount,
                     toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
-                    ) AS pay_prev
+                    ) AS pay_prev,
+                countIf(
+                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
+                    AND category = 'Revenue') AS ord_cur,
+                countIf(
+                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
+                    AND category = 'Revenue') AS ord_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_prev_start:Date}
@@ -236,16 +188,42 @@ async def get_ozon_finances(
         })
         if txn_totals.result_rows:
             r = txn_totals.result_rows[0]
-            accruals_cur = float(r[0] or 0)
-            accruals_prev = float(r[1] or 0)
+            revenue_cur = float(r[0] or 0)
+            revenue_prev = float(r[1] or 0)
             commission_cur = abs(float(r[2] or 0))
             commission_prev = abs(float(r[3] or 0))
             services_cur = abs(float(r[4] or 0))
             services_prev = abs(float(r[5] or 0))
             payout_cur = float(r[6] or 0)
             payout_prev = float(r[7] or 0)
+            orders_cur = int(r[8] or 0)
+            orders_prev = int(r[9] or 0)
     except Exception as e:
         logger.warning("CH txn totals query failed: %s", e)
+
+    # Daily orders & revenue for chart
+    orders_daily = {}
+    try:
+        orders_daily_result = ch.query("""
+            SELECT
+                toDate(operation_date) AS dt,
+                sum(accruals_for_sale) AS revenue,
+                count() AS orders_count
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(operation_date) >= {d_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+              AND category = 'Revenue'
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+        })
+        for r in orders_daily_result.result_rows:
+            orders_daily[str(r[0])] = {"revenue": float(r[1] or 0), "orders": int(r[2] or 0)}
+    except Exception as e:
+        logger.warning("CH orders daily query failed: %s", e)
 
     try:
         # 2b. Bulk expense categories (Logistics sku=0, Storage, Acquiring, etc.)
@@ -258,7 +236,7 @@ async def get_ozon_finances(
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_prev_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
-              AND category NOT IN ('Revenue', 'Marketing')
+              AND category NOT IN ('Revenue')
             GROUP BY category
         """, parameters={
             "shop_id": shop_id,
@@ -286,7 +264,6 @@ async def get_ozon_finances(
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
-              AND category != 'Marketing'
             GROUP BY dt
             ORDER BY dt
         """, parameters={
@@ -298,49 +275,30 @@ async def get_ozon_finances(
         logger.warning("CH txn daily query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 3. ADS: ad_spend current + prev + daily
-    #    fact_ozon_ad_daily.dt is Date, so no toDate needed
+    # 3. ADS: taken directly from transactions (Marketing) to match balance
     # ══════════════════════════════════════════════════════
-    ad_spend_cur = 0.0
-    ad_spend_prev = 0.0
+    ad_spend_cur = abs(bulk_cur.get("marketing", 0))
+    ad_spend_prev = abs(bulk_prev.get("marketing", 0))
     ads_daily = {}
 
     try:
-        ads_totals = ch.query("""
-            SELECT
-                sumIf(money_spent, dt >= {d_start:Date} AND dt <= {d_end:Date}) AS ads_cur,
-                sumIf(money_spent, dt >= {d_prev_start:Date} AND dt <= {d_prev_end:Date}) AS ads_prev
-            FROM mms_analytics.fact_ozon_ad_daily FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {d_prev_start:Date}
-              AND dt <= {d_end:Date}
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
-        })
-        if ads_totals.result_rows:
-            ad_spend_cur = float(ads_totals.result_rows[0][0] or 0)
-            ad_spend_prev = float(ads_totals.result_rows[0][1] or 0)
-    except Exception as e:
-        logger.warning("CH ads totals query failed: %s", e)
-
-    try:
+        # Get daily ad spend from transactions for the chart
         ads_daily_result = ch.query("""
-            SELECT dt, sum(money_spent) AS ad_spend
-            FROM mms_analytics.fact_ozon_ad_daily FINAL
+            SELECT toDate(operation_date) AS dt, sum(amount) AS ad_spend
+            FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {d_start:Date}
-              AND dt <= {d_end:Date}
+              AND toDate(operation_date) >= {d_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+              AND category = 'Marketing'
             GROUP BY dt
             ORDER BY dt
         """, parameters={
             "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
         })
         for r in ads_daily_result.result_rows:
-            ads_daily[str(r[0])] = float(r[1] or 0)
+            ads_daily[str(r[0])] = abs(float(r[1] or 0))
     except Exception as e:
-        logger.warning("CH ads daily query failed: %s", e)
+        logger.warning("CH ads daily from txn query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 4. COGS: cost_price × qty from Revenue TRANSACTIONS
@@ -426,40 +384,40 @@ async def get_ozon_finances(
     # revenue      = accruals_for_sale (gross sale amount from txn)
     # commission   = |sale_commission| (from Revenue txns)
     # services     = |services_total| (per-order logistics+services)
-    # bulk_charges = |Logistics| + |Storage| + |Acquiring| + ...
+    # bulk_charges = |Logistics| + |Storage| + |Acquiring| + |Refunds| + |Penalties| + |Compensation| + |Other| (excluding Marketing)
     # mp_fees      = commission + services + bulk_charges
-    # payout       = revenue - mp_fees (before ads & COGS)
-    # profit       = revenue - mp_fees - ads(ad_daily) - cogs
+    # payout       = sum of ALL txn amounts including Marketing (what Ozon actually transfers)
+    # operating    = services + bulk_charges (for frontend to display as Расходы МП directly)
+    # profit       = revenue - commission - operating - ad_spend - cogs
     # ══════════════════════════════════════════════════════
-    # Use accruals_for_sale as revenue (= Excel "Σ Продажи")
-    revenue_cur = accruals_cur if accruals_cur > 0 else revenue_cur
-    revenue_prev = accruals_prev if accruals_prev > 0 else revenue_prev
 
-    # Bulk charges (negative in CH → abs)
-    bulk_charges_cur = sum(abs(v) for v in bulk_cur.values())
-    bulk_charges_prev = sum(abs(v) for v in bulk_prev.values())
+    # Bulk charges (excluding Marketing which is ads)
+    bulk_charges_cur = sum(abs(v) for k, v in bulk_cur.items() if k != "marketing")
+    bulk_charges_prev = sum(abs(v) for k, v in bulk_prev.items() if k != "marketing")
 
     # Total MP fees = commission + services + bulk
     mp_fees_cur = commission_cur + services_cur + bulk_charges_cur
     mp_fees_prev = commission_prev + services_prev + bulk_charges_prev
+    
+    # Operating expenses (everything except commission and ads)
+    operating_cur = services_cur + bulk_charges_cur
+    operating_prev = services_prev + bulk_charges_prev
 
-    # Payout = revenue - mp_fees (what Ozon transfers before ads & COGS)
-    payout_cur = revenue_cur - mp_fees_cur
-    payout_prev = revenue_prev - mp_fees_prev
-
-    # Profit
-    profit_cur = payout_cur - ad_spend_cur - cogs_cur
-    profit_prev = payout_prev - ad_spend_prev - cogs_prev
+    # Profit (based on revenue, subtracting all expenses)
+    profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
+    profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
     kpi = {
         "revenue": round(revenue_cur, 2),
         "revenue_delta": _safe_delta(revenue_cur, revenue_prev),
-        "payout": round(payout_cur, 2),
+        "payout": round(payout_cur, 2),  # This is the exact sum of transactions
         "payout_delta": _safe_delta(payout_cur, payout_prev),
         "mp_fees": round(mp_fees_cur, 2),
         "mp_fees_delta": _safe_delta(mp_fees_cur, mp_fees_prev),
+        "operating": round(operating_cur, 2),
+        "operating_delta": _safe_delta(operating_cur, operating_prev),
         "ad_spend": round(ad_spend_cur, 2),
         "ad_spend_delta": _safe_delta(ad_spend_cur, ad_spend_prev),
         "cogs": round(cogs_cur, 2),
@@ -500,14 +458,10 @@ async def get_ozon_finances(
         txn_d = txn_daily.get(ds, 0)  # sum(txn excl Marketing) for day
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        # mp_fees = rev - txn_d (since txn_d = rev_txn_net + expenses)
-        # payout = rev - mp_fees = txn_d + (rev - rev) approximately
-        # Simpler: use accruals-based approach for daily is complex,
-        # so just derive: payout_d = txn_d, mp_d = rev - txn_d
-        # NOTE: txn_d already excludes Marketing
+        # mp_d is operating + commission (mp_fees)
+        mp_d = max(0, rev - txn_d - ads_d) if rev > 0 else 0
         payout_d = txn_d
-        mp_d = max(0, rev - txn_d) if rev > 0 else 0
-        profit_d = payout_d - ads_d - cogs_d
+        profit_d = rev - mp_d - ads_d - cogs_d
 
         daily_raw.append({
             "date": ds,
@@ -621,7 +575,7 @@ async def get_wb_finances(
       - Revenue:    retail_amount   (operation_type = 'Продажа')
       - Payout:     payout_amount   (ppvz_for_pay)
       - Commission: commission_amount (ppvz_sales_commission)
-      - Logistics:  logistics_total (delivery_rub + rebill_logistic_cost)
+      - Logistics:  wb_delivery_rub (delivery_rub only, without rebill_logistic_cost)
       - Storage:    storage_fee
       - Acquiring:  wb_acquiring    (acquiring_fee)
       - Penalties:  penalty_total
@@ -689,27 +643,25 @@ async def get_wb_finances(
     try:
         fin_totals = ch.query("""
             SELECT
-                -- Revenue = retail_price_withdisc_rub (розничная цена = что платит покупатель)
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS rev_cur,
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS rev_prev,
+                -- Revenue = retail_price_withdisc_rub (продажи минус возвраты)
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date})
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS rev_cur,
+                
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date})
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS rev_prev,
 
                 -- Payout = ppvz_for_pay (к перечислению продавцу)
-                sumIf(payout_amount,
-                    operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS pay_cur,
-                sumIf(payout_amount,
-                    operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS pay_prev,
+                sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date})
+                 - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS pay_cur,
+                 
+                sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date})
+                 - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS pay_prev,
 
-                -- Logistics (all operation types)
-                sumIf(logistics_total,
+                -- Logistics (delivery_rub only, NOT rebill_logistic_cost)
+                sumIf(wb_delivery_rub,
                     event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS log_cur,
-                sumIf(logistics_total,
+                sumIf(wb_delivery_rub,
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS log_prev,
 
@@ -756,21 +708,12 @@ async def get_wb_finances(
                 ) AS ded_prev,
 
                 -- Returns
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                    operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS ret_cur,
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                    operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS ret_prev,
-
-                -- Orders count (quantity from Продажа with positive qty)
-                sumIf(quantity,
-                    operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS ord_cur,
-                sumIf(quantity,
-                    operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS ord_prev
-
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS returns_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS returns_prev,
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS orders_cur,
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0 AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS orders_prev,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS total_deductions_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS total_deductions_prev
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
@@ -803,7 +746,10 @@ async def get_wb_finances(
             returns_prev = abs(float(r[17] or 0))
             orders_cur = int(r[18] or 0)
             orders_prev = int(r[19] or 0)
-            # Commission = Revenue - Payout (includes SPP discount + WB commission)
+            total_deductions_cur = abs(float(r[20] or 0))
+            total_deductions_prev = abs(float(r[21] or 0))
+
+            # Commission = Revenue - Payout (includes SPP discount + WB commission) + Acquiring
             commission_cur = max(revenue_cur - payout_cur, 0)
             commission_prev = max(revenue_prev - payout_prev, 0)
     except Exception as e:
@@ -817,14 +763,16 @@ async def get_wb_finances(
         daily_result = ch.query("""
             SELECT
                 event_date AS dt,
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа') AS revenue,
-                sumIf(payout_amount, operation_type = 'Продажа') AS payout,
-                sum(logistics_total) AS logistics,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа') 
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS revenue,
+                sumIf(payout_amount, operation_type = 'Продажа') - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                sum(wb_delivery_rub) AS logistics,
                 sum(storage_fee) AS storage,
                 sum(penalty_total) AS penalties,
                 sum(wb_acquiring) AS acquiring,
                 sum(acceptance_fee) AS acceptance,
                 sumIf(JSONExtractFloat(raw_payload, 'deduction'), positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0) AS deductions,
+                sum(JSONExtractFloat(raw_payload, 'deduction')) AS total_deductions,
                 sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS orders,
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS returns
             FROM mms_analytics.fact_finances FINAL
@@ -850,8 +798,9 @@ async def get_wb_finances(
                 "acquiring": abs(float(r[6] or 0)),
                 "acceptance": abs(float(r[7] or 0)),
                 "deductions": abs(float(r[8] or 0)),
-                "orders": int(r[9] or 0),
-                "returns": abs(float(r[10] or 0)),
+                "total_deductions": abs(float(r[9] or 0)),
+                "orders": int(r[10] or 0),
+                "returns": abs(float(r[11] or 0)),
             }
     except Exception as e:
         logger.warning("CH WB daily query failed: %s", e)
@@ -923,12 +872,10 @@ async def get_wb_finances(
                 SELECT
                     event_date AS dt,
                     vendor_code AS art,
-                    sum(quantity) AS qty
+                    sumIf(quantity, operation_type = 'Продажа') - sumIf(quantity, operation_type = 'Возврат') AS qty
                 FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND marketplace = 1
-                  AND operation_type = 'Продажа'
-                  AND quantity > 0
                   AND event_date >= {d_prev_start:Date}
                   AND event_date <= {d_end:Date}
                 GROUP BY dt, art
@@ -963,24 +910,32 @@ async def get_wb_finances(
     #
     # NOTE: commission is NOT subtracted from payout (it's already excluded!)
     # ══════════════════════════════════════════════════════
-    operating_cur = logistics_cur + storage_cur + penalties_cur + acquiring_cur + acceptance_cur + deductions_cur
-    operating_prev = logistics_prev + storage_prev + penalties_prev + acquiring_prev + acceptance_prev + deductions_prev
+    operating_cur = logistics_cur + storage_cur + acquiring_cur + penalties_cur + acceptance_cur + deductions_cur
+    operating_prev = logistics_prev + storage_prev + acquiring_prev + penalties_prev + acceptance_prev + deductions_prev
 
     mp_fees_cur = commission_cur + operating_cur
     mp_fees_prev = commission_prev + operating_prev
 
-    profit_cur = payout_cur - operating_cur - ad_spend_cur - cogs_cur
-    profit_prev = payout_prev - operating_prev - ad_spend_prev - cogs_prev
+    # Payout (Bank transfer): ppvz_for_pay - logistics - storage - penalties - acceptance - total_deductions (which includes ads)
+    # Note: Acquiring is already deducted from ppvz_for_pay by WB.
+    actual_payout_cur = payout_cur - (logistics_cur + storage_cur + penalties_cur + acceptance_cur + total_deductions_cur)
+    actual_payout_prev = payout_prev - (logistics_prev + storage_prev + penalties_prev + acceptance_prev + total_deductions_prev)
+
+    # Profit
+    profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
+    profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
     kpi = {
         "revenue": round(revenue_cur, 2),
         "revenue_delta": _safe_delta(revenue_cur, revenue_prev),
-        "payout": round(payout_cur, 2),
-        "payout_delta": _safe_delta(payout_cur, payout_prev),
+        "payout": round(actual_payout_cur, 2),
+        "payout_delta": _safe_delta(actual_payout_cur, actual_payout_prev),
         "mp_fees": round(mp_fees_cur, 2),
         "mp_fees_delta": _safe_delta(mp_fees_cur, mp_fees_prev),
+        "operating": round(operating_cur, 2),
+        "operating_delta": _safe_delta(operating_cur, operating_prev),
         "ad_spend": round(ad_spend_cur, 2),
         "ad_spend_delta": _safe_delta(ad_spend_cur, ad_spend_prev),
         "cogs": round(cogs_cur, 2),
@@ -1019,7 +974,7 @@ async def get_wb_finances(
     for ds in sorted(all_dates):
         dd = daily_data.get(ds, {})
         rev = dd.get("revenue", 0)
-        pay = dd.get("payout", 0)
+        pay = dd.get("payout", 0) # This is the payout_amount from WB report, not the final bank transfer
         comm_d = dd.get("commission", 0)
         log_d = dd.get("logistics", 0)
         stor_d = dd.get("storage", 0)
@@ -1027,29 +982,34 @@ async def get_wb_finances(
         acq_d = dd.get("acquiring", 0)
         acc_d = dd.get("acceptance", 0)
         ded_d = dd.get("deductions", 0)
-        ords = dd.get("orders", 0)
+        tded_d = dd.get("total_deductions", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
         op_d = log_d + stor_d + pen_d + acq_d + acc_d + ded_d
         mp_d = comm_d + op_d
-        profit_d = pay - op_d - ads_d - cogs_d
+
+        # Payout (bank transfer) logic
+        bank_trans_d = pay - (log_d + stor_d + pen_d + acc_d + tded_d)
+
+        profit_d = rev - mp_d - ads_d - cogs_d
 
         daily_raw.append({
             "date": ds,
-            "revenue": round(rev, 2),
-            "payout": round(pay, 2),
-            "mp_fees": round(mp_d, 2),
-            "ad_spend": round(ads_d, 2),
-            "cogs": round(cogs_d, 2),
-            "orders": ords,
-            "profit": round(profit_d, 2),
+            "revenue": rev,
+            "payout": bank_trans_d,
+            "mp_fees": mp_d,
+            "operating": op_d,
+            "ad_spend": ads_d,
+            "cogs": cogs_d,
+            "orders": dd.get("orders", 0),
+            "profit": profit_d,
         })
 
     # Apply grouping if week/month
     if group_by in ("week", "month"):
         from collections import defaultdict
         grouped = defaultdict(lambda: {
-            "revenue": 0, "payout": 0, "mp_fees": 0, "ad_spend": 0,
+            "revenue": 0, "payout": 0, "mp_fees": 0, "operating": 0, "ad_spend": 0,
             "cogs": 0, "orders": 0, "profit": 0,
         })
         for pt in daily_raw:
@@ -1058,25 +1018,63 @@ async def get_wb_finances(
                 key = str(d_obj - timedelta(days=d_obj.weekday()))
             else:
                 key = str(d_obj.replace(day=1))
-            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
-                grouped[key][field] += pt[field]
+            # Recalculate payout and profit based on new definitions for grouped data
+            rev = pt["revenue"]
+            comm = max(rev - pt["payout"], 0) # Recalculate commission from daily_raw's payout
+            oper = pt["mp_fees"] - comm # Recalculate operating from daily_raw's mp_fees and new comm
+            mp_fees = comm + oper
+            actual_payout = rev - mp_fees
+            prof = rev - mp_fees - pt["ad_spend"] - pt["cogs"]
+
+            grouped[key]["revenue"] += rev
+            grouped[key]["payout"] += actual_payout
+            grouped[key]["mp_fees"] += mp_fees
+            grouped[key]["operating"] += oper
+            grouped[key]["ad_spend"] += pt["ad_spend"]
+            grouped[key]["cogs"] += pt["cogs"]
+            grouped[key]["orders"] += pt["orders"]
+            grouped[key]["profit"] += prof
 
         daily_final = []
         for k in sorted(grouped.keys()):
             entry = {"date": k}
-            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
-                val = grouped[k][field]
-                entry[field] = round(val, 2) if isinstance(val, float) else val
+            for field in ("revenue", "payout", "mp_fees", "operating", "ad_spend", "cogs", "orders", "profit"):
+                val = grouped[k].get(field, 0)
+                entry[field] = round(val, 2) if isinstance(val, (int, float)) else val
             daily_final.append(entry)
     else:
-        daily_final = daily_raw
+        daily_final = []
+        for ds in sorted(daily_data.keys()):
+            pt = daily_data[ds]
+            rev = pt["revenue"]
+            pay = pt["payout"] # This is the bank transfer
+            comm = pt["commission"]
+            oper = pt["logistics"] + pt["storage"] + pt["penalties"] + pt["acquiring"] + pt["acceptance"] + pt["deductions"]
+            mp_fees = comm + oper
+            ads = ads_daily.get(ds, 0)
+            cogs = cogs_daily.get(ds, 0)
+            actual_payout = pay - (pt["logistics"] + pt["storage"] + pt["penalties"] + pt["acceptance"] + pt.get("total_deductions", 0))
+            prof = rev - mp_fees - ads - cogs
+
+            daily_final.append({
+                "date": ds,
+                "revenue": round(rev, 2),
+                "payout": round(actual_payout, 2),
+                "mp_fees": round(mp_fees, 2),
+                "operating": round(oper, 2),
+                "ad_spend": round(ads, 2),
+                "cogs": round(cogs, 2),
+                "orders": pt["orders"],
+                "profit": round(prof, 2),
+            })
 
     # ── Build comparison ──
     comparison = {
         "current": {
             "revenue": round(revenue_cur, 2),
-            "payout": round(payout_cur, 2),
+            "payout": round(actual_payout_cur, 2),
             "mp_fees": round(mp_fees_cur, 2),
+            "operating": round(operating_cur, 2),
             "commission": round(commission_cur, 2),
             "logistics": round(logistics_cur, 2),
             "storage": round(storage_cur, 2),
@@ -1092,8 +1090,9 @@ async def get_wb_finances(
         },
         "previous": {
             "revenue": round(revenue_prev, 2),
-            "payout": round(payout_prev, 2),
+            "payout": round(actual_payout_prev, 2),
             "mp_fees": round(mp_fees_prev, 2),
+            "operating": round(operating_prev, 2),
             "commission": round(commission_prev, 2),
             "logistics": round(logistics_prev, 2),
             "storage": round(storage_prev, 2),
@@ -1200,8 +1199,10 @@ async def get_wb_products_finance(
                 ) AS rev_cur,
                 sumIf(payout_amount,
                     operation_type = 'Продажа' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) - sumIf(payout_amount,
+                    operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS pay_cur,
-                sumIf(logistics_total,
+                sumIf(wb_delivery_rub,
                     event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS log_cur,
                 sumIf(storage_fee,
@@ -1220,6 +1221,10 @@ async def get_wb_products_finance(
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS ret_cur,
+                sumIf(quantity,
+                    operation_type = 'Возврат'
+                    AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ret_qty_cur,
 
                 -- Previous period
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
@@ -1227,8 +1232,10 @@ async def get_wb_products_finance(
                 ) AS rev_prev,
                 sumIf(payout_amount,
                     operation_type = 'Продажа' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) - sumIf(payout_amount,
+                    operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS pay_prev,
-                sumIf(logistics_total,
+                sumIf(wb_delivery_rub,
                     event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS log_prev,
                 sumIf(storage_fee,
@@ -1246,7 +1253,11 @@ async def get_wb_products_finance(
                 ) AS sales_prev,
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS ret_prev
+                ) AS ret_prev,
+                sumIf(quantity,
+                    operation_type = 'Возврат'
+                    AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ret_qty_prev
 
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
@@ -1273,14 +1284,16 @@ async def get_wb_products_finance(
             pen_cur = abs(float(r[7] or 0))
             sales_cur = int(r[8] or 0)
             ret_cur = abs(float(r[9] or 0))
-            rev_prev = float(r[10] or 0)
-            pay_prev = float(r[11] or 0)
-            log_prev = abs(float(r[12] or 0))
-            stor_prev = abs(float(r[13] or 0))
-            acq_prev = abs(float(r[14] or 0))
-            pen_prev = abs(float(r[15] or 0))
-            sales_prev = int(r[16] or 0)
-            ret_prev = abs(float(r[17] or 0))
+            ret_qty_cur = abs(int(r[10] or 0))
+            rev_prev = float(r[11] or 0)
+            pay_prev = float(r[12] or 0)
+            log_prev = abs(float(r[13] or 0))
+            stor_prev = abs(float(r[14] or 0))
+            acq_prev = abs(float(r[15] or 0))
+            pen_prev = abs(float(r[16] or 0))
+            sales_prev = int(r[17] or 0)
+            ret_prev = abs(float(r[18] or 0))
+            ret_qty_prev = abs(int(r[19] or 0))
 
             if vc not in products:
                 products[vc] = {
@@ -1288,15 +1301,16 @@ async def get_wb_products_finance(
                     "nm_id": nm,
                     "cur": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                             "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                            "ad_spend": 0, "cogs": 0},
+                            "returns_qty": 0, "ad_spend": 0, "cogs": 0},
                     "prev": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                              "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                             "ad_spend": 0, "cogs": 0},
+                             "returns_qty": 0, "ad_spend": 0, "cogs": 0},
                 }
             p = products[vc]
             if nm and not p["nm_id"]:
                 p["nm_id"] = nm
-            p["cur"]["revenue"] += rev_cur
+            # Revenue = sales - returns (matching KPI logic)
+            p["cur"]["revenue"] += rev_cur - ret_cur
             p["cur"]["payout"] += pay_cur
             p["cur"]["logistics"] += log_cur
             p["cur"]["storage"] += stor_cur
@@ -1304,7 +1318,9 @@ async def get_wb_products_finance(
             p["cur"]["penalties"] += pen_cur
             p["cur"]["sales"] += sales_cur
             p["cur"]["returns"] += ret_cur
-            p["prev"]["revenue"] += rev_prev
+            p["cur"]["returns_qty"] += ret_qty_cur
+            # Revenue = sales - returns (matching KPI logic)
+            p["prev"]["revenue"] += rev_prev - ret_prev
             p["prev"]["payout"] += pay_prev
             p["prev"]["logistics"] += log_prev
             p["prev"]["storage"] += stor_prev
@@ -1312,6 +1328,7 @@ async def get_wb_products_finance(
             p["prev"]["penalties"] += pen_prev
             p["prev"]["sales"] += sales_prev
             p["prev"]["returns"] += ret_prev
+            p["prev"]["returns_qty"] += ret_qty_prev
     except Exception as e:
         logger.warning("CH WB product finance query failed: %s", e)
 
@@ -1390,10 +1407,65 @@ async def get_wb_products_finance(
         for vc, p in products.items():
             unit_cost = cost_map.get(vc.lower(), 0)
             if unit_cost > 0:
-                p["cur"]["cogs"] = round(unit_cost * p["cur"]["sales"], 2)
-                p["prev"]["cogs"] = round(unit_cost * p["prev"]["sales"], 2)
+                # Net qty = sales - returns_qty (matching KPI COGS logic)
+                net_qty_cur = max(p["cur"]["sales"] - p["cur"]["returns_qty"], 0)
+                net_qty_prev = max(p["prev"]["sales"] - p["prev"]["returns_qty"], 0)
+                p["cur"]["cogs"] = round(unit_cost * net_qty_cur, 2)
+                p["prev"]["cogs"] = round(unit_cost * net_qty_prev, 2)
     except Exception as e:
         logger.warning("PG product_costs query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 3.5. Deductions + Acceptance (not tied to specific products)
+    #      These must be included so product-level profit sum matches KPI
+    # ══════════════════════════════════════════════════════
+    try:
+        ded_result = ch.query("""
+            SELECT
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
+                    AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ded_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
+                    AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ded_prev,
+                sumIf(acceptance_fee, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS acc_cur,
+                sumIf(acceptance_fee, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS acc_prev
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d_prev_start:Date}
+              AND event_date <= {d_end:Date}
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if ded_result.result_rows:
+            dr = ded_result.result_rows[0]
+            ded_cur_val = abs(float(dr[0] or 0))
+            ded_prev_val = abs(float(dr[1] or 0))
+            acc_cur_val = abs(float(dr[2] or 0))
+            acc_prev_val = abs(float(dr[3] or 0))
+
+            no_prod_key = "__no_product__"
+            if no_prod_key not in products:
+                products[no_prod_key] = {
+                    "vendor_code": "Без привязки к товару",
+                    "nm_id": 0,
+                    "cur": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
+                            "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
+                            "ad_spend": 0, "cogs": 0},
+                    "prev": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
+                             "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
+                             "ad_spend": 0, "cogs": 0},
+                }
+            # Deductions and acceptance reduce profit as negative payout adjustment
+            products[no_prod_key]["cur"]["payout"] -= (ded_cur_val + acc_cur_val)
+            products[no_prod_key]["prev"]["payout"] -= (ded_prev_val + acc_prev_val)
+    except Exception as e:
+        logger.warning("CH WB deductions for product table failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 4. Build response
@@ -1403,7 +1475,10 @@ async def get_wb_products_finance(
         cur = p["cur"]
         prev = p["prev"]
 
-        # Profit = payout - logistics - storage - acquiring - penalties - ad_spend - cogs
+        # Profit formula must match KPI: revenue - commission - operating - ad_spend - cogs
+        # where commission = revenue - payout, operating = logistics + storage + acquiring + penalties
+        # Simplified: payout - logistics - storage - acquiring - penalties - ad_spend - cogs
+        # NOTE: This naturally matches KPI because KPI uses same subtraction logic
         cur_profit = cur["payout"] - cur["logistics"] - cur["storage"] - cur["acquiring"] - cur["penalties"] - cur["ad_spend"] - cur["cogs"]
         prev_profit = prev["payout"] - prev["logistics"] - prev["storage"] - prev["acquiring"] - prev["penalties"] - prev["ad_spend"] - prev["cogs"]
 
@@ -1533,104 +1608,40 @@ async def get_ozon_products_finance(
     products = {}  # offer_id -> {...}
 
     # ══════════════════════════════════════════════════════
-    # 1. Revenue from fact_ozon_orders
-    # ══════════════════════════════════════════════════════
-    try:
-        orders_result = ch.query("""
-            SELECT
-                offer_id,
-                sumIf(price * quantity, toDate(order_date) >= {d_start:Date} AND toDate(order_date) <= {d_end:Date}) AS rev_cur,
-                sumIf(quantity, toDate(order_date) >= {d_start:Date} AND toDate(order_date) <= {d_end:Date}) AS sales_cur,
-                sumIf(price * quantity, toDate(order_date) >= {d_prev_start:Date} AND toDate(order_date) <= {d_prev_end:Date}) AS rev_prev,
-                sumIf(quantity, toDate(order_date) >= {d_prev_start:Date} AND toDate(order_date) <= {d_prev_end:Date}) AS sales_prev
-            FROM mms_analytics.fact_ozon_orders FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(order_date) >= {d_prev_start:Date}
-              AND toDate(order_date) <= {d_end:Date}
-              AND status NOT IN ('cancelled', 'canceled')
-            GROUP BY offer_id
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
-        })
-
-        for r in orders_result.result_rows:
-            oid = str(r[0] or "").strip()
-            if not oid:
-                oid = "__unknown__"
-            products[oid] = {
-                "offer_id": oid,
-                "cur": {
-                    "revenue": float(r[1] or 0), "sales": int(r[2] or 0),
-                    "commission": 0, "logistics": 0, "storage": 0, "acquiring": 0,
-                    "penalties": 0, "returns": 0, "ad_spend": 0, "cogs": 0,
-                },
-                "prev": {
-                    "revenue": float(r[3] or 0), "sales": int(r[4] or 0),
-                    "commission": 0, "logistics": 0, "storage": 0, "acquiring": 0,
-                    "penalties": 0, "returns": 0, "ad_spend": 0, "cogs": 0,
-                },
-            }
-    except Exception as e:
-        logger.warning("CH Ozon orders per product query failed: %s", e)
-
-    # ══════════════════════════════════════════════════════
-    # 2. Transaction details from fact_ozon_transactions
-    #    Revenue txns: per-order commission + services (by sku)
-    #    Bulk charges: Logistics/Storage/etc — NOT per-product
+    # 1. Product metrics from fact_ozon_transactions
+    #    Revenue, Sales volume, Commission, Logistics (per-item)
     # ══════════════════════════════════════════════════════
 
-    # Build sku → offer_id mapping
+    # Build sku → offer_id mapping from dim_ozon_products (PG)
+    # Must use same source as KPI COGS to ensure offer_id consistency with product_costs
     sku_to_offer = {}
     try:
-        sku_map = ch.query("""
-            SELECT DISTINCT sku, offer_id
-            FROM mms_analytics.fact_ozon_orders FINAL
-            WHERE shop_id = {shop_id:UInt32}
-        """, parameters={"shop_id": shop_id})
-        for r in sku_map.result_rows:
-            sku_to_offer[int(r[0])] = str(r[1])
+        sku_map_result = await db.execute(
+            text("""
+                SELECT sku, offer_id
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND sku > 0
+            """),
+            {"shop_id": shop_id},
+        )
+        for r in sku_map_result.fetchall():
+            sku_to_offer[int(r[0])] = r[1]
     except Exception:
         pass
 
     try:
-        # 2a. Commission percentage from fact_ozon_commissions
-        #     sales_percent is the Ozon commission rate per offer_id
-        #     Much more reliable than sale_commission from transactions
-        #     (transactions only contain settled orders, not all)
-        comm_pct = {}  # offer_id -> sales_percent
-        comm_result = ch.query("""
-            SELECT offer_id, argMax(sales_percent, dt) AS pct
-            FROM mms_analytics.fact_ozon_commissions FINAL
-            WHERE shop_id = {shop_id:UInt32}
-            GROUP BY offer_id
-        """, parameters={"shop_id": shop_id})
-        for r in comm_result.result_rows:
-            oid = str(r[0] or "").strip()
-            if oid:
-                comm_pct[oid] = float(r[1] or 0)
-
-        # Apply commission = revenue × sales_percent / 100
-        for oid, p in products.items():
-            pct = comm_pct.get(oid, 0)
-            if pct > 0:
-                p["cur"]["commission"] = round(p["cur"]["revenue"] * pct / 100, 2)
-                p["prev"]["commission"] = round(p["prev"]["revenue"] * pct / 100, 2)
-    except Exception as e:
-        logger.warning("CH Ozon commissions per product query failed: %s", e)
-
-    try:
-        # 2a-bis. Per-order logistics from Revenue transactions (where available)
         txn_result = ch.query("""
             SELECT
                 sku,
-                sumIf(abs(services_total),
-                    toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}
-                ) AS svc_cur,
-                sumIf(abs(services_total),
-                    toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}
-                ) AS svc_prev
+                sumIf(accruals_for_sale, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS rev_cur,
+                countIf(toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS sales_cur,
+                sumIf(sale_commission, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS comm_cur,
+                sumIf(services_total, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS svc_cur,
+                
+                sumIf(accruals_for_sale, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS rev_prev,
+                countIf(toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS sales_prev,
+                sumIf(sale_commission, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS comm_prev,
+                sumIf(services_total, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS svc_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND category = 'Revenue'
@@ -1647,11 +1658,31 @@ async def get_ozon_products_finance(
         for r in txn_result.result_rows:
             sku = int(r[0] or 0)
             oid = sku_to_offer.get(sku, str(sku))
-            svc_cur = float(r[1] or 0)
-            svc_prev = float(r[2] or 0)
-            if oid in products:
-                products[oid]["cur"]["logistics"] += svc_cur
-                products[oid]["prev"]["logistics"] += svc_prev
+            
+            if oid not in products:
+                products[oid] = {
+                    "offer_id": oid,
+                    "cur": {
+                        "revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0, 
+                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0,
+                    },
+                    "prev": {
+                        "revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0, 
+                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0,
+                    }
+                }
+            
+            # Accumulate metrics (commission and logistics are negative in DB, so we take abs)
+            products[oid]["cur"]["revenue"] += float(r[1] or 0)
+            products[oid]["cur"]["sales"] += int(r[2] or 0)
+            products[oid]["cur"]["commission"] += abs(float(r[3] or 0))
+            products[oid]["cur"]["logistics"] += abs(float(r[4] or 0))
+
+            products[oid]["prev"]["revenue"] += float(r[5] or 0)
+            products[oid]["prev"]["sales"] += int(r[6] or 0)
+            products[oid]["prev"]["commission"] += abs(float(r[7] or 0))
+            products[oid]["prev"]["logistics"] += abs(float(r[8] or 0))
+
     except Exception as e:
         logger.warning("CH Ozon txn per product query failed: %s", e)
 
@@ -1724,6 +1755,8 @@ async def get_ozon_products_finance(
         })
 
         # sku_to_offer already built in section 2
+        unmatched_ads_cur = 0.0
+        unmatched_ads_prev = 0.0
         for r in ads_result.result_rows:
             sku = int(r[0] or 0)
             ads_c = float(r[1] or 0)
@@ -1732,11 +1765,67 @@ async def get_ozon_products_finance(
             if oid in products:
                 products[oid]["cur"]["ad_spend"] += ads_c
                 products[oid]["prev"]["ad_spend"] += ads_p
+            else:
+                unmatched_ads_cur += ads_c
+                unmatched_ads_prev += ads_p
+
+        # Add unmatched ads to __no_product__ bucket
+        if unmatched_ads_cur > 0 or unmatched_ads_prev > 0:
+            no_prod_key = "__no_product__"
+            if no_prod_key not in products:
+                products[no_prod_key] = {
+                    "offer_id": no_prod_key,
+                    "cur": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
+                            "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                    "prev": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
+                             "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                }
+            products[no_prod_key]["cur"]["ad_spend"] += unmatched_ads_cur
+            products[no_prod_key]["prev"]["ad_spend"] += unmatched_ads_prev
     except Exception as e:
         logger.warning("CH Ozon ads per product query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 4. COGS from product_costs (PG)
+    # 3.5. Refund + Other bulk charges (not tied to products)
+    #      These are in the KPI mp_fees but not in per-product queries
+    # ══════════════════════════════════════════════════════
+    try:
+        refund_other = ch.query("""
+            SELECT
+                sumIf(abs(amount), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS total_cur,
+                sumIf(abs(amount), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS total_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(operation_date) >= {d_prev_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+              AND category IN ('Refund', 'Other')
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if refund_other.result_rows:
+            oc = refund_other.result_rows[0]
+            ref_cur = float(oc[0] or 0)
+            ref_prev = float(oc[1] or 0)
+            if ref_cur > 0 or ref_prev > 0:
+                no_prod_key = "__no_product__"
+                if no_prod_key not in products:
+                    products[no_prod_key] = {
+                        "offer_id": no_prod_key,
+                        "cur": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
+                                "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                        "prev": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
+                                 "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                    }
+                # These reduce profit (unattributed expenses go into commission bucket)
+                products[no_prod_key]["cur"]["commission"] += ref_cur
+                products[no_prod_key]["prev"]["commission"] += ref_prev
+    except Exception as e:
+        logger.warning("CH Ozon refund/other for product table failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 4. COGS from product_costs (PG) & Names from dim_ozon_products
     # ══════════════════════════════════════════════════════
     try:
         cost_result = await db.execute(
@@ -1757,6 +1846,22 @@ async def get_ozon_products_finance(
     except Exception as e:
         logger.warning("PG product_costs query failed: %s", e)
 
+    names_map = {}
+    try:
+        name_result = await db.execute(
+            text("""
+                SELECT offer_id, name
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id
+            """),
+            {"shop_id": shop_id},
+        )
+        for r in name_result.fetchall():
+            if r[1]:
+                names_map[r[0]] = r[1]
+    except Exception as e:
+        logger.warning("PG dim_ozon_products query failed: %s", e)
+
     # ══════════════════════════════════════════════════════
     # 5. Build response
     # ══════════════════════════════════════════════════════
@@ -1765,9 +1870,9 @@ async def get_ozon_products_finance(
         cur = p["cur"]
         prev = p["prev"]
 
-        # Ozon profit = revenue - commission - logistics - acquiring - ad_spend - cogs
-        cur_profit = cur["revenue"] - cur["commission"] - cur["logistics"] - cur["acquiring"] - cur["ad_spend"] - cur["cogs"]
-        prev_profit = prev["revenue"] - prev["commission"] - prev["logistics"] - prev["acquiring"] - prev["ad_spend"] - prev["cogs"]
+        # Ozon profit = revenue - commission - logistics - storage - acquiring - ad_spend - cogs
+        cur_profit = cur["revenue"] - cur["commission"] - cur["logistics"] - cur["storage"] - cur["acquiring"] - cur["ad_spend"] - cur["cogs"]
+        prev_profit = prev["revenue"] - prev["commission"] - prev["logistics"] - prev["storage"] - prev["acquiring"] - prev["ad_spend"] - prev["cogs"]
 
         current = {
             "sales": cur["sales"],
@@ -1804,6 +1909,7 @@ async def get_ozon_products_finance(
 
         result_products.append({
             "vendor_code": oid,
+            "name": names_map.get(oid, ""),
             "current": current,
             "previous": previous,
             "delta_pct": delta_pct,

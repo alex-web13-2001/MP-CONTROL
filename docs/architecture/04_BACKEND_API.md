@@ -178,7 +178,7 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
   period: str,
   kpi: {
     orders_count, orders_delta,         // Заказы
-    revenue, revenue_delta, avg_check,  // Выручка
+    revenue, revenue_delta, avg_check,  // Продажи (сумма заказов × цена)
     views, views_delta,                 // Показы рекламы
     clicks, clicks_delta,               // Клики рекламы
     ad_spend, ad_spend_delta,           // Расход рекламы
@@ -200,6 +200,8 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 ### Ключевая логика
 
 - 5 SQL-запросов к ClickHouse: заказы, реклама, график продаж, график рекламы, ТОП товаров
+- **Все заказы:** фильтры на cancelled/is_cancel убраны — учитываются все статусы (совпадение с ЛК)
+- **Timezone:** группировка по дате в МСК (UTC+3): `toDate(addHours(in_process_at, 3))` (Ozon), `toDate(addHours(date, 3))` (WB)
 - **DRR** = `ad_spend / orders_revenue × 100` (НЕ ad_revenue)
 - Delta = процент изменения к предыдущему аналогичному периоду
 - Обогащение товаров именами/изображениями из PostgreSQL
@@ -351,4 +353,14 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
   - **Operating expenses:** `logistics + storage + penalties + acquiring + acceptance + deductions`
   - **Формула прибыли:** `payout − operating − ads − cogs` (ранее: `payout − mp_fees`, где mp_fees включал комиссию → двойной счёт)
   - **Marketplace filter:** `marketplace = 1` (Enum8, ранее: `marketplace = 'wildberries'` — не работало)
-  - **Breakdown response:** добавлены `deductions`, `compensation` (приёмка)
+
+### 2026-02-27
+
+- **Ozon Финансы:** Расчёт товарной прибыли полностью переведён на транзакции (`fact_ozon_transactions`) для точного совпадения с балансом, устранено смешивание данных с `fact_ozon_orders`.
+- **Ozon Финансы:** В ответ `GET /api/v1/finances/ozon/products` добавлено поле `name`. Извлекается JOIN-ом из PostgreSQL `dim_ozon_products` по `offer_id` для замены технических артикулов вроде `01-0001055`.
+- **Ozon Dashboard:** Удалён фильтр `status NOT IN ('cancelled')` — теперь на дашборде учитываются ВСЕ заказы, включая отменённые, для совпадения с ЛК Ozon Seller.
+- **WB Dashboard:** Удалён фильтр `is_cancel = 0` — аналогично, все заказы включены.
+- **Ozon Dashboard:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(in_process_at, 3))` вместо `toDate(in_process_at)`.
+- **WB Dashboard:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(date, 3))` вместо `toDate(date)`.
+- **Ozon Финансы (COGS):** Маппинг `sku → offer_id` для товарной прибыли переведён на `dim_ozon_products` (PG) вместо `fact_ozon_orders` (CH). В CH offer_id содержал артефакты (лишние пробелы), что ломало lookup в `product_costs`.
+- **Ozon + WB Финансы (COGS):** Расчёт себестоимости использует `net_qty = sales - returns` вместо `sales` — корректный учёт возвратов.

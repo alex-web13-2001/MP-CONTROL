@@ -376,7 +376,8 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
 const DYNAMICS_METRICS = [
   { key: 'revenue', label: 'Выручка', color: '#10b981', yAxis: 'left' },
   { key: 'payout', label: 'К перечислению', color: '#3b82f6', yAxis: 'left' },
-  { key: 'mp_fees', label: 'Услуги МП', color: '#f97316', yAxis: 'left' },
+  { key: 'operating', label: 'Расходы МП', color: '#f97316', yAxis: 'left' },
+  { key: 'mp_fees', label: 'Всего услуг', color: '#fca5a5', yAxis: 'left' },
   { key: 'ad_spend', label: 'Реклама', color: '#ef4444', yAxis: 'left' },
   { key: 'cogs', label: 'Себестоимость', color: '#64748b', yAxis: 'left' },
   { key: 'profit', label: 'Прибыль', color: '#8b5cf6', yAxis: 'left' },
@@ -388,7 +389,8 @@ type DynamicsMetricKey = typeof DYNAMICS_METRICS[number]['key']
 const DYNAMICS_LABELS: Record<string, string> = {
   revenue: 'Выручка',
   payout: 'К перечислению',
-  mp_fees: 'Услуги МП',
+  operating: 'Расходы МП',
+  mp_fees: 'Всего услуг',
   ad_spend: 'Реклама',
   cogs: 'Себестоимость',
   profit: 'Прибыль',
@@ -554,16 +556,30 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
             />
           )}
 
+          {/* Operating expenses — line */}
+          {activeMetrics.has('operating') && (
+            <Line
+              yAxisId="left"
+              type="monotone"
+              dataKey="operating"
+              stroke="#f97316"
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ r: 4, fill: '#f97316' }}
+            />
+          )}
+
           {/* MP fees — line */}
           {activeMetrics.has('mp_fees') && (
             <Line
               yAxisId="left"
               type="monotone"
               dataKey="mp_fees"
-              stroke="#f97316"
+              stroke="#fca5a5"
               strokeWidth={2}
+              strokeDasharray="4 4"
               dot={false}
-              activeDot={{ r: 4, fill: '#f97316' }}
+              activeDot={{ r: 4, fill: '#fca5a5' }}
             />
           )}
 
@@ -621,14 +637,17 @@ const COMPARISON_ROWS = [
   { key: 'revenue', label: 'Выручка', isMoney: true },
   { key: 'orders', label: 'Заказы', isMoney: false },
   { key: 'payout', label: 'К перечислению', isMoney: true },
-  { key: 'mp_fees', label: 'Услуги МП', isMoney: true, invert: true },
+  { key: 'mp_fees', label: 'Удержания маркетплейса', isMoney: true, invert: true, bold: true },
   { key: 'commission', label: '  └ Комиссия + скидки', isMoney: true, invert: true, indent: true },
-  { key: 'logistics', label: '  └ Логистика', isMoney: true, invert: true, indent: true },
-  { key: 'storage', label: '  └ Хранение', isMoney: true, invert: true, indent: true },
-  { key: 'acquiring', label: '  └ Эквайринг', isMoney: true, invert: true, indent: true },
+  { key: 'operating', label: '  └ Расходы МП (ОПЕКС)', isMoney: true, invert: true, indent: true },
+  { key: 'logistics', label: '        • Логистика', isMoney: true, invert: true, indent: true },
+  { key: 'storage', label: '        • Хранение', isMoney: true, invert: true, indent: true },
+  { key: 'acquiring', label: '        • Эквайринг', isMoney: true, invert: true, indent: true },
+  { key: 'penalties', label: '        • Штрафы', isMoney: true, invert: true, indent: true },
+  { key: 'deductions', label: '        • Удержания', isMoney: true, invert: true, indent: true },
+  { key: 'acceptance', label: '        • Плат. приёмка', isMoney: true, invert: true, indent: true },
   { key: 'advertising', label: 'Реклама', isMoney: true, invert: true },
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
-  { key: 'penalties', label: 'Штрафы', isMoney: true, invert: true },
   { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
   { key: 'profit', label: 'Чистая прибыль', isMoney: true, bold: true },
 ]
@@ -861,21 +880,14 @@ export default function FinancesPage() {
           delay={0.05}
         />
         {(() => {
-          // WB: payout comes from ppvz_for_pay (independent), so commission = revenue - payout
-          //     operating = mp_fees - commission = mp_fees - (revenue - payout)
-          // Ozon: payout = revenue - mp_fees (derived), so the WB formula gives 0.
-          //     Use breakdown components instead: logistics + storage + acquiring
-          const isWb = currentShop?.marketplace === 'wildberries'
-          const operating = isWb
-            ? kpi.mp_fees - Math.max(kpi.revenue - kpi.payout, 0)
-            : (data.breakdown?.logistics ?? 0) + (data.breakdown?.storage ?? 0) + (data.breakdown?.acquiring ?? 0)
+          const operating = kpi.operating
           const operatingPct = kpi.payout > 0 ? (operating / kpi.payout * 100).toFixed(1) : '0'
           return (
             <KpiCard
               title="Расходы МП"
               value={formatMoney(operating)}
               subtitle={`${operatingPct}% от перечисления`}
-              delta={kpi.mp_fees_delta}
+              delta={kpi.operating_delta ?? kpi.mp_fees_delta}
               invertDelta
               icon={Building2}
               accent="#f97316"

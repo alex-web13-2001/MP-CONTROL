@@ -2,9 +2,41 @@
 
 Все изменения в проекте документируются в этом файле.
 
-## [Unreleased] - 2026-02-26
+## [Unreleased] - 2026-02-28
 
-### Fixed — WB P&L: полный пересмотр расчёта прибыли
+### Changed — Дашборд: терминология и период по умолчанию
+
+- **Frontend / `DashboardPage.tsx` [MODIFY]:** KPI-карточка «Выручка» переименована в «Продажи» (отображается сумма заказов × цена, а не выручка после возвратов). Переименовано в 5 местах: KPI, тултип графика, легенда, таблица топ-товаров.
+- **Frontend / `DashboardPage.tsx` [MODIFY]:** Период по умолчанию изменён с `'7d'` на `'today'`.
+
+### Fixed — Календарь произвольных дат на странице Товары
+
+- **Frontend / `DateRangePicker.tsx` [MODIFY]:** Добавлен проп `popupAlign: 'left' | 'right'` (default `'right'`). CSS `.rdp-months`: явный `flex-direction: row; flex-wrap: nowrap` + `minWidth: 580px` — гарантирует отображение 2 месяцев рядом.
+- **Frontend / `ProductsPage.tsx` [MODIFY]:** PeriodSelector получает `popupAlign="left"` — попап открывается вправо от кнопки, не обрезается.
+
+## [Unreleased] - 2026-02-27
+
+### Fixed — Ozon P&L: Унификация источника данных и названий товаров
+
+- **Backend / `finances.py` [MODIFY]:** Расчёт Ozon KPI и товарной прибыли полностью переведён на `fact_ozon_transactions` как единый источник правды.
+  - Revenue, commissions, logistics, storage и acquiring теперь считаются по факту транзакций (поступлений/списаний).
+  - Устранена ошибка, когда общая прибыль в KPI не сходилась с суммой прибыли по всем SKU в таблице из-за смешивания данных заказов и транзакций.
+- **Backend / `finances.py` [MODIFY]:** В ответ `GET /api/v1/finances/ozon/products` добавлено поле `name` (из `dim_ozon_products`).
+- **Frontend / `ProductFinanceTable.tsx` [MODIFY]:** В таблице детализации вместо технических артикулов (например, `01-0001055`) теперь крупно отображается нормальное имя товара, а артикул выводится мелким шрифтом ниже.
+- **Frontend / `finances.ts` [MODIFY]:** В `ProductFinanceItem` добавлено опциональное поле `name`.
+
+### Fixed — Dashboard: все заказы + МСК timezone
+
+- **Backend / `dashboard.py` [MODIFY]:** Удалён фильтр `status NOT IN ('cancelled')` для Ozon — все заказы включены в подсчёт (совпадение с ЛК Ozon Seller).
+- **Backend / `dashboard.py` [MODIFY]:** Удалён фильтр `is_cancel = 0` для WB — аналогично.
+- **Backend / `dashboard.py` [MODIFY]:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(in_process_at, 3))` (Ozon), `toDate(addHours(date, 3))` (WB).
+
+### Fixed — Ozon COGS: маппинг и net_qty
+
+- **Backend / `finances.py` [MODIFY]:** Маппинг `sku → offer_id` для товарной прибыли переведён на `dim_ozon_products` (PG) вместо `fact_ozon_orders` (CH). В CH offer_id содержал артефакты (лишние пробелы), ломавшие lookup в `product_costs`.
+- **Backend / `finances.py` [MODIFY]:** Расчёт COGS использует `net_qty = sales - returns` вместо `sales` (Ozon + WB).
+
+## [Unreleased] - 2026-02-26
 
 - **Backend / `finances.py` [MODIFY]:** Исправлен расчёт WB P&L из `fact_finances FINAL`
   - Revenue = `retail_price_withdisc_rub` (розничная цена, ранее: `retail_amount` — заниженная)

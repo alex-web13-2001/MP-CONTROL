@@ -524,6 +524,7 @@ export default function ProductsPage() {
         <PeriodSelector
           value={periodValue}
           onChange={(v) => { setPeriodValue(v); setPage(1) }}
+          popupAlign="left"
         />
         {/* Filters */}
         <div className="flex items-center gap-1.5 flex-wrap">

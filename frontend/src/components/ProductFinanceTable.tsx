@@ -203,11 +203,15 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                 >
                   {/* Product name */}
                   <td className="sticky left-0 z-10 bg-[hsl(var(--card))] px-4 py-2.5">
-                    <div className="text-xs font-medium text-white truncate max-w-[170px]" title={product.vendor_code}>
-                      {product.vendor_code}
+                    <div className="text-xs font-medium text-white truncate max-w-[170px]" title={product.name || product.vendor_code}>
+                      {product.name || product.vendor_code}
                     </div>
-                    {product.nm_id ? (
-                      <div className="text-[10px] text-white/30 mt-0.5">
+                    {product.name && product.name !== product.vendor_code ? (
+                      <div className="text-[10px] text-white/30 mt-0.5" title={product.vendor_code}>
+                        {product.vendor_code}
+                      </div>
+                    ) : product.nm_id ? (
+                      <div className="text-[10px] text-white/30 mt-0.5" title={product.nm_id.toString()}>
                         {product.nm_id}
                       </div>
                     ) : null}
