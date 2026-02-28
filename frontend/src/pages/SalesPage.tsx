@@ -1,15 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   ShoppingCart,
   DollarSign,
-  CreditCard,
   RotateCcw,
   ArrowUpRight,
   ArrowDownRight,
   RefreshCw,
   MapPin,
   TrendingDown,
+  ChevronDown,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -37,7 +37,7 @@ import {
 } from '@/api/sales'
 
 /* ═══════════════════════════════════════════════════════════
-   Constants & Helpers
+   Helpers
    ═══════════════════════════════════════════════════════════ */
 
 const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
@@ -55,14 +55,8 @@ function formatChartDate(dateStr: string): string {
   return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`
 }
 
-function formatDelta(value: number, invert = false): { text: string; positive: boolean } {
-  const positive = invert ? value < 0 : value > 0
-  const arrow = value > 0 ? '↗' : value < 0 ? '↘' : ''
-  return { text: `${arrow} ${value > 0 ? '+' : ''}${value}%`, positive }
-}
-
 /* ═══════════════════════════════════════════════════════════
-   KPI Card (same pattern as DashboardPage & FinancesPage)
+   KPI Card — fixed height, no optional subtitle variance
    ═══════════════════════════════════════════════════════════ */
 
 function KpiCard({
@@ -84,42 +78,42 @@ function KpiCard({
   accent: string
   delay: number
 }) {
-  const d = formatDelta(delta, invertDelta)
+  const positive = invertDelta ? delta < 0 : delta > 0
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay, duration: 0.4 }}
     >
-      <Card className="relative overflow-hidden">
-        <CardContent className="p-5">
+      <Card className="relative overflow-hidden h-full">
+        <CardContent className="p-5 flex flex-col justify-between h-full">
           <div className="flex items-start justify-between">
-            <div className="space-y-1">
+            <div className="space-y-1 min-w-0">
               <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">{title}</p>
               <p className="text-2xl font-bold tracking-tight">{value}</p>
-              {subtitle && (
-                <p className="text-[12px] text-[hsl(var(--muted-foreground))]">{subtitle}</p>
-              )}
             </div>
             <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${accent} shadow-lg`}>
               <Icon className="h-5 w-5 text-white" />
             </div>
           </div>
-          {delta !== 0 && (
-            <div className="mt-3 flex items-center gap-1.5">
+          <div className="mt-3 flex items-center gap-2 min-h-[24px]">
+            {delta !== 0 && (
               <span className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-xs font-semibold ${
-                d.positive
+                positive
                   ? 'bg-emerald-500/15 text-emerald-400'
                   : 'bg-red-500/15 text-red-400'
               }`}>
-                {d.positive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                {positive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                 {Math.abs(delta)}%
               </span>
-              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                к пред. периоду
-              </span>
-            </div>
-          )}
+            )}
+            {subtitle && (
+              <span className="text-[12px] text-[hsl(var(--muted-foreground))] truncate">{subtitle}</span>
+            )}
+            {delta !== 0 && !subtitle && (
+              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">к пред. периоду</span>
+            )}
+          </div>
         </CardContent>
       </Card>
     </motion.div>
@@ -127,7 +121,7 @@ function KpiCard({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Sales Chart — orders (bar) + revenue (line) + returns (line)
+   Sales Chart
    ═══════════════════════════════════════════════════════════ */
 
 function SalesChart({ data }: { data: SalesDailyPoint[] }) {
@@ -206,47 +200,82 @@ function SalesChart({ data }: { data: SalesDailyPoint[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Geography Table
+   Geography — full-width, collapsible, compact
    ═══════════════════════════════════════════════════════════ */
 
-function GeoTable({ data }: { data: SalesGeoItem[] }) {
+const GEO_COLLAPSED_COUNT = 5
+
+function GeoSection({ data }: { data: SalesGeoItem[] }) {
+  const [expanded, setExpanded] = useState(false)
   const maxRevenue = Math.max(...data.map(d => d.revenue), 1)
+  const visible = expanded ? data : data.slice(0, GEO_COLLAPSED_COUNT)
+  const hasMore = data.length > GEO_COLLAPSED_COUNT
+
+  if (data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-[120px] text-[hsl(var(--muted-foreground))] text-sm">
+        Нет данных о географии за период
+      </div>
+    )
+  }
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-[hsl(var(--border))]">
-            <th className="px-3 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Регион</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Доля</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Ср. чек</th>
-            <th className="px-3 py-3 text-[13px] font-medium text-[hsl(var(--muted-foreground))] w-[200px]"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row, i) => (
-            <tr key={row.region} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors">
-              <td className="px-3 py-2.5 font-medium flex items-center gap-2">
-                <MapPin className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
-                {row.region}
-              </td>
-              <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(row.orders)}</td>
-              <td className="px-3 py-2.5 text-right tabular-nums font-medium">{formatMoney(row.revenue)}</td>
-              <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{row.pct}%</td>
-              <td className="px-3 py-2.5 text-right tabular-nums">{formatMoney(row.avg_check)}</td>
-              <td className="px-3 py-2.5">
-                <div className="h-2 w-full rounded-full bg-[hsl(var(--muted)/0.3)]">
-                  <div
-                    className="h-2 rounded-full bg-gradient-to-r from-[hsl(var(--primary))] to-[hsl(var(--primary)/0.6)]"
-                    style={{ width: `${Math.round(row.revenue / maxRevenue * 100)}%` }}
-                  />
-                </div>
-              </td>
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-[hsl(var(--border))]">
+              <th className="px-3 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Город</th>
+              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
+              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
+              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Доля</th>
+              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Ср. чек</th>
+              <th className="px-3 py-2.5 text-[13px] font-medium text-[hsl(var(--muted-foreground))] w-[180px]"></th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            <AnimatePresence initial={false}>
+              {visible.map((row) => (
+                <motion.tr
+                  key={row.region}
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors"
+                >
+                  <td className="px-3 py-2 font-medium">
+                    <span className="flex items-center gap-2">
+                      <MapPin className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))] shrink-0" />
+                      {row.region}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatNumber(row.orders)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-medium">{formatMoney(row.revenue)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{row.pct}%</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatMoney(row.avg_check)}</td>
+                  <td className="px-3 py-2">
+                    <div className="h-1.5 w-full rounded-full bg-[hsl(var(--muted)/0.3)]">
+                      <div
+                        className="h-1.5 rounded-full bg-gradient-to-r from-[hsl(var(--primary))] to-[hsl(var(--primary)/0.6)]"
+                        style={{ width: `${Math.round(row.revenue / maxRevenue * 100)}%` }}
+                      />
+                    </div>
+                  </td>
+                </motion.tr>
+              ))}
+            </AnimatePresence>
+          </tbody>
+        </table>
+      </div>
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="mt-2 w-full flex items-center justify-center gap-1.5 py-2 text-sm text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+        >
+          <ChevronDown className={`h-4 w-4 transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`} />
+          {expanded ? 'Свернуть' : `Показать все ${data.length} городов`}
+        </button>
+      )}
     </div>
   )
 }
@@ -263,11 +292,11 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[hsl(var(--border))]">
-            <th className="px-3 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Возвраты</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">% возвр.</th>
+            <th className="px-3 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
+            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
+            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
+            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Возвраты</th>
+            <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">% возвр.</th>
           </tr>
         </thead>
         <tbody>
@@ -297,7 +326,7 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
                     </div>
                   )}
                   <div className="min-w-0">
-                    <p className="text-[13px] font-medium truncate max-w-[250px]">{p.name || p.offer_id}</p>
+                    <p className="text-[13px] font-medium truncate max-w-[280px]">{p.name || p.offer_id}</p>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] truncate">{p.offer_id}</p>
                   </div>
                 </div>
@@ -335,60 +364,39 @@ function TopProductsTable({ data }: { data: SalesTopProduct[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Return Reasons Chart (Horizontal bars)
+   Return Reasons — compact inline bars (no recharts)
    ═══════════════════════════════════════════════════════════ */
 
-function ReturnReasonsChart({ data }: { data: SalesReturnReason[] }) {
+function ReturnReasons({ data, total }: { data: SalesReturnReason[]; total: number }) {
   if (data.length === 0) {
     return (
-      <div className="flex items-center justify-center h-[200px] text-[hsl(var(--muted-foreground))] text-sm">
+      <div className="flex items-center justify-center h-[100px] text-[hsl(var(--muted-foreground))] text-sm">
         Нет данных о возвратах за период
       </div>
     )
   }
 
-  const chartData = data.map(d => ({
-    ...d,
-    reason: d.reason.length > 30 ? d.reason.slice(0, 28) + '...' : d.reason,
-    fullReason: d.reason,
-  }))
+  const maxCount = Math.max(...data.map(d => d.count), 1)
 
   return (
-    <ResponsiveContainer width="100%" height={Math.max(200, data.length * 40 + 30)}>
-      <BarChart data={chartData} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.3} horizontal={false} />
-        <XAxis
-          type="number"
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-          axisLine={false}
-          tickLine={false}
-        />
-        <YAxis
-          type="category"
-          dataKey="reason"
-          width={180}
-          tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }}
-          axisLine={false}
-          tickLine={false}
-        />
-        <Tooltip
-          contentStyle={{
-            backgroundColor: 'hsl(var(--card))',
-            border: '1px solid hsl(var(--border))',
-            borderRadius: 12,
-            fontSize: 13,
-          }}
-          formatter={(value: number) => [formatNumber(value), 'Возвратов']}
-          labelFormatter={(_: string, payload: any[]) => payload?.[0]?.payload?.fullReason || ''}
-        />
-        <Bar
-          dataKey="count"
-          fill="#ef4444"
-          radius={[0, 4, 4, 0]}
-          opacity={0.8}
-        />
-      </BarChart>
-    </ResponsiveContainer>
+    <div className="space-y-3">
+      {data.map((item) => (
+        <div key={item.reason} className="space-y-1">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-[13px] truncate max-w-[70%]">{item.reason}</span>
+            <span className="text-[13px] tabular-nums text-[hsl(var(--muted-foreground))] shrink-0 ml-2">
+              {item.count} ({item.pct}%)
+            </span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-[hsl(var(--muted)/0.3)]">
+            <div
+              className="h-2 rounded-full bg-gradient-to-r from-red-500 to-red-400 transition-all duration-500"
+              style={{ width: `${Math.round(item.count / maxCount * 100)}%` }}
+            />
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -399,16 +407,13 @@ function ReturnReasonsChart({ data }: { data: SalesReturnReason[] }) {
 function SalesSkeleton() {
   return (
     <div className="space-y-6 animate-pulse">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {[...Array(4)].map((_, idx) => (
-          <Card key={idx}><CardContent className="p-5"><Skeleton className="h-20 w-full" /></CardContent></Card>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {[...Array(3)].map((_, idx) => (
+          <Card key={idx}><CardContent className="p-5"><Skeleton className="h-24 w-full" /></CardContent></Card>
         ))}
       </div>
       <Card><CardContent className="p-5"><Skeleton className="h-[340px] w-full" /></CardContent></Card>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <Card><CardContent className="p-5"><Skeleton className="h-[300px] w-full" /></CardContent></Card>
-        <Card><CardContent className="p-5"><Skeleton className="h-[300px] w-full" /></CardContent></Card>
-      </div>
+      <Card><CardContent className="p-5"><Skeleton className="h-[300px] w-full" /></CardContent></Card>
     </div>
   )
 }
@@ -458,7 +463,6 @@ export default function SalesPage() {
     fetchData()
   }, [fetchData])
 
-  // Auto-refresh every 2 min
   useEffect(() => {
     const interval = setInterval(fetchData, 120_000)
     return () => clearInterval(interval)
@@ -519,12 +523,13 @@ export default function SalesPage() {
       {/* ── Content ── */}
       {data && (
         <>
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {/* ── KPI Cards — 3 cards, equal height ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <KpiCard
               title="Заказы"
               value={formatNumber(data.kpi.orders_count)}
               delta={data.kpi.orders_delta}
+              subtitle="к пред. периоду"
               icon={ShoppingCart}
               accent="from-violet-500 to-purple-600"
               delay={0}
@@ -539,14 +544,6 @@ export default function SalesPage() {
               delay={0.05}
             />
             <KpiCard
-              title="Средний чек"
-              value={formatMoney(data.kpi.avg_check)}
-              delta={0}
-              icon={CreditCard}
-              accent="from-blue-500 to-cyan-600"
-              delay={0.1}
-            />
-            <KpiCard
               title="Возвраты"
               value={formatNumber(data.kpi.returns_count)}
               subtitle={`${data.kpi.returns_pct}% от заказов`}
@@ -554,12 +551,12 @@ export default function SalesPage() {
               invertDelta
               icon={RotateCcw}
               accent="from-red-500 to-rose-600"
-              delay={0.15}
+              delay={0.1}
             />
           </div>
 
-          {/* Sales Chart */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+          {/* ── Sales Chart ── */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base font-semibold">Динамика продаж</CardTitle>
@@ -570,47 +567,8 @@ export default function SalesPage() {
             </Card>
           </motion.div>
 
-          {/* Geography + Returns */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-            {/* Geography */}
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <MapPin className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
-                    География продаж
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {data.geo.length > 0 ? (
-                    <GeoTable data={data.geo} />
-                  ) : (
-                    <div className="flex items-center justify-center h-[200px] text-[hsl(var(--muted-foreground))] text-sm">
-                      Нет данных о географии за период
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </motion.div>
-
-            {/* Return Reasons */}
-            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base font-semibold flex items-center gap-2">
-                    <TrendingDown className="h-4 w-4 text-red-400" />
-                    Причины возвратов
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ReturnReasonsChart data={data.returns.by_reason} />
-                </CardContent>
-              </Card>
-            </motion.div>
-          </div>
-
-          {/* Top Products */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.35 }}>
+          {/* ── Top Products (full width) ── */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base font-semibold">Топ товаров по продажам</CardTitle>
@@ -620,6 +578,53 @@ export default function SalesPage() {
               </CardContent>
             </Card>
           </motion.div>
+
+          {/* ── Geography (full width, collapsible) + Returns side by side ── */}
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+            {/* Geography — 2/3 width */}
+            <motion.div
+              className="xl:col-span-2"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25 }}
+            >
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                    География продаж
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <GeoSection data={data.geo} />
+                </CardContent>
+              </Card>
+            </motion.div>
+
+            {/* Returns — 1/3 width */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+            >
+              <Card className="h-full">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base font-semibold flex items-center gap-2">
+                    <TrendingDown className="h-4 w-4 text-red-400" />
+                    Причины возвратов
+                  </CardTitle>
+                  {data.returns.total > 0 && (
+                    <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                      Всего: {formatNumber(data.returns.total)}
+                    </p>
+                  )}
+                </CardHeader>
+                <CardContent>
+                  <ReturnReasons data={data.returns.by_reason} total={data.returns.total} />
+                </CardContent>
+              </Card>
+            </motion.div>
+          </div>
         </>
       )}
     </div>
