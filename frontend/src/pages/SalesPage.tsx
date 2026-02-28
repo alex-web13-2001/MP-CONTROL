@@ -358,6 +358,9 @@ function Delta({ value, suffix = '%', invert = false }: { value: number; suffix?
   )
 }
 
+type SortKey = keyof SalesTopProduct
+type SortDir = 'asc' | 'desc'
+
 function TopProductsTable({
   data,
   selectedSkus,
@@ -369,9 +372,44 @@ function TopProductsTable({
 }) {
   const [hoveredImg, setHoveredImg] = useState<{ url: string; x: number; y: number } | null>(null)
   const hasAdData = data.some(p => p.ad_views > 0)
+  const [sortKey, setSortKey] = useState<SortKey>('revenue')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
 
-  const thCls = "px-3 py-2 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap"
+  const toggleSort = useCallback((key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }, [sortKey])
+
+  const sorted = useMemo(() => {
+    return [...data].sort((a, b) => {
+      const av = a[sortKey] as number
+      const bv = b[sortKey] as number
+      return sortDir === 'desc' ? bv - av : av - bv
+    })
+  }, [data, sortKey, sortDir])
+
+  const thBase = "px-3 py-2 text-right text-[12px] font-medium whitespace-nowrap select-none"
   const tdCls = "px-3 py-2 text-right tabular-nums text-[13px]"
+
+  const SortTh = ({ k, children, className = '' }: { k: SortKey; children: React.ReactNode; className?: string }) => (
+    <th
+      className={`${thBase} ${className} cursor-pointer hover:text-[hsl(var(--foreground))] transition-colors ${
+        sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'
+      }`}
+      onClick={(e) => { e.stopPropagation(); toggleSort(k) }}
+    >
+      <span className="inline-flex items-center gap-1 justify-end">
+        {children}
+        {sortKey === k && (
+          <span className="text-[10px] opacity-70">{sortDir === 'desc' ? '▼' : '▲'}</span>
+        )}
+      </span>
+    </th>
+  )
 
   return (
     <div className="overflow-x-auto relative">
@@ -393,25 +431,25 @@ function TopProductsTable({
               <span className="text-[11px] text-[hsl(var(--muted-foreground))]">📊</span>
             </th>
             <th className="px-3 py-2 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-            <th className={thCls}>Заказы</th>
-            <th className={thCls}>Продажи</th>
-            <th className={thCls}>Цена</th>
-            <th className={thCls}>Возвр.</th>
-            <th className={thCls}>% возвр.</th>
+            <SortTh k="orders">Заказы</SortTh>
+            <SortTh k="revenue">Продажи</SortTh>
+            <SortTh k="avg_price">Цена</SortTh>
+            <SortTh k="returns">Возвр.</SortTh>
+            <SortTh k="return_pct">% возвр.</SortTh>
             {hasAdData && (
               <>
-                <th className={`${thCls} border-l border-[hsl(var(--border)/0.2)]`}>Показы</th>
-                <th className={thCls}>Клики</th>
-                <th className={thCls}>Корзины</th>
-                <th className={thCls}>CTR</th>
-                <th className={thCls}>CR→корз.</th>
-                <th className={thCls}>CR→заказ</th>
+                <SortTh k="ad_views" className="border-l border-[hsl(var(--border)/0.2)]">Показы</SortTh>
+                <SortTh k="ad_clicks">Клики</SortTh>
+                <SortTh k="ad_add_to_cart">Корзины</SortTh>
+                <SortTh k="ad_ctr">CTR</SortTh>
+                <SortTh k="ad_cart_rate">CR→корз.</SortTh>
+                <SortTh k="ad_order_rate">CR→заказ</SortTh>
               </>
             )}
           </tr>
         </thead>
         <tbody>
-          {data.map((p) => {
+          {sorted.map((p) => {
             const isSelected = selectedSkus.has(p.sku)
             return (
               <tr
