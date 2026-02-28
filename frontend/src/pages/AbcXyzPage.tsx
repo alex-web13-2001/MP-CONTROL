@@ -2,6 +2,21 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { fetchAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-xyz'
 import { useAppStore } from '@/stores/appStore'
 
+/* Sticky cell styles — must be opaque to hide content scrolling behind */
+const stickyHeaderStyle: React.CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  zIndex: 30,
+  background: 'hsl(224 15% 11%)',
+  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.4)',
+}
+const stickyCellStyle: React.CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  zIndex: 10,
+  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.4)',
+}
+
 /* ── helpers ── */
 const fmtMoney = (v: number) =>
   v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
@@ -20,9 +35,9 @@ function pluralize(n: number, one: string, few: string, many: string) {
 
 /* ── color config ── */
 const ABC_CFG = {
-  A: { gradient: 'from-emerald-500/20 to-emerald-600/5', border: 'border-emerald-500/30', badge: 'bg-emerald-500/20 text-emerald-400', ring: 'ring-emerald-500/40', label: 'Лидеры', desc: '80% дохода' },
-  B: { gradient: 'from-amber-500/20 to-amber-600/5', border: 'border-amber-500/30', badge: 'bg-amber-500/20 text-amber-400', ring: 'ring-amber-500/40', label: 'Средние', desc: '15% дохода' },
-  C: { gradient: 'from-red-500/20 to-red-600/5', border: 'border-red-500/30', badge: 'bg-red-500/20 text-red-400', ring: 'ring-red-500/40', label: 'Аутсайдеры', desc: '5% дохода' },
+  A: { gradient: 'from-emerald-500/20 to-emerald-600/5', border: 'border-emerald-500/30', badge: 'bg-emerald-500/20 text-emerald-400', label: 'Лидеры', desc: '80% дохода' },
+  B: { gradient: 'from-amber-500/20 to-amber-600/5', border: 'border-amber-500/30', badge: 'bg-amber-500/20 text-amber-400', label: 'Средние', desc: '15% дохода' },
+  C: { gradient: 'from-red-500/20 to-red-600/5', border: 'border-red-500/30', badge: 'bg-red-500/20 text-red-400', label: 'Аутсайдеры', desc: '5% дохода' },
 } as const
 
 const XYZ_CFG = {
@@ -155,7 +170,6 @@ export default function AbcXyzPage() {
         <>
           {/* ═══ SUMMARY CARDS ═══ */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
             {/* ABC group */}
             <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6">
               <div className="flex items-center gap-2 mb-5">
@@ -167,13 +181,8 @@ export default function AbcXyzPage() {
                   const s = data.summary[g]
                   const c = ABC_CFG[g]
                   return (
-                    <div
-                      key={g}
-                      className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}
-                    >
-                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>
-                        {g}
-                      </span>
+                    <div key={g} className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}>
+                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>{g}</span>
                       <div className="text-3xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
                       <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1">{c.label}</div>
                       <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">
@@ -196,13 +205,8 @@ export default function AbcXyzPage() {
                   const s = data.summary[g]
                   const c = XYZ_CFG[g]
                   return (
-                    <div
-                      key={g}
-                      className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}
-                    >
-                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>
-                        {g}
-                      </span>
+                    <div key={g} className={`rounded-xl border ${c.border} bg-gradient-to-br ${c.gradient} p-4 text-center`}>
+                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-xl ${c.badge} font-bold text-xl mb-3`}>{g}</span>
                       <div className="text-3xl font-bold text-[hsl(var(--foreground))]">{s?.count || 0}</div>
                       <div className="text-sm text-[hsl(var(--muted-foreground))] mt-1">{c.label}</div>
                       <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">{c.desc}</div>
@@ -218,9 +222,7 @@ export default function AbcXyzPage() {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Матрица ABC × XYZ</h2>
-                <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
-                  Нажмите на ячейку для фильтрации таблицы
-                </p>
+                <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">Нажмите на ячейку для фильтрации таблицы</p>
               </div>
               {selectedCell && (
                 <button
@@ -235,30 +237,22 @@ export default function AbcXyzPage() {
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-8">
               {/* Grid */}
               <div>
-                {/* Column headers */}
                 <div className="grid grid-cols-[60px_1fr_1fr_1fr] gap-2 mb-2">
                   <div />
                   {(['X', 'Y', 'Z'] as const).map((x) => (
                     <div key={x} className="text-center">
-                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${XYZ_CFG[x].badge} font-bold text-base`}>
-                        {x}
-                      </span>
+                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${XYZ_CFG[x].badge} font-bold text-base`}>{x}</span>
                       <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">{XYZ_CFG[x].label}</div>
                     </div>
                   ))}
                 </div>
 
-                {/* Rows */}
                 {(['A', 'B', 'C'] as const).map((a) => (
                   <div key={a} className="grid grid-cols-[60px_1fr_1fr_1fr] gap-2 mb-2">
-                    {/* Row header */}
                     <div className="flex flex-col items-center justify-center">
-                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${ABC_CFG[a].badge} font-bold text-base`}>
-                        {a}
-                      </span>
+                      <span className={`inline-flex items-center justify-center w-9 h-9 rounded-xl ${ABC_CFG[a].badge} font-bold text-base`}>{a}</span>
                       <div className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">{ABC_CFG[a].label}</div>
                     </div>
-                    {/* Cells */}
                     {(['X', 'Y', 'Z'] as const).map((x) => {
                       const key = `${a}${x}`
                       const count = data.matrix[key] || 0
@@ -282,9 +276,7 @@ export default function AbcXyzPage() {
                           <div className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
                             {pluralize(count, 'товар', 'товара', 'товаров')}
                           </div>
-                          {count > 0 && (
-                            <div className="text-sm mt-1 opacity-50">{cell.emoji}</div>
-                          )}
+                          {count > 0 && <div className="text-sm mt-1 opacity-50">{cell.emoji}</div>}
                         </button>
                       )
                     })}
@@ -305,14 +297,10 @@ export default function AbcXyzPage() {
                         selectedCell === key ? 'bg-[hsl(var(--muted)/0.5)]' : 'hover:bg-[hsl(var(--muted)/0.2)]'
                       }`}
                     >
-                      <span className={`shrink-0 inline-flex items-center justify-center w-10 h-7 rounded-lg ${cell.bg} ${cell.text} text-xs font-bold`}>
-                        {key}
-                      </span>
+                      <span className={`shrink-0 inline-flex items-center justify-center w-10 h-7 rounded-lg ${cell.bg} ${cell.text} text-xs font-bold`}>{key}</span>
                       <div className="min-w-0">
                         <div className="text-sm text-[hsl(var(--foreground))] leading-tight">{desc}</div>
-                        <div className="text-xs text-[hsl(var(--muted-foreground))]">
-                          {pluralize(count, 'товар', 'товара', 'товаров')}
-                        </div>
+                        <div className="text-xs text-[hsl(var(--muted-foreground))]">{pluralize(count, 'товар', 'товара', 'товаров')}</div>
                       </div>
                     </div>
                   )
@@ -374,16 +362,16 @@ function ProductsTable({
     })
   }, [products, sortKey, sortDir])
 
-  const SortTh = ({ k, children, align = 'right' }: { k: SortKey; children: React.ReactNode; align?: 'left' | 'right' | 'center' }) => (
+  const SortTh = ({ k, children }: { k: SortKey; children: React.ReactNode }) => (
     <th
       className={`
-        px-4 py-3.5 text-[13px] font-semibold whitespace-nowrap select-none cursor-pointer
-        transition-colors text-${align}
+        px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none cursor-pointer
+        transition-colors
         ${sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}
       `}
       onClick={() => toggleSort(k)}
     >
-      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end' : align === 'center' ? 'justify-center' : ''}`}>
+      <span className="inline-flex items-center gap-1 justify-end">
         {children}
         {sortKey === k && (
           <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>
@@ -394,7 +382,7 @@ function ProductsTable({
 
   return (
     <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-      {/* Table header */}
+      {/* Table title bar */}
       <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
         <div className="flex items-center gap-3">
           <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Товары</h2>
@@ -403,10 +391,7 @@ function ProductsTable({
               <span className={`inline-flex items-center px-3 py-1 rounded-lg text-sm font-semibold ${MATRIX_CELL[selectedCell]?.bg} ${MATRIX_CELL[selectedCell]?.text}`}>
                 {selectedCell}
               </span>
-              <button
-                onClick={onClearFilter}
-                className="text-sm text-[hsl(var(--primary))] hover:underline font-medium"
-              >
+              <button onClick={onClearFilter} className="text-sm text-[hsl(var(--primary))] hover:underline font-medium">
                 ✕ Сбросить
               </button>
             </span>
@@ -417,11 +402,15 @@ function ProductsTable({
         </span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)]">
-              <th className="px-5 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] min-w-[320px]">
+      {/* Scrollable table — sticky header (vertical) + sticky first column (horizontal) */}
+      <div className="overflow-auto max-h-[600px] relative">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 z-20">
+            <tr className="border-b border-[hsl(var(--border))]" style={{ background: 'hsl(224 15% 11%)' }}>
+              <th
+                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[220px] min-w-[220px] max-w-[220px]"
+                style={stickyHeaderStyle}
+              >
                 Товар
               </th>
               <SortTh k="revenue">Выручка</SortTh>
@@ -443,78 +432,54 @@ function ProductsTable({
               const abc = ABC_CFG[p.abc_group as keyof typeof ABC_CFG]
               const xyz = XYZ_CFG[p.xyz_group as keyof typeof XYZ_CFG]
               const marginColor = p.margin_pct > 20 ? 'text-emerald-400' : p.margin_pct > 0 ? 'text-amber-400' : 'text-red-400'
+              const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
 
               return (
                 <tr
                   key={p.sku}
-                  className={`
-                    border-b border-[hsl(var(--border)/0.2)] transition-colors
-                    ${idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.06)]'}
-                    hover:bg-[hsl(var(--muted)/0.2)]
-                  `}
+                  className={`border-b border-[hsl(var(--border)/0.2)] transition-colors ${rowBg} hover:bg-[hsl(var(--muted)/0.2)] group`}
                 >
-                  {/* Product */}
-                  <td className="px-5 py-3.5">
-                    <div className="flex items-center gap-3">
+                  {/* Product — sticky left */}
+                  <td
+                    className="px-4 py-3 w-[220px] min-w-[220px] max-w-[220px] group-hover:!bg-[hsl(var(--muted)/0.2)]"
+                    style={{ ...stickyCellStyle, background: idx % 2 === 0 ? 'hsl(224 15% 11%)' : 'hsl(224 15% 12%)' }}
+                  >
+                    <div className="flex items-center gap-2.5">
                       {p.image_url ? (
-                        <img src={p.image_url} alt="" className="w-11 h-11 rounded-xl object-cover shrink-0 border border-[hsl(var(--border)/0.3)]" />
+                        <img src={p.image_url} alt="" className="w-9 h-9 rounded-lg object-cover shrink-0 border border-[hsl(var(--border)/0.3)]" />
                       ) : (
-                        <div className="w-11 h-11 rounded-xl bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-[hsl(var(--muted-foreground))] text-lg">
-                          📦
-                        </div>
+                        <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-sm">📦</div>
                       )}
                       <div className="min-w-0 flex-1">
-                        <div className="text-[14px] font-medium text-[hsl(var(--foreground))] truncate" title={p.name || p.offer_id}>
+                        <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={p.name || p.offer_id}>
                           {p.name || p.offer_id}
                         </div>
-                        <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 opacity-70">{p.offer_id}</div>
+                        <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate">{p.offer_id}</div>
                       </div>
                     </div>
                   </td>
-                  {/* Revenue */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] font-semibold text-[hsl(var(--foreground))]">
-                    {fmtMoney(p.revenue)}
-                  </td>
-                  {/* Profit */}
-                  <td className={`px-4 py-3.5 text-right tabular-nums text-[14px] font-semibold ${p.profit > 0 ? 'text-emerald-400' : p.profit < 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}`}>
-                    {fmtMoney(p.profit)}
-                  </td>
-                  {/* Margin */}
-                  <td className={`px-4 py-3.5 text-right tabular-nums text-[13px] font-semibold ${marginColor}`}>
-                    {fmtPct(p.margin_pct)}
-                  </td>
-                  {/* Orders */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px]">{fmtNum(p.orders)}</td>
-                  {/* Avg Price */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] text-[hsl(var(--muted-foreground))]">{fmtMoney(p.avg_price)}</td>
-                  {/* Cost */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[14px] text-[hsl(var(--muted-foreground))]">
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] font-semibold text-[hsl(var(--foreground))] whitespace-nowrap">{fmtMoney(p.revenue)}</td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-[13px] font-semibold whitespace-nowrap ${p.profit > 0 ? 'text-emerald-400' : p.profit < 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'}`}>{fmtMoney(p.profit)}</td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-[13px] font-semibold whitespace-nowrap ${marginColor}`}>{fmtPct(p.margin_pct)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] whitespace-nowrap">{fmtNum(p.orders)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))] whitespace-nowrap">{fmtMoney(p.avg_price)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                     {p.cost_price > 0 ? fmtMoney(p.cost_price) : <span className="opacity-40">—</span>}
                   </td>
-                  {/* MP fees */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                     {(p.mp_fees ?? 0) > 0 ? fmtMoney(p.mp_fees ?? 0) : <span className="opacity-40">—</span>}
                   </td>
-                  {/* Ads */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                     {(p.ad_spend ?? 0) > 0 ? fmtMoney(p.ad_spend ?? 0) : <span className="opacity-40">—</span>}
                   </td>
-                  {/* ABC badge */}
-                  <td className="px-4 py-3.5 text-center">
-                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-xl ${abc.badge} font-bold text-sm`}>
-                      {p.abc_group}
-                    </span>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${abc.badge} font-bold text-xs`}>{p.abc_group}</span>
                   </td>
-                  {/* Share */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px]">{fmtPct(p.abc_share)}</td>
-                  {/* XYZ badge */}
-                  <td className="px-4 py-3.5 text-center">
-                    <span className={`inline-flex items-center justify-center w-8 h-8 rounded-xl ${xyz.badge} font-bold text-sm`}>
-                      {p.xyz_group}
-                    </span>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] whitespace-nowrap">{fmtPct(p.abc_share)}</td>
+                  <td className="px-4 py-3 text-center">
+                    <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${xyz.badge} font-bold text-xs`}>{p.xyz_group}</span>
                   </td>
-                  {/* CV */}
-                  <td className="px-4 py-3.5 text-right tabular-nums text-[13px]">{fmtPct(p.xyz_cv)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-[13px] whitespace-nowrap">{fmtPct(p.xyz_cv)}</td>
                 </tr>
               )
             })}
