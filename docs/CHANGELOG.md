@@ -202,3 +202,21 @@
 ### Frontend
 - `abc-xyz.ts`: добавлена `fetchWbAbcXyz()`
 - `AbcXyzPage.tsx`: авто-определение маркетплейса → вызов нужного API
+
+## 2026-02-28 — Раздел «Прогноз продаж» для Ozon
+
+### Backend
+- `GET /api/v1/sales/ozon/forecast` — трендовый прогноз + unit economics
+  - History: дневная выручка/заказы из `fact_ozon_orders`
+  - Forecast: линейная регрессия на Python (без numpy) + доверительный коридор ±σ
+  - Per-product: CPO, CPC, CTR, CR, ROI из `fact_ozon_ad_daily` + `fact_ozon_transactions`
+  - COGS из `product_costs`, info из `dim_ozon_products`
+
+### Frontend
+- `ForecastPage.tsx` — комбо-раздел:
+  - Трендовый график (Recharts AreaChart + Line, история + прогноз с доверительным коридором)
+  - 4 KPI карточки: прогноз выручки/заказов, тренд, направление
+  - Симулятор «Что если?» — ползунки бюджета рекламы (×0.5—3.0) и цены (×0.8—1.2) per-product
+  - Мгновенный JS-пересчёт заказов/выручки/прибыли при перемещении ползунков
+- `forecast.ts` — API клиент с TypeScript типами
+- Роут `/sales/forecast`, навигация в Sidebar (иконка Sparkles)
