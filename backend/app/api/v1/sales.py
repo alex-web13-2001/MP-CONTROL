@@ -2627,12 +2627,12 @@ def _lightgbm_sku_forecast(
             X_pred = feat_row.reshape(1, -1)
             raw_pred = max(float(model_ord.predict(X_pred)[0]), 0)
 
-            # Floor: if prediction is below 30% of historical avg,
-            # blend with historical average to avoid unrealistic near-zero forecasts
-            floor_threshold = avg_daily_orders * 0.3
+            # Floor: if prediction is below 50% of historical avg,
+            # blend with historical average to avoid unrealistic drops
+            floor_threshold = avg_daily_orders * 0.5
             if raw_pred < floor_threshold and avg_daily_orders > 0:
-                # Blend: 30% model + 70% historical avg
-                pred_orders = raw_pred * 0.3 + avg_daily_orders * 0.7
+                # Blend: 10% model + 90% historical avg
+                pred_orders = raw_pred * 0.1 + avg_daily_orders * 0.9
             else:
                 pred_orders = raw_pred
 
