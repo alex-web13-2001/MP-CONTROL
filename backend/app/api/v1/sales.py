@@ -2137,9 +2137,9 @@ async def get_wb_forecast(
             pg_products = await db.execute(
                 text(f"""
                     SELECT nm_id, 
-                           COALESCE(NULLIF(product_name, ''), vendor_code, nm_id::text) AS name, 
+                           COALESCE(NULLIF(name, ''), vendor_code, nm_id::text) AS prod_name, 
                            vendor_code,
-                           '' AS image_url
+                           COALESCE(main_image_url, '') AS image_url
                     FROM dim_products
                     WHERE shop_id = :sid AND nm_id IN ({placeholders})
                 """),

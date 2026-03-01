@@ -63,6 +63,7 @@ function SkuAnalysisCard({ product }: { product: ForecastProduct }) {
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold truncate max-w-[200px]">{product.name || product.offer_id}</span>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))]">{product.offer_id}</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.7)] font-mono">{product.sku}</span>
           </div>
           <div className="text-xs mt-0.5">
             <span className="font-semibold">{s.icon} {a.title}</span>
