@@ -308,3 +308,25 @@
 - **Fallback**: обновлён с 5.5% до 40%
 - **Файл**: `backend/app/api/v1/sales.py` (endpoint `/sales/wb/forecast`)
 
+
+## 2026-03-01
+
+### ui(sales+finances): единый стиль таблиц — sticky + scroll
+
+**SalesPage.tsx → TopProductsTable:**
+- Обёрнут в `rounded-2xl` контейнер с title bar (убрана дублирующая Card)
+- `max-h-[600px]` + `overflow-auto` — вертикальный скролл
+- Sticky header (`sticky top-0 z-20`)
+- Sticky первый столбец «Товар» (`stickyBase` + box-shadow)
+- Zebra striping: `idx % 2 === 0 ? bg-card : bg-muted/0.06`
+- Ячейки: `px-4 py-3.5`, `text-[13px]`, `font-semibold`
+- Sort indicator: `text-[hsl(var(--primary))]` вместо opacity
+
+**ProductFinanceTable.tsx:**
+- `rounded-2xl` контейнер + title bar c счётчиком товаров
+- `max-h-[600px]` + `overflow-auto`
+- Sticky header (`sticky top-0 z-20`)
+- Sticky footer «Итого» (`sticky bottom-0 z-20`) — всегда виден
+- Sticky первый столбец с `stickyCol` + box-shadow
+- Zebra striping, единые размеры ячеек
+
