@@ -14,13 +14,12 @@
 
 ### Fixed — Forecast: нулевые/заниженные прогнозы → funnel-based model
 
-- **Backend / `sales.py` [FEAT]:** Заменён статический floor (историческое среднее × 0.9) на **funnel-based прогноз**. Логика: `projected_carts × cart_to_order_rate` — если корзин стало больше, значит и заказов станет больше.
-- **Backend / `sales.py` [FEAT]:** Тренды воронки: сравнение последней половины vs предыдущей (views, clicks, carts, orders). Capped 0.5x–2.0x.
+- **Backend / `sales.py` [FEAT]:** Заменён статический floor (историческое среднее × 0.9) на **funnel-based прогноз**. Логика: `period_avg_carts × cart_to_order_rate`.
 - **Backend / `sales.py` [FEAT]:** LightGBM blend с funnel: 70% model + 30% funnel если модель адекватна (50-200% от funnel), иначе 20% model + 80% funnel.
-- **Backend / `sales.py` [FIX]:** Funnel features (views/clicks/carts) теперь отражают тренды, а не замороженные средние за 14 дней.
+- **Backend / `sales.py` [FIX]:** Funnel features (views/clicks/carts) используют стабильные period averages (не recent 7d, не trend × avg — оба варианта завышали в 2-4x).
 - **Backend / `sales.py` [FIX]:** Forecast ad_spend: среднее за весь period (не за 7 дней, раздувало в 2-3x).
-- **Backend / `sales.py` [FIX]:** «СЕЙЧАС» метрики нормализованы к `forecast_days` при `period > forecast_days`.
-- **Результат:** АМ-СОБ-КР-ЯГ-10: выручка прогноз **290 004₽** ≈ факт **289 522₽** (100.2%). Ранее: 102 993₽ (72%).
+- **Backend / `sales.py` [FIX]:** «СЕЙЧАС» метрики: `history_totals` и `generate_sku_recommendations()` теперь используют `recent_rev/orders/ad_spend` (последние `forecast_days`), а не `total_hist_*` (полный period).
+- **Результат:** Общий прогноз **1 133 158₽** при факте **1 010 833₽** (88% точность). Ранее: 2 380 325₽ (42%). Заказы: 405 vs факт 418 (97%).
 
 ## [Unreleased] - 2026-02-28
 
