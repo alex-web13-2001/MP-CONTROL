@@ -49,8 +49,8 @@ export default function ForecastPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const [data, setData] = useState<ForecastResponse | null>(null)
   const [loading, setLoading] = useState(true)
-  const [period, setPeriod] = useState(90)
-  const [forecastDays, setForecastDays] = useState(14)
+  const [period, setPeriod] = useState(120)
+  const [forecastDays, setForecastDays] = useState(30)
   const [chartMetric, setChartMetric] = useState<'revenue' | 'orders'>('revenue')
 
   const load = useCallback(async () => {
@@ -145,7 +145,9 @@ export default function ForecastPage() {
             <option value={30}>30 дней</option>
             <option value={60}>60 дней</option>
             <option value={90}>90 дней</option>
+            <option value={120}>120 дней</option>
             <option value={180}>180 дней</option>
+            <option value={365}>365 дней</option>
           </select>
           {/* Forecast days */}
           <select
@@ -156,6 +158,8 @@ export default function ForecastPage() {
             <option value={7}>+7 дней</option>
             <option value={14}>+14 дней</option>
             <option value={30}>+30 дней</option>
+            <option value={60}>+60 дней</option>
+            <option value={90}>+90 дней</option>
           </select>
         </div>
       </div>

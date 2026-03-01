@@ -1978,8 +1978,8 @@ def _lightgbm_forecast(
 @router.get("/ozon/forecast")
 async def get_ozon_forecast(
     shop_id: int = Query(...),
-    period: int = Query(90, ge=14, le=365),
-    forecast_days: int = Query(14, ge=7, le=60),
+    period: int = Query(120, ge=14, le=365),
+    forecast_days: int = Query(30, ge=7, le=90),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

@@ -63,7 +63,7 @@ export interface ForecastResponse {
 
 export async function fetchOzonForecast(
   shopId: number,
-  period: number = 90,
+  period: number = 120,
   forecastDays: number = 14,
 ): Promise<ForecastResponse> {
   const { data } = await apiClient.get<ForecastResponse>('/sales/ozon/forecast', {
@@ -118,7 +118,7 @@ export interface SkuForecastResponse {
 
 export async function fetchOzonSkuForecast(
   shopId: number,
-  period: number = 90,
+  period: number = 120,
   forecastDays: number = 14,
   sku?: number,
 ): Promise<SkuForecastResponse> {
