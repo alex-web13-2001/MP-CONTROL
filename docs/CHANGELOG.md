@@ -294,3 +294,17 @@
 ### 07_INFRASTRUCTURE.md
 - Документировано различие nginx.conf (dev) и nginx.prod.conf (prod)
 - ML зависимости удалены, Docker build ~60с
+
+## 2026-03-01
+
+### fix(forecast): WB profit calculation — real mp_fees from fact_finances FINAL
+
+- **Проблема**: forecast использовал `fact_finances_latest.retail_amount` для расчёта mp_fees,
+  но у некоторых магазинов (shop_id=18) `retail_amount` всегда = 0.
+  Fallback 5.5% давал нереально высокую прибыль (маржа 51% вместо 13.4%)
+- **Решение**: перешли на `fact_finances FINAL` + `JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub')` —
+  тот же подход что и раздел Финансов (`finances.py`)
+- **Компоненты mp_fees**: Commission(rev-payout) + Logistics(wb_delivery_rub) + Storage + Acquiring + Penalties + Deductions
+- **Fallback**: обновлён с 5.5% до 40%
+- **Файл**: `backend/app/api/v1/sales.py` (endpoint `/sales/wb/forecast`)
+
