@@ -4,7 +4,6 @@ import {
   fetchWbForecast,
   type ForecastResponse,
   type ForecastProduct,
-  type SkuAnalysis,
 } from '@/api/forecast'
 import { useAppStore } from '@/stores/appStore'
 import {
