@@ -11,6 +11,7 @@ import SettingsPage from '@/pages/SettingsPage'
 import FinancesPage from '@/pages/FinancesPage'
 import SalesPage from '@/pages/SalesPage'
 import AbcXyzPage from '@/pages/AbcXyzPage'
+import ForecastPage from '@/pages/ForecastPage'
 
 export default function App() {
   return (
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/abc-xyz" element={<AbcXyzPage />} />
+          <Route path="/sales/forecast" element={<ForecastPage />} />
           <Route path="/finances" element={<FinancesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
