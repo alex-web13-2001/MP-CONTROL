@@ -2540,9 +2540,8 @@ def _lightgbm_sku_forecast(
 
         X_train = train_df[FEATURE_COLS].fillna(0).values
         y_orders = train_df["orders"].values
-        y_revenue = train_df["revenue"].values
 
-        # Train LightGBM — orders (reduced estimators for speed)
+        # Train LightGBM — orders only (revenue derived from avg_price)
         model_ord = lgb.LGBMRegressor(
             objective="regression",
             n_estimators=50,
@@ -2564,27 +2563,32 @@ def _lightgbm_sku_forecast(
         }
         feat_imp = dict(sorted(feat_imp.items(), key=lambda x: -x[1]))
 
-        # Revenue model
-        model_rev = lgb.LGBMRegressor(
-            objective="regression",
-            n_estimators=50,
-            num_leaves=31,
-            learning_rate=0.08,
-            min_child_samples=3,
-            verbose=-1,
-        )
-        model_rev.fit(X_train, y_revenue)
+        # Average price per order (for revenue derivation)
+        recent_mask = df["orders"] > 0
+        if recent_mask.sum() > 0:
+            avg_price_per_order = float(
+                df.loc[recent_mask, "revenue"].tail(30).sum()
+                / max(df.loc[recent_mask, "orders"].tail(30).sum(), 1)
+            )
+        else:
+            avg_price_per_order = float(df["revenue"].sum() / max(df["orders"].sum(), 1))
 
         # ── Multi-step iterative forecast (numpy-based for speed) ──
-        # FEATURE_COLS index mapping for fast access
         col_idx = {c: i for i, c in enumerate(FEATURE_COLS)}
 
         # Extract last row as numpy array
         last_feat = feat_df[FEATURE_COLS].fillna(0).iloc[-1].values.astype(np.float64)
 
-        # Recent orders for MA calculation
-        recent_orders = df["orders"].tail(14).tolist()
-        std_orders = float(np.std(recent_orders)) if len(recent_orders) > 1 else 1
+        # Ring buffers for lag7 (need to track 7 past values)
+        orders_history = df["orders"].tail(14).tolist()
+        revenue_history = df["revenue"].tail(14).tolist()
+        std_orders = float(np.std(orders_history)) if len(orders_history) > 1 else 1
+
+        # Stable averages for funnel features (we don't predict them)
+        avg_views = float(df["views"].tail(14).mean()) if "views" in df else 0
+        avg_clicks = float(df["clicks"].tail(14).mean()) if "clicks" in df else 0
+        avg_carts = float(df["carts"].tail(14).mean()) if "carts" in df else 0
+        avg_ad_spend = float(df["ad_spend"].tail(14).mean()) if "ad_spend" in df else 0
 
         forecast_pts = []
         feat_row = np.copy(last_feat)
@@ -2596,10 +2600,25 @@ def _lightgbm_sku_forecast(
             feat_row[col_idx["day_of_week"]] = next_date.dayofweek
             feat_row[col_idx["is_weekend"]] = 1.0 if next_date.dayofweek >= 5 else 0.0
 
-            # Predict using 2D numpy array (avoids DataFrame creation)
+            # Keep funnel features stable (use recent averages)
+            feat_row[col_idx["views_lag1"]] = avg_views
+            feat_row[col_idx["views_lag2"]] = avg_views
+            feat_row[col_idx["views_lag3"]] = avg_views
+            feat_row[col_idx["clicks_lag1"]] = avg_clicks
+            feat_row[col_idx["clicks_lag2"]] = avg_clicks
+            feat_row[col_idx["carts_lag1"]] = avg_carts
+            feat_row[col_idx["carts_lag2"]] = avg_carts
+            feat_row[col_idx["ad_spend_lag1"]] = avg_ad_spend
+            feat_row[col_idx["ad_spend_lag2"]] = avg_ad_spend
+            feat_row[col_idx["ctr_lag1"]] = round(avg_clicks / max(avg_views, 1) * 100, 2)
+            feat_row[col_idx["cart_rate_lag1"]] = round(avg_carts / max(avg_clicks, 1) * 100, 2)
+
+            # Predict ORDERS only
             X_pred = feat_row.reshape(1, -1)
             pred_orders = max(float(model_ord.predict(X_pred)[0]), 0)
-            pred_revenue = max(float(model_rev.predict(X_pred)[0]), 0)
+
+            # Derive REVENUE from orders × avg_price (stable, no cascading error)
+            pred_revenue = round(pred_orders * avg_price_per_order)
 
             # Confidence band
             band = std_orders * (1 + (step - 1) * 0.05)
@@ -2607,29 +2626,28 @@ def _lightgbm_sku_forecast(
             forecast_pts.append({
                 "date": str(next_date.date()),
                 "orders": round(pred_orders),
-                "revenue": round(pred_revenue),
+                "revenue": pred_revenue,
                 "orders_low": round(max(pred_orders - band, 0)),
                 "orders_high": round(pred_orders + band),
             })
 
-            # Shift lags for next iteration (in-place numpy updates)
-            feat_row[col_idx["orders_lag3"]] = feat_row[col_idx["orders_lag2"]]
-            feat_row[col_idx["orders_lag2"]] = feat_row[col_idx["orders_lag1"]]
-            feat_row[col_idx["orders_lag1"]] = pred_orders
-            feat_row[col_idx["revenue_lag7"]] = feat_row[col_idx["revenue_lag1"]]
-            feat_row[col_idx["revenue_lag1"]] = pred_revenue
-            feat_row[col_idx["views_lag3"]] = feat_row[col_idx["views_lag2"]]
-            feat_row[col_idx["views_lag2"]] = feat_row[col_idx["views_lag1"]]
-            feat_row[col_idx["clicks_lag2"]] = feat_row[col_idx["clicks_lag1"]]
-            feat_row[col_idx["carts_lag2"]] = feat_row[col_idx["carts_lag1"]]
-            feat_row[col_idx["ad_spend_lag2"]] = feat_row[col_idx["ad_spend_lag1"]]
+            # Update orders/revenue history
+            orders_history.append(pred_orders)
+            revenue_history.append(pred_revenue)
 
-            # Update MA
-            recent_orders.append(pred_orders)
-            if len(recent_orders) > 7:
-                recent_orders = recent_orders[-7:]
-            feat_row[col_idx["orders_ma7"]] = float(np.mean(recent_orders[-7:]))
-            feat_row[col_idx["orders_ma3"]] = float(np.mean(recent_orders[-3:]))
+            # Orders lags from history buffer (correct temporal distance)
+            feat_row[col_idx["orders_lag1"]] = orders_history[-1]
+            feat_row[col_idx["orders_lag2"]] = orders_history[-2] if len(orders_history) >= 2 else 0
+            feat_row[col_idx["orders_lag3"]] = orders_history[-3] if len(orders_history) >= 3 else 0
+            feat_row[col_idx["orders_lag7"]] = orders_history[-7] if len(orders_history) >= 7 else orders_history[0]
+
+            # Revenue lags from history buffer
+            feat_row[col_idx["revenue_lag1"]] = revenue_history[-1]
+            feat_row[col_idx["revenue_lag7"]] = revenue_history[-7] if len(revenue_history) >= 7 else revenue_history[0]
+
+            # Update MA from full recent window
+            feat_row[col_idx["orders_ma7"]] = float(np.mean(orders_history[-7:]))
+            feat_row[col_idx["orders_ma3"]] = float(np.mean(orders_history[-3:]))
 
         # Trend
         if len(forecast_pts) >= 2:
