@@ -2584,6 +2584,9 @@ def _lightgbm_sku_forecast(
         revenue_history = df["revenue"].tail(14).tolist()
         std_orders = float(np.std(orders_history)) if len(orders_history) > 1 else 1
 
+        # Historical daily average (used as floor for predictions)
+        avg_daily_orders = float(df["orders"].mean())
+
         # Stable averages for funnel features (we don't predict them)
         avg_views = float(df["views"].tail(14).mean()) if "views" in df else 0
         avg_clicks = float(df["clicks"].tail(14).mean()) if "clicks" in df else 0
@@ -2615,7 +2618,16 @@ def _lightgbm_sku_forecast(
 
             # Predict ORDERS only
             X_pred = feat_row.reshape(1, -1)
-            pred_orders = max(float(model_ord.predict(X_pred)[0]), 0)
+            raw_pred = max(float(model_ord.predict(X_pred)[0]), 0)
+
+            # Floor: if prediction is below 30% of historical avg,
+            # blend with historical average to avoid unrealistic near-zero forecasts
+            floor_threshold = avg_daily_orders * 0.3
+            if raw_pred < floor_threshold and avg_daily_orders > 0:
+                # Blend: 30% model + 70% historical avg
+                pred_orders = raw_pred * 0.3 + avg_daily_orders * 0.7
+            else:
+                pred_orders = raw_pred
 
             # Derive REVENUE from orders × avg_price (stable, no cascading error)
             pred_revenue = round(pred_orders * avg_price_per_order)
