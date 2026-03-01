@@ -2640,8 +2640,14 @@ def _lightgbm_sku_forecast(
         forecast_pts = []
         feat_row = np.copy(last_feat)
 
+        # ── PASS 1: Collect raw LightGBM predictions (for shape) ──
+        raw_preds = []
+        feat_rows_snapshot = []
+        forecast_dates = []
+        
         for step in range(1, forecast_days + 1):
             next_date = df["ds"].max() + pd.Timedelta(days=step)
+            forecast_dates.append(next_date)
 
             # Update calendar features
             feat_row[col_idx["day_of_week"]] = next_date.dayofweek
@@ -2669,42 +2675,13 @@ def _lightgbm_sku_forecast(
             # Predict ORDERS via LightGBM
             X_pred = feat_row.reshape(1, -1)
             raw_pred = max(float(model_ord.predict(X_pred)[0]), 0)
+            raw_preds.append(raw_pred)
 
-            # Funnel-based prediction as smart floor
-            # If LightGBM prediction is reasonable (within 50-200% of funnel),
-            # blend LightGBM + funnel. Otherwise use funnel prediction.
-            if funnel_daily_orders > 0:
-                ratio = raw_pred / funnel_daily_orders if funnel_daily_orders > 0 else 1
-                if 0.5 <= ratio <= 2.0:
-                    # LightGBM is in reasonable range — use it (70% model, 30% funnel)
-                    pred_orders = raw_pred * 0.7 + funnel_daily_orders * 0.3
-                else:
-                    # LightGBM is way off — trust funnel (20% model, 80% funnel)
-                    pred_orders = raw_pred * 0.2 + funnel_daily_orders * 0.8
-            else:
-                pred_orders = raw_pred
+            # Update orders/revenue history for lags
+            orders_history.append(raw_pred)
+            revenue_history.append(round(raw_pred * avg_price_per_order))
 
-            pred_orders = max(pred_orders, 0)
-
-            # Derive REVENUE from orders × avg_price (stable, no cascading error)
-            pred_revenue = round(pred_orders * avg_price_per_order)
-
-            # Confidence band
-            band = std_orders * (1 + (step - 1) * 0.05)
-
-            forecast_pts.append({
-                "date": str(next_date.date()),
-                "orders": round(pred_orders),
-                "revenue": pred_revenue,
-                "orders_low": round(max(pred_orders - band, 0)),
-                "orders_high": round(pred_orders + band),
-            })
-
-            # Update orders/revenue history
-            orders_history.append(pred_orders)
-            revenue_history.append(pred_revenue)
-
-            # Orders lags from history buffer (correct temporal distance)
+            # Orders lags from history buffer
             feat_row[col_idx["orders_lag1"]] = orders_history[-1]
             feat_row[col_idx["orders_lag2"]] = orders_history[-2] if len(orders_history) >= 2 else 0
             feat_row[col_idx["orders_lag3"]] = orders_history[-3] if len(orders_history) >= 3 else 0
@@ -2717,6 +2694,38 @@ def _lightgbm_sku_forecast(
             # Update MA from full recent window
             feat_row[col_idx["orders_ma7"]] = float(np.mean(orders_history[-7:]))
             feat_row[col_idx["orders_ma3"]] = float(np.mean(orders_history[-3:]))
+
+        # ── PASS 2: Scale LightGBM shape to match funnel total ──
+        # LightGBM determines SHAPE (daily variation: dow, lags)
+        # Funnel determines SCALE (total volume accuracy)
+        lgbm_total = sum(raw_preds)
+        funnel_total = funnel_daily_orders * forecast_days
+
+        if lgbm_total > 0 and funnel_total > 0:
+            # Blend totals: weight depends on how close LightGBM is to funnel
+            ratio = lgbm_total / funnel_total
+            if 0.5 <= ratio <= 2.0:
+                blended_total = lgbm_total * 0.5 + funnel_total * 0.5
+            else:
+                blended_total = lgbm_total * 0.2 + funnel_total * 0.8
+            scale = blended_total / lgbm_total
+        elif lgbm_total > 0:
+            scale = 1.0  # No funnel data, use LightGBM as-is
+        else:
+            scale = 1.0
+
+        for i, (next_date, raw_pred) in enumerate(zip(forecast_dates, raw_preds)):
+            pred_orders = max(raw_pred * scale, 0)
+            pred_revenue = round(pred_orders * avg_price_per_order)
+            band = std_orders * (1 + i * 0.05)
+
+            forecast_pts.append({
+                "date": str(next_date.date()),
+                "orders": round(pred_orders),
+                "revenue": pred_revenue,
+                "orders_low": round(max(pred_orders - band, 0)),
+                "orders_high": round(pred_orders + band),
+            })
 
         # Trend
         if len(forecast_pts) >= 2:
