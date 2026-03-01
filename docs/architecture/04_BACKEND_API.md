@@ -268,6 +268,41 @@ period: "7d" | "14d" | "30d" (default: "7d")
 
 ---
 
+## Товары WB — `/api/v1/products/wb`
+
+### Endpoints
+
+| Метод   | Path                         | Описание                                       | Auth   |
+| ------- | ---------------------------- | ---------------------------------------------- | ------ |
+| `GET`   | `/products/wb`               | Агрегированные данные по всем товарам WB       | Bearer |
+| `PATCH` | `/products/wb/cost`          | Обновить себестоимость товара (by vendor_code) | Bearer |
+| `POST`  | `/products/wb/cost/bulk`     | Загрузить себестоимость из Excel (.xlsx)       | Bearer |
+| `GET`   | `/products/wb/cost/template` | Скачать Excel-шаблон для заполнения            | Bearer |
+
+### GET `/products/wb` — Query Parameters
+
+```
+shop_id: int (required)
+page: int (default: 1)
+per_page: int (default: 25, 10-100)
+sort: "revenue_7d" | "orders_7d" | "stocks" | "price" | "gross_profit" | "drr" | "name"
+order: "desc" | "asc" (default: "desc")
+filter: "all" | "with_ads" | "no_ads" | "leaders" | "falling" | "problems"
+search: string
+period: "7d" | "14d" | "30d" (default: "7d")
+date_from / date_to: date (optional) — кастомный диапазон
+```
+
+### Ключевая логика
+
+- 8 источников: PG каталог + product_costs → CH заказы/остатки/реклама/финансы
+- Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
+- WB CDN: `wb_image_url(nm_id)` — динамическая генерация URL фото
+- Серверные `totals`: итоги по всем товарам до пагинации
+- Фильтры: `with_ads` (ad_spend > 0), `leaders` (top 20% revenue), `falling` (delta < -20%), `problems` (stock = 0)
+
+---
+
 ## Финансовые отчёты — `/api/v1/finance-reports`
 
 | Метод  | Path                                | Описание                         | Auth |
@@ -295,10 +330,12 @@ period: "7d" | "14d" | "30d" (default: "7d")
 | ----- | --------------------------- | ----------------------------------------- | ------ |
 | `GET` | `/sales/ozon`               | KPI + графики + ТОП товаров Ozon          | Bearer |
 | `GET` | `/sales/ozon/product-daily` | Дневная динамика по конкретным SKU (Ozon) | Bearer |
+| `GET` | `/sales/ozon/abc-xyz`       | ABC/XYZ анализ товаров Ozon               | Bearer |
+| `GET` | `/sales/ozon/forecast`      | Прогноз продаж Ozon (LightGBM)            | Bearer |
 | `GET` | `/sales/wb`                 | KPI + графики + ТОП товаров WB            | Bearer |
 | `GET` | `/sales/wb/product-daily`   | Дневная динамика по конкретным SKU (WB)   | Bearer |
-| `GET` | `/sales/ozon/abc-xyz`       | ABC/XYZ анализ товаров Ozon               | Bearer |
 | `GET` | `/sales/wb/abc-xyz`         | ABC/XYZ анализ товаров WB                 | Bearer |
+| `GET` | `/sales/wb/forecast`        | Прогноз продаж WB (LightGBM)              | Bearer |
 
 ### Query Parameters (общие для ozon/wb)
 
@@ -454,4 +491,10 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **Добавлена секция «Продажи — /api/v1/sales»** — 6 endpoints: Ozon/WB sales overview, product-daily, ABC/XYZ анализ
 - **Добавлена секция «Финансы — /api/v1/finances»** — 4 endpoints: P&L и товарная прибыль для Ozon/WB
 - **Роутинг обновлён:** 10 роутеров вместо 6 (добавлены products, wb_products, finances, sales)
-- Удалены forecast endpoints (код вынесен в ветку `feature/forecast-ml`)
+
+### 2026-03-02
+
+- **Добавлена секция «Товары WB — /api/v1/products/wb»** — 4 endpoints: GET list, PATCH cost, POST bulk, GET template
+- **Sales endpoints:** добавлены `/sales/ozon/forecast` и `/sales/wb/forecast` (LightGBM, SKU-уровень)
+- **Sales:** итого 8 endpoints в секции (+ forecast)
+- **Forecast engine:** `forecast_engine.py` — внутренняя утилита для SKU-рекомендаций, не отдельный роутер

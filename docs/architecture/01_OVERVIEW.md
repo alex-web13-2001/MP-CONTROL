@@ -261,6 +261,11 @@ graph TB
 
         subgraph "AuthGuard + OnboardingGuard + AppLayout"
             Dashboard["/<br/>DashboardPage"]
+            Products["/products<br/>ProductsPage / WBProductsPage"]
+            Sales["/sales<br/>SalesPage"]
+            AbcXyz["/sales/abc-xyz<br/>AbcXyzPage"]
+            Forecast["/sales/forecast<br/>ForecastPage"]
+            Finances["/finances<br/>FinancesPage"]
             Settings["/settings<br/>SettingsPage"]
         end
     end
@@ -270,8 +275,9 @@ graph TB
         AppStore["appStore<br/>theme, sidebar, currentShop"]
     end
 
-    subgraph "API Layer"
+    subgraph "API Layer (9 модулей)"
         ApiClient["axios client<br/>+ interceptors"]
+        ApiModules["auth, dashboard, products,<br/>wb-products, sales, abc-xyz,<br/>finances, forecast, client"]
     end
 
     Login --> AuthStore
@@ -280,15 +286,15 @@ graph TB
     Settings --> ApiClient
 ```
 
-| Файл                  | Назначение                                                              |
-| --------------------- | ----------------------------------------------------------------------- |
-| `App.tsx`             | Роутинг: публичные (login, register) + защищённые (dashboard, settings) |
-| `AuthGuard.tsx`       | HOC: редирект на /login если нет токена                                 |
-| `OnboardingGuard.tsx` | HOC: редирект на /onboarding если нет магазинов                         |
-| `AppLayout.tsx`       | Sidebar + Header + content area                                         |
-| `authStore.ts`        | JWT, user, shops — persist в localStorage                               |
-| `appStore.ts`         | Тема (dark/light), sidebar, текущий магазин                             |
-| `client.ts`           | Axios + auto-Bearer + auto-refresh при 401                              |
+| Файл                  | Назначение                                                   |
+| --------------------- | ------------------------------------------------------------ |
+| `App.tsx`             | Роутинг: 3 публичных + 7 защищённых + 4 placeholder маршрута |
+| `AuthGuard.tsx`       | HOC: редирект на /login если нет токена                      |
+| `OnboardingGuard.tsx` | HOC: редирект на /onboarding если нет магазинов              |
+| `AppLayout.tsx`       | Sidebar + Header + content area                              |
+| `authStore.ts`        | JWT, user, shops — persist в localStorage                    |
+| `appStore.ts`         | Тема (dark/light), sidebar, текущий магазин                  |
+| `client.ts`           | Axios + auto-Bearer + auto-refresh при 401                   |
 
 ---
 

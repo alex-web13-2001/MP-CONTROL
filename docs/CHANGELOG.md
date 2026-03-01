@@ -349,3 +349,25 @@
 - Sticky header (z-20) + sticky first column + **sticky ИТОГО footer** (bottom-0)
 - Zebra striping, единые шрифты через HSL vars
 
+
+## 2026-03-02
+
+### docs: полный аудит и обновление архитектурной документации
+
+**06_FRONTEND.md:**
+- Добавлены секции ForecastPage (387 строк), WBProductsPage (644 строки), FinancesPage (1009 строк)
+- Routing diagram: 7 активных + 4 placeholder маршрута (ранее неполный)
+- Sidebar навигация: полная таблица с секциями, вложенным меню и статусами
+- Unified Table Design: единый стиль таблиц (sticky header/column/footer, max-h-[600px], zebra)
+- Компоненты: добавлены ProductFinanceTable, DateRangePicker, Badge
+- API Layer: 9 модулей (добавлены forecast.ts, wb-products.ts)
+
+**01_OVERVIEW.md:**
+- Frontend routing diagram: 7 активных + 4 placeholder (ранее: 2 страницы)
+- API Layer: 9 модулей с перечислением
+
+**04_BACKEND_API.md:**
+- Добавлена секция «Товары WB» — 4 endpoints (GET list, PATCH cost, POST bulk, GET template)
+- Sales: +2 forecast endpoints (/ozon/forecast, /wb/forecast), итого 8
+- forecast_engine.py — внутренняя утилита (не роутер)
+

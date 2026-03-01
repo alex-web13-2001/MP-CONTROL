@@ -38,14 +38,26 @@ graph TB
         Products["/products → ProductsPage"]
         Sales["/sales → SalesPage"]
         AbcXyz["/sales/abc-xyz → AbcXyzPage"]
+        Forecast["/sales/forecast → ForecastPage"]
         Finances["/finances → FinancesPage"]
         Settings["/settings → SettingsPage"]
+    end
+
+    subgraph "Placeholder (в App.tsx)"
+        Funnel["/funnel → FunnelPage"]
+        Warehouses["/warehouses → WarehousesPage"]
+        Advertising["/advertising → AdvertisingPage"]
+        Events["/events → EventsPage"]
     end
 
     Login -->|"успех"| Dashboard
     Register -->|"успех"| Onboarding
     Onboarding -->|"магазин добавлен"| Dashboard
 ```
+
+> [!NOTE]
+> `ProductsPage` автоматически выбирает Ozon или WB в зависимости от `currentShop.marketplace`.
+> Для WB рендерится компонент `WBProductsPage` (644 строк), для Ozon — `ProductsPage` (820 строк).
 
 ### Guards (HOC)
 
@@ -283,7 +295,7 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | ------------------ | ------------------------------------------------------------------------------- |
 | `KpiCard`          | Универсальная карточка: value, delta badge, icon, accent, subtitle              |
 | `SalesChart`       | ComposedChart (bar заказы + line выручка + line возвраты + per-product overlay) |
-| `TopProductsTable` | Таблица ТОП товаров с сортировкой, рекл. воронкой, чекбоксы для выбора          |
+| `TopProductsTable` | Таблица ТОП товаров — unified style (см. ниже)                                  |
 | `GeoSection`       | География заказов: города с bar-прогрессом, collapse/expand                     |
 | `ReturnReasons`    | Причины возвратов c inline bars                                                 |
 | `SalesSkeleton`    | Skeleton loader                                                                 |
@@ -294,6 +306,72 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 - Продажи: Заказы, Продажи, Цена, Возвраты, % возвр. (каждый с delta)
 - Рекл. воронка (если есть данные): Показы, Клики, Корзины, CTR, CR→корз, CR→заказ
+
+### `WBProductsPage` (644 строки)
+
+Каталог товаров WB с аналитикой. Аналог `ProductsPage` для Ozon, но с WB-спецификой.
+
+- API: `GET /api/v1/products/wb?shop_id=X&period=7d`
+- Себестоимость: `PATCH /api/v1/products/wb/cost`, Excel bulk upload
+
+**Столбцы таблицы:**
+
+| Столбец   | Описание                                             |
+| --------- | ---------------------------------------------------- |
+| Товар     | CDN-фото + название + артикул                        |
+| Заказы    | Кол-во + выручка + дельта                            |
+| Остатки   | FBO/FBS (одно число)                                 |
+| Цена      | Текущая цена                                         |
+| С/с       | Себестоимость + inline редактирование (`WBCostEdit`) |
+| Реклама   | Расход + DRR                                         |
+| Услуги МП | Удержания маркетплейса                               |
+| Прибыль   | Чистая прибыль + маржа                               |
+
+**Компоненты:**
+
+| Компонент    | Описание                                                            |
+| ------------ | ------------------------------------------------------------------- |
+| `WBCostEdit` | Inline popover для редактирования С/с + упаковки (с подтверждением) |
+| `SortTh`     | Кликабельный заголовок с иконкой сортировки                         |
+| `DeltaBadge` | Бейдж дельты: зелёный ▲ / красный ▼                                 |
+
+**Фичи:**
+
+- Серверная сортировка по 8 полям
+- Фильтры: Все / С рекламой / Без рекламы / Лидеры / Падающие / Нет остатков
+- WB CDN: `wbImageUrl(nmId)` — динамическая генерация URL фото
+- Excel bulk upload себестоимости (колонка A = артикул, B = С/с)
+- Поиск по артикулу/названию
+
+### `ForecastPage` (387 строк)
+
+Страница «Прогноз продаж». Универсальная для Ozon и WB.
+
+- Ozon → `GET /api/v1/sales/ozon/forecast?shop_id=X&period=90`
+- WB → `GET /api/v1/sales/wb/forecast?shop_id=X&period=90`
+
+**Секции:**
+
+1. **Общий прогноз** — ComposedChart с областью (actual + forecast) + доверительный интервал
+2. **KPI-карточки** — 5 метрик: прогноз выручки, прогноз заказов, средний чек, тренд, точность модели
+3. **SKU-анализ** — карточки «Сейчас → Будет → Делай» по каждому товару
+
+**Компоненты:**
+
+| Компонент         | Описание                                                                                                |
+| ----------------- | ------------------------------------------------------------------------------------------------------- |
+| `KpiCard`         | Локальная карточка KPI с trend-стрелкой                                                                 |
+| `SkuAnalysisCard` | Карточка товара: severity (critical/warning/opportunity/ok), текущие и прогнозные метрики, рекомендации |
+| `MetricRow`       | Строка метрики (label + value + color)                                                                  |
+
+**Severity уровни:**
+
+| Уровень        | Цвет      | Описание    |
+| -------------- | --------- | ----------- |
+| 🔴 critical    | red-500   | Критично    |
+| 🟡 warning     | amber-500 | Внимание    |
+| 🟢 opportunity | emerald   | Возможность |
+| ✅ ok          | border    | Ок          |
 
 ### `AbcXyzPage` (~489 строк)
 
@@ -314,6 +392,34 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 **Тогглы периода:** 30 дн. / 60 дн. / 90 дн.  
 **Тоггл ABC по:** Выручка / Чистая прибыль
 
+### `FinancesPage` (~1009 строк)
+
+Страница «Финансы». Полный P&L анализ для Ozon и WB.
+
+- Ozon → `GET /api/v1/finances/ozon` + `GET /api/v1/finances/ozon/products`
+- WB → `GET /api/v1/finances/wb` + `GET /api/v1/finances/wb/products`
+
+**6 KPI-карточек:**
+
+- Выручка, К перечислению, Расходы МП (% от перечисления), Реклама (ДРР), Себестоимость (% от выручки), Чистая прибыль (% от выручки)
+
+**Секции:**
+
+| Секция              | Компонент             | Описание                                                                                                     |
+| ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Структура расходов  | `BreakdownChart`      | Waterfall: revenue → commission → payout → expenses → profit                                                 |
+| Детализация товаров | `ProductFinanceTable` | P&L по каждому товару — unified table style (см. ниже)                                                       |
+| Динамика            | `DynamicsChart`       | ComposedChart: 8 метрик с toggle chips (revenue, profit, payout, operating, mp_fees, ad_spend, cogs, orders) |
+| Сравнение периодов  | `ComparisonTable`     | Текущий vs предыдущий период: 15 показателей с Δ                                                             |
+
+**GroupBySelector:** день / неделя / месяц
+
+**Waterfall (BreakdownChart):**
+
+- Подытог «= К перечислению» (после комиссии), «= Прибыль» (финал)
+- Нулевые строки скрыты автоматически
+- Разделительные линии перед подытогами
+
 ### `SettingsPage` (633 строки)
 
 Управление магазинами:
@@ -330,19 +436,61 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 ## Компоненты
 
-| Компонент         | Директория           | Назначение                                   |
-| ----------------- | -------------------- | -------------------------------------------- |
-| `AppLayout`       | `components/layout/` | Sidebar + Header + content area              |
-| `Sidebar`         | `components/layout/` | Навигация (collapse)                         |
-| `Header`          | `components/layout/` | Верхняя панель (shop selector, theme toggle) |
-| `ShopSelector`    | `components/layout/` | Dropdown выбора магазина                     |
-| `AuthGuard`       | `components/auth/`   | Защита маршрутов                             |
-| `OnboardingGuard` | `components/`        | Защита от отсутствия магазинов               |
-| `ShopWizard`      | `components/shops/`  | Пошаговый мастер подключения                 |
-| `Button`          | `components/ui/`     | Единая кнопка (primary/outline/ghost/danger) |
-| `Card`            | `components/ui/`     | Карточка с заголовком                        |
-| `Skeleton`        | `components/ui/`     | Placeholder для загрузки                     |
-| Input/Label       | `components/ui/`     | Элементы форм                                |
+| Компонент             | Директория           | Назначение                                               |
+| --------------------- | -------------------- | -------------------------------------------------------- |
+| `AppLayout`           | `components/layout/` | Sidebar + Header + content area                          |
+| `Sidebar`             | `components/layout/` | Навигация (collapse, nested menu)                        |
+| `Header`              | `components/layout/` | Верхняя панель (shop selector, theme toggle)             |
+| `ShopSelector`        | `components/layout/` | Dropdown выбора магазина                                 |
+| `AuthGuard`           | `components/auth/`   | Защита маршрутов                                         |
+| `OnboardingGuard`     | `components/`        | Защита от отсутствия магазинов                           |
+| `ShopWizard`          | `components/shops/`  | Пошаговый мастер подключения                             |
+| `ProductFinanceTable` | `components/`        | Товарный P&L — unified table style                       |
+| `DateRangePicker`     | `components/`        | Календарь произвольного диапазона (2 месяца, popupAlign) |
+| `Button`              | `components/ui/`     | Единая кнопка (primary/outline/ghost/danger)             |
+| `Card`                | `components/ui/`     | Карточка с заголовком                                    |
+| `Badge`               | `components/ui/`     | Стилизованный бейдж                                      |
+| `Skeleton`            | `components/ui/`     | Placeholder для загрузки                                 |
+| Input/Label           | `components/ui/`     | Элементы форм                                            |
+
+---
+
+## Sidebar навигация
+
+Bоковая панель с вложенной навигацией (collapse + expand):
+
+| Секция         | Пункт            | Путь              | Иконка          | Статус         |
+| -------------- | ---------------- | ----------------- | --------------- | -------------- |
+| **АНАЛИТИКА**  | Обзор            | `/`               | LayoutDashboard | ✅ Активен     |
+|                | Товары           | `/products`       | Package         | ✅ Активен     |
+|                | Продажи ▾        |                   | ShoppingCart    | ✅ Группа      |
+|                | └ Обзор продаж   | `/sales`          | TrendingUp      | ✅ Активен     |
+|                | └ ABC/XYZ анализ | `/sales/abc-xyz`  | Grid3X3         | ✅ Активен     |
+|                | └ Прогноз        | `/sales/forecast` | LineChart       | ✅ Активен     |
+|                | Воронка          | `/funnel`         | BarChart3       | 🚧 Placeholder |
+|                | Склады           | `/warehouses`     | Warehouse       | 🚧 Placeholder |
+|                | Финансы          | `/finances`       | DollarSign      | ✅ Активен     |
+| **УПРАВЛЕНИЕ** | Реклама          | `/advertising`    | Megaphone       | 🚧 Placeholder |
+|                | События          | `/events`         | Activity        | 🚧 Placeholder |
+| **СИСТЕМА**    | Настройки        | `/settings`       | Settings        | ✅ Активен     |
+
+---
+
+## Unified Table Design
+
+Таблицы `TopProductsTable` (SalesPage), `ProductFinanceTable` (FinancesPage) и `ProductsTable` (AbcXyzPage) приведены к единому стилю:
+
+| Свойство           | Реализация                                                          |
+| ------------------ | ------------------------------------------------------------------- |
+| Контейнер          | `rounded-2xl border bg-[hsl(var(--card))]` с overflow-hidden        |
+| Title bar          | Заголовок + описание/счётчик товаров                                |
+| Высота             | `max-h-[600px]` — вертикальный скролл внутри                        |
+| Sticky header      | `thead.sticky.top-0.z-20` — заголовки всегда видны                  |
+| Sticky 1-й столбец | `position: sticky; left: 0; box-shadow: 2px 0 8px…`                 |
+| Sticky footer      | `tfoot.sticky.bottom-0.z-20` — строка «Итого» (ProductFinanceTable) |
+| Zebra striping     | Чередование строк: `bg-card` / `bg-muted/0.06`                      |
+| Ячейки             | Padding: `px-4 py-3.5` (header), `px-4 py-3` (body)                 |
+| Шрифты             | `text-[13px] font-semibold` (header), `text-[13px]` (body)          |
 
 ---
 
@@ -367,13 +515,15 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 ---
 
-## Будущие страницы (зарезервированы в App.tsx)
+## Placeholder-страницы (активны в App.tsx)
+
+Следующие маршруты зарегистрированы в `App.tsx` и отображаются в Sidebar, но содержат placeholder-компоненты:
 
 ```typescript
-// <Route path="/funnel" element={<FunnelPage />} />
-// <Route path="/warehouses" element={<WarehousesPage />} />
-// <Route path="/advertising" element={<AdvertisingPage />} />
-// <Route path="/events" element={<EventsPage />} />
+<Route path="/funnel" element={<FunnelPage />} />
+<Route path="/warehouses" element={<WarehousesPage />} />
+<Route path="/advertising" element={<AdvertisingPage />} />
+<Route path="/events" element={<EventsPage />} />
 ```
 
 ---
@@ -441,5 +591,16 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - **Добавлена секция `SalesPage`** — Обзор продаж (1019 строк): 7 KPI, география, возвраты, per-product overlay
 - **Добавлена секция `AbcXyzPage`** — ABC/XYZ анализ (489 строк): матрица 3×3, таблица товаров
 - **Обновлён Routing:** 6 активных роутов (добавлены /sales, /sales/abc-xyz, /finances, /products)
-- **Убран «Прогноз»** из Sidebar и роутинга (код вынесен в ветку `feature/forecast-ml`)
 - Добавлен `PeriodSelector` в таблицу компонентов
+
+### 2026-03-02
+
+- **Добавлена секция `ForecastPage`** (387 строк): прогноз продаж Ozon/WB, SKU-анализ, SkuAnalysisCard, severity levels
+- **Добавлена секция `WBProductsPage`** (644 строки): каталог товаров WB с аналитикой, WBCostEdit, серверная сортировка, фильтры
+- **Добавлена секция `FinancesPage`** (1009 строк): P&L, waterfall BreakdownChart, DynamicsChart (8 метрик), ComparisonTable, GroupBySelector
+- **Routing diagram:** обновлена — 7 активных + 4 placeholder маршрута
+- **Sidebar навигация:** полная таблица с секциями, вложенным меню «Продажи», статусами страниц
+- **Unified Table Design:** документирован единый стиль таблиц (sticky header/column/footer, `max-h-[600px]`, zebra, rounded card)
+- **Компоненты:** добавлены `ProductFinanceTable`, `DateRangePicker`, `Badge`
+- **Placeholder-страницы:** уточнено описание (активны в App.tsx, а не закомментированы)
+- **API Layer:** добавлены `forecast.ts`, `wb-products.ts` — 9 API-модулей вместо 7
