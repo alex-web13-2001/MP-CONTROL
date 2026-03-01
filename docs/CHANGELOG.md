@@ -330,3 +330,22 @@
 - Sticky первый столбец с `stickyCol` + box-shadow
 - Zebra striping, единые размеры ячеек
 
+
+## 2026-03-01
+
+### ui(sales+finances): unified table style — matching ABC/XYZ
+
+**TopProductsTable** (SalesPage.tsx):
+- Rounded-2xl card container с title bar
+- `max-h-[600px]` scrollable area
+- Sticky header (vertical z-20) + sticky first column 'Товар' (horizontal, box-shadow)
+- Zebra striping (odd rows bg-muted/0.06)
+- Убрана дублирующая Card-обёртка
+- Единые padding/font-size ячеек
+
+**ProductFinanceTable** (ProductFinanceTable.tsx):
+- Тот же rounded-2xl card + title bar + счётчик товаров
+- `max-h-[600px]` vertical scroll
+- Sticky header (z-20) + sticky first column + **sticky ИТОГО footer** (bottom-0)
+- Zebra striping, единые шрифты через HSL vars
+
