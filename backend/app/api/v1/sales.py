@@ -2321,12 +2321,12 @@ async def get_ozon_forecast(
             ord_trend_pct = round((ord_second_half - ord_first_half) / max(ord_first_half, 1) * 100, 1)
 
             # ── Generate recommendations ──
-            avg_price = round(total_hist_rev / total_hist_orders) if total_hist_orders > 0 else 0
+            avg_price = round(recent_rev / recent_orders) if recent_orders > 0 else 0
 
             analysis = generate_sku_recommendations(
-                revenue=total_hist_rev,
-                orders=total_hist_orders,
-                ad_spend=total_hist_ad_spend,
+                revenue=recent_rev,
+                orders=recent_orders,
+                ad_spend=recent_ad_spend,
                 commission=hist_commission,
                 logistics=hist_logistics,
                 cogs=hist_cogs,
@@ -2352,11 +2352,11 @@ async def get_ozon_forecast(
                 "offer_id": oid,
                 "name": sku_to_name.get(s, ""),
                 "image_url": sku_to_image.get(s, ""),
-                # Historical totals
+                # Historical totals (last forecast_days for fair comparison)
                 "history_totals": {
-                    "revenue": round(total_hist_rev),
-                    "orders": total_hist_orders,
-                    "ad_spend": round(total_hist_ad_spend),
+                    "revenue": round(recent_rev),
+                    "orders": recent_orders,
+                    "ad_spend": round(recent_ad_spend),
                     "profit": hist_profit,
                     "margin_pct": hist_margin,
                     "roi": hist_roi,
