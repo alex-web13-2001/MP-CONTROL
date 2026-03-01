@@ -5,19 +5,19 @@
  * revenue, logistics, storage, ads, COGS, profit —
  * with delta % vs previous period and % of revenue.
  *
- * Unified style matching ABC/XYZ & Sales tables:
- *   - rounded-2xl card container with title bar
- *   - max-h-[600px] scrollable area
- *   - sticky header (vertical) + sticky footer (ИТОГО)
- *   - sticky first column (horizontal) with box-shadow
- *   - zebra-striped rows
+ * Unified style matching ABC/XYZ and Sales tables:
+ * - rounded-2xl card container with title bar
+ * - max-h-[600px] scrollable area
+ * - sticky header (vertical) + sticky first column (horizontal)
+ * - sticky ИТОГО footer
+ * - zebra striping
  */
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
-import { ArrowUpDown, ArrowUp, ArrowDown, TrendingUp, TrendingDown, Package } from 'lucide-react'
+import { TrendingUp, TrendingDown, Package } from 'lucide-react'
 import type { ProductFinanceItem } from '@/api/finances'
 
-// ── Sticky cell styles ───────────────────────────────────────
+// ── Sticky cell styles ────────────────────────────────────────
 const stickyCol: React.CSSProperties = {
   position: 'sticky',
   left: 0,
@@ -156,7 +156,8 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
     return 'text-red-400'
   }
 
-  const thBase = 'px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none'
+  const thCls = "px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none cursor-pointer transition-colors"
+  const tdCls = "px-4 py-3 text-right whitespace-nowrap"
 
   return (
     <motion.div
@@ -176,13 +177,13 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
         </span>
       </div>
 
-      {/* Scrollable table — sticky header + footer (vertical), sticky first column (horizontal) */}
+      {/* Scrollable table — sticky header (vertical) + sticky first column (horizontal) + sticky footer */}
       <div className="overflow-auto max-h-[600px] relative">
         <table className="w-full border-collapse" style={{ minWidth: 900 }}>
           <thead className="sticky top-0 z-20">
             <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
               <th
-                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--card))]"
+                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px] min-w-[250px] max-w-[250px] bg-[hsl(var(--card))]"
                 style={{ ...stickyCol, zIndex: 30 }}
               >
                 Товар
@@ -191,32 +192,26 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                 <th
                   key={col.key}
                   className={cn(
-                    thBase,
-                    'cursor-pointer transition-colors bg-[hsl(var(--card))]',
+                    thCls,
                     sortKey === col.key
                       ? 'text-[hsl(var(--foreground))]'
-                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]',
+                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
                   )}
                   onClick={() => handleSort(col.key)}
                 >
                   <span className="inline-flex items-center gap-1 justify-end">
                     {col.shortLabel || col.label}
-                    {sortKey === col.key ? (
-                      sortDir === 'desc'
-                        ? <ArrowDown className="h-3 w-3 text-[hsl(var(--primary))]" />
-                        : <ArrowUp className="h-3 w-3 text-[hsl(var(--primary))]" />
-                    ) : (
-                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    {sortKey === col.key && (
+                      <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>
                     )}
                   </span>
                 </th>
               ))}
-              <th className={cn(thBase, 'text-[hsl(var(--muted-foreground))] bg-[hsl(var(--card))]')}>
+              <th className="px-4 py-3.5 text-right text-[13px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                 Маржа
               </th>
             </tr>
           </thead>
-
           <tbody>
             {sorted.map((product, idx) => {
               const rev = product.current.revenue || 0
@@ -227,32 +222,30 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
               return (
                 <tr
                   key={product.vendor_code}
-                  className={cn(
-                    'border-b border-[hsl(var(--border)/0.2)] hover:bg-[hsl(var(--muted)/0.2)] transition-colors group',
-                    rowBg,
-                  )}
+                  className={`border-b border-[hsl(var(--border)/0.2)] transition-colors ${rowBg} hover:bg-[hsl(var(--muted)/0.2)] group`}
                 >
                   {/* Product name — sticky left */}
                   <td
-                    className={cn(
-                      'px-4 py-3 w-[220px] min-w-[220px] max-w-[220px]',
-                      rowBg,
-                      'group-hover:bg-[hsl(var(--muted)/0.2)]',
-                    )}
+                    className={`px-4 py-3 w-[250px] min-w-[250px] max-w-[250px] ${rowBg} group-hover:bg-[hsl(var(--muted)/0.2)]`}
                     style={{ ...stickyCol, zIndex: 10 }}
                   >
-                    <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={product.name || product.vendor_code}>
-                      {product.name || product.vendor_code}
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-sm">📦</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={product.name || product.vendor_code}>
+                          {product.name || product.vendor_code}
+                        </div>
+                        {product.name && product.name !== product.vendor_code ? (
+                          <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate" title={product.vendor_code}>
+                            {product.vendor_code}
+                          </div>
+                        ) : product.nm_id ? (
+                          <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate" title={product.nm_id.toString()}>
+                            {product.nm_id}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
-                    {product.name && product.name !== product.vendor_code ? (
-                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 mt-0.5 truncate" title={product.vendor_code}>
-                        {product.vendor_code}
-                      </div>
-                    ) : product.nm_id ? (
-                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 mt-0.5" title={product.nm_id.toString()}>
-                        {product.nm_id}
-                      </div>
-                    ) : null}
                   </td>
 
                   {/* Data columns */}
@@ -262,9 +255,9 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                     const pctRev = product.pct_of_revenue[col.key]
 
                     return (
-                      <td key={col.key} className="px-4 py-3 text-right whitespace-nowrap">
+                      <td key={col.key} className={tdCls}>
                         <div className={cn(
-                          'text-[13px] font-medium',
+                          'text-[13px] font-medium tabular-nums',
                           col.key === 'profit' ? marginColor(val, rev) : 'text-[hsl(var(--foreground))]',
                         )}>
                           {col.isCount ? val : formatMoney(val)}
@@ -280,8 +273,8 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   })}
 
                   {/* Margin */}
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <div className={cn('text-[13px] font-semibold', marginColor(profit, rev))}>
+                  <td className={tdCls}>
+                    <div className={cn('text-[13px] font-semibold tabular-nums', marginColor(profit, rev))}>
                       {margin.toFixed(1)}%
                     </div>
                   </td>
@@ -293,31 +286,31 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
             {unmatchedRow && (
               <tr className="border-b border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.04)]">
                 <td
-                  className="px-4 py-3 w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--muted)/0.04)]"
+                  className="px-4 py-3 bg-[hsl(var(--muted)/0.04)] w-[250px] min-w-[250px] max-w-[250px]"
                   style={{ ...stickyCol, zIndex: 10 }}
                 >
                   <div className="text-[13px] text-[hsl(var(--muted-foreground))] italic">Без привязки к товару</div>
                 </td>
                 {columns.map(col => (
-                  <td key={col.key} className="px-4 py-3 text-right whitespace-nowrap">
-                    <div className="text-[13px] text-[hsl(var(--muted-foreground))]">
+                  <td key={col.key} className={tdCls}>
+                    <div className="text-[13px] text-[hsl(var(--muted-foreground))] tabular-nums">
                       {col.isCount ? (unmatchedRow.cur[col.key] ?? 0) : formatMoney(unmatchedRow.cur[col.key] ?? 0)}
                     </div>
                   </td>
                 ))}
-                <td className="px-4 py-3" />
+                <td className={tdCls} />
               </tr>
             )}
           </tbody>
 
-          {/* Sticky totals footer — stays visible at bottom */}
+          {/* Sticky ИТОГО footer */}
           <tfoot className="sticky bottom-0 z-20">
             <tr className="border-t-2 border-[hsl(var(--border))] bg-[hsl(var(--card))]">
               <td
-                className="px-4 py-3.5 w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--card))]"
+                className="px-4 py-4 bg-[hsl(var(--card))] w-[250px] min-w-[250px] max-w-[250px]"
                 style={{ ...stickyCol, zIndex: 30 }}
               >
-                <div className="text-[13px] font-bold text-[hsl(var(--foreground))]">Итого</div>
+                <div className="text-[14px] font-bold text-[hsl(var(--foreground))]">Итого</div>
               </td>
               {columns.map(col => {
                 const val = totals.current[col.key] ?? 0
@@ -327,9 +320,9 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   ? (val / rev * 100).toFixed(1) : undefined
 
                 return (
-                  <td key={col.key} className="px-4 py-3.5 text-right whitespace-nowrap">
+                  <td key={col.key} className="px-4 py-4 text-right whitespace-nowrap">
                     <div className={cn(
-                      'text-[13px] font-bold',
+                      'text-[13px] font-bold tabular-nums',
                       col.key === 'profit'
                         ? marginColor(val, totals.current.revenue || 0)
                         : 'text-[hsl(var(--foreground))]',
@@ -343,9 +336,9 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   </td>
                 )
               })}
-              <td className="px-4 py-3.5 text-right whitespace-nowrap">
+              <td className="px-4 py-4 text-right whitespace-nowrap">
                 <div className={cn(
-                  'text-[13px] font-bold',
+                  'text-[13px] font-bold tabular-nums',
                   marginColor(totals.current.profit ?? 0, totals.current.revenue ?? 0)
                 )}>
                   {totals.current.revenue
