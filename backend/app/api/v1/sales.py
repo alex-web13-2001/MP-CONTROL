@@ -1742,25 +1742,25 @@ async def get_wb_abc_xyz(
 
 
 # ═══════════════════════════════════════════════════════════════
-# Ozon Sales Forecast + Simulator  (NeuralProphet)
+# Ozon Sales Forecast + Simulator  (LightGBM)
 # ═══════════════════════════════════════════════════════════════
 
 
-def _neuralprophet_forecast(
+def _lightgbm_forecast(
     dates: list[str],
     values: list[float],
     forecast_days: int,
     ad_spend_daily: dict[str, float] | None = None,
-) -> tuple[list[dict], dict]:
-    """Run NeuralProphet forecast with weekly seasonality + AR.
+) -> tuple[list[dict], dict, dict[str, float]]:
+    """Run LightGBM forecast with lag features, rolling stats, seasonality.
 
-    Uses n_forecasts for multi-step prediction.
-    Returns (forecast_points, trend_info).
-    Falls back to simple moving average if NeuralProphet fails.
+    Returns (forecast_points, trend_info, feature_importance).
+    Falls back to simple moving average if data is insufficient.
     """
     import pandas as pd
     import numpy as np
 
+    # ── Fallback for insufficient data ──
     if len(dates) < 14:
         mean_val = sum(values) / len(values) if values else 0
         last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
@@ -1773,58 +1773,137 @@ def _neuralprophet_forecast(
                 "value_low": round(mean_val * 0.7),
                 "value_high": round(mean_val * 1.3),
             })
-        return forecast_pts, {"slope_pct": 0, "direction": "flat"}
+        return forecast_pts, {"slope_pct": 0, "direction": "flat"}, {}
 
     try:
-        from neuralprophet import NeuralProphet, set_log_level
-        set_log_level("ERROR")
+        import lightgbm as lgb
 
         df = pd.DataFrame({"ds": pd.to_datetime(dates), "y": values})
+        df = df.sort_values("ds").reset_index(drop=True)
 
-        # NeuralProphet with AR requires n_forecasts for multi-step
-        model = NeuralProphet(
-            seasonality_mode="multiplicative",
-            weekly_seasonality=True,
-            daily_seasonality=False,
-            yearly_seasonality=False,
-            n_lags=7,
-            n_forecasts=forecast_days,
-            learning_rate=0.1,
-            epochs=150,
-            batch_size=min(32, max(8, len(df) // 4)),
+        # Exogenous: ad_spend
+        if ad_spend_daily:
+            df["ad_spend"] = df["ds"].apply(
+                lambda d: ad_spend_daily.get(str(d.date()), 0)
+            )
+        else:
+            df["ad_spend"] = 0.0
+
+        # ── Feature engineering ──
+        for lag in [1, 2, 3, 7, 14]:
+            df[f"lag{lag}"] = df["y"].shift(lag)
+
+        df["ma3"] = df["y"].rolling(3, min_periods=1).mean()
+        df["ma7"] = df["y"].rolling(7, min_periods=1).mean()
+        df["ma14"] = df["y"].rolling(14, min_periods=1).mean()
+        df["std7"] = df["y"].rolling(7, min_periods=1).std().fillna(0)
+
+        # Ad spend lags
+        for lag in [1, 2, 3]:
+            df[f"ad_spend_lag{lag}"] = df["ad_spend"].shift(lag)
+
+        df["ad_spend_ma7"] = df["ad_spend"].rolling(7, min_periods=1).mean()
+
+        # Seasonality
+        df["day_of_week"] = df["ds"].dt.dayofweek
+        df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
+        df["month"] = df["ds"].dt.month
+
+        feature_cols = [
+            "lag1", "lag2", "lag3", "lag7", "lag14",
+            "ma3", "ma7", "ma14", "std7",
+            "ad_spend_lag1", "ad_spend_lag2", "ad_spend_lag3", "ad_spend_ma7",
+            "day_of_week", "is_weekend", "month",
+        ]
+
+        # Drop rows with NaN (from lags)
+        df_train = df.dropna(subset=feature_cols).copy()
+
+        if len(df_train) < 10:
+            raise ValueError("Not enough training data after feature engineering")
+
+        X = df_train[feature_cols].values
+        y = df_train["y"].values
+
+        model = lgb.LGBMRegressor(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.05,
+            num_leaves=31,
+            min_child_samples=5,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            verbose=-1,
         )
+        model.fit(X, y)
 
-        model.fit(df, freq="D", progress=False)
+        # ── Feature importance ──
+        importances = model.feature_importances_
+        total_imp = sum(importances) or 1
+        feat_importance = {
+            col: round(imp / total_imp * 100, 1)
+            for col, imp in sorted(
+                zip(feature_cols, importances),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+        }
 
-        future = model.make_future_dataframe(df, periods=forecast_days)
-        pred = model.predict(future)
+        # ── Multi-step forecast ──
+        last_row = df.iloc[-1].copy()
+        last_dt = pd.Timestamp(dates[-1])
+        recent_values = list(values[-14:])
+        recent_ad = [ad_spend_daily.get(str(d), 0) for d in
+                     [(date.fromisoformat(dates[-1]) - timedelta(days=i)) for i in range(14)]]
 
-        # Extract future rows (after last historical date)
-        last_hist_date = pd.Timestamp(dates[-1])
-        forecast_df = pred[pred["ds"] > last_hist_date].reset_index(drop=True)
-
-        # With n_forecasts, values are diagonal: yhat1 for day 1, yhat2 for day 2, etc.
         forecast_pts = []
-        for i, (_, row) in enumerate(forecast_df.iterrows()):
-            step = i + 1
-            col_name = f"yhat{step}"
-            yhat = float(row.get(col_name, 0) or 0)
+        residuals = y - model.predict(X)
+        residual_std = float(np.std(residuals))
+
+        for step in range(1, forecast_days + 1):
+            fd = last_dt + pd.Timedelta(days=step)
+
+            # Build feature vector for this step
+            vals = recent_values
+            features = {
+                "lag1": vals[-1] if len(vals) >= 1 else 0,
+                "lag2": vals[-2] if len(vals) >= 2 else 0,
+                "lag3": vals[-3] if len(vals) >= 3 else 0,
+                "lag7": vals[-7] if len(vals) >= 7 else 0,
+                "lag14": vals[-14] if len(vals) >= 14 else 0,
+                "ma3": float(np.mean(vals[-3:])) if len(vals) >= 3 else float(np.mean(vals)),
+                "ma7": float(np.mean(vals[-7:])) if len(vals) >= 7 else float(np.mean(vals)),
+                "ma14": float(np.mean(vals[-14:])) if len(vals) >= 14 else float(np.mean(vals)),
+                "std7": float(np.std(vals[-7:])) if len(vals) >= 7 else 0,
+                "ad_spend_lag1": recent_ad[0] if len(recent_ad) >= 1 else 0,
+                "ad_spend_lag2": recent_ad[1] if len(recent_ad) >= 2 else 0,
+                "ad_spend_lag3": recent_ad[2] if len(recent_ad) >= 3 else 0,
+                "ad_spend_ma7": float(np.mean(recent_ad[:7])) if recent_ad else 0,
+                "day_of_week": fd.dayofweek,
+                "is_weekend": 1 if fd.dayofweek >= 5 else 0,
+                "month": fd.month,
+            }
+
+            X_pred = np.array([[features[c] for c in feature_cols]])
+            yhat = float(model.predict(X_pred)[0])
             yhat = max(yhat, 0)
 
-            # Estimate confidence interval from historical volatility
-            recent = values[-14:] if len(values) >= 14 else values
-            std_val = float(np.std(recent)) if len(recent) > 1 else yhat * 0.2
-            confidence_mult = 1 + (step - 1) * 0.03
-            band = std_val * confidence_mult
+            # Confidence interval widens with step
+            confidence_mult = 1 + (step - 1) * 0.05
+            band = residual_std * confidence_mult * 1.5
 
             forecast_pts.append({
-                "date": str(row["ds"].date()),
+                "date": str(fd.date()),
                 "value": round(yhat),
                 "value_low": round(max(yhat - band, 0)),
                 "value_high": round(yhat + band),
             })
 
-        # Trend
+            # Update recent_values for next step (autoregressive)
+            recent_values.append(yhat)
+            recent_ad.insert(0, recent_ad[0] if recent_ad else 0)
+
+        # ── Trend ──
         if len(forecast_pts) >= 2:
             first_v = forecast_pts[0]["value"]
             last_v = forecast_pts[-1]["value"]
@@ -1840,10 +1919,10 @@ def _neuralprophet_forecast(
             "direction": "up" if slope_pct > 0.1 else "down" if slope_pct < -0.1 else "flat",
         }
 
-        return forecast_pts, trend_info
+        return forecast_pts, trend_info, feat_importance
 
     except Exception as e:
-        logger.warning("NeuralProphet failed, fallback to moving average: %s", e)
+        logger.warning("LightGBM forecast failed, fallback to moving average: %s", e)
         window = values[-7:] if len(values) >= 7 else values
         mean_val = sum(window) / len(window) if window else 0
         last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
@@ -1856,7 +1935,8 @@ def _neuralprophet_forecast(
                 "value_low": round(mean_val * 0.7),
                 "value_high": round(mean_val * 1.3),
             })
-        return forecast_pts, {"slope_pct": 0, "direction": "flat"}
+        return forecast_pts, {"slope_pct": 0, "direction": "flat"}, {}
+
 
 
 @router.get("/ozon/forecast")
@@ -1867,10 +1947,10 @@ async def get_ozon_forecast(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sales forecast for Ozon using NeuralProphet.
+    """Sales forecast for Ozon using LightGBM.
 
-    Model: NeuralProphet with weekly seasonality, 7-day autoregression,
-    and ad spend as lagged regressor.
+    Model: LightGBM with lag features, rolling stats, weekly/monthly
+    seasonality, ad spend as exogenous variable, feature importance.
     Products: unit economics for what-if simulator.
     """
     result = await db.execute(
@@ -1939,21 +2019,21 @@ async def get_ozon_forecast(
         except Exception as e:
             logger.warning("Forecast daily ads error: %s", e)
 
-        # ── 2. NeuralProphet forecast ──
+        # ── 2. LightGBM forecast ──
         import asyncio
 
         loop = asyncio.get_event_loop()
 
         # Revenue forecast (run in thread to avoid blocking)
-        rev_forecast, rev_trend = await loop.run_in_executor(
+        rev_forecast, rev_trend, rev_feat_imp = await loop.run_in_executor(
             None,
-            lambda: _neuralprophet_forecast(dates_list, rev_values, forecast_days, ad_spend_daily),
+            lambda: _lightgbm_forecast(dates_list, rev_values, forecast_days, ad_spend_daily),
         )
 
         # Orders forecast
-        ord_forecast, ord_trend = await loop.run_in_executor(
+        ord_forecast, ord_trend, ord_feat_imp = await loop.run_in_executor(
             None,
-            lambda: _neuralprophet_forecast(dates_list, ord_values, forecast_days, None),
+            lambda: _lightgbm_forecast(dates_list, ord_values, forecast_days, None),
         )
 
         # Combine into unified forecast points
@@ -2171,6 +2251,10 @@ async def get_ozon_forecast(
             "history": history,
             "forecast": forecast,
             "trend": trend,
+            "feature_importance": {
+                "revenue": rev_feat_imp,
+                "orders": ord_feat_imp,
+            },
             "products": products_list,
         }
 
