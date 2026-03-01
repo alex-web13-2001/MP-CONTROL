@@ -1,7 +1,7 @@
 # MP-CONTROL — Backend API
 
 > REST API на FastAPI. Все endpoints начинаются с `/api/v1/`.  
-> Файлы: `backend/app/api/v1/` (6 роутеров), `backend/app/schemas/auth.py`
+> Файлы: `backend/app/api/v1/` (10 роутеров), `backend/app/schemas/auth.py`
 
 ---
 
@@ -9,12 +9,16 @@
 
 ```python
 # backend/app/api/v1/router.py
-router.include_router(auth_router)        # /api/v1/auth/*
-router.include_router(shops_router)       # /api/v1/shops/*
-router.include_router(commercial_router)  # /api/v1/commercial/*
-router.include_router(finance_router)     # /api/v1/finance-reports/*
-router.include_router(advert_router)      # /api/v1/advertising/*
-router.include_router(dashboard_router)   # /api/v1/dashboard/*
+router.include_router(auth_router)              # /api/v1/auth/*
+router.include_router(shops_router)             # /api/v1/shops/*
+router.include_router(finance_reports_router)    # /api/v1/finance-reports/*
+router.include_router(advertising_router)       # /api/v1/advertising/*
+router.include_router(commercial_router)        # /api/v1/commercial/*
+router.include_router(dashboard_router)         # /api/v1/dashboard/*
+router.include_router(products_router)          # /api/v1/products/*
+router.include_router(wb_products_router)       # /api/v1/products/wb/*
+router.include_router(finances_router)          # /api/v1/finances/*
+router.include_router(sales_router)             # /api/v1/sales/*
 ```
 
 ---
@@ -283,6 +287,86 @@ period: "7d" | "14d" | "30d" (default: "7d")
 
 ---
 
+## Продажи — `/api/v1/sales`
+
+### Endpoints
+
+| Метод | Path                        | Описание                                  | Auth   |
+| ----- | --------------------------- | ----------------------------------------- | ------ |
+| `GET` | `/sales/ozon`               | KPI + графики + ТОП товаров Ozon          | Bearer |
+| `GET` | `/sales/ozon/product-daily` | Дневная динамика по конкретным SKU (Ozon) | Bearer |
+| `GET` | `/sales/wb`                 | KPI + графики + ТОП товаров WB            | Bearer |
+| `GET` | `/sales/wb/product-daily`   | Дневная динамика по конкретным SKU (WB)   | Bearer |
+| `GET` | `/sales/ozon/abc-xyz`       | ABC/XYZ анализ товаров Ozon               | Bearer |
+| `GET` | `/sales/wb/abc-xyz`         | ABC/XYZ анализ товаров WB                 | Bearer |
+
+### Query Parameters (общие для ozon/wb)
+
+```
+shop_id: int (required)
+period: int (default: 7, 1-366) — период в днях
+date_from: date (optional) — начало кастомного диапазона
+date_to: date (optional) — конец кастомного диапазона
+```
+
+### Response Schema (GET /sales/ozon и /sales/wb)
+
+```
+{
+  kpi: {
+    orders_count, orders_delta,
+    revenue, revenue_delta, avg_check,
+    views, views_delta,
+    clicks, clicks_delta,
+    ad_spend, ad_spend_delta,
+    carts, carts_delta,
+    drr, drr_delta
+  },
+  charts: {
+    daily: [{ date, orders, revenue, views, clicks, carts, ad_spend, drr }]
+  },
+  top_products: [{
+    sku, name, image_url, orders, revenue, delta_pct, ad_spend, drr
+  }]
+}
+```
+
+### ABC/XYZ анализ (GET /sales/ozon/abc-xyz, /sales/wb/abc-xyz)
+
+```
+shop_id: int (required)
+period: int (default: 90, 14-365)
+use_profit: bool (default: false) — ABC по чистой прибыли вместо выручки
+```
+
+**Формула ABC:**
+
+- Сортировка товаров по убыванию выручки (или прибыли)
+- Кумулятивный % → A (≤80%), B (80-95%), C (>95%)
+
+**Формула XYZ:**
+
+- CV = std(daily_orders) / mean(daily_orders) × 100
+- X (CV<10%), Y (CV 10-25%), Z (CV>25%)
+
+**Формула чистой прибыли:**
+`profit = revenue − commission − logistics − storage − acquiring − ad_spend − cogs`
+
+---
+
+## Финансы — `/api/v1/finances`
+
+### Endpoints
+
+| Метод | Path                      | Описание              | Auth   |
+| ----- | ------------------------- | --------------------- | ------ |
+| `GET` | `/finances/ozon`          | P&L Ozon (waterfall)  | Bearer |
+| `GET` | `/finances/wb`            | P&L WB (waterfall)    | Bearer |
+| `GET` | `/finances/ozon/products` | Товарная прибыль Ozon | Bearer |
+| `GET` | `/finances/wb/products`   | Товарная прибыль WB   | Bearer |
+
+---
+
 ## Общий паттерн async task endpoints
 
 Все sync-endpoints возвращают `task_id` → клиент полит через GET `/status/{task_id}`:
@@ -303,7 +387,7 @@ get_db()            → AsyncSession (PostgreSQL)
 get_current_user()  → User (JWT decode → SELECT user + shops)
 ```
 
-`get_current_user` используется как `Depends()` в auth/shops/dashboard/products endpoints. Commercial/finance endpoints пока не защищены Bearer (принимают api_key в body).
+`get_current_user` используется как `Depends()` в auth/shops/dashboard/products/sales/finances endpoints.
 
 ---
 
@@ -364,3 +448,10 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **WB Dashboard:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(date, 3))` вместо `toDate(date)`.
 - **Ozon Финансы (COGS):** Маппинг `sku → offer_id` для товарной прибыли переведён на `dim_ozon_products` (PG) вместо `fact_ozon_orders` (CH). В CH offer_id содержал артефакты (лишние пробелы), что ломало lookup в `product_costs`.
 - **Ozon + WB Финансы (COGS):** Расчёт себестоимости использует `net_qty = sales - returns` вместо `sales` — корректный учёт возвратов.
+
+### 2026-03-01
+
+- **Добавлена секция «Продажи — /api/v1/sales»** — 6 endpoints: Ozon/WB sales overview, product-daily, ABC/XYZ анализ
+- **Добавлена секция «Финансы — /api/v1/finances»** — 4 endpoints: P&L и товарная прибыль для Ozon/WB
+- **Роутинг обновлён:** 10 роутеров вместо 6 (добавлены products, wb_products, finances, sales)
+- Удалены forecast endpoints (код вынесен в ветку `feature/forecast-ml`)

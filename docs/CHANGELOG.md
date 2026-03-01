@@ -277,3 +277,20 @@
 ### Исправлено
 - docker-compose.yml: nginx переключён с prod-конфига (SSL) на dev-конфиг
 - Docker build теперь 60с вместо 5+ минут
+
+## 2026-03-01 — Обновление архитектурной документации
+
+### 04_BACKEND_API.md
+- Добавлена секция «Продажи — /api/v1/sales» (6 endpoints)
+- Добавлена секция «Финансы — /api/v1/finances» (4 endpoints)
+- Роутинг обновлён: 10 роутеров вместо 6
+- Удалены forecast endpoints (код в feature/forecast-ml)
+
+### 06_FRONTEND.md
+- Добавлены секции SalesPage (1019 строк) и AbcXyzPage (489 строк)
+- Routing обновлён: 6 активных роутов
+- Убран «Прогноз» из sidebar
+
+### 07_INFRASTRUCTURE.md
+- Документировано различие nginx.conf (dev) и nginx.prod.conf (prod)
+- ML зависимости удалены, Docker build ~60с

@@ -111,7 +111,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 
 ## Nginx
 
-Файл: `nginx/nginx.conf`
+### Dev: `nginx/nginx.conf`
+
+Используется в `docker-compose.yml` для локальной разработки (без SSL).
 
 ```nginx
 upstream backend  { server backend:8000; }
@@ -141,6 +143,13 @@ server {
 ```
 
 **Gzip:** включён для text/css, JSON, JavaScript.
+
+### Prod: `nginx/nginx.prod.conf`
+
+Используется в `docker-compose.prod.yml` для production (SSL Let's Encrypt, домен mp-control.ru).
+
+> [!WARNING]
+> `docker-compose.yml` должен маппить `nginx.conf` (dev). Если маппить `nginx.prod.conf` локально — nginx не стартует из-за отсутствия SSL сертификатов.
 
 ---
 
@@ -426,3 +435,9 @@ docker-compose up -d --build
 - **`deploy.sh` обновлён:** добавлены шаги копирования `scripts/` и `migrations/` + автоматический запуск `run_ch_migrations.py` перед рестартом контейнеров
 - Обновлена секция «Процесс деплоя» — полный пошаговый список с CH миграциями
 - **Причина:** при деплое `wb_acquiring` код уже включал колонку в INSERT, но колонки не было в prod схеме CH → все финотчёты shop_id=12 падали. CH миграции решают эту проблему.
+
+### 2026-03-01
+
+- **Nginx:** Документировано различие `nginx.conf` (dev, без SSL) и `nginx.prod.conf` (prod, SSL)
+- **docker-compose.yml:** Переключён на `nginx.conf` для локальной разработки (ранее маппил `nginx.prod.conf` → nginx не стартовал без SSL)
+- **ML зависимости удалены:** `torch`, `neuralprophet`, `lightgbm`, `scikit-learn`, `pandas` убраны из `requirements.txt` и Dockerfile. Docker build ~60 сек вместо 5+ мин

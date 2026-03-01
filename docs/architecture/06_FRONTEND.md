@@ -35,6 +35,10 @@ graph TB
 
     subgraph "Auth + Shop Required"
         Dashboard["/ → DashboardPage"]
+        Products["/products → ProductsPage"]
+        Sales["/sales → SalesPage"]
+        AbcXyz["/sales/abc-xyz → AbcXyzPage"]
+        Finances["/finances → FinancesPage"]
         Settings["/settings → SettingsPage"]
     end
 
@@ -261,7 +265,56 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Excel bulk upload (.xlsx)
 - Excel шаблон для заполнения
 
-### `SettingsPage` (633 строки — самая большая страница)
+### `SalesPage` (~1019 строк)
+
+Страница «Обзор продаж». Универсальная для Ozon и WB, авто-определение маркетплейса.
+
+- Ozon → `GET /api/v1/sales/ozon?shop_id=X&period=7`
+- WB → `GET /api/v1/sales/wb?shop_id=X&period=7`
+- Auto-refresh каждые 2 мин.
+
+**7 KPI-карточек** (Framer Motion, delta к предыдущему периоду):
+
+- Заказы, Продажи, Возвраты, Показы, Клики, Расход рекламы, DRR
+
+**Компоненты:**
+
+| Компонент          | Описание                                                                        |
+| ------------------ | ------------------------------------------------------------------------------- |
+| `KpiCard`          | Универсальная карточка: value, delta badge, icon, accent, subtitle              |
+| `SalesChart`       | ComposedChart (bar заказы + line выручка + line возвраты + per-product overlay) |
+| `TopProductsTable` | Таблица ТОП товаров с сортировкой, рекл. воронкой, чекбоксы для выбора          |
+| `GeoSection`       | География заказов: города с bar-прогрессом, collapse/expand                     |
+| `ReturnReasons`    | Причины возвратов c inline bars                                                 |
+| `SalesSkeleton`    | Skeleton loader                                                                 |
+
+**Per-product overlay:** выбор товаров чекбоксами в таблице → их выручка накладывается на общий график (до 10 цветов). Данные запрашиваются через `/sales/ozon/product-daily` или `/sales/wb/product-daily`.
+
+**Таблица ТОП товаров — столбцы:**
+
+- Продажи: Заказы, Продажи, Цена, Возвраты, % возвр. (каждый с delta)
+- Рекл. воронка (если есть данные): Показы, Клики, Корзины, CTR, CR→корз, CR→заказ
+
+### `AbcXyzPage` (~489 строк)
+
+Страница «ABC/XYZ Анализ». Классификация товаров по вкладу в выручку и стабильности спроса.
+
+- Ozon → `GET /api/v1/sales/ozon/abc-xyz?shop_id=X&period=90`
+- WB → `GET /api/v1/sales/wb/abc-xyz?shop_id=X&period=90`
+
+**Компоненты:**
+
+| Компонент       | Описание                                                         |
+| --------------- | ---------------------------------------------------------------- |
+| ABC сводка      | 3 карточки (A/B/C): кол-во товаров, % выручки, градиентные цвета |
+| XYZ сводка      | 3 карточки (X/Y/Z): стабильность спроса, CV пороги               |
+| Матрица 3×3     | Интерактивная сетка: AX..CZ с emoji, градиентами, клик фильтрует |
+| `ProductsTable` | Таблица товаров с сортировкой, sticky-колонкой, фото товара      |
+
+**Тогглы периода:** 30 дн. / 60 дн. / 90 дн.  
+**Тоггл ABC по:** Выручка / Чистая прибыль
+
+### `SettingsPage` (633 строки)
 
 Управление магазинами:
 
@@ -317,10 +370,8 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 ## Будущие страницы (зарезервированы в App.tsx)
 
 ```typescript
-// <Route path="/sales" element={<SalesPage />} />
 // <Route path="/funnel" element={<FunnelPage />} />
 // <Route path="/warehouses" element={<WarehousesPage />} />
-// <Route path="/finances" element={<FinancesPage />} />
 // <Route path="/advertising" element={<AdvertisingPage />} />
 // <Route path="/events" element={<EventsPage />} />
 ```
@@ -384,3 +435,11 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 - **`DashboardPage.tsx`:** KPI-карточка «Выручка» переименована в «Продажи» (там отображается сумма заказов, не выручка после возвратов). Переименовано во всех 5 местах: KPI, тултип, легенда, таблица топ-товаров.
 - **`DashboardPage.tsx`:** Период по умолчанию изменён с `'7d'` на `'today'`.
+
+### 2026-03-01
+
+- **Добавлена секция `SalesPage`** — Обзор продаж (1019 строк): 7 KPI, география, возвраты, per-product overlay
+- **Добавлена секция `AbcXyzPage`** — ABC/XYZ анализ (489 строк): матрица 3×3, таблица товаров
+- **Обновлён Routing:** 6 активных роутов (добавлены /sales, /sales/abc-xyz, /finances, /products)
+- **Убран «Прогноз»** из Sidebar и роутинга (код вынесен в ветку `feature/forecast-ml`)
+- Добавлен `PeriodSelector` в таблицу компонентов
