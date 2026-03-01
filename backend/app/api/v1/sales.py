@@ -2126,8 +2126,7 @@ async def get_wb_forecast(
         sku_to_name: dict[int, str] = {}
         sku_to_image: dict[int, str] = {}
         cost_map: dict[str, float] = {}
-        commission_rates: dict[int, float] = {}
-        logistics_per_order: dict[int, float] = {}
+        mp_fees_pct_map: dict[int, float] = {}  # mp_fees as % of revenue per SKU
 
         try:
             placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
@@ -2163,29 +2162,31 @@ async def get_wb_forecast(
         except Exception as e:
             logger.warning("WB Forecast products/costs error: %s", e)
 
-        # Commission & logistics from fact_finances (WB)
+        # MP fees from fact_finances (WB): mp_fees_pct = (retail - payout) / retail
+        # This is the CORRECT approach — same as Ozon products page.
+        # It captures ALL marketplace deductions (commission, logistics, storage, etc.)
         try:
             econ_rows = ch.query(f"""
                 SELECT
                     external_id,
-                    sum(abs(commission_amount)) / nullIf(sum(abs(retail_amount)), 0) AS commission_rate,
-                    sum(abs(logistics_total)) AS total_logistics,
-                    count() AS tx_count
+                    sum(retail_amount) AS total_retail,
+                    sum(payout_amount) AS total_payout
                 FROM mms_analytics.fact_finances_latest
                 WHERE shop_id = {{shop_id:UInt32}}
                   AND marketplace = 'wb'
                   AND event_date >= {{cur_start:Date}}
                   AND event_date <= {{cur_end:Date}}
                   AND external_id IN ({sku_str})
-                  AND operation_type NOT IN ('Шоссе', 'Пересорт')
+                  AND retail_amount > 0
                 GROUP BY external_id
             """, parameters=params).result_rows
             for r in econ_rows:
                 try:
                     nm = int(r[0])
-                    commission_rates[nm] = min(float(r[1] or 0), 1.0)
-                    tx_count = int(r[3] or 1) or 1
-                    logistics_per_order[nm] = float(r[2] or 0) / tx_count
+                    retail = float(r[1] or 0)
+                    payout = float(r[2] or 0)
+                    if retail > 0:
+                        mp_fees_pct_map[nm] = min((retail - payout) / retail, 0.5)
                 except (ValueError, TypeError):
                     pass
         except Exception as e:
@@ -2233,8 +2234,7 @@ async def get_wb_forecast(
         for s in sku_list:
             oid = sku_to_offer.get(s, str(s))
             cogs_unit = cost_map.get(oid.lower(), 0)
-            comm_rate = commission_rates.get(s, 0.15)
-            log_per_ord = logistics_per_order.get(s, 100)
+            mp_fees_pct = mp_fees_pct_map.get(s, 0.055)  # default 5.5% based on WB avg
 
             # Build daily data for this SKU
             daily_data = []
@@ -2277,15 +2277,13 @@ async def get_wb_forecast(
                 rev = pt["revenue"]
                 ords = pt["orders"]
                 ad_est = round(avg_daily_ad)
-                commission = round(rev * comm_rate)
-                logistics = round(ords * log_per_ord)
+                mp_fees = round(rev * mp_fees_pct)
                 cogs = round(cogs_unit * ords)
-                pft = round(rev - commission - logistics - ad_est - cogs)
+                pft = round(rev - mp_fees - ad_est - cogs)
                 mgn = round(pft / rev * 100, 1) if rev > 0 else 0
 
                 pt["ad_spend"] = ad_est
-                pt["commission"] = commission
-                pt["logistics"] = logistics
+                pt["mp_fees"] = mp_fees
                 pt["cogs"] = cogs
                 pt["profit"] = pft
                 pt["margin_pct"] = mgn
@@ -2311,10 +2309,9 @@ async def get_wb_forecast(
             recent_clicks = sum(d["clicks"] for d in recent_data)
             recent_carts = sum(d["carts"] for d in recent_data)
 
-            hist_commission = round(recent_rev * comm_rate)
-            hist_logistics = round(recent_orders * log_per_ord)
+            hist_mp_fees = round(recent_rev * mp_fees_pct)
             hist_cogs = round(cogs_unit * recent_orders)
-            hist_profit = round(recent_rev - hist_commission - hist_logistics - recent_ad_spend - hist_cogs)
+            hist_profit = round(recent_rev - hist_mp_fees - recent_ad_spend - hist_cogs)
             hist_margin = round(hist_profit / recent_rev * 100, 1) if recent_rev > 0 else 0
             hist_roi = round((recent_rev - recent_ad_spend) / recent_ad_spend * 100, 1) if recent_ad_spend > 0 else 0
             hist_ctr = round(recent_clicks / max(recent_views, 1) * 100, 2)
@@ -2336,8 +2333,8 @@ async def get_wb_forecast(
                 revenue=recent_rev,
                 orders=recent_orders,
                 ad_spend=recent_ad_spend,
-                commission=hist_commission,
-                logistics=hist_logistics,
+                commission=hist_mp_fees,
+                logistics=0,
                 cogs=hist_cogs,
                 profit=hist_profit,
                 margin_pct=hist_margin,
