@@ -8,14 +8,13 @@ import {
 import { useAppStore } from '@/stores/appStore'
 import {
   ResponsiveContainer, ComposedChart, Area, Line, XAxis, YAxis,
-  CartesianGrid, Tooltip, Legend, BarChart, Bar,
+  CartesianGrid, Tooltip, Legend,
 } from 'recharts'
 
 /* ── helpers ── */
 const fmtMoney = (v: number) =>
   v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
 const fmtNum = (v: number) => v.toLocaleString('ru-RU')
-const fmtPct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
 const fmtDate = (d: string) => {
   const dt = new Date(d)
   return dt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
@@ -303,12 +302,14 @@ export default function ForecastPage() {
           <div className="space-y-3">
             {data.products
               .filter(p => p.recommendations.length > 0)
-              .slice(0, 10)
               .map(p => (
                 <div key={p.sku} className="flex gap-3 items-start">
-                  <div className="flex items-center gap-2 min-w-[180px] flex-shrink-0">
+                  <div className="flex items-center gap-2 min-w-[220px] flex-shrink-0">
                     {p.image_url && <img src={p.image_url} alt="" className="w-6 h-6 rounded object-cover" />}
-                    <span className="text-xs font-medium truncate max-w-[150px]">{p.name || p.offer_id}</span>
+                    <div className="min-w-0">
+                      <span className="text-xs font-medium truncate block max-w-[180px]">{p.name || p.offer_id}</span>
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.6)]">{p.offer_id}</span>
+                    </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {p.recommendations.map((r, i) => (
