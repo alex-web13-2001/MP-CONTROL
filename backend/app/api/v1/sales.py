@@ -1750,15 +1750,23 @@ def _lightgbm_forecast(
     dates: list[str],
     values: list[float],
     forecast_days: int,
-    ad_spend_daily: dict[str, float] | None = None,
+    exog_daily: dict[str, dict[str, float]] | None = None,
 ) -> tuple[list[dict], dict, dict[str, float]]:
-    """Run LightGBM forecast with lag features, rolling stats, seasonality.
+    """Run LightGBM forecast with lag features, rolling stats, seasonality,
+    and exogenous variables (ad_spend, views, clicks, carts, active_sku).
+
+    Args:
+        dates: list of date strings
+        values: target values (revenue or orders)
+        forecast_days: how many days to forecast
+        exog_daily: {date_str: {ad_spend, views, clicks, carts, active_sku}}
 
     Returns (forecast_points, trend_info, feature_importance).
-    Falls back to simple moving average if data is insufficient.
     """
     import pandas as pd
     import numpy as np
+
+    exog_daily = exog_daily or {}
 
     # ── Fallback for insufficient data ──
     if len(dates) < 14:
@@ -1781,15 +1789,14 @@ def _lightgbm_forecast(
         df = pd.DataFrame({"ds": pd.to_datetime(dates), "y": values})
         df = df.sort_values("ds").reset_index(drop=True)
 
-        # Exogenous: ad_spend
-        if ad_spend_daily:
-            df["ad_spend"] = df["ds"].apply(
-                lambda d: ad_spend_daily.get(str(d.date()), 0)
+        # ── Exogenous columns from daily data ──
+        exog_cols = ["ad_spend", "views", "clicks", "carts", "active_sku"]
+        for col in exog_cols:
+            df[col] = df["ds"].apply(
+                lambda d, c=col: exog_daily.get(str(d.date()), {}).get(c, 0)
             )
-        else:
-            df["ad_spend"] = 0.0
 
-        # ── Feature engineering ──
+        # ── Feature engineering: target lags & rolling ──
         for lag in [1, 2, 3, 7, 14]:
             df[f"lag{lag}"] = df["y"].shift(lag)
 
@@ -1798,11 +1805,15 @@ def _lightgbm_forecast(
         df["ma14"] = df["y"].rolling(14, min_periods=1).mean()
         df["std7"] = df["y"].rolling(7, min_periods=1).std().fillna(0)
 
-        # Ad spend lags
-        for lag in [1, 2, 3]:
-            df[f"ad_spend_lag{lag}"] = df["ad_spend"].shift(lag)
+        # ── Feature engineering: exogenous lags ──
+        for col in exog_cols:
+            df[f"{col}_lag1"] = df[col].shift(1)
+            df[f"{col}_lag3"] = df[col].shift(3)
+            df[f"{col}_ma7"] = df[col].rolling(7, min_periods=1).mean()
 
-        df["ad_spend_ma7"] = df["ad_spend"].rolling(7, min_periods=1).mean()
+        # Derived: CTR, cart_rate
+        df["ctr"] = (df["clicks"] / df["views"].replace(0, 1) * 100).fillna(0)
+        df["cart_rate"] = (df["carts"] / df["clicks"].replace(0, 1) * 100).fillna(0)
 
         # Seasonality
         df["day_of_week"] = df["ds"].dt.dayofweek
@@ -1810,9 +1821,18 @@ def _lightgbm_forecast(
         df["month"] = df["ds"].dt.month
 
         feature_cols = [
+            # Target lags & rolling
             "lag1", "lag2", "lag3", "lag7", "lag14",
             "ma3", "ma7", "ma14", "std7",
-            "ad_spend_lag1", "ad_spend_lag2", "ad_spend_lag3", "ad_spend_ma7",
+            # Exogenous lags
+            "ad_spend_lag1", "ad_spend_lag3", "ad_spend_ma7",
+            "views_lag1", "views_lag3", "views_ma7",
+            "clicks_lag1", "clicks_lag3", "clicks_ma7",
+            "carts_lag1", "carts_lag3", "carts_ma7",
+            "active_sku_lag1", "active_sku_lag3", "active_sku_ma7",
+            # Derived
+            "ctr", "cart_rate",
+            # Seasonality
             "day_of_week", "is_weekend", "month",
         ]
 
@@ -1826,13 +1846,15 @@ def _lightgbm_forecast(
         y = df_train["y"].values
 
         model = lgb.LGBMRegressor(
-            n_estimators=200,
+            n_estimators=300,
             max_depth=6,
             learning_rate=0.05,
             num_leaves=31,
             min_child_samples=5,
             subsample=0.8,
             colsample_bytree=0.8,
+            reg_alpha=0.1,
+            reg_lambda=0.1,
             verbose=-1,
         )
         model.fit(X, y)
@@ -1850,11 +1872,15 @@ def _lightgbm_forecast(
         }
 
         # ── Multi-step forecast ──
-        last_row = df.iloc[-1].copy()
         last_dt = pd.Timestamp(dates[-1])
         recent_values = list(values[-14:])
-        recent_ad = [ad_spend_daily.get(str(d), 0) for d in
-                     [(date.fromisoformat(dates[-1]) - timedelta(days=i)) for i in range(14)]]
+
+        # Build recent exog arrays (last 14 days, index 0 = most recent)
+        recent_exog: dict[str, list[float]] = {col: [] for col in exog_cols}
+        for i in range(14):
+            d_str = str(date.fromisoformat(dates[-1]) - timedelta(days=i))
+            for col in exog_cols:
+                recent_exog[col].append(exog_daily.get(d_str, {}).get(col, 0))
 
         forecast_pts = []
         residuals = y - model.predict(X)
@@ -1863,9 +1889,9 @@ def _lightgbm_forecast(
         for step in range(1, forecast_days + 1):
             fd = last_dt + pd.Timedelta(days=step)
 
-            # Build feature vector for this step
             vals = recent_values
             features = {
+                # Target lags
                 "lag1": vals[-1] if len(vals) >= 1 else 0,
                 "lag2": vals[-2] if len(vals) >= 2 else 0,
                 "lag3": vals[-3] if len(vals) >= 3 else 0,
@@ -1875,14 +1901,25 @@ def _lightgbm_forecast(
                 "ma7": float(np.mean(vals[-7:])) if len(vals) >= 7 else float(np.mean(vals)),
                 "ma14": float(np.mean(vals[-14:])) if len(vals) >= 14 else float(np.mean(vals)),
                 "std7": float(np.std(vals[-7:])) if len(vals) >= 7 else 0,
-                "ad_spend_lag1": recent_ad[0] if len(recent_ad) >= 1 else 0,
-                "ad_spend_lag2": recent_ad[1] if len(recent_ad) >= 2 else 0,
-                "ad_spend_lag3": recent_ad[2] if len(recent_ad) >= 3 else 0,
-                "ad_spend_ma7": float(np.mean(recent_ad[:7])) if recent_ad else 0,
-                "day_of_week": fd.dayofweek,
-                "is_weekend": 1 if fd.dayofweek >= 5 else 0,
-                "month": fd.month,
             }
+            # Exogenous lags (use last known values for future)
+            for col in exog_cols:
+                arr = recent_exog[col]
+                features[f"{col}_lag1"] = arr[0] if arr else 0
+                features[f"{col}_lag3"] = arr[2] if len(arr) > 2 else (arr[0] if arr else 0)
+                features[f"{col}_ma7"] = float(np.mean(arr[:7])) if arr else 0
+
+            # Derived
+            v = recent_exog["views"][0] if recent_exog["views"] else 1
+            c = recent_exog["clicks"][0] if recent_exog["clicks"] else 0
+            ct = recent_exog["carts"][0] if recent_exog["carts"] else 0
+            features["ctr"] = round(c / max(v, 1) * 100, 2)
+            features["cart_rate"] = round(ct / max(c, 1) * 100, 2)
+
+            # Seasonality
+            features["day_of_week"] = fd.dayofweek
+            features["is_weekend"] = 1 if fd.dayofweek >= 5 else 0
+            features["month"] = fd.month
 
             X_pred = np.array([[features[c] for c in feature_cols]])
             yhat = float(model.predict(X_pred)[0])
@@ -1901,7 +1938,6 @@ def _lightgbm_forecast(
 
             # Update recent_values for next step (autoregressive)
             recent_values.append(yhat)
-            recent_ad.insert(0, recent_ad[0] if recent_ad else 0)
 
         # ── Trend ──
         if len(forecast_pts) >= 2:
@@ -2002,11 +2038,18 @@ async def get_ozon_forecast(
             rev_values.append(rev)
             ord_values.append(float(ords))
 
-        # ── 1b. Daily ad spend for regressor ──
-        ad_spend_daily: dict[str, float] = {}
+        # ── 1b. Daily exogenous data (ad_spend, views, clicks, carts, active_sku) ──
+        exog_daily: dict[str, dict[str, float]] = {}
+
+        # Ad funnel: views, clicks, carts, spend
         try:
             ad_daily_rows = ch.query("""
-                SELECT dt, sum(money_spent) AS spend
+                SELECT
+                    dt,
+                    sum(money_spent) AS spend,
+                    sum(views) AS views,
+                    sum(clicks) AS clicks,
+                    sum(add_to_cart) AS carts
                 FROM mms_analytics.fact_ozon_ad_daily FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND dt >= {cur_start:Date}
@@ -2015,9 +2058,33 @@ async def get_ozon_forecast(
                 ORDER BY dt
             """, parameters=params).result_rows
             for r in ad_daily_rows:
-                ad_spend_daily[str(r[0])] = float(r[1] or 0)
+                d_str = str(r[0])
+                exog_daily.setdefault(d_str, {})
+                exog_daily[d_str]["ad_spend"] = float(r[1] or 0)
+                exog_daily[d_str]["views"] = float(r[2] or 0)
+                exog_daily[d_str]["clicks"] = float(r[3] or 0)
+                exog_daily[d_str]["carts"] = float(r[4] or 0)
         except Exception as e:
             logger.warning("Forecast daily ads error: %s", e)
+
+        # Active SKU count per day
+        try:
+            sku_count_rows = ch.query("""
+                SELECT
+                    toDate(addHours(in_process_at, 3)) AS dt,
+                    uniqExact(sku) AS active_sku
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+                GROUP BY dt
+            """, parameters=params).result_rows
+            for r in sku_count_rows:
+                d_str = str(r[0])
+                exog_daily.setdefault(d_str, {})
+                exog_daily[d_str]["active_sku"] = float(r[1] or 0)
+        except Exception as e:
+            logger.warning("Forecast active SKU error: %s", e)
 
         # ── 2. LightGBM forecast ──
         import asyncio
@@ -2027,13 +2094,13 @@ async def get_ozon_forecast(
         # Revenue forecast (run in thread to avoid blocking)
         rev_forecast, rev_trend, rev_feat_imp = await loop.run_in_executor(
             None,
-            lambda: _lightgbm_forecast(dates_list, rev_values, forecast_days, ad_spend_daily),
+            lambda: _lightgbm_forecast(dates_list, rev_values, forecast_days, exog_daily),
         )
 
         # Orders forecast
         ord_forecast, ord_trend, ord_feat_imp = await loop.run_in_executor(
             None,
-            lambda: _lightgbm_forecast(dates_list, ord_values, forecast_days, None),
+            lambda: _lightgbm_forecast(dates_list, ord_values, forecast_days, exog_daily),
         )
 
         # Combine into unified forecast points
