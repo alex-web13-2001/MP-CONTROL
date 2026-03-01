@@ -2,6 +2,21 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-03-01
+
+### Fixed — Forecast: коллапс прогнозной выручки → 0₽
+
+- **Backend / `sales.py` [FIX]:** Убрана отдельная LightGBM revenue-модель, которая каскадно деградировала (predicted revenue_lag → wrong features → revenue→0). Revenue теперь = `pred_orders × avg_price_per_order` (стабильная привязка к реальным ценам за 30 дней).
+- **Backend / `sales.py` [FIX]:** `orders_lag7` теперь обновляется через кольцевой буфер (ранее не обновлялся вообще).
+- **Backend / `sales.py` [FIX]:** Funnel features (views/clicks/carts/ad_spend) используют стабильные средние за 14 дней вместо декадирующих predicted values.
+- **Backend / `sales.py` [FIX]:** `ctr_lag1` и `cart_rate_lag1` пересчитываются каждый шаг прогноза.
+- **Результат:** SKU АМ-СОБ-КР-ЯГ-10: прогноз 76 382₽ vs факт ~72 380₽/мес (~95% точность).
+
+### Fixed — Forecast: нулевые прогнозы для SKU с редкими заказами
+
+- **Backend / `sales.py` [FIX]:** Добавлен floor для orders prediction. Для SKU с avg 0.2–0.5 заказов/день модель предсказывала ~0 → revenue=0₽. Теперь если prediction < 30% от historic avg, применяется blend (30% model + 70% historic avg).
+- **Результат:** SKU 2066794861: 12 836₽ → 71 000₽ (77% от historic monthly). Все 20 SKU — адекватные прогнозы (58-77%).
+
 ## [Unreleased] - 2026-02-28
 
 ### Added — Раздел «Продажи» (Ozon)
