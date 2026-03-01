@@ -2314,7 +2314,9 @@ async def get_ozon_forecast(
             ord_trend_pct = round((ord_second_half - ord_first_half) / max(ord_first_half, 1) * 100, 1)
 
             # ── Generate recommendations ──
-            recommendations = generate_sku_recommendations(
+            avg_price = round(total_hist_rev / total_hist_orders) if total_hist_orders > 0 else 0
+
+            analysis = generate_sku_recommendations(
                 revenue=total_hist_rev,
                 orders=total_hist_orders,
                 ad_spend=total_hist_ad_spend,
@@ -2326,16 +2328,17 @@ async def get_ozon_forecast(
                 roi=hist_roi,
                 ctr=hist_ctr,
                 cart_rate=hist_cart_rate,
+                avg_price=avg_price,
                 forecast_revenue=total_fc_rev,
                 forecast_orders=total_fc_orders,
                 forecast_profit=total_fc_profit,
                 forecast_margin_pct=fc_margin,
+                forecast_ad_spend=total_fc_ad,
                 revenue_trend_pct=rev_trend_pct,
                 orders_trend_pct=ord_trend_pct,
+                period_days=period,
+                forecast_days=forecast_days,
             )
-
-            # Avg price
-            avg_price = round(total_hist_rev / total_hist_orders) if total_hist_orders > 0 else 0
 
             products_list.append({
                 "sku": s,
@@ -2364,7 +2367,7 @@ async def get_ozon_forecast(
                     "profit": round(total_fc_profit),
                     "margin_pct": fc_margin,
                 },
-                "recommendations": recommendations,
+                "analysis": analysis,
                 "feature_importance": feat_imp,
             })
 
@@ -2411,11 +2414,11 @@ async def get_ozon_forecast(
             "direction": "up" if slope > 0.1 else "down" if slope < -0.1 else "flat",
         }
 
-        # Count recommendations by type
-        rec_summary = {"critical": 0, "warning": 0, "opportunity": 0, "info": 0}
+        # Count severity by type
+        rec_summary = {"critical": 0, "warning": 0, "opportunity": 0, "ok": 0}
         for p in products_list:
-            for r in p.get("recommendations", []):
-                rec_summary[r["type"]] = rec_summary.get(r["type"], 0) + 1
+            sev = p.get("analysis", {}).get("severity", "ok")
+            rec_summary[sev] = rec_summary.get(sev, 0) + 1
 
         return {
             "shop_id": shop_id,

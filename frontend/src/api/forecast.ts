@@ -29,11 +29,41 @@ export interface OverallTotals {
   margin_pct: number
 }
 
-export interface Recommendation {
-  type: 'critical' | 'warning' | 'opportunity' | 'info'
-  message: string
-  action: string
-  metric: string
+export interface SkuAction {
+  text: string
+  profit_impact: string
+  priority: number
+}
+
+export interface SkuNowState {
+  profit: number
+  profit_daily: number
+  margin_pct: number
+  revenue: number
+  orders: number
+  ad_spend: number
+  drr: number
+  roi: number
+  ctr: number
+  avg_price: number
+}
+
+export interface SkuForecastState {
+  profit: number
+  profit_daily: number
+  margin_pct: number
+  revenue: number
+  orders: number
+  ad_spend: number
+  drr: number
+}
+
+export interface SkuAnalysis {
+  severity: 'critical' | 'warning' | 'opportunity' | 'ok'
+  title: string
+  now: SkuNowState
+  forecast: SkuForecastState
+  actions: SkuAction[]
 }
 
 export interface ProductHistoryTotals {
@@ -79,7 +109,7 @@ export interface ForecastProduct {
   forecast: ProductForecastPoint[]
   trend: { slope_pct: number; direction: 'up' | 'down' | 'flat' }
   forecast_totals: ProductForecastTotals
-  recommendations: Recommendation[]
+  analysis: SkuAnalysis
   feature_importance: Record<string, number>
 }
 
