@@ -2029,14 +2029,18 @@ async def get_ozon_forecast(
         rev_values: list[float] = []
         ord_values: list[float] = []
 
+        today_str = str(cur_end)
+
         for r in daily_rows:
             dt_str = str(r[0])
             rev = float(r[1] or 0)
             ords = int(r[2] or 0)
             history.append({"date": dt_str, "revenue": round(rev), "orders": ords})
-            dates_list.append(dt_str)
-            rev_values.append(rev)
-            ord_values.append(float(ords))
+            # Exclude today (incomplete day) from model training data
+            if dt_str != today_str:
+                dates_list.append(dt_str)
+                rev_values.append(rev)
+                ord_values.append(float(ords))
 
         # ── 1b. Daily exogenous data (ad_spend, views, clicks, carts, active_sku) ──
         exog_daily: dict[str, dict[str, float]] = {}
