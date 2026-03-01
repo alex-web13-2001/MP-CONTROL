@@ -650,7 +650,7 @@ function TopProductsTable({
    Return Reasons — compact inline bars
    ═══════════════════════════════════════════════════════════ */
 
-function ReturnReasons({ data, total }: { data: SalesReturnReason[]; total: number }) {
+function ReturnReasons({ data }: { data: SalesReturnReason[] }) {
   if (data.length === 0) {
     return (
       <div className="flex items-center justify-center h-[100px] text-[hsl(var(--muted-foreground))] text-sm">
@@ -1005,7 +1005,7 @@ export default function SalesPage() {
                     )}
                   </CardHeader>
                   <CardContent>
-                    <ReturnReasons data={data.returns.by_reason} total={data.returns.total} />
+                    <ReturnReasons data={data.returns.by_reason} />
                   </CardContent>
                 </Card>
               </motion.div>
