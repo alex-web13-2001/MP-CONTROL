@@ -2162,31 +2162,48 @@ async def get_wb_forecast(
         except Exception as e:
             logger.warning("WB Forecast products/costs error: %s", e)
 
-        # MP fees from fact_finances (WB): mp_fees_pct = (retail - payout) / retail
-        # This is the CORRECT approach — same as Ozon products page.
-        # It captures ALL marketplace deductions (commission, logistics, storage, etc.)
+        # MP fees from fact_finances FINAL (WB realization report)
+        # Uses same approach as finances.py:
+        #   Revenue = retail_price_withdisc_rub (Продажа - Возврат)
+        #   Commission = Revenue - payout_amount
+        #   + logistics (wb_delivery_rub) + storage + acquiring + penalties + deductions
         try:
             econ_rows = ch.query(f"""
                 SELECT
                     external_id,
-                    sum(retail_amount) AS total_retail,
-                    sum(payout_amount) AS total_payout
-                FROM mms_analytics.fact_finances_latest
+                    sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа')
+                     - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS revenue,
+                    sumIf(payout_amount, operation_type = 'Продажа')
+                     - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                    sum(abs(wb_delivery_rub)) AS logistics,
+                    sum(abs(storage_fee)) AS storage,
+                    sum(abs(wb_acquiring)) AS acquiring,
+                    sum(abs(penalty_total)) AS penalties,
+                    sum(abs(acceptance_fee)) AS acceptance,
+                    sum(abs(JSONExtractFloat(raw_payload, 'deduction'))) AS deductions
+                FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {{shop_id:UInt32}}
-                  AND marketplace = 'wb'
+                  AND marketplace = 1
                   AND event_date >= {{cur_start:Date}}
                   AND event_date <= {{cur_end:Date}}
                   AND external_id IN ({sku_str})
-                  AND retail_amount > 0
                 GROUP BY external_id
             """, parameters=params).result_rows
             for r in econ_rows:
                 try:
                     nm = int(r[0])
-                    retail = float(r[1] or 0)
+                    revenue = float(r[1] or 0)
                     payout = float(r[2] or 0)
-                    if retail > 0:
-                        mp_fees_pct_map[nm] = min((retail - payout) / retail, 0.5)
+                    logistics = float(r[3] or 0)
+                    storage = float(r[4] or 0)
+                    acquiring = float(r[5] or 0)
+                    penalties = float(r[6] or 0)
+                    acceptance = float(r[7] or 0)
+                    deductions = float(r[8] or 0)
+                    if revenue > 0:
+                        commission = max(revenue - payout, 0)
+                        mp_fees = commission + logistics + storage + acquiring + penalties + acceptance + deductions
+                        mp_fees_pct_map[nm] = min(mp_fees / revenue, 0.8)
                 except (ValueError, TypeError):
                     pass
         except Exception as e:
@@ -2234,7 +2251,7 @@ async def get_wb_forecast(
         for s in sku_list:
             oid = sku_to_offer.get(s, str(s))
             cogs_unit = cost_map.get(oid.lower(), 0)
-            mp_fees_pct = mp_fees_pct_map.get(s, 0.055)  # default 5.5% based on WB avg
+            mp_fees_pct = mp_fees_pct_map.get(s, 0.40)  # default 40% based on real WB data
 
             # Build daily data for this SKU
             daily_data = []
