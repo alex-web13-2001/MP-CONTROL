@@ -12,16 +12,15 @@
 - **Backend / `sales.py` [FIX]:** `ctr_lag1` и `cart_rate_lag1` пересчитываются каждый шаг прогноза.
 - **Результат:** SKU АМ-СОБ-КР-ЯГ-10: прогноз 76 382₽ vs факт ~72 380₽/мес (~95% точность).
 
-### Fixed — Forecast: нулевые прогнозы для SKU с редкими заказами
+### Fixed — Forecast: нулевые/заниженные прогнозы → funnel-based model
 
-- **Backend / `sales.py` [FIX]:** Добавлен floor для orders prediction. Для SKU с avg 0.2–0.5 заказов/день модель предсказывала ~0 → revenue=0₽. Теперь если prediction < 30% от historic avg, применяется blend (30% model + 70% historic avg).
-- **Результат:** SKU 2066794861: 12 836₽ → 71 000₽ (77% от historic monthly). Все 20 SKU — адекватные прогнозы (58-77%).
-
-### Fixed — Forecast: прогнозная реклама раздувалась в 2x
-
-- **Backend / `sales.py` [FIX]:** Forecast ad_spend считался из среднего за **последние 7 дней** (пик рекламы), а не за весь период. При всплеске рекламы в последнюю неделю прогнозный ad_spend раздувался в 2-3x. Теперь используется avg за весь выбранный period.
-- **Backend / `sales.py` [FIX]:** «СЕЙЧАС» метрики в рекомендательных карточках нормализованы к `forecast_days` (последние 30 дней) при `period > forecast_days`, для честного сравнения с прогнозом.
-- **Результат:** АМ-СОБ-КР-ЯГ-10: Реклама прогноз 23 100₽ ≈ факт 23 095₽ (было 46 470₽). ДРР: 22.4% (было 45.1%).
+- **Backend / `sales.py` [FEAT]:** Заменён статический floor (историческое среднее × 0.9) на **funnel-based прогноз**. Логика: `projected_carts × cart_to_order_rate` — если корзин стало больше, значит и заказов станет больше.
+- **Backend / `sales.py` [FEAT]:** Тренды воронки: сравнение последней половины vs предыдущей (views, clicks, carts, orders). Capped 0.5x–2.0x.
+- **Backend / `sales.py` [FEAT]:** LightGBM blend с funnel: 70% model + 30% funnel если модель адекватна (50-200% от funnel), иначе 20% model + 80% funnel.
+- **Backend / `sales.py` [FIX]:** Funnel features (views/clicks/carts) теперь отражают тренды, а не замороженные средние за 14 дней.
+- **Backend / `sales.py` [FIX]:** Forecast ad_spend: среднее за весь period (не за 7 дней, раздувало в 2-3x).
+- **Backend / `sales.py` [FIX]:** «СЕЙЧАС» метрики нормализованы к `forecast_days` при `period > forecast_days`.
+- **Результат:** АМ-СОБ-КР-ЯГ-10: выручка прогноз **290 004₽** ≈ факт **289 522₽** (100.2%). Ранее: 102 993₽ (72%).
 
 ## [Unreleased] - 2026-02-28
 
