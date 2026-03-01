@@ -8,22 +8,66 @@ export interface ForecastHistoryPoint {
   orders: number
 }
 
-export interface ForecastPoint {
+export interface OverallForecastPoint {
   date: string
   revenue: number
-  revenue_low: number
-  revenue_high: number
   orders: number
-  orders_low: number
-  orders_high: number
+  profit: number
+  ad_spend: number
 }
 
-export interface ForecastTrend {
+export interface OverallTrend {
   revenue_slope_pct: number
-  orders_slope_pct: number
   direction: 'up' | 'down' | 'flat'
-  forecast_revenue: number
-  forecast_orders: number
+}
+
+export interface OverallTotals {
+  revenue: number
+  orders: number
+  profit: number
+  ad_spend: number
+  margin_pct: number
+}
+
+export interface Recommendation {
+  type: 'critical' | 'warning' | 'opportunity' | 'info'
+  message: string
+  action: string
+  metric: string
+}
+
+export interface ProductHistoryTotals {
+  revenue: number
+  orders: number
+  ad_spend: number
+  profit: number
+  margin_pct: number
+  roi: number
+  avg_price: number
+  ctr: number
+  cart_rate: number
+}
+
+export interface ProductForecastTotals {
+  revenue: number
+  orders: number
+  ad_spend: number
+  profit: number
+  margin_pct: number
+}
+
+export interface ProductForecastPoint {
+  date: string
+  orders: number
+  revenue: number
+  orders_low: number
+  orders_high: number
+  ad_spend: number
+  commission: number
+  logistics: number
+  cogs: number
+  profit: number
+  margin_pct: number
 }
 
 export interface ForecastProduct {
@@ -31,22 +75,12 @@ export interface ForecastProduct {
   offer_id: string
   name: string
   image_url: string
-  orders: number
-  revenue: number
-  avg_price: number
-  ad_spend: number
-  ad_views: number
-  ad_clicks: number
-  commission: number
-  logistics: number
-  cogs: number
-  profit: number
-  margin_pct: number
-  ctr: number
-  cpc: number
-  cpo: number
-  cr: number
-  roi: number
+  history_totals: ProductHistoryTotals
+  forecast: ProductForecastPoint[]
+  trend: { slope_pct: number; direction: 'up' | 'down' | 'flat' }
+  forecast_totals: ProductForecastTotals
+  recommendations: Recommendation[]
+  feature_importance: Record<string, number>
 }
 
 export interface ForecastResponse {
@@ -54,8 +88,12 @@ export interface ForecastResponse {
   period: number
   forecast_days: number
   history: ForecastHistoryPoint[]
-  forecast: ForecastPoint[]
-  trend: ForecastTrend
+  overall: {
+    forecast: OverallForecastPoint[]
+    trend: OverallTrend
+    totals: OverallTotals
+  }
+  recommendation_summary: Record<string, number>
   products: ForecastProduct[]
 }
 
@@ -64,15 +102,16 @@ export interface ForecastResponse {
 export async function fetchOzonForecast(
   shopId: number,
   period: number = 120,
-  forecastDays: number = 14,
+  forecastDays: number = 30,
 ): Promise<ForecastResponse> {
   const { data } = await apiClient.get<ForecastResponse>('/sales/ozon/forecast', {
     params: { shop_id: shopId, period, forecast_days: forecastDays },
+    timeout: 120000,
   })
   return data
 }
 
-/* ── SKU Forecast (LightGBM) ── */
+/* ── SKU Forecast (LightGBM) — legacy endpoint ── */
 
 export interface SkuForecastPoint {
   date: string
@@ -119,7 +158,7 @@ export interface SkuForecastResponse {
 export async function fetchOzonSkuForecast(
   shopId: number,
   period: number = 120,
-  forecastDays: number = 14,
+  forecastDays: number = 30,
   sku?: number,
 ): Promise<SkuForecastResponse> {
   const params: Record<string, unknown> = { shop_id: shopId, period, forecast_days: forecastDays }
