@@ -2251,11 +2251,9 @@ async def get_ozon_forecast(
 
             # ── Calculate full economics for each forecast day ──
             # Estimate future ad_spend from recent average
-            recent_7d_ads = [
-                sku_funnel.get(s, {}).get(str(d.date()), {}).get("ad_spend", 0)
-                for d in all_dates[-7:]
-            ]
-            avg_daily_ad = float(np.mean(recent_7d_ads)) if recent_7d_ads else 0
+            # Use full-period average for forecast ad_spend (not just last 7 days)
+            # This prevents misleading spikes from recent ad changes
+            avg_daily_ad = float(total_hist_ad_spend / max(len(all_dates), 1))
 
             total_fc_rev = 0.0
             total_fc_orders = 0
@@ -2293,14 +2291,23 @@ async def get_ozon_forecast(
                 overall_by_day[d]["ad_spend"] += ad_est
 
             # ── Historical economics for recommendations ──
-            hist_commission = round(total_hist_rev * comm_rate)
-            hist_logistics = round(total_hist_orders * log_per_ord)
-            hist_cogs = round(cogs_unit * total_hist_orders)
-            hist_profit = round(total_hist_rev - hist_commission - hist_logistics - total_hist_ad_spend - hist_cogs)
-            hist_margin = round(hist_profit / total_hist_rev * 100, 1) if total_hist_rev > 0 else 0
-            hist_roi = round((total_hist_rev - total_hist_ad_spend) / total_hist_ad_spend * 100, 1) if total_hist_ad_spend > 0 else 0
-            hist_ctr = round(total_hist_clicks / max(total_hist_views, 1) * 100, 2)
-            hist_cart_rate = round(total_hist_carts / max(total_hist_clicks, 1) * 100, 2)
+            # Use ONLY last forecast_days for fair comparison with forecast period
+            recent_data = daily_data[-forecast_days:]
+            recent_rev = sum(d["revenue"] for d in recent_data)
+            recent_orders = sum(d["orders"] for d in recent_data)
+            recent_ad_spend = sum(d["ad_spend"] for d in recent_data)
+            recent_views = sum(d["views"] for d in recent_data)
+            recent_clicks = sum(d["clicks"] for d in recent_data)
+            recent_carts = sum(d["carts"] for d in recent_data)
+
+            hist_commission = round(recent_rev * comm_rate)
+            hist_logistics = round(recent_orders * log_per_ord)
+            hist_cogs = round(cogs_unit * recent_orders)
+            hist_profit = round(recent_rev - hist_commission - hist_logistics - recent_ad_spend - hist_cogs)
+            hist_margin = round(hist_profit / recent_rev * 100, 1) if recent_rev > 0 else 0
+            hist_roi = round((recent_rev - recent_ad_spend) / recent_ad_spend * 100, 1) if recent_ad_spend > 0 else 0
+            hist_ctr = round(recent_clicks / max(recent_views, 1) * 100, 2)
+            hist_cart_rate = round(recent_carts / max(recent_clicks, 1) * 100, 2)
 
             fc_margin = round(total_fc_profit / total_fc_rev * 100, 1) if total_fc_rev > 0 else 0
 
