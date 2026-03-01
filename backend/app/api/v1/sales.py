@@ -2052,7 +2052,7 @@ async def get_ozon_forecast(
               AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
             GROUP BY sku
             ORDER BY revenue DESC
-            LIMIT 50
+            LIMIT 20
         """, parameters=params).result_rows
         sku_list = [int(r[0]) for r in top_rows]
 
@@ -2501,12 +2501,7 @@ def _lightgbm_sku_forecast(
 ) -> tuple[list[dict], dict, dict]:
     """Per-SKU forecast using LightGBM with funnel lagged features.
 
-    Args:
-        daily_data: [{ds, orders, revenue, views, clicks, carts, ad_spend}]
-        forecast_days: horizon
-
-    Returns:
-        (forecast_points, trend_info, feature_importance)
+    Optimized: numpy-based prediction loop, reduced estimators.
     """
     import pandas as pd
     import numpy as np
@@ -2540,24 +2535,25 @@ def _lightgbm_sku_forecast(
         if len(train_df) < 7:
             raise ValueError("Not enough training data after lag creation")
 
-        X_train = train_df[FEATURE_COLS].fillna(0)
-        y_train = train_df["orders"]
+        X_train = train_df[FEATURE_COLS].fillna(0).values
+        y_orders = train_df["orders"].values
+        y_revenue = train_df["revenue"].values
 
-        # Train LightGBM
-        model = lgb.LGBMRegressor(
+        # Train LightGBM — orders (reduced estimators for speed)
+        model_ord = lgb.LGBMRegressor(
             objective="regression",
-            n_estimators=150,
+            n_estimators=50,
             num_leaves=31,
-            learning_rate=0.05,
+            learning_rate=0.08,
             min_child_samples=3,
             subsample=0.8,
             colsample_bytree=0.8,
             verbose=-1,
         )
-        model.fit(X_train, y_train)
+        model_ord.fit(X_train, y_orders)
 
         # Feature importance
-        importances = model.feature_importances_
+        importances = model_ord.feature_importances_
         feat_imp = {
             FEATURE_COLS[i]: round(float(importances[i]) / max(importances.sum(), 1) * 100, 1)
             for i in range(len(FEATURE_COLS))
@@ -2566,58 +2562,43 @@ def _lightgbm_sku_forecast(
         feat_imp = dict(sorted(feat_imp.items(), key=lambda x: -x[1]))
 
         # Revenue model
-        X_rev = train_df[FEATURE_COLS].fillna(0)
-        y_rev = train_df["revenue"]
         model_rev = lgb.LGBMRegressor(
             objective="regression",
-            n_estimators=150,
+            n_estimators=50,
             num_leaves=31,
-            learning_rate=0.05,
+            learning_rate=0.08,
             min_child_samples=3,
             verbose=-1,
         )
-        model_rev.fit(X_rev, y_rev)
+        model_rev.fit(X_train, y_revenue)
 
-        # Multi-step iterative forecast
-        last_row = feat_df.iloc[-1].copy()
-        forecast_pts = []
+        # ── Multi-step iterative forecast (numpy-based for speed) ──
+        # FEATURE_COLS index mapping for fast access
+        col_idx = {c: i for i, c in enumerate(FEATURE_COLS)}
+
+        # Extract last row as numpy array
+        last_feat = feat_df[FEATURE_COLS].fillna(0).iloc[-1].values.astype(np.float64)
+
+        # Recent orders for MA calculation
         recent_orders = df["orders"].tail(14).tolist()
         std_orders = float(np.std(recent_orders)) if len(recent_orders) > 1 else 1
+
+        forecast_pts = []
+        feat_row = np.copy(last_feat)
 
         for step in range(1, forecast_days + 1):
             next_date = df["ds"].max() + pd.Timedelta(days=step)
 
-            # Build feature row for prediction
-            feat_row = {}
-            feat_row["day_of_week"] = next_date.dayofweek
-            feat_row["is_weekend"] = 1 if next_date.dayofweek >= 5 else 0
+            # Update calendar features
+            feat_row[col_idx["day_of_week"]] = next_date.dayofweek
+            feat_row[col_idx["is_weekend"]] = 1.0 if next_date.dayofweek >= 5 else 0.0
 
-            # Use last known values shifted
-            feat_row["orders_lag1"] = last_row.get("orders_lag1", 0)
-            feat_row["orders_lag2"] = last_row.get("orders_lag2", 0)
-            feat_row["orders_lag3"] = last_row.get("orders_lag3", 0)
-            feat_row["orders_lag7"] = last_row.get("orders_lag7", 0)
-            feat_row["orders_ma7"] = last_row.get("orders_ma7", 0)
-            feat_row["orders_ma3"] = last_row.get("orders_ma3", 0)
-            feat_row["revenue_lag1"] = last_row.get("revenue_lag1", 0)
-            feat_row["revenue_lag7"] = last_row.get("revenue_lag7", 0)
-            feat_row["views_lag1"] = last_row.get("views_lag1", 0)
-            feat_row["views_lag2"] = last_row.get("views_lag2", 0)
-            feat_row["views_lag3"] = last_row.get("views_lag3", 0)
-            feat_row["clicks_lag1"] = last_row.get("clicks_lag1", 0)
-            feat_row["clicks_lag2"] = last_row.get("clicks_lag2", 0)
-            feat_row["carts_lag1"] = last_row.get("carts_lag1", 0)
-            feat_row["carts_lag2"] = last_row.get("carts_lag2", 0)
-            feat_row["ad_spend_lag1"] = last_row.get("ad_spend_lag1", 0)
-            feat_row["ad_spend_lag2"] = last_row.get("ad_spend_lag2", 0)
-            feat_row["ctr_lag1"] = last_row.get("ctr_lag1", 0)
-            feat_row["cart_rate_lag1"] = last_row.get("cart_rate_lag1", 0)
-
-            X_pred = pd.DataFrame([feat_row])[FEATURE_COLS].fillna(0)
-            pred_orders = max(float(model.predict(X_pred)[0]), 0)
+            # Predict using 2D numpy array (avoids DataFrame creation)
+            X_pred = feat_row.reshape(1, -1)
+            pred_orders = max(float(model_ord.predict(X_pred)[0]), 0)
             pred_revenue = max(float(model_rev.predict(X_pred)[0]), 0)
 
-            # Confidence band grows with step
+            # Confidence band
             band = std_orders * (1 + (step - 1) * 0.05)
 
             forecast_pts.append({
@@ -2628,23 +2609,24 @@ def _lightgbm_sku_forecast(
                 "orders_high": round(pred_orders + band),
             })
 
-            # Shift lags for next iteration
-            last_row["orders_lag3"] = last_row.get("orders_lag2", 0)
-            last_row["orders_lag2"] = last_row.get("orders_lag1", 0)
-            last_row["orders_lag1"] = pred_orders
-            last_row["revenue_lag1"] = pred_revenue
-            # Keep views/clicks/carts from recent averages (we don't predict them)
-            last_row["views_lag3"] = last_row.get("views_lag2", 0)
-            last_row["views_lag2"] = last_row.get("views_lag1", 0)
-            last_row["clicks_lag2"] = last_row.get("clicks_lag1", 0)
-            last_row["carts_lag2"] = last_row.get("carts_lag1", 0)
-            last_row["ad_spend_lag2"] = last_row.get("ad_spend_lag1", 0)
+            # Shift lags for next iteration (in-place numpy updates)
+            feat_row[col_idx["orders_lag3"]] = feat_row[col_idx["orders_lag2"]]
+            feat_row[col_idx["orders_lag2"]] = feat_row[col_idx["orders_lag1"]]
+            feat_row[col_idx["orders_lag1"]] = pred_orders
+            feat_row[col_idx["revenue_lag7"]] = feat_row[col_idx["revenue_lag1"]]
+            feat_row[col_idx["revenue_lag1"]] = pred_revenue
+            feat_row[col_idx["views_lag3"]] = feat_row[col_idx["views_lag2"]]
+            feat_row[col_idx["views_lag2"]] = feat_row[col_idx["views_lag1"]]
+            feat_row[col_idx["clicks_lag2"]] = feat_row[col_idx["clicks_lag1"]]
+            feat_row[col_idx["carts_lag2"]] = feat_row[col_idx["carts_lag1"]]
+            feat_row[col_idx["ad_spend_lag2"]] = feat_row[col_idx["ad_spend_lag1"]]
+
             # Update MA
             recent_orders.append(pred_orders)
             if len(recent_orders) > 7:
                 recent_orders = recent_orders[-7:]
-            last_row["orders_ma7"] = np.mean(recent_orders[-7:])
-            last_row["orders_ma3"] = np.mean(recent_orders[-3:])
+            feat_row[col_idx["orders_ma7"]] = float(np.mean(recent_orders[-7:]))
+            feat_row[col_idx["orders_ma3"]] = float(np.mean(recent_orders[-3:]))
 
         # Trend
         if len(forecast_pts) >= 2:
