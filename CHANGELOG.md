@@ -4,6 +4,13 @@
 
 ## [Unreleased] - 2026-03-01
 
+### Added — Прогноз продаж для Wildberries
+
+- **Backend / `sales.py` [FEAT]:** Новый endpoint `/sales/wb/forecast` — bottom-up прогноз по SKU для WB. Источники: `fact_orders_raw` (заказы/выручка), `fact_sales_funnel` (воронка: views/carts), `fact_advert_stats_v3` (реклама), `fact_finances` (комиссия/логистика). Тот же двухпроходный LightGBM+funnel подход что и для Ozon.
+- **Frontend / `forecast.ts` [FEAT]:** `fetchWbForecast()` — клиентская функция для WB прогноза.
+- **Frontend / `ForecastPage.tsx` [FEAT]:** Автоматическое переключение: WB-магазины → WB endpoint, Ozon → Ozon endpoint.
+- **Результат:** ПФ ВБ (120д): прогноз **1 275 867₽** выручки, **542** заказа, маржа **25.1%**.
+
 ### Fixed — Forecast: коллапс прогнозной выручки → 0₽
 
 - **Backend / `sales.py` [FIX]:** Убрана отдельная LightGBM revenue-модель, которая каскадно деградировала (predicted revenue_lag → wrong features → revenue→0). Revenue теперь = `pred_orders × avg_price_per_order` (стабильная привязка к реальным ценам за 30 дней).
