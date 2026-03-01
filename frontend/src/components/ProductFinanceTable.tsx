@@ -4,11 +4,25 @@
  * Sortable table showing per-product financials:
  * revenue, logistics, storage, ads, COGS, profit —
  * with delta % vs previous period and % of revenue.
+ *
+ * Unified style matching ABC/XYZ & Sales tables:
+ *   - rounded-2xl card container with title bar
+ *   - max-h-[600px] scrollable area
+ *   - sticky header (vertical) + sticky footer (ИТОГО)
+ *   - sticky first column (horizontal) with box-shadow
+ *   - zebra-striped rows
  */
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { ArrowUpDown, ArrowUp, ArrowDown, TrendingUp, TrendingDown, Package } from 'lucide-react'
 import type { ProductFinanceItem } from '@/api/finances'
+
+// ── Sticky cell styles ───────────────────────────────────────
+const stickyCol: React.CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.15)',
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -124,16 +138,9 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
     }
   }
 
-  const SortIcon = ({ active, dir }: { active: boolean; dir: SortDir }) => {
-    if (!active) return <ArrowUpDown className="h-3 w-3 opacity-30" />
-    return dir === 'desc'
-      ? <ArrowDown className="h-3 w-3 text-[hsl(var(--primary))]" />
-      : <ArrowUp className="h-3 w-3 text-[hsl(var(--primary))]" />
-  }
-
   if (products.length === 0) {
     return (
-      <div className="rounded-2xl border border-white/5 bg-[hsl(var(--card))] p-8 text-center text-sm text-white/40">
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-8 text-center text-sm text-[hsl(var(--muted-foreground))]">
         <Package className="mx-auto mb-3 h-8 w-8 opacity-40" />
         Нет данных по товарам за выбранный период
       </div>
@@ -142,76 +149,107 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
 
   // Margin color helper
   const marginColor = (profit: number, revenue: number) => {
-    if (revenue <= 0) return 'text-white/40'
+    if (revenue <= 0) return 'text-[hsl(var(--muted-foreground))]'
     const pct = (profit / revenue) * 100
     if (pct >= 20) return 'text-emerald-400'
     if (pct >= 5) return 'text-amber-400'
     return 'text-red-400'
   }
 
+  const thBase = 'px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none'
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: 0.2 }}
-      className="rounded-2xl border border-white/5 bg-[hsl(var(--card))] overflow-hidden"
+      className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden"
     >
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-white/5">
-        <h3 className="text-base font-semibold text-white">Детализация по товарам</h3>
-        <p className="text-xs text-white/40 mt-0.5">P&L по каждому товару за выбранный период</p>
+      {/* Title bar */}
+      <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+        <div>
+          <h3 className="text-xl font-bold text-[hsl(var(--foreground))]">Детализация по товарам</h3>
+          <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">P&L по каждому товару за выбранный период</p>
+        </div>
+        <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">
+          {sorted.length} {sorted.length === 1 ? 'товар' : sorted.length < 5 ? 'товара' : 'товаров'}
+        </span>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-white/5">
-              <th className="sticky left-0 z-10 bg-[hsl(var(--card))] px-4 py-3 text-left text-xs font-medium text-white/50 min-w-[180px]">
+      {/* Scrollable table — sticky header + footer (vertical), sticky first column (horizontal) */}
+      <div className="overflow-auto max-h-[600px] relative">
+        <table className="w-full border-collapse" style={{ minWidth: 900 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+              <th
+                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--card))]"
+                style={{ ...stickyCol, zIndex: 30 }}
+              >
                 Товар
               </th>
               {columns.map(col => (
                 <th
                   key={col.key}
-                  className="px-3 py-3 text-right text-xs font-medium text-white/50 cursor-pointer hover:text-white/70 transition-colors whitespace-nowrap select-none"
+                  className={cn(
+                    thBase,
+                    'cursor-pointer transition-colors bg-[hsl(var(--card))]',
+                    sortKey === col.key
+                      ? 'text-[hsl(var(--foreground))]'
+                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]',
+                  )}
                   onClick={() => handleSort(col.key)}
                 >
                   <span className="inline-flex items-center gap-1 justify-end">
                     {col.shortLabel || col.label}
-                    <SortIcon active={sortKey === col.key} dir={sortDir} />
+                    {sortKey === col.key ? (
+                      sortDir === 'desc'
+                        ? <ArrowDown className="h-3 w-3 text-[hsl(var(--primary))]" />
+                        : <ArrowUp className="h-3 w-3 text-[hsl(var(--primary))]" />
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-30" />
+                    )}
                   </span>
                 </th>
               ))}
-              <th className="px-3 py-3 text-right text-xs font-medium text-white/50 whitespace-nowrap">
+              <th className={cn(thBase, 'text-[hsl(var(--muted-foreground))] bg-[hsl(var(--card))]')}>
                 Маржа
               </th>
             </tr>
           </thead>
+
           <tbody>
             {sorted.map((product, idx) => {
               const rev = product.current.revenue || 0
               const profit = product.current.profit || 0
               const margin = rev > 0 ? (profit / rev * 100) : 0
+              const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
 
               return (
                 <tr
                   key={product.vendor_code}
                   className={cn(
-                    'border-b border-white/[0.03] hover:bg-white/[0.02] transition-colors',
-                    idx % 2 === 0 ? 'bg-transparent' : 'bg-white/[0.01]'
+                    'border-b border-[hsl(var(--border)/0.2)] hover:bg-[hsl(var(--muted)/0.2)] transition-colors group',
+                    rowBg,
                   )}
                 >
-                  {/* Product name */}
-                  <td className="sticky left-0 z-10 bg-[hsl(var(--card))] px-4 py-2.5">
-                    <div className="text-xs font-medium text-white truncate max-w-[170px]" title={product.name || product.vendor_code}>
+                  {/* Product name — sticky left */}
+                  <td
+                    className={cn(
+                      'px-4 py-3 w-[220px] min-w-[220px] max-w-[220px]',
+                      rowBg,
+                      'group-hover:bg-[hsl(var(--muted)/0.2)]',
+                    )}
+                    style={{ ...stickyCol, zIndex: 10 }}
+                  >
+                    <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={product.name || product.vendor_code}>
                       {product.name || product.vendor_code}
                     </div>
                     {product.name && product.name !== product.vendor_code ? (
-                      <div className="text-[10px] text-white/30 mt-0.5" title={product.vendor_code}>
+                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 mt-0.5 truncate" title={product.vendor_code}>
                         {product.vendor_code}
                       </div>
                     ) : product.nm_id ? (
-                      <div className="text-[10px] text-white/30 mt-0.5" title={product.nm_id.toString()}>
+                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 mt-0.5" title={product.nm_id.toString()}>
                         {product.nm_id}
                       </div>
                     ) : null}
@@ -224,16 +262,16 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                     const pctRev = product.pct_of_revenue[col.key]
 
                     return (
-                      <td key={col.key} className="px-3 py-2.5 text-right">
+                      <td key={col.key} className="px-4 py-3 text-right whitespace-nowrap">
                         <div className={cn(
-                          'text-xs font-medium',
-                          col.key === 'profit' ? marginColor(val, rev) : 'text-white',
+                          'text-[13px] font-medium',
+                          col.key === 'profit' ? marginColor(val, rev) : 'text-[hsl(var(--foreground))]',
                         )}>
                           {col.isCount ? val : formatMoney(val)}
                         </div>
                         <div className="flex items-center justify-end gap-1 mt-0.5">
                           {pctRev !== undefined && !col.isCount && col.key !== 'revenue' && (
-                            <span className="text-[10px] text-white/25">{pctRev}%</span>
+                            <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">{pctRev}%</span>
                           )}
                           <DeltaBadge value={delta} invert={col.invert} />
                         </div>
@@ -242,8 +280,8 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   })}
 
                   {/* Margin */}
-                  <td className="px-3 py-2.5 text-right">
-                    <div className={cn('text-xs font-semibold', marginColor(profit, rev))}>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <div className={cn('text-[13px] font-semibold', marginColor(profit, rev))}>
                       {margin.toFixed(1)}%
                     </div>
                   </td>
@@ -253,27 +291,33 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
 
             {/* Unmatched row */}
             {unmatchedRow && (
-              <tr className="border-b border-white/[0.03] bg-white/[0.02]">
-                <td className="sticky left-0 z-10 bg-[hsl(var(--card))] px-4 py-2.5">
-                  <div className="text-xs text-white/40 italic">Без привязки к товару</div>
+              <tr className="border-b border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.04)]">
+                <td
+                  className="px-4 py-3 w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--muted)/0.04)]"
+                  style={{ ...stickyCol, zIndex: 10 }}
+                >
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))] italic">Без привязки к товару</div>
                 </td>
                 {columns.map(col => (
-                  <td key={col.key} className="px-3 py-2.5 text-right">
-                    <div className="text-xs text-white/40">
+                  <td key={col.key} className="px-4 py-3 text-right whitespace-nowrap">
+                    <div className="text-[13px] text-[hsl(var(--muted-foreground))]">
                       {col.isCount ? (unmatchedRow.cur[col.key] ?? 0) : formatMoney(unmatchedRow.cur[col.key] ?? 0)}
                     </div>
                   </td>
                 ))}
-                <td className="px-3 py-2.5" />
+                <td className="px-4 py-3" />
               </tr>
             )}
           </tbody>
 
-          {/* Sticky totals footer */}
-          <tfoot>
-            <tr className="border-t-2 border-white/10 bg-white/[0.03]">
-              <td className="sticky left-0 z-10 bg-[hsl(var(--card-muted,var(--card)))] px-4 py-3">
-                <div className="text-xs font-semibold text-white">Итого</div>
+          {/* Sticky totals footer — stays visible at bottom */}
+          <tfoot className="sticky bottom-0 z-20">
+            <tr className="border-t-2 border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+              <td
+                className="px-4 py-3.5 w-[220px] min-w-[220px] max-w-[220px] bg-[hsl(var(--card))]"
+                style={{ ...stickyCol, zIndex: 30 }}
+              >
+                <div className="text-[13px] font-bold text-[hsl(var(--foreground))]">Итого</div>
               </td>
               {columns.map(col => {
                 const val = totals.current[col.key] ?? 0
@@ -283,25 +327,25 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   ? (val / rev * 100).toFixed(1) : undefined
 
                 return (
-                  <td key={col.key} className="px-3 py-3 text-right">
+                  <td key={col.key} className="px-4 py-3.5 text-right whitespace-nowrap">
                     <div className={cn(
-                      'text-xs font-semibold',
+                      'text-[13px] font-bold',
                       col.key === 'profit'
                         ? marginColor(val, totals.current.revenue || 0)
-                        : 'text-white',
+                        : 'text-[hsl(var(--foreground))]',
                     )}>
                       {col.isCount ? val : formatMoney(val)}
                     </div>
                     <div className="flex items-center justify-end gap-1 mt-0.5">
-                      {pctRev && <span className="text-[10px] text-white/25">{pctRev}%</span>}
+                      {pctRev && <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">{pctRev}%</span>}
                       <DeltaBadge value={delta} invert={col.invert} />
                     </div>
                   </td>
                 )
               })}
-              <td className="px-3 py-3 text-right">
+              <td className="px-4 py-3.5 text-right whitespace-nowrap">
                 <div className={cn(
-                  'text-xs font-bold',
+                  'text-[13px] font-bold',
                   marginColor(totals.current.profit ?? 0, totals.current.revenue ?? 0)
                 )}>
                   {totals.current.revenue

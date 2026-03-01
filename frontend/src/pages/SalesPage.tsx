@@ -366,6 +366,13 @@ function Delta({ value, suffix = '%', invert = false }: { value: number; suffix?
 type SortKey = keyof SalesTopProduct
 type SortDir = 'asc' | 'desc'
 
+/* Sticky cell styles — must be opaque to hide content scrolling behind */
+const stickyBase: React.CSSProperties = {
+  position: 'sticky',
+  left: 0,
+  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.15)',
+}
+
 function TopProductsTable({
   data,
   selectedSkus,
@@ -399,239 +406,266 @@ function TopProductsTable({
     })
   }, [data, sortKey, sortDir])
 
-  const thBase = "px-3 py-2 text-right text-[12px] font-medium whitespace-nowrap select-none"
-  const tdCls = "px-3 py-2 text-right tabular-nums text-[13px]"
+  const thBase = "px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none"
+  const tdCls = "px-4 py-3 text-right tabular-nums text-[13px] whitespace-nowrap"
 
   const SortTh = ({ k, children, className = '' }: { k: SortKey; children: React.ReactNode; className?: string }) => (
     <th
-      className={`${thBase} ${className} cursor-pointer hover:text-[hsl(var(--foreground))] transition-colors ${
-        sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'
+      className={`${thBase} ${className} cursor-pointer transition-colors ${
+        sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
       }`}
       onClick={(e) => { e.stopPropagation(); toggleSort(k) }}
     >
       <span className="inline-flex items-center gap-1 justify-end">
         {children}
         {sortKey === k && (
-          <span className="text-[10px] opacity-70">{sortDir === 'desc' ? '▼' : '▲'}</span>
+          <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>
         )}
       </span>
     </th>
   )
 
   return (
-    <div className="overflow-x-auto relative">
-      <table className="w-full text-sm" style={{ minWidth: hasAdData ? 1100 : undefined }}>
-        <thead>
-          {hasAdData && (
-            <tr className="border-b border-[hsl(var(--border)/0.15)]">
-              <th colSpan={2}></th>
-              <th colSpan={5} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-1.5 tracking-wide uppercase">
-                Продажи
-              </th>
-              <th className="border-l border-[hsl(var(--border)/0.2)]" colSpan={6} style={{ textAlign: 'center', fontSize: 11, fontWeight: 600, color: 'hsl(var(--muted-foreground))', padding: '6px 0', letterSpacing: '0.05em', textTransform: 'uppercase' as const }}>
-                Рекл. воронка
-              </th>
-            </tr>
-          )}
-          <tr className="border-b border-[hsl(var(--border))]">
-            <th className="px-2 py-2 w-[36px]">
-              <span className="text-[11px] text-[hsl(var(--muted-foreground))]">📊</span>
-            </th>
-            <th className="px-3 py-2 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-            <SortTh k="orders">Заказы</SortTh>
-            <SortTh k="revenue">Продажи</SortTh>
-            <SortTh k="avg_price">Цена</SortTh>
-            <SortTh k="returns">{isWb ? 'Отм.' : 'Возвр.'}</SortTh>
-            <SortTh k="return_pct">{isWb ? '% отм.' : '% возвр.'}</SortTh>
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+      {/* Title bar */}
+      <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+        <div className="flex items-center gap-3">
+          <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Топ товаров по продажам</h2>
+        </div>
+        <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">
+          Нажмите на товар чтобы вывести его на график
+        </span>
+      </div>
+
+      {/* Scrollable table — sticky header (vertical) + sticky first column (horizontal) */}
+      <div className="overflow-auto max-h-[600px] relative">
+        <table className="w-full border-collapse" style={{ minWidth: hasAdData ? 1200 : 800 }}>
+          <thead className="sticky top-0 z-20">
             {hasAdData && (
-              <>
-                <SortTh k="ad_views" className="border-l border-[hsl(var(--border)/0.2)]">Показы</SortTh>
-                <SortTh k="ad_clicks">Клики</SortTh>
-                <SortTh k="ad_add_to_cart">Корзины</SortTh>
-                <SortTh k="ad_ctr">CTR</SortTh>
-                <SortTh k="ad_cart_rate">CR→корз.</SortTh>
-                <SortTh k="ad_order_rate">CR→заказ</SortTh>
-              </>
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((p) => {
-            const isSelected = selectedSkus.has(p.sku)
-            return (
-              <tr
-                key={p.sku}
-                className={`border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.3)] transition-colors cursor-pointer ${
-                  isSelected ? 'bg-[hsl(var(--primary)/0.08)]' : ''
-                }`}
-                onClick={() => onToggle(p)}
-              >
-                <td className="px-2 py-2 text-center">
-                  <div className={`
-                    h-5 w-5 rounded border-2 flex items-center justify-center mx-auto transition-all
-                    ${isSelected
-                      ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]'
-                      : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary)/0.5)]'
-                    }
-                  `}>
-                    {isSelected && <Check className="h-3 w-3 text-white" />}
-                  </div>
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-3">
-                    {p.image_url ? (
-                      <div
-                        className="relative"
-                        onMouseEnter={(e) => {
-                          const rect = (e.target as HTMLElement).getBoundingClientRect()
-                          setHoveredImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
-                        }}
-                        onMouseLeave={() => setHoveredImg(null)}
-                      >
-                        <img
-                          src={p.image_url}
-                          alt=""
-                          className="h-10 w-[30px] rounded object-cover bg-[hsl(var(--muted))]"
-                          loading="lazy"
-                        />
-                      </div>
-                    ) : (
-                      <div className="h-10 w-[30px] rounded bg-[hsl(var(--muted))] flex items-center justify-center">
-                        <ShoppingCart className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
-                      </div>
-                    )}
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        {isSelected && (
-                          <span
-                            className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
-                            style={{ backgroundColor: PRODUCT_COLORS[
-                              data.filter(d => selectedSkus.has(d.sku)).findIndex(d => d.sku === p.sku) % PRODUCT_COLORS.length
-                            ] }}
-                          />
-                        )}
-                        <p className="text-[13px] font-medium truncate max-w-[220px]">{p.name || p.offer_id}</p>
-                      </div>
-                      <p className="text-[11px] text-[hsl(var(--muted-foreground))] truncate">{p.offer_id}</p>
-                    </div>
-                  </div>
-                </td>
-                {/* Orders */}
-                <td className={`${tdCls} font-medium`}>
-                  <div className="flex flex-col items-end gap-0.5">
-                    <span>{formatNumber(p.orders)}</span>
-                    <Delta value={p.orders_delta} />
-                  </div>
-                </td>
-                {/* Revenue */}
-                <td className={`${tdCls} font-medium`}>
-                  <div className="flex flex-col items-end gap-0.5">
-                    <span>{formatMoney(p.revenue)}</span>
-                    <Delta value={p.revenue_delta} />
-                  </div>
-                </td>
-                {/* Avg Price */}
-                <td className={tdCls}>
-                  <div className="flex flex-col items-end gap-0.5">
-                    <span>{formatMoney(p.avg_price)}</span>
-                    <Delta value={p.avg_price_delta} />
-                  </div>
-                </td>
-                {/* Returns */}
-                <td className={tdCls}>{p.returns > 0 ? formatNumber(p.returns) : '—'}</td>
-                {/* Return % */}
-                <td className={tdCls}>
-                  {p.return_pct > 0 ? (
-                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      p.return_pct > 10 ? 'bg-red-500/15 text-red-400' :
-                      p.return_pct > 5 ? 'bg-amber-500/15 text-amber-400' :
-                      'bg-emerald-500/15 text-emerald-400'
-                    }`}>
-                      {p.return_pct}%
-                    </span>
-                  ) : '—'}
-                </td>
-                {hasAdData && (
-                  <>
-                    {/* Ad Views */}
-                    <td className={`${tdCls} border-l border-[hsl(var(--border)/0.15)]`}>
-                      {p.ad_views > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span>{formatNumber(p.ad_views)}</span>
-                          <Delta value={p.ad_views_delta} />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                    {/* Ad Clicks */}
-                    <td className={tdCls}>
-                      {p.ad_clicks > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span>{formatNumber(p.ad_clicks)}</span>
-                          <Delta value={p.ad_clicks_delta} />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                    {/* Add to cart */}
-                    <td className={tdCls}>
-                      {p.ad_add_to_cart > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span>{formatNumber(p.ad_add_to_cart)}</span>
-                          <Delta value={p.ad_add_to_cart_delta} />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                    {/* CTR */}
-                    <td className={tdCls}>
-                      {p.ad_ctr > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            p.ad_ctr >= 3 ? 'bg-emerald-500/15 text-emerald-400' :
-                            p.ad_ctr >= 1 ? 'bg-amber-500/15 text-amber-400' :
-                            'bg-red-500/15 text-red-400'
-                          }`}>
-                            {p.ad_ctr}%
-                          </span>
-                          <Delta value={p.ad_ctr_delta} suffix="pp" />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                    {/* CR → cart */}
-                    <td className={tdCls}>
-                      {p.ad_cart_rate > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            p.ad_cart_rate >= 15 ? 'bg-emerald-500/15 text-emerald-400' :
-                            p.ad_cart_rate >= 5 ? 'bg-amber-500/15 text-amber-400' :
-                            'bg-red-500/15 text-red-400'
-                          }`}>
-                            {p.ad_cart_rate}%
-                          </span>
-                          <Delta value={p.ad_cart_rate_delta} suffix="pp" />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                    {/* CR → order */}
-                    <td className={tdCls}>
-                      {p.ad_order_rate > 0 ? (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
-                            p.ad_order_rate >= 30 ? 'bg-emerald-500/15 text-emerald-400' :
-                            p.ad_order_rate >= 10 ? 'bg-amber-500/15 text-amber-400' :
-                            'bg-red-500/15 text-red-400'
-                          }`}>
-                            {p.ad_order_rate}%
-                          </span>
-                          <Delta value={p.ad_order_rate_delta} suffix="pp" />
-                        </div>
-                      ) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
-                    </td>
-                  </>
-                )}
+              <tr className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--card))]">
+                <th
+                  className="bg-[hsl(var(--card))]"
+                  style={{ ...stickyBase, zIndex: 30 }}
+                  colSpan={1}
+                ></th>
+                <th colSpan={5} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-2 tracking-wide uppercase bg-[hsl(var(--card))]">
+                  Продажи
+                </th>
+                <th colSpan={6} className="text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] py-2 tracking-wide uppercase bg-[hsl(var(--card))] border-l border-[hsl(var(--border)/0.2)]">
+                  Рекл. воронка
+                </th>
               </tr>
-            )
-          })}
-        </tbody>
-      </table>
+            )}
+            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+              <th
+                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[280px] min-w-[280px] max-w-[280px] bg-[hsl(var(--card))]"
+                style={{ ...stickyBase, zIndex: 30 }}
+              >
+                Товар
+              </th>
+              <SortTh k="orders">Заказы</SortTh>
+              <SortTh k="revenue">Продажи ₽</SortTh>
+              <SortTh k="avg_price">Цена</SortTh>
+              <SortTh k="returns">{isWb ? 'Отм.' : 'Возвр.'}</SortTh>
+              <SortTh k="return_pct">{isWb ? '% отм.' : '% возвр.'}</SortTh>
+              {hasAdData && (
+                <>
+                  <SortTh k="ad_views" className="border-l border-[hsl(var(--border)/0.2)]">Показы</SortTh>
+                  <SortTh k="ad_clicks">Клики</SortTh>
+                  <SortTh k="ad_add_to_cart">Корзины</SortTh>
+                  <SortTh k="ad_ctr">CTR</SortTh>
+                  <SortTh k="ad_cart_rate">CR→корз.</SortTh>
+                  <SortTh k="ad_order_rate">CR→заказ</SortTh>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p, idx) => {
+              const isSelected = selectedSkus.has(p.sku)
+              const rowBg = isSelected
+                ? 'bg-[hsl(var(--primary)/0.08)]'
+                : idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
+              return (
+                <tr
+                  key={p.sku}
+                  className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${rowBg} hover:bg-[hsl(var(--muted)/0.2)] group`}
+                  onClick={() => onToggle(p)}
+                >
+                  {/* Product — sticky left */}
+                  <td
+                    className={`px-4 py-3 w-[280px] min-w-[280px] max-w-[280px] ${rowBg} group-hover:bg-[hsl(var(--muted)/0.2)]`}
+                    style={{ ...stickyBase, zIndex: 10 }}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {/* Checkbox */}
+                      <div className={`
+                        h-5 w-5 rounded border-2 flex items-center justify-center shrink-0 transition-all
+                        ${isSelected
+                          ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary))]'
+                          : 'border-[hsl(var(--border))] hover:border-[hsl(var(--primary)/0.5)]'
+                        }
+                      `}>
+                        {isSelected && <Check className="h-3 w-3 text-white" />}
+                      </div>
+                      {/* Image */}
+                      {p.image_url ? (
+                        <div
+                          className="relative shrink-0"
+                          onMouseEnter={(e) => {
+                            const rect = (e.target as HTMLElement).getBoundingClientRect()
+                            setHoveredImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
+                          }}
+                          onMouseLeave={() => setHoveredImg(null)}
+                        >
+                          <img
+                            src={p.image_url}
+                            alt=""
+                            className="w-9 h-9 rounded-lg object-cover border border-[hsl(var(--border)/0.3)]"
+                            loading="lazy"
+                          />
+                        </div>
+                      ) : (
+                        <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-sm">
+                          📦
+                        </div>
+                      )}
+                      {/* Name */}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          {isSelected && (
+                            <span
+                              className="inline-block h-2.5 w-2.5 rounded-full shrink-0"
+                              style={{ backgroundColor: PRODUCT_COLORS[
+                                data.filter(d => selectedSkus.has(d.sku)).findIndex(d => d.sku === p.sku) % PRODUCT_COLORS.length
+                              ] }}
+                            />
+                          )}
+                          <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={p.name || p.offer_id}>
+                            {p.name || p.offer_id}
+                          </div>
+                        </div>
+                        <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate">{p.offer_id}</div>
+                      </div>
+                    </div>
+                  </td>
+                  {/* Orders */}
+                  <td className={`${tdCls} font-semibold`}>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span>{formatNumber(p.orders)}</span>
+                      <Delta value={p.orders_delta} />
+                    </div>
+                  </td>
+                  {/* Revenue */}
+                  <td className={`${tdCls} font-semibold text-[hsl(var(--foreground))]`}>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span>{formatMoney(p.revenue)}</span>
+                      <Delta value={p.revenue_delta} />
+                    </div>
+                  </td>
+                  {/* Avg Price */}
+                  <td className={`${tdCls} text-[hsl(var(--muted-foreground))]`}>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span>{formatMoney(p.avg_price)}</span>
+                      <Delta value={p.avg_price_delta} />
+                    </div>
+                  </td>
+                  {/* Returns */}
+                  <td className={tdCls}>{p.returns > 0 ? formatNumber(p.returns) : <span className="opacity-40">—</span>}</td>
+                  {/* Return % */}
+                  <td className={tdCls}>
+                    {p.return_pct > 0 ? (
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        p.return_pct > 10 ? 'bg-red-500/15 text-red-400' :
+                        p.return_pct > 5 ? 'bg-amber-500/15 text-amber-400' :
+                        'bg-emerald-500/15 text-emerald-400'
+                      }`}>
+                        {p.return_pct}%
+                      </span>
+                    ) : <span className="opacity-40">—</span>}
+                  </td>
+                  {hasAdData && (
+                    <>
+                      {/* Ad Views */}
+                      <td className={`${tdCls} border-l border-[hsl(var(--border)/0.15)]`}>
+                        {p.ad_views > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span>{formatNumber(p.ad_views)}</span>
+                            <Delta value={p.ad_views_delta} />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                      {/* Ad Clicks */}
+                      <td className={tdCls}>
+                        {p.ad_clicks > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span>{formatNumber(p.ad_clicks)}</span>
+                            <Delta value={p.ad_clicks_delta} />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                      {/* Add to cart */}
+                      <td className={tdCls}>
+                        {p.ad_add_to_cart > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span>{formatNumber(p.ad_add_to_cart)}</span>
+                            <Delta value={p.ad_add_to_cart_delta} />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                      {/* CTR */}
+                      <td className={tdCls}>
+                        {p.ad_ctr > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              p.ad_ctr >= 3 ? 'bg-emerald-500/15 text-emerald-400' :
+                              p.ad_ctr >= 1 ? 'bg-amber-500/15 text-amber-400' :
+                              'bg-red-500/15 text-red-400'
+                            }`}>
+                              {p.ad_ctr}%
+                            </span>
+                            <Delta value={p.ad_ctr_delta} suffix="pp" />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                      {/* CR → cart */}
+                      <td className={tdCls}>
+                        {p.ad_cart_rate > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              p.ad_cart_rate >= 15 ? 'bg-emerald-500/15 text-emerald-400' :
+                              p.ad_cart_rate >= 5 ? 'bg-amber-500/15 text-amber-400' :
+                              'bg-red-500/15 text-red-400'
+                            }`}>
+                              {p.ad_cart_rate}%
+                            </span>
+                            <Delta value={p.ad_cart_rate_delta} suffix="pp" />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                      {/* CR → order */}
+                      <td className={tdCls}>
+                        {p.ad_order_rate > 0 ? (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${
+                              p.ad_order_rate >= 30 ? 'bg-emerald-500/15 text-emerald-400' :
+                              p.ad_order_rate >= 10 ? 'bg-amber-500/15 text-amber-400' :
+                              'bg-red-500/15 text-red-400'
+                            }`}>
+                              {p.ad_order_rate}%
+                            </span>
+                            <Delta value={p.ad_order_rate_delta} suffix="pp" />
+                          </div>
+                        ) : <span className="opacity-40">—</span>}
+                      </td>
+                    </>
+                  )}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {/* Hover preview */}
       {hoveredImg && (
@@ -945,24 +979,12 @@ export default function SalesPage() {
 
           {/* ── Top Products with checkboxes ── */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-            <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-semibold">Топ товаров по продажам</CardTitle>
-                  <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                    Нажмите на товар чтобы вывести его на график
-                  </p>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <TopProductsTable
-                  data={data.top_products}
-                  selectedSkus={selectedSkus}
-                  onToggle={handleToggleProduct}
-                  isWb={isWb}
-                />
-              </CardContent>
-            </Card>
+            <TopProductsTable
+              data={data.top_products}
+              selectedSkus={selectedSkus}
+              onToggle={handleToggleProduct}
+              isWb={isWb}
+            />
           </motion.div>
 
           {/* ── Geography + Returns ── */}
