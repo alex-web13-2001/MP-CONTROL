@@ -260,3 +260,20 @@
 ### Инфраструктура
 - Nginx proxy timeout увеличен с 60с до 180с для ML-эндпоинтов
 - Dockerfile: torch незафиксирован (2.2.0 удалён с CDN PyTorch)
+
+## 2026-03-01 — Очистка ветки: удалён ML-код для деплоя
+
+### Удалено из feature/sales-page
+- NeuralProphet + LightGBM эндпоинты и хелперы из `sales.py` (−942 строки)
+- `ForecastPage.tsx`, `forecast.ts` (удалены)
+- ML-зависимости: `torch`, `neuralprophet`, `lightgbm`, `scikit-learn`, `pandas`
+- Torch из Dockerfile / Dockerfile.prod
+- Роут `/sales/forecast` из App.tsx и Sidebar.tsx
+- Nginx timeout возвращён с 180с на 60с
+
+### Сохранено
+- Весь ML-код сохранён в ветке `feature/forecast-ml`
+
+### Исправлено
+- docker-compose.yml: nginx переключён с prod-конфига (SSL) на dev-конфиг
+- Docker build теперь 60с вместо 5+ минут
