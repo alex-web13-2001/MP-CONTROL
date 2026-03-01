@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   fetchOzonForecast,
+  fetchWbForecast,
   type ForecastResponse,
   type ForecastProduct,
   type SkuAnalysis,
@@ -147,7 +148,8 @@ export default function ForecastPage() {
     if (!currentShop) return
     setLoading(true)
     try {
-      const res = await fetchOzonForecast(currentShop.id, period, forecastDays)
+      const fetchFn = currentShop.marketplace === 'wildberries' ? fetchWbForecast : fetchOzonForecast
+      const res = await fetchFn(currentShop.id, period, forecastDays)
       setData(res)
     } catch (e) {
       console.error('Forecast fetch error', e)

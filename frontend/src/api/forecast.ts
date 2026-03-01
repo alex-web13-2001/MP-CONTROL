@@ -141,6 +141,18 @@ export async function fetchOzonForecast(
   return data
 }
 
+export async function fetchWbForecast(
+  shopId: number,
+  period: number = 120,
+  forecastDays: number = 30,
+): Promise<ForecastResponse> {
+  const { data } = await apiClient.get<ForecastResponse>('/sales/wb/forecast', {
+    params: { shop_id: shopId, period, forecast_days: forecastDays },
+    timeout: 120000,
+  })
+  return data
+}
+
 /* ── SKU Forecast (LightGBM) — legacy endpoint ── */
 
 export interface SkuForecastPoint {

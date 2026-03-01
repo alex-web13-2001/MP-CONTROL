@@ -1974,6 +1974,484 @@ def _lightgbm_forecast(
         return forecast_pts, {"slope_pct": 0, "direction": "flat"}, {}
 
 
+# ═══════════════════════════════════════════════════════════════
+# WB Unified Sales Forecast (bottom-up per-SKU)
+# ═══════════════════════════════════════════════════════════════
+
+
+@router.get("/wb/forecast")
+async def get_wb_forecast(
+    shop_id: int = Query(...),
+    period: int = Query(120, ge=14, le=365),
+    forecast_days: int = Query(30, ge=7, le=90),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unified sales forecast for WB — bottom-up per-SKU approach.
+
+    Uses:
+    - fact_orders_raw: orders, revenue (price_with_disc)
+    - fact_sales_funnel: views (open_count), carts (cart_count)
+    - fact_advert_stats_v3: ad spend, clicks
+    - fact_finances_latest: commission, logistics rates
+    """
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        from app.api.v1.forecast_engine import generate_sku_recommendations
+        import pandas as pd
+        import numpy as np
+        import asyncio
+
+        ch = get_clickhouse_client()
+
+        cur_end = date.today() - timedelta(days=1)
+        cur_start = cur_end - timedelta(days=period - 1)
+
+        params = {
+            "shop_id": shop_id,
+            "cur_start": str(cur_start),
+            "cur_end": str(cur_end),
+        }
+
+        # ══════════════════════════════════════════════════════════
+        # 1. COLLECT DATA
+        # ══════════════════════════════════════════════════════════
+
+        # ── 1a. Overall daily history (for chart) ──
+        # WB: use fact_orders_raw (price_with_disc = actual paid price)
+        daily_rows = ch.query("""
+            SELECT
+                toDate(date) AS dt,
+                sum(price_with_disc) AS revenue,
+                count() AS orders
+            FROM mms_analytics.fact_orders_raw_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {cur_start:Date}
+              AND toDate(date) <= {cur_end:Date}
+              AND is_cancel = 0
+            GROUP BY dt
+            ORDER BY dt
+        """, parameters=params).result_rows
+
+        history = []
+        for r in daily_rows:
+            history.append({
+                "date": str(r[0]),
+                "revenue": round(float(r[1] or 0)),
+                "orders": int(r[2] or 0),
+            })
+
+        # ── 1b. Top SKUs by revenue ──
+        top_rows = ch.query("""
+            SELECT nm_id, sum(price_with_disc) AS revenue
+            FROM mms_analytics.fact_orders_raw_latest
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(date) >= {cur_start:Date}
+              AND toDate(date) <= {cur_end:Date}
+              AND is_cancel = 0
+            GROUP BY nm_id
+            ORDER BY revenue DESC
+            LIMIT 20
+        """, parameters=params).result_rows
+        sku_list = [int(r[0]) for r in top_rows]
+
+        if not sku_list:
+            return {
+                "shop_id": shop_id, "period": period,
+                "forecast_days": forecast_days,
+                "history": history,
+                "overall": {"forecast": [], "trend": {}, "totals": {}},
+                "products": [],
+            }
+
+        sku_str = ",".join(str(s) for s in sku_list)
+
+        # ── 1c. Daily orders per SKU ──
+        orders_rows = ch.query(f"""
+            SELECT
+                nm_id,
+                toDate(date) AS dt,
+                sum(price_with_disc) AS revenue,
+                count() AS orders
+            FROM mms_analytics.fact_orders_raw_latest
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND toDate(date) >= {{cur_start:Date}}
+              AND toDate(date) <= {{cur_end:Date}}
+              AND is_cancel = 0
+              AND nm_id IN ({sku_str})
+            GROUP BY nm_id, dt
+            ORDER BY nm_id, dt
+        """, parameters=params).result_rows
+
+        # ── 1d. Daily funnel per SKU (from fact_sales_funnel) ──
+        funnel_rows = ch.query(f"""
+            SELECT
+                nm_id, event_date AS dt,
+                sum(open_count) AS views,
+                sum(cart_count) AS carts,
+                sum(order_count) AS funnel_orders
+            FROM mms_analytics.fact_sales_funnel_latest
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND event_date >= {{cur_start:Date}}
+              AND event_date <= {{cur_end:Date}}
+              AND nm_id IN ({sku_str})
+            GROUP BY nm_id, dt
+            ORDER BY nm_id, dt
+        """, parameters=params).result_rows
+
+        # ── 1d2. Daily ad stats per SKU (from fact_advert_stats_v3) ──
+        ad_rows = ch.query(f"""
+            SELECT
+                nm_id, date AS dt,
+                sum(spend) AS ad_spend,
+                sum(clicks) AS clicks
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND date >= {{cur_start:Date}}
+              AND date <= {{cur_end:Date}}
+              AND nm_id IN ({sku_str})
+            GROUP BY nm_id, dt
+            ORDER BY nm_id, dt
+        """, parameters=params).result_rows
+
+        # ── 1e. Product info from dim_products ──
+        sku_to_offer: dict[int, str] = {}
+        sku_to_name: dict[int, str] = {}
+        sku_to_image: dict[int, str] = {}
+        cost_map: dict[str, float] = {}
+        commission_rates: dict[int, float] = {}
+        logistics_per_order: dict[int, float] = {}
+
+        try:
+            placeholders = ",".join(f":sku_{i}" for i in range(len(sku_list)))
+            bind_params = {f"sku_{i}": s for i, s in enumerate(sku_list)}
+            bind_params["sid"] = shop_id
+
+            pg_products = await db.execute(
+                text(f"""
+                    SELECT nm_id, 
+                           COALESCE(NULLIF(product_name, ''), vendor_code, nm_id::text) AS name, 
+                           vendor_code,
+                           '' AS image_url
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({placeholders})
+                """),
+                bind_params,
+            )
+            for row in pg_products.fetchall():
+                sku_to_name[row[0]] = row[1]
+                sku_to_offer[row[0]] = row[2] or str(row[0])
+                sku_to_image[row[0]] = row[3]
+
+            cost_result = await db.execute(
+                text("""
+                    SELECT offer_id,
+                           COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                    FROM product_costs
+                    WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+                """),
+                {"shop_id": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception as e:
+            logger.warning("WB Forecast products/costs error: %s", e)
+
+        # Commission & logistics from fact_finances (WB)
+        try:
+            econ_rows = ch.query(f"""
+                SELECT
+                    external_id,
+                    sum(abs(commission_amount)) / nullIf(sum(abs(retail_amount)), 0) AS commission_rate,
+                    sum(abs(logistics_total)) AS total_logistics,
+                    count() AS tx_count
+                FROM mms_analytics.fact_finances_latest
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND marketplace = 'wb'
+                  AND event_date >= {{cur_start:Date}}
+                  AND event_date <= {{cur_end:Date}}
+                  AND external_id IN ({sku_str})
+                  AND operation_type NOT IN ('Шоссе', 'Пересорт')
+                GROUP BY external_id
+            """, parameters=params).result_rows
+            for r in econ_rows:
+                try:
+                    nm = int(r[0])
+                    commission_rates[nm] = min(float(r[1] or 0), 1.0)
+                    tx_count = int(r[3] or 1) or 1
+                    logistics_per_order[nm] = float(r[2] or 0) / tx_count
+                except (ValueError, TypeError):
+                    pass
+        except Exception as e:
+            logger.warning("WB Forecast economics error: %s", e)
+
+        # ══════════════════════════════════════════════════════════
+        # 2. BUILD PER-SKU DATA & RUN FORECASTS
+        # ══════════════════════════════════════════════════════════
+
+        all_dates = pd.date_range(cur_start, cur_end, freq="D")
+
+        # Index data by SKU
+        sku_orders: dict[int, dict[str, dict]] = {}
+        for r in orders_rows:
+            s = int(r[0])
+            sku_orders.setdefault(s, {})[str(r[1])] = {
+                "revenue": float(r[2] or 0), "orders": int(r[3] or 0),
+            }
+
+        sku_funnel: dict[int, dict[str, dict]] = {}
+        for r in funnel_rows:
+            s = int(r[0])
+            dt_str = str(r[1])
+            sku_funnel.setdefault(s, {}).setdefault(dt_str, {
+                "views": 0, "clicks": 0, "carts": 0, "ad_spend": 0,
+            })
+            sku_funnel[s][dt_str]["views"] += int(r[2] or 0)
+            sku_funnel[s][dt_str]["carts"] += int(r[3] or 0)
+
+        # Merge ad stats into funnel
+        for r in ad_rows:
+            s = int(r[0])
+            dt_str = str(r[1])
+            sku_funnel.setdefault(s, {}).setdefault(dt_str, {
+                "views": 0, "clicks": 0, "carts": 0, "ad_spend": 0,
+            })
+            sku_funnel[s][dt_str]["ad_spend"] += float(r[2] or 0)
+            sku_funnel[s][dt_str]["clicks"] += int(r[3] or 0)
+
+        products_list = []
+        overall_by_day: dict[str, dict[str, float]] = {}
+
+        loop = asyncio.get_event_loop()
+
+        for s in sku_list:
+            oid = sku_to_offer.get(s, str(s))
+            cogs_unit = cost_map.get(oid.lower(), 0)
+            comm_rate = commission_rates.get(s, 0.15)
+            log_per_ord = logistics_per_order.get(s, 100)
+
+            # Build daily data for this SKU
+            daily_data = []
+            total_hist_rev = 0.0
+            total_hist_orders = 0
+            total_hist_ad_spend = 0.0
+
+            for dt in all_dates:
+                dt_str = str(dt.date())
+                o = sku_orders.get(s, {}).get(dt_str, {"revenue": 0, "orders": 0})
+                f = sku_funnel.get(s, {}).get(dt_str, {"views": 0, "clicks": 0, "carts": 0, "ad_spend": 0})
+                daily_data.append({
+                    "ds": dt_str,
+                    "orders": o["orders"],
+                    "revenue": o["revenue"],
+                    "views": f["views"],
+                    "clicks": f["clicks"],
+                    "carts": f["carts"],
+                    "ad_spend": f["ad_spend"],
+                })
+                total_hist_rev += o["revenue"]
+                total_hist_orders += o["orders"]
+                total_hist_ad_spend += f["ad_spend"]
+
+            # Run per-SKU forecast (in thread)
+            forecast_pts, trend_info, feat_imp = await loop.run_in_executor(
+                None,
+                lambda dd=daily_data, fd=forecast_days: _lightgbm_sku_forecast(dd, fd),
+            )
+
+            # ── Calculate full economics for each forecast day ──
+            avg_daily_ad = float(total_hist_ad_spend / max(len(all_dates), 1))
+
+            total_fc_rev = 0.0
+            total_fc_orders = 0
+            total_fc_profit = 0.0
+            total_fc_ad = 0.0
+
+            for pt in forecast_pts:
+                rev = pt["revenue"]
+                ords = pt["orders"]
+                ad_est = round(avg_daily_ad)
+                commission = round(rev * comm_rate)
+                logistics = round(ords * log_per_ord)
+                cogs = round(cogs_unit * ords)
+                pft = round(rev - commission - logistics - ad_est - cogs)
+                mgn = round(pft / rev * 100, 1) if rev > 0 else 0
+
+                pt["ad_spend"] = ad_est
+                pt["commission"] = commission
+                pt["logistics"] = logistics
+                pt["cogs"] = cogs
+                pt["profit"] = pft
+                pt["margin_pct"] = mgn
+
+                total_fc_rev += rev
+                total_fc_orders += ords
+                total_fc_profit += pft
+                total_fc_ad += ad_est
+
+                d = pt["date"]
+                overall_by_day.setdefault(d, {"revenue": 0, "orders": 0, "profit": 0, "ad_spend": 0})
+                overall_by_day[d]["revenue"] += rev
+                overall_by_day[d]["orders"] += ords
+                overall_by_day[d]["profit"] += pft
+                overall_by_day[d]["ad_spend"] += ad_est
+
+            # ── Historical economics for recommendations ──
+            recent_data = daily_data[-forecast_days:]
+            recent_rev = sum(d["revenue"] for d in recent_data)
+            recent_orders = sum(d["orders"] for d in recent_data)
+            recent_ad_spend = sum(d["ad_spend"] for d in recent_data)
+            recent_views = sum(d["views"] for d in recent_data)
+            recent_clicks = sum(d["clicks"] for d in recent_data)
+            recent_carts = sum(d["carts"] for d in recent_data)
+
+            hist_commission = round(recent_rev * comm_rate)
+            hist_logistics = round(recent_orders * log_per_ord)
+            hist_cogs = round(cogs_unit * recent_orders)
+            hist_profit = round(recent_rev - hist_commission - hist_logistics - recent_ad_spend - hist_cogs)
+            hist_margin = round(hist_profit / recent_rev * 100, 1) if recent_rev > 0 else 0
+            hist_roi = round((recent_rev - recent_ad_spend) / recent_ad_spend * 100, 1) if recent_ad_spend > 0 else 0
+            hist_ctr = round(recent_clicks / max(recent_views, 1) * 100, 2)
+            hist_cart_rate = round(recent_carts / max(recent_clicks, 1) * 100, 2)
+
+            fc_margin = round(total_fc_profit / total_fc_rev * 100, 1) if total_fc_rev > 0 else 0
+
+            rev_first_half = sum(d["revenue"] for d in daily_data[:len(daily_data)//2])
+            rev_second_half = sum(d["revenue"] for d in daily_data[len(daily_data)//2:])
+            rev_trend_pct = round((rev_second_half - rev_first_half) / max(rev_first_half, 1) * 100, 1)
+
+            ord_first_half = sum(d["orders"] for d in daily_data[:len(daily_data)//2])
+            ord_second_half = sum(d["orders"] for d in daily_data[len(daily_data)//2:])
+            ord_trend_pct = round((ord_second_half - ord_first_half) / max(ord_first_half, 1) * 100, 1)
+
+            avg_price = round(recent_rev / recent_orders) if recent_orders > 0 else 0
+
+            analysis = generate_sku_recommendations(
+                revenue=recent_rev,
+                orders=recent_orders,
+                ad_spend=recent_ad_spend,
+                commission=hist_commission,
+                logistics=hist_logistics,
+                cogs=hist_cogs,
+                profit=hist_profit,
+                margin_pct=hist_margin,
+                roi=hist_roi,
+                ctr=hist_ctr,
+                cart_rate=hist_cart_rate,
+                avg_price=avg_price,
+                forecast_revenue=total_fc_rev,
+                forecast_orders=total_fc_orders,
+                forecast_profit=total_fc_profit,
+                forecast_margin_pct=fc_margin,
+                forecast_ad_spend=total_fc_ad,
+                revenue_trend_pct=rev_trend_pct,
+                orders_trend_pct=ord_trend_pct,
+                period_days=period,
+                forecast_days=forecast_days,
+            )
+
+            products_list.append({
+                "sku": s,
+                "offer_id": oid,
+                "name": sku_to_name.get(s, str(s)),
+                "image_url": sku_to_image.get(s, ""),
+                "history_totals": {
+                    "revenue": round(recent_rev),
+                    "orders": recent_orders,
+                    "ad_spend": round(recent_ad_spend),
+                    "profit": hist_profit,
+                    "margin_pct": hist_margin,
+                    "roi": hist_roi,
+                    "avg_price": avg_price,
+                    "ctr": hist_ctr,
+                    "cart_rate": hist_cart_rate,
+                },
+                "forecast": forecast_pts,
+                "trend": trend_info,
+                "forecast_totals": {
+                    "revenue": round(total_fc_rev),
+                    "orders": total_fc_orders,
+                    "ad_spend": round(total_fc_ad),
+                    "profit": round(total_fc_profit),
+                    "margin_pct": fc_margin,
+                },
+                "analysis": analysis,
+                "feature_importance": feat_imp,
+            })
+
+        products_list.sort(key=lambda x: x["history_totals"]["revenue"], reverse=True)
+
+        # ══════════════════════════════════════════════════════════
+        # 3. BOTTOM-UP OVERALL FORECAST
+        # ══════════════════════════════════════════════════════════
+
+        overall_forecast = []
+        for d in sorted(overall_by_day.keys()):
+            v = overall_by_day[d]
+            overall_forecast.append({
+                "date": d,
+                "revenue": round(v["revenue"]),
+                "orders": round(v["orders"]),
+                "profit": round(v["profit"]),
+                "ad_spend": round(v["ad_spend"]),
+            })
+
+        overall_totals = {
+            "revenue": sum(f["revenue"] for f in overall_forecast),
+            "orders": sum(f["orders"] for f in overall_forecast),
+            "profit": sum(f["profit"] for f in overall_forecast),
+            "ad_spend": sum(f["ad_spend"] for f in overall_forecast),
+        }
+        overall_totals["margin_pct"] = (
+            round(overall_totals["profit"] / overall_totals["revenue"] * 100, 1)
+            if overall_totals["revenue"] > 0 else 0
+        )
+
+        if len(overall_forecast) >= 2:
+            first_rev = overall_forecast[0]["revenue"]
+            last_rev = overall_forecast[-1]["revenue"]
+            avg_rev = sum(f["revenue"] for f in overall_forecast) / len(overall_forecast) or 1
+            slope = round((last_rev - first_rev) / avg_rev / len(overall_forecast) * 100, 1)
+        else:
+            slope = 0
+
+        overall_trend = {
+            "revenue_slope_pct": slope,
+            "direction": "up" if slope > 0.1 else "down" if slope < -0.1 else "flat",
+        }
+
+        rec_summary = {"critical": 0, "warning": 0, "opportunity": 0, "ok": 0}
+        for p in products_list:
+            sev = p.get("analysis", {}).get("severity", "ok")
+            rec_summary[sev] = rec_summary.get(sev, 0) + 1
+
+        return {
+            "shop_id": shop_id,
+            "period": period,
+            "forecast_days": forecast_days,
+            "history": history,
+            "overall": {
+                "forecast": overall_forecast,
+                "trend": overall_trend,
+                "totals": overall_totals,
+            },
+            "recommendation_summary": rec_summary,
+            "products": products_list,
+        }
+
+    except Exception as e:
+        logger.exception("WB forecast error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка прогноза WB: {e}",
+        )
+
 
 @router.get("/ozon/forecast")
 async def get_ozon_forecast(
