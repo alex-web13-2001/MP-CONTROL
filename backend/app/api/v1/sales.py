@@ -2591,14 +2591,52 @@ def _lightgbm_sku_forecast(
         revenue_history = df["revenue"].tail(14).tolist()
         std_orders = float(np.std(orders_history)) if len(orders_history) > 1 else 1
 
-        # Historical daily average (used as floor for predictions)
-        avg_daily_orders = float(df["orders"].mean())
+        # ── Funnel conversion rates (the core forecasting logic) ──
+        n_days = len(df)
+        total_views = float(df["views"].sum()) if "views" in df else 0
+        total_clicks = float(df["clicks"].sum()) if "clicks" in df else 0
+        total_carts = float(df["carts"].sum()) if "carts" in df else 0
+        total_orders = float(df["orders"].sum())
 
-        # Stable averages for funnel features (we don't predict them)
-        avg_views = float(df["views"].tail(14).mean()) if "views" in df else 0
-        avg_clicks = float(df["clicks"].tail(14).mean()) if "clicks" in df else 0
-        avg_carts = float(df["carts"].tail(14).mean()) if "carts" in df else 0
-        avg_ad_spend = float(df["ad_spend"].tail(14).mean()) if "ad_spend" in df else 0
+        # Conversion rates from full history
+        cart_to_order_rate = total_orders / max(total_carts, 1) if total_carts > 10 else 0
+        click_to_cart_rate = total_carts / max(total_clicks, 1) if total_clicks > 10 else 0
+        view_to_click_rate = total_clicks / max(total_views, 1) if total_views > 10 else 0
+
+        # Daily averages: recent (last 7d) vs period
+        avg_daily_orders = float(df["orders"].mean())
+        half = max(n_days // 2, 7)
+        recent_half = df.tail(half)
+        prev_half = df.head(half)
+
+        # Funnel trends: recent vs previous half (capped 0.5x–2.0x)
+        def _trend(col: str) -> float:
+            r = float(recent_half[col].mean()) if col in df else 0
+            p = float(prev_half[col].mean()) if col in df else 0
+            if p > 0:
+                return max(0.5, min(2.0, r / p))
+            return 1.0
+
+        views_trend = _trend("views")
+        clicks_trend = _trend("clicks")
+        carts_trend = _trend("carts")
+        orders_trend = _trend("orders")
+
+        # Recent funnel averages (last 7 days — reflect current state)
+        avg_views_recent = float(df["views"].tail(7).mean()) if "views" in df else 0
+        avg_clicks_recent = float(df["clicks"].tail(7).mean()) if "clicks" in df else 0
+        avg_carts_recent = float(df["carts"].tail(7).mean()) if "carts" in df else 0
+        avg_ad_spend = float(df["ad_spend"].mean()) if "ad_spend" in df else 0
+
+        # Funnel-based daily order prediction:
+        # projected_carts × cart_to_order_rate
+        if cart_to_order_rate > 0 and avg_carts_recent > 0:
+            funnel_daily_orders = avg_carts_recent * carts_trend * cart_to_order_rate
+        elif avg_daily_orders > 0:
+            # Fallback: use orders trend directly
+            funnel_daily_orders = avg_daily_orders * orders_trend
+        else:
+            funnel_daily_orders = 0
 
         forecast_pts = []
         feat_row = np.copy(last_feat)
@@ -2610,31 +2648,44 @@ def _lightgbm_sku_forecast(
             feat_row[col_idx["day_of_week"]] = next_date.dayofweek
             feat_row[col_idx["is_weekend"]] = 1.0 if next_date.dayofweek >= 5 else 0.0
 
-            # Keep funnel features stable (use recent averages)
-            feat_row[col_idx["views_lag1"]] = avg_views
-            feat_row[col_idx["views_lag2"]] = avg_views
-            feat_row[col_idx["views_lag3"]] = avg_views
-            feat_row[col_idx["clicks_lag1"]] = avg_clicks
-            feat_row[col_idx["clicks_lag2"]] = avg_clicks
-            feat_row[col_idx["carts_lag1"]] = avg_carts
-            feat_row[col_idx["carts_lag2"]] = avg_carts
+            # Funnel features: use recent values with trend applied
+            proj_views = avg_views_recent * views_trend
+            proj_clicks = avg_clicks_recent * clicks_trend
+            proj_carts = avg_carts_recent * carts_trend
+            proj_ctr = round(proj_clicks / max(proj_views, 1) * 100, 2)
+            proj_cart_rate = round(proj_carts / max(proj_clicks, 1) * 100, 2)
+
+            feat_row[col_idx["views_lag1"]] = proj_views
+            feat_row[col_idx["views_lag2"]] = proj_views
+            feat_row[col_idx["views_lag3"]] = proj_views
+            feat_row[col_idx["clicks_lag1"]] = proj_clicks
+            feat_row[col_idx["clicks_lag2"]] = proj_clicks
+            feat_row[col_idx["carts_lag1"]] = proj_carts
+            feat_row[col_idx["carts_lag2"]] = proj_carts
             feat_row[col_idx["ad_spend_lag1"]] = avg_ad_spend
             feat_row[col_idx["ad_spend_lag2"]] = avg_ad_spend
-            feat_row[col_idx["ctr_lag1"]] = round(avg_clicks / max(avg_views, 1) * 100, 2)
-            feat_row[col_idx["cart_rate_lag1"]] = round(avg_carts / max(avg_clicks, 1) * 100, 2)
+            feat_row[col_idx["ctr_lag1"]] = proj_ctr
+            feat_row[col_idx["cart_rate_lag1"]] = proj_cart_rate
 
-            # Predict ORDERS only
+            # Predict ORDERS via LightGBM
             X_pred = feat_row.reshape(1, -1)
             raw_pred = max(float(model_ord.predict(X_pred)[0]), 0)
 
-            # Floor: if prediction is below 50% of historical avg,
-            # blend with historical average to avoid unrealistic drops
-            floor_threshold = avg_daily_orders * 0.5
-            if raw_pred < floor_threshold and avg_daily_orders > 0:
-                # Blend: 10% model + 90% historical avg
-                pred_orders = raw_pred * 0.1 + avg_daily_orders * 0.9
+            # Funnel-based prediction as smart floor
+            # If LightGBM prediction is reasonable (within 50-200% of funnel),
+            # blend LightGBM + funnel. Otherwise use funnel prediction.
+            if funnel_daily_orders > 0:
+                ratio = raw_pred / funnel_daily_orders if funnel_daily_orders > 0 else 1
+                if 0.5 <= ratio <= 2.0:
+                    # LightGBM is in reasonable range — use it (70% model, 30% funnel)
+                    pred_orders = raw_pred * 0.7 + funnel_daily_orders * 0.3
+                else:
+                    # LightGBM is way off — trust funnel (20% model, 80% funnel)
+                    pred_orders = raw_pred * 0.2 + funnel_daily_orders * 0.8
             else:
                 pred_orders = raw_pred
+
+            pred_orders = max(pred_orders, 0)
 
             # Derive REVENUE from orders × avg_price (stable, no cascading error)
             pred_revenue = round(pred_orders * avg_price_per_order)
