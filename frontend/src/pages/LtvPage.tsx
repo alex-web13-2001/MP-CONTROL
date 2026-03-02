@@ -167,7 +167,7 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
       {/* Row 3: buyers count + % */}
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-[15px] font-bold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
-        <span className="text-[11px] font-semibold text-violet-400">{fmtPct(product.pct_of_l1)}</span>
+        <span className="text-[13px] font-bold text-violet-300 bg-violet-500/15 px-1.5 py-0.5 rounded">{fmtPct(product.pct_of_l1)}</span>
         <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">от L1</span>
       </div>
 
