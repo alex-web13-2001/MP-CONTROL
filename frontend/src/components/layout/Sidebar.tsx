@@ -17,6 +17,7 @@ import {
   TrendingUp,
   Grid3X3,
   LineChart,
+  Users,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -59,6 +60,14 @@ const navSections: NavSection[] = [
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse },
       { path: '/finances', label: 'Финансы', icon: DollarSign },
+      {
+        path: '/customers',
+        label: 'Клиенты',
+        icon: Users,
+        children: [
+          { path: '/customers/ltv', label: 'LTV анализ', icon: TrendingUp },
+        ],
+      },
     ],
   },
   {
