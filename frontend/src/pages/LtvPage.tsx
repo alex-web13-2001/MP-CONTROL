@@ -145,11 +145,11 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
 }) {
   const barWidth = Math.max((product.buyers / Math.max(l1Buyers, 1)) * 100, 3)
   return (
-    <div className="rounded-xl border border-[hsl(var(--border)/0.35)] bg-[hsl(var(--card))] p-3.5 transition-all hover:border-violet-500/30">
+    <div className="rounded-xl border border-[hsl(var(--border)/0.6)] bg-[hsl(var(--card))] p-3.5 transition-all hover:border-violet-500/40">
       {/* Row 1: rank + offer_id + repeat badge */}
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className="text-[11px] font-bold text-violet-400">#{rank}</span>
-        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.2)] text-[hsl(var(--muted-foreground)/0.8)] truncate max-w-[150px]">
+        <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-violet-500/15 text-violet-300 truncate max-w-[160px]">
           {product.offer_id}
         </span>
         {isRepeat && (
