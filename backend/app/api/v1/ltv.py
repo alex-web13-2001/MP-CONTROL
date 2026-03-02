@@ -606,6 +606,33 @@ async def get_ozon_purchase_chain(
                 "products": products[:10],  # Top 10 per level
             })
 
+        # ── Enrich with canonical offer_id from PostgreSQL ──
+        all_chain_skus = set()
+        all_chain_skus.add(sku)  # L1 SKU
+        for cl in chain_levels:
+            for p in cl["products"]:
+                all_chain_skus.add(p["sku"])
+
+        if all_chain_skus:
+            from sqlalchemy import text as sa_text
+            pg_result = await db.execute(
+                sa_text(
+                    "SELECT sku, offer_id FROM dim_ozon_products "
+                    "WHERE shop_id = :shop_id AND sku = ANY(:skus)"
+                ),
+                {"shop_id": shop_id, "skus": list(all_chain_skus)},
+            )
+            canon_map = {int(row[0]): str(row[1]) for row in pg_result.fetchall()}
+            # Override offer_id in chain products
+            for cl in chain_levels:
+                for p in cl["products"]:
+                    if p["sku"] in canon_map:
+                        p["offer_id"] = canon_map[p["sku"]]
+            # Override L1 offer_id
+            l1_offer_id = canon_map.get(sku, str(l1_stats[4]))
+        else:
+            l1_offer_id = str(l1_stats[4])
+
         return {
             "shop_id": shop_id,
             "target_sku": sku,
@@ -613,7 +640,7 @@ async def get_ozon_purchase_chain(
             "date_range": {"start": str(start_date), "end": str(end_date)},
             "l1": {
                 "sku": sku,
-                "offer_id": str(l1_stats[4]),
+                "offer_id": l1_offer_id,
                 "name": str(l1_stats[5])[:80],
                 "total_buyers": l1_total,
                 "total_qty": int(l1_stats[1] or 0),
