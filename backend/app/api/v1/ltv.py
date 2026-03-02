@@ -279,7 +279,23 @@ async def get_ozon_ltv(
                 "conv_to_3": _sf(r[9]),
                 "avg_days_between": int(_sf(r[10])),
                 "avg_ltv_repeat": _sf(r[11]),
+                "image_url": "",
             })
+
+        # ── Enrich with images from PostgreSQL ──
+        if sku_table:
+            sku_ids = [s["sku"] for s in sku_table]
+            from sqlalchemy import text as sa_text
+            img_result = await db.execute(
+                sa_text(
+                    "SELECT sku, main_image_url FROM dim_ozon_products "
+                    "WHERE shop_id = :shop_id AND sku = ANY(:skus)"
+                ),
+                {"shop_id": shop_id, "skus": sku_ids},
+            )
+            img_map = {int(row[0]): (row[1] or "") for row in img_result.fetchall()}
+            for item in sku_table:
+                item["image_url"] = img_map.get(item["sku"], "")
 
         # ══════════════════════════════════════════════
         # 4. Time-to-repeat distribution (histogram data)

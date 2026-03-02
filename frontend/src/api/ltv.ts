@@ -30,6 +30,7 @@ export interface SkuRepeatRow {
   sku: number
   offer_id: string
   name: string
+  image_url: string
   total_buyers: number
   total_qty: number
   total_revenue: number

@@ -437,15 +437,15 @@ function SkuTable({ rows, onSelectSku, selectedSku }: {
       <div className="overflow-auto max-h-[500px]">
         <table className="w-full text-[13px]">
           <thead className="sticky top-0 z-20 bg-[hsl(var(--card))]">
-            <tr className="border-b border-[hsl(var(--border)/0.15)]">
-              <th className="text-left px-4 py-3.5 text-[13px] font-semibold text-[hsl(var(--muted-foreground))] sticky left-0 z-30 bg-[hsl(var(--card))] min-w-[240px]">
+             <tr className="border-b border-[hsl(var(--border)/0.15)]">
+              <th className="text-left px-4 py-3.5 text-[13px] font-semibold text-[hsl(var(--muted-foreground))] sticky left-0 z-30 bg-[hsl(var(--card))] min-w-[280px]">
                 Товар
               </th>
               <SortTh label="Покупат." field="total_buyers" />
               <SortTh label="Повтор." field="repeat_buyers" />
-              <SortTh label="Conv→2" field="conv_to_2" />
-              <SortTh label="Conv→3" field="conv_to_3" />
-              <SortTh label="Avg дней" field="avg_days_between" />
+              <SortTh label="Конв. 2" field="conv_to_2" />
+              <SortTh label="Конв. 3" field="conv_to_3" />
+              <SortTh label="Ср. дней" field="avg_days_between" />
               <SortTh label="LTV повт." field="avg_ltv_repeat" />
               <SortTh label="Выручка" field="total_revenue" />
             </tr>
@@ -463,40 +463,65 @@ function SkuTable({ rows, onSelectSku, selectedSku }: {
                       : 'bg-[hsl(var(--muted)/0.04)] hover:bg-[hsl(var(--muted)/0.10)]'
                 }`}
               >
-                <td className="px-4 py-3 sticky left-0 z-10 bg-inherit min-w-[240px]"
+                <td className="px-4 py-2.5 sticky left-0 z-10 bg-inherit min-w-[280px]"
                   style={selectedSku === r.sku ? { background: 'hsl(var(--card))' } : undefined}
                 >
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-[12px] text-[hsl(var(--foreground))] font-medium leading-tight line-clamp-1">
-                      {r.name}
-                    </span>
-                    <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]">{r.offer_id}</span>
+                  <div className="flex items-center gap-3">
+                    {/* Thumbnail with hover zoom */}
+                    <div className="relative group shrink-0">
+                      {r.image_url ? (
+                        <>
+                          <img
+                            src={r.image_url}
+                            alt=""
+                            className="w-10 h-10 rounded-lg object-cover border border-[hsl(var(--border)/0.2)]"
+                          />
+                          <div className="absolute left-12 top-0 z-50 hidden group-hover:block">
+                            <img
+                              src={r.image_url}
+                              alt={r.name}
+                              className="w-40 h-40 rounded-xl object-cover border-2 border-violet-500/40 shadow-2xl shadow-black/50"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="w-10 h-10 rounded-lg bg-[hsl(var(--muted)/0.15)] flex items-center justify-center">
+                          <Package size={16} className="text-[hsl(var(--muted-foreground)/0.3)]" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <span className="text-[12px] text-[hsl(var(--foreground))] font-medium leading-tight line-clamp-1">
+                        {r.name}
+                      </span>
+                      <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]">{r.offer_id}</span>
+                    </div>
                   </div>
                 </td>
-                <td className="px-4 py-3 text-right font-medium">{fmtNum(r.total_buyers)}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-2.5 text-right font-medium">{fmtNum(r.total_buyers)}</td>
+                <td className="px-4 py-2.5 text-right">
                   <span className="font-bold text-violet-400">{fmtNum(r.repeat_buyers)}</span>
                   <span className="text-[hsl(var(--muted-foreground))] ml-1 text-[11px]">
                     ({fmtPct(r.repeat_buyers / Math.max(r.total_buyers, 1) * 100)})
                   </span>
                 </td>
-                <td className="px-4 py-3 text-right font-semibold">
+                <td className="px-4 py-2.5 text-right font-semibold">
                   <span className={r.conv_to_2 > 30 ? 'text-emerald-400' : r.conv_to_2 > 0 ? 'text-amber-400' : 'text-[hsl(var(--muted-foreground))]'}>
                     {fmtPct(r.conv_to_2)}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-right font-semibold">
+                <td className="px-4 py-2.5 text-right font-semibold">
                   <span className={r.conv_to_3 > 30 ? 'text-emerald-400' : r.conv_to_3 > 0 ? 'text-amber-400' : 'text-[hsl(var(--muted-foreground))]'}>
                     {r.conv_to_3 > 0 ? fmtPct(r.conv_to_3) : '—'}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-right text-[hsl(var(--muted-foreground))]">
+                <td className="px-4 py-2.5 text-right text-[hsl(var(--muted-foreground))]">
                   {r.avg_days_between > 0 ? `${r.avg_days_between} дн` : '—'}
                 </td>
-                <td className="px-4 py-3 text-right font-medium text-emerald-400">
+                <td className="px-4 py-2.5 text-right font-medium text-emerald-400">
                   {r.avg_ltv_repeat > 0 ? fmtMoney(r.avg_ltv_repeat) : '—'}
                 </td>
-                <td className="px-4 py-3 text-right font-medium">{fmtMoney(r.total_revenue)}</td>
+                <td className="px-4 py-2.5 text-right font-medium">{fmtMoney(r.total_revenue)}</td>
               </tr>
             ))}
           </tbody>
