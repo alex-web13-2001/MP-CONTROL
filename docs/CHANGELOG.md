@@ -371,3 +371,22 @@
 - Sales: +2 forecast endpoints (/ozon/forecast, /wb/forecast), итого 8
 - forecast_engine.py — внутренняя утилита (не роутер)
 
+
+## 2026-03-02
+
+### feat: LTV клиентов Ozon — полный раздел анализа повторных покупок
+
+**Backend (app/api/v1/ltv.py):**
+- 2 API endpoints: `GET /sales/ozon/ltv` и `GET /sales/ozon/ltv/chain`
+- KPI метрики: уникальные клиенты, повторные, retention rate, средний LTV, avg check
+- Когортная retention матрица (месячные когорты с % удержания до +6 мес)
+- Таблица SKU с повторными покупками (конверсии →2/→3, avg days between, LTV repeat)
+- Распределение времени до повторной покупки (гистограмма по бакетам)
+- Цепочка продаж L1→L5 (кросс-продажи после покупки конкретного SKU)
+- ClickHouse-совместимые запросы (window functions, safe NaN handling)
+
+**Frontend:**
+- `ltv.ts` — API модуль с TypeScript типами
+- `LtvPage.tsx` (673 строки) — KPI карточки, cohort heatmap, interactive chain visualization, SKU table с сортировкой/поиском, histogram
+- Route `/customers/ltv` в App.tsx
+- Sidebar: пункт «Клиенты → LTV анализ»
