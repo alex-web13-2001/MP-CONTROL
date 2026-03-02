@@ -233,7 +233,7 @@ async def get_ozon_ltv(
                 sku_client_agg AS (
                     SELECT
                         sku,
-                        any(offer_id) AS offer_id,
+                        argMax(offer_id, order_date) AS offer_id,
                         any(product_name) AS product_name,
                         client_id,
                         count() AS purchases,
@@ -246,7 +246,7 @@ async def get_ozon_ltv(
                 )
             SELECT
                 sku,
-                any(offer_id) AS offer_id,
+                argMax(offer_id, last_buy) AS offer_id,
                 any(product_name) AS name,
                 count() AS total_buyers,
                 sum(client_qty) AS total_qty,
@@ -406,8 +406,8 @@ async def get_ozon_purchase_chain(
                         splitByChar('-', posting_number)[1] AS client_id,
                         order_number,
                         sku,
-                        any(offer_id) AS offer_id,
-                        any(product_name) AS product_name,
+                        argMax(offer_id, toDate(addHours(in_process_at, 3))) AS offer_id,
+                        argMax(product_name, toDate(addHours(in_process_at, 3))) AS product_name,
                         min(toDate(addHours(in_process_at, 3))) AS order_date,
                         sum(price * quantity) AS revenue,
                         sum(quantity) AS qty
@@ -467,8 +467,8 @@ async def get_ozon_purchase_chain(
             SELECT
                 level,
                 sku,
-                any(offer_id) AS offer_id,
-                any(product_name) AS name,
+                argMax(offer_id, order_date) AS offer_id,
+                argMax(product_name, order_date) AS name,
                 count(DISTINCT client_id) AS buyers,
                 sum(qty) AS total_qty,
                 round(sum(revenue), 0) AS total_revenue,
@@ -485,8 +485,8 @@ async def get_ozon_purchase_chain(
                 sum(quantity) AS total_qty,
                 round(sum(price * quantity), 0) AS total_revenue,
                 round(avg(price), 0) AS avg_price,
-                any(offer_id) AS offer_id,
-                any(product_name) AS name
+                argMax(offer_id, toDate(addHours(in_process_at, 3))) AS offer_id,
+                argMax(product_name, toDate(addHours(in_process_at, 3))) AS name
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND sku = {target_sku:UInt64}
