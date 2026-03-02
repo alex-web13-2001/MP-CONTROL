@@ -606,10 +606,10 @@ async def get_ozon_purchase_chain(
             },
             "chain": chain_levels,
             "avg_days_between": {
-                "l1_to_l2": int(time_between[0]) if time_between[0] else 0,
-                "l2_to_l3": int(time_between[1]) if time_between[1] else 0,
-                "l3_to_l4": int(time_between[2]) if time_between[2] else 0,
-                "l4_to_l5": int(time_between[3]) if time_between[3] else 0,
+                "l1_to_l2": int(_sf(time_between[0])),
+                "l2_to_l3": int(_sf(time_between[1])),
+                "l3_to_l4": int(_sf(time_between[2])),
+                "l4_to_l5": int(_sf(time_between[3])),
             },
         }
 
