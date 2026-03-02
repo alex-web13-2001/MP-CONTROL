@@ -39,13 +39,15 @@ function KpiCard({ label, value, sub, icon: Icon, color }: {
   icon: React.ElementType; color: string
 }) {
   return (
-    <div className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] p-5 flex flex-col gap-1.5">
+    <div className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] p-5 flex flex-col gap-2">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wider">{label}</span>
-        <Icon size={16} style={{ color }} className="opacity-60" />
+        <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground)/0.7)] uppercase tracking-widest">{label}</span>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${color}15` }}>
+          <Icon size={16} style={{ color }} />
+        </div>
       </div>
-      <span className="text-2xl font-bold" style={{ color }}>{value}</span>
-      {sub && <span className="text-xs text-[hsl(var(--muted-foreground))]">{sub}</span>}
+      <span className="text-[26px] font-extrabold leading-tight" style={{ color }}>{value}</span>
+      {sub && <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.8)] font-medium">{sub}</span>}
     </div>
   )
 }
@@ -133,55 +135,32 @@ function CohortMatrix({ cohorts }: { cohorts: CohortRow[] }) {
 }
 
 /* ══════════════════════════════════════════════════════
-   Purchase Chain Card (single product in chain)
+   ChainCard — compact product card in chain level
    ══════════════════════════════════════════════════════ */
-function ChainCard({ product, rank, isRepeat, l1Buyers }: {
+function ChainCard({ product, rank, isRepeat }: {
   product: { sku: number; offer_id: string; name: string; buyers: number; avg_revenue: number; pct_of_l1: number }
-  rank: number; isRepeat: boolean; l1Buyers: number
+  rank: number; isRepeat: boolean
 }) {
-  const pctWidth = Math.max((product.buyers / l1Buyers) * 100, 4)
   return (
-    <div className={`rounded-xl border p-3.5 transition-all hover:border-[hsl(var(--primary)/0.5)] ${
+    <div className={`rounded-lg border px-3 py-2.5 transition-colors ${
       isRepeat
-        ? 'border-emerald-500/40 bg-emerald-500/5'
-        : 'border-[hsl(var(--border)/0.25)] bg-[hsl(var(--card))]'
+        ? 'border-emerald-500/40 bg-emerald-500/8'
+        : 'border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.04)]'
     }`}>
-      <div className="flex items-start gap-2.5">
-        <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] bg-[hsl(var(--muted)/0.15)] rounded-md w-7 h-7 flex items-center justify-center shrink-0">
-          #{rank}
-        </span>
+      <div className="flex items-center gap-2">
+        <span className={`text-[11px] font-bold shrink-0 w-5 text-center ${
+          rank <= 3 ? 'text-violet-400' : 'text-[hsl(var(--muted-foreground)/0.5)]'
+        }`}>#{rank}</span>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1.5 mb-1">
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground))]">
-              {product.offer_id}
-            </span>
-            {isRepeat && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 font-medium">
-                🔁 Повтор
-              </span>
-            )}
-          </div>
-          <p className="text-[12px] text-[hsl(var(--foreground)/0.85)] leading-tight line-clamp-2 mb-2">
-            {product.name}
+          <p className={`text-[12px] leading-tight line-clamp-1 ${
+            isRepeat ? 'text-emerald-400 font-semibold' : 'text-[hsl(var(--foreground)/0.9)]'
+          }`}>
+            {isRepeat && '🔁 '}{product.name}
           </p>
-          <div className="flex items-center justify-between text-[11px]">
-            <span className="font-bold text-[hsl(var(--foreground))]">{product.buyers} чел</span>
-            <span className="text-violet-400 font-semibold">{fmtPct(product.pct_of_l1)} от L1</span>
-          </div>
-          <div className="mt-1.5 h-1.5 rounded-full bg-[hsl(var(--muted)/0.15)] overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${pctWidth}%`,
-                background: isRepeat
-                  ? 'linear-gradient(90deg, #10b981, #34d399)'
-                  : 'linear-gradient(90deg, #8b5cf6, #a78bfa)',
-              }}
-            />
-          </div>
-          <div className="mt-1.5 text-[11px] text-[hsl(var(--muted-foreground))]">
-            💰 {fmtMoney(product.avg_revenue)} / заказ
-          </div>
+        </div>
+        <div className="text-right shrink-0 ml-1">
+          <span className="text-[13px] font-bold text-[hsl(var(--foreground))]">{product.buyers}</span>
+          <span className="text-[10px] text-violet-400/80 ml-1">{fmtPct(product.pct_of_l1)}</span>
         </div>
       </div>
     </div>
@@ -189,17 +168,17 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
 }
 
 /* ══════════════════════════════════════════════════════
-   Purchase Chain Visualization
+   Purchase Chain Visualization (redesigned)
    ══════════════════════════════════════════════════════ */
-function PurchaseChain({ chain }: {
-  chain: ChainResponse | null
+function PurchaseChain({ chain, loading }: {
+  chain: ChainResponse | null; loading: boolean
 }) {
   if (!chain) {
     return (
-      <div className="rounded-2xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] p-8 text-center">
-        <Package size={40} className="mx-auto mb-3 text-[hsl(var(--muted-foreground))] opacity-40" />
-        <p className="text-sm text-[hsl(var(--muted-foreground))]">
-          Выберите товар в таблице ниже, чтобы увидеть цепочку продаж
+      <div className="rounded-2xl border border-dashed border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] p-10 text-center">
+        <Package size={36} className="mx-auto mb-3 text-violet-400 opacity-30" />
+        <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.7)]">
+          {loading ? 'Загрузка цепочки...' : 'Выберите товар в таблице ниже →'}
         </p>
       </div>
     )
@@ -208,89 +187,93 @@ function PurchaseChain({ chain }: {
   const l1 = chain.l1
   const levels = chain.chain
   const daysMap = chain.avg_days_between
-
   const daysLabels: Record<number, number> = {
-    2: daysMap.l1_to_l2,
-    3: daysMap.l2_to_l3,
-    4: daysMap.l3_to_l4,
-    5: daysMap.l4_to_l5,
+    2: daysMap.l1_to_l2, 3: daysMap.l2_to_l3,
+    4: daysMap.l3_to_l4, 5: daysMap.l4_to_l5,
   }
+  const stepNames = ['', 'Первая', 'Вторая', 'Третья', 'Четвёртая', 'Пятая']
 
   return (
     <div className="rounded-2xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] overflow-hidden">
-      <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)]">
-        <h3 className="text-base font-semibold text-[hsl(var(--foreground))]">
-          🔗 Цепочка продаж (1 → 2 → 3 → 4 → 5)
-        </h3>
-        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">
-          Что покупают клиенты после покупки выбранного товара
-        </p>
+      <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)] flex items-center justify-between">
+        <div>
+          <h3 className="text-[15px] font-bold text-[hsl(var(--foreground))]">
+            🔗 Цепочка покупок
+          </h3>
+          <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.7)] mt-0.5 line-clamp-1 max-w-[400px]">
+            {l1.name}
+          </p>
+        </div>
+        <div className="text-right">
+          <div className="text-[22px] font-extrabold text-violet-400 leading-none">{fmtNum(l1.total_buyers)}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)]">покупателей</div>
+        </div>
       </div>
 
-      <div className="p-5 overflow-x-auto">
-        <div className="flex gap-3 min-w-[1100px]">
-          {/* L1 — Target Product */}
-          <div className="w-[200px] shrink-0">
-            <div className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2 text-center">
-              ① Первая покупка
-            </div>
-            <div className="rounded-xl border-2 border-violet-500/50 bg-violet-500/5 p-4">
-              <div className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 w-fit mb-2">
-                {l1.offer_id}
-              </div>
-              <p className="text-[12px] text-[hsl(var(--foreground))] leading-tight line-clamp-3 mb-3 font-medium">
-                {l1.name}
-              </p>
-              <div className="text-xl font-bold text-violet-400 mb-1">{fmtNum(l1.total_buyers)} чел</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                {fmtNum(l1.total_qty)} шт · ~{fmtMoney(l1.avg_price)} / шт
-              </div>
-              <div className="mt-2 text-[11px] text-[hsl(var(--muted-foreground))]">
-                Перешли ко 2-й: <b className="text-[hsl(var(--foreground))]">
-                  {levels[1] ? fmtNum(levels[1].total_buyers) : 0}
-                </b> ({levels[1] ? fmtPct(levels[1].conversion_from_l1) : '0%'})
-              </div>
-            </div>
-          </div>
-
-          {/* L2..L5 */}
-          {[2, 3, 4, 5].map(lvlNum => {
+      <div className="p-4 overflow-x-auto">
+        <div className="flex gap-1 min-w-[850px]">
+          {[1, 2, 3, 4, 5].map(lvlNum => {
             const lvl = levels.find(l => l.level === lvlNum)
-            if (!lvl || lvl.products.length === 0) return null
-
+            if (!lvl) return null
+            const products = lvl.products
+            if (products.length === 0 && lvlNum > 1) return null
 
             return (
-              <div key={lvlNum} className="flex items-start gap-3">
-                {/* Arrow with conversion */}
-                <div className="flex flex-col items-center justify-center mt-[60px] w-[50px] shrink-0">
-                  <div className="text-lg font-bold text-violet-400">{fmtPct(lvl.conversion_from_prev)}</div>
-                  <ChevronRight size={20} className="text-violet-400/50 my-0.5" />
-                  <div className="text-[10px] text-[hsl(var(--muted-foreground))] text-center leading-tight">
-                    конверсия
-                  </div>
-                  {daysLabels[lvlNum] > 0 && (
-                    <div className="text-[10px] text-amber-400 mt-1">
-                      ⏱ {daysLabels[lvlNum]}д
+              <div key={lvlNum} className="flex items-stretch">
+                {/* Arrow connector */}
+                {lvlNum > 1 && (
+                  <div className="flex flex-col items-center justify-center w-[44px] shrink-0 py-8">
+                    <div className="text-[14px] font-extrabold text-violet-400">
+                      {fmtPct(lvl.conversion_from_prev)}
                     </div>
-                  )}
-                </div>
+                    <div className="flex items-center my-1">
+                      <div className="w-3 h-px bg-violet-400/30" />
+                      <ChevronRight size={14} className="text-violet-400/60 -mx-0.5" />
+                      <div className="w-3 h-px bg-violet-400/30" />
+                    </div>
+                    {daysLabels[lvlNum] > 0 && (
+                      <div className="text-[10px] font-semibold text-amber-400/80 bg-amber-400/10 rounded px-1.5 py-0.5">
+                        ~{daysLabels[lvlNum]}дн
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Products column */}
-                <div className="w-[200px] shrink-0">
-                  <div className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2 text-center">
-                    {'②③④⑤'[lvlNum - 2]} {['Вторая', 'Третья', 'Четвёртая', 'Пятая'][lvlNum - 2]} покупка
+                <div className={`shrink-0 ${lvlNum === 1 ? 'w-[150px]' : 'w-[170px]'}`}>
+                  <div className="text-[10px] font-bold text-[hsl(var(--muted-foreground)/0.5)] uppercase tracking-widest mb-2 text-center">
+                    {stepNames[lvlNum]} покупка
                   </div>
-                  <div className="flex flex-col gap-2 max-h-[400px] overflow-y-auto pr-1">
-                    {lvl.products.map((p, i) => (
-                      <ChainCard
-                        key={p.sku}
-                        product={p}
-                        rank={i + 1}
-                        isRepeat={p.sku === l1.sku}
-                        l1Buyers={l1.total_buyers}
-                      />
-                    ))}
-                  </div>
+
+                  {lvlNum === 1 ? (
+                    <div className="rounded-xl border-2 border-violet-500/40 bg-violet-500/5 p-3">
+                      <p className="text-[12px] text-[hsl(var(--foreground))] leading-tight line-clamp-2 font-medium mb-2">
+                        {l1.name}
+                      </p>
+                      <div className="text-[18px] font-extrabold text-violet-400 leading-none">
+                        {fmtNum(l1.total_buyers)}
+                      </div>
+                      <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.6)] mt-1">
+                        {fmtNum(l1.total_qty)} шт · {fmtMoney(l1.avg_price)}/шт
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1.5 max-h-[320px] overflow-y-auto">
+                      {products.slice(0, 5).map((p, i) => (
+                        <ChainCard
+                          key={p.sku}
+                          product={p}
+                          rank={i + 1}
+                          isRepeat={p.sku === l1.sku}
+                        />
+                      ))}
+                      {products.length > 5 && (
+                        <div className="text-[10px] text-center text-[hsl(var(--muted-foreground)/0.5)] py-1">
+                          +{products.length - 5} ещё
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )
@@ -659,7 +642,7 @@ export default function LtvPage() {
             <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
           </div>
         )}
-        <PurchaseChain chain={chain} />
+        <PurchaseChain chain={chain} loading={chainLoading} />
       </div>
 
       {/* SKU Table */}
