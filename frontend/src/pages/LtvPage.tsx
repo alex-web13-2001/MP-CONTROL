@@ -7,6 +7,7 @@ import {
   type SkuRepeatRow,
   type CohortRow,
 } from '@/api/ltv'
+import { fetchWbLtv, fetchWbPurchaseChain } from '@/api/wb_ltv'
 import { useAppStore } from '@/stores/appStore'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -546,21 +547,25 @@ export default function LtvPage() {
   const [error, setError] = useState<string | null>(null)
 
   const isOzon = currentShop?.marketplace === 'ozon'
+  const isWb = currentShop?.marketplace === 'wildberries'
+  const isSupported = isOzon || isWb
 
   // Load main LTV data
   const loadData = useCallback(async () => {
-    if (!currentShop || !isOzon) return
+    if (!currentShop || !isSupported) return
     setLoading(true)
     setError(null)
     try {
-      const result = await fetchLtv(currentShop.id, period)
+      const result = isWb
+        ? await fetchWbLtv(currentShop.id, period)
+        : await fetchLtv(currentShop.id, period)
       setData(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
       setLoading(false)
     }
-  }, [currentShop, period, isOzon])
+  }, [currentShop, period, isSupported, isWb])
 
   useEffect(() => { loadData() }, [loadData])
 
@@ -570,24 +575,26 @@ export default function LtvPage() {
     setSelectedSku(sku)
     setChainLoading(true)
     try {
-      const result = await fetchPurchaseChain(currentShop.id, sku, period)
+      const result = isWb
+        ? await fetchWbPurchaseChain(currentShop.id, sku, period)
+        : await fetchPurchaseChain(currentShop.id, sku, period)
       setChain(result)
     } catch {
       setChain(null)
     } finally {
       setChainLoading(false)
     }
-  }, [currentShop, period])
+  }, [currentShop, period, isWb])
 
-  // Not Ozon — show message
-  if (!isOzon) {
+  // Unsupported marketplace
+  if (!isSupported) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
         <div className="text-center">
           <Users size={48} className="mx-auto mb-4 text-[hsl(var(--muted-foreground))] opacity-30" />
-          <h2 className="text-lg font-semibold text-[hsl(var(--foreground))] mb-2">LTV-анализ доступен только для Ozon</h2>
+          <h2 className="text-lg font-semibold text-[hsl(var(--foreground))] mb-2">LTV-анализ недоступен</h2>
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
-            Wildberries не предоставляет ID клиента в данных заказов
+            Выберите магазин Ozon или Wildberries
           </p>
         </div>
       </div>

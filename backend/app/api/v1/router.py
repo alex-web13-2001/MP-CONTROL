@@ -13,6 +13,7 @@ from app.api.v1.wb_products import router as wb_products_router
 from app.api.v1.finances import router as finances_router
 from app.api.v1.sales import router as sales_router
 from app.api.v1.ltv import router as ltv_router
+from app.api.v1.wb_ltv import router as wb_ltv_router
 
 api_router = APIRouter()
 
@@ -30,6 +31,7 @@ api_router.include_router(wb_products_router)
 api_router.include_router(finances_router)
 api_router.include_router(sales_router)
 api_router.include_router(ltv_router)
+api_router.include_router(wb_ltv_router)
 
 
 @api_router.get("/")
