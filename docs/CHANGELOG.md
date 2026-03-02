@@ -1,3 +1,25 @@
+## 2026-03-03
+
+### feat: WB LTV — полный модуль анализа повторных покупок
+
+**Открытие**: обнаружен buyer_id в поле `srid` заказов WB.  
+Формула: `substring(splitByChar('.', srid)[1], 1, 8)` для числовых srid 16-19 символов.  
+Точность: 97.1% (подтверждена на 2 магазинах, cross-validated с Ozon).
+
+**Backend** (`backend/app/api/v1/wb_ltv.py`):
+
+- `GET /sales/wb/ltv` — KPI, когортная матрица, SKU repeat table, time distribution
+- `GET /sales/wb/ltv/chain` — цепочка покупок L1→L5 для конкретного nm_id
+- Buyer ID extraction из srid, фильтр числовых srid 16-19 символов
+- Зарегистрирован в `router.py`
+
+**Frontend**:
+
+- `frontend/src/api/wb_ltv.ts` — API модуль с типами
+- `LtvPage.tsx` расширена для WB: автовыбор API (Ozon/WB) по marketplace магазина
+
+---
+
 ## 2026-02-28
 
 ### fix(sales): sticky header/column + обрезка названий
@@ -170,10 +192,12 @@
 ## 2026-02-28 — WB Sales Overview (Обзор продаж для Wildberries)
 
 ### Backend
+
 - `GET /api/v1/sales/wb` — KPI (заказы, выручка, ср. чек, отмены), дневной график, география (top-20 регионов), top-20 товаров с органической воронкой из `fact_sales_funnel`
 - `GET /api/v1/sales/wb/product-daily` — дневная динамика по конкретным товарам (для оверлея на графике)
 
 ### Frontend
+
 - `sales.ts`: добавлены `getWbSalesApi()` и `getWbProductDailyApi()`
 - `SalesPage.tsx`: адаптирован для обоих маркетплейсов:
   - Автоопределение маркетплейса → вызов нужного API
@@ -183,6 +207,7 @@
   - Блок «Причины возвратов» скрыт для WB (нет данных)
 
 ### Исправление: Рекламная воронка WB (fix)
+
 - Заменён источник данных воронки: `fact_sales_funnel` (органическая) → `fact_advert_stats_v3 FINAL` (рекламная)
 - Теперь корректные значения: views (рекл. показы), clicks (клики), atbs (корзины), orders (заказы), spend (расходы)
 - CTR = clicks/views, CR→корз. = atbs/clicks, CR→заказ = orders/atbs
@@ -191,6 +216,7 @@
 ## 2026-02-28 — WB ABC/XYZ анализ
 
 ### Backend
+
 - `GET /api/v1/sales/wb/abc-xyz` — полный ABC/XYZ анализ для товаров WB
   - Revenue/costs: `fact_finances FINAL` (per vendor_code/nm_id)
   - Ad spend: `fact_advert_stats_v3 FINAL` (per nm_id)
@@ -200,12 +226,14 @@
   - Commission = revenue - payout (модель WB)
 
 ### Frontend
+
 - `abc-xyz.ts`: добавлена `fetchWbAbcXyz()`
 - `AbcXyzPage.tsx`: авто-определение маркетплейса → вызов нужного API
 
 ## 2026-02-28 — Раздел «Прогноз продаж» для Ozon
 
 ### Backend
+
 - `GET /api/v1/sales/ozon/forecast` — трендовый прогноз + unit economics
   - History: дневная выручка/заказы из `fact_ozon_orders`
   - Forecast: линейная регрессия на Python (без numpy) + доверительный коридор ±σ
@@ -213,6 +241,7 @@
   - COGS из `product_costs`, info из `dim_ozon_products`
 
 ### Frontend
+
 - `ForecastPage.tsx` — комбо-раздел:
   - Трендовый график (Recharts AreaChart + Line, история + прогноз с доверительным коридором)
   - 4 KPI карточки: прогноз выручки/заказов, тренд, направление
@@ -224,6 +253,7 @@
 ## 2026-02-28 — NeuralProphet вместо линейной регрессии
 
 ### Backend
+
 - Заменена линейная регрессия на **NeuralProphet 0.9.0** (PyTorch)
   - Мультипликативная недельная сезонность
   - Авторегрессия AR(7) — последние 7 дней влияют на прогноз
@@ -232,11 +262,13 @@
   - Fallback на 7-дневное скользящее среднее при ошибке модели
 
 ### Зависимости
+
 - `neuralprophet==0.9.0`, `torch==2.2.0` (CPU-only), `pandas<3.0`
 - Dockerfile обновлён: `--index-url https://download.pytorch.org/whl/cpu`
 - `.gitignore`: добавлен `backend/lightning_logs/`
 
 ### Устранённые проблемы
+
 - pandas 3.0 → ошибка `Series.view()` (фикс: pandas<3.0)
 - torch 2.10 → несовместимость API (фикс: torch==2.2.0)
 - `n_forecasts` не был задан → только 1 день прогноза
@@ -245,6 +277,7 @@
 ## 2026-02-28 — LightGBM per-SKU прогноз с воронкой
 
 ### Backend
+
 - Добавлен **LightGBM** per-SKU прогноз с 21 lagged фичей (показы, клики, корзины, рекл. расход за 1-3 дня)
 - Новый endpoint `GET /sales/ozon/forecast/sku` — прогноз заказов, выручки, прибыли по каждому SKU
 - Feature importance — показывает какой фактор больше всего влияет на продажи каждого SKU
@@ -252,18 +285,21 @@
 - Зависимости: `lightgbm>=4.0`, `scikit-learn`
 
 ### Frontend
+
 - Новая секция «Прогноз по SKU (LightGBM)» на странице прогноза
 - Кнопки выбора SKU (топ-5 по выручке), KPI карточки, график заказов с confidence band
 - Панель «Влияние факторов» — визуальные бары feature importance
 - Блок «Структура прибыли» — разбивка: выручка, комиссия, логистика, реклама, чистая прибыль
 
 ### Инфраструктура
+
 - Nginx proxy timeout увеличен с 60с до 180с для ML-эндпоинтов
 - Dockerfile: torch незафиксирован (2.2.0 удалён с CDN PyTorch)
 
 ## 2026-03-01 — Очистка ветки: удалён ML-код для деплоя
 
 ### Удалено из feature/sales-page
+
 - NeuralProphet + LightGBM эндпоинты и хелперы из `sales.py` (−942 строки)
 - `ForecastPage.tsx`, `forecast.ts` (удалены)
 - ML-зависимости: `torch`, `neuralprophet`, `lightgbm`, `scikit-learn`, `pandas`
@@ -272,26 +308,31 @@
 - Nginx timeout возвращён с 180с на 60с
 
 ### Сохранено
+
 - Весь ML-код сохранён в ветке `feature/forecast-ml`
 
 ### Исправлено
+
 - docker-compose.yml: nginx переключён с prod-конфига (SSL) на dev-конфиг
 - Docker build теперь 60с вместо 5+ минут
 
 ## 2026-03-01 — Обновление архитектурной документации
 
 ### 04_BACKEND_API.md
+
 - Добавлена секция «Продажи — /api/v1/sales» (6 endpoints)
 - Добавлена секция «Финансы — /api/v1/finances» (4 endpoints)
 - Роутинг обновлён: 10 роутеров вместо 6
 - Удалены forecast endpoints (код в feature/forecast-ml)
 
 ### 06_FRONTEND.md
+
 - Добавлены секции SalesPage (1019 строк) и AbcXyzPage (489 строк)
 - Routing обновлён: 6 активных роутов
 - Убран «Прогноз» из sidebar
 
 ### 07_INFRASTRUCTURE.md
+
 - Документировано различие nginx.conf (dev) и nginx.prod.conf (prod)
 - ML зависимости удалены, Docker build ~60с
 
@@ -308,12 +349,12 @@
 - **Fallback**: обновлён с 5.5% до 40%
 - **Файл**: `backend/app/api/v1/sales.py` (endpoint `/sales/wb/forecast`)
 
-
 ## 2026-03-01
 
 ### ui(sales+finances): единый стиль таблиц — sticky + scroll
 
 **SalesPage.tsx → TopProductsTable:**
+
 - Обёрнут в `rounded-2xl` контейнер с title bar (убрана дублирующая Card)
 - `max-h-[600px]` + `overflow-auto` — вертикальный скролл
 - Sticky header (`sticky top-0 z-20`)
@@ -323,6 +364,7 @@
 - Sort indicator: `text-[hsl(var(--primary))]` вместо opacity
 
 **ProductFinanceTable.tsx:**
+
 - `rounded-2xl` контейнер + title bar c счётчиком товаров
 - `max-h-[600px]` + `overflow-auto`
 - Sticky header (`sticky top-0 z-20`)
@@ -330,12 +372,12 @@
 - Sticky первый столбец с `stickyCol` + box-shadow
 - Zebra striping, единые размеры ячеек
 
-
 ## 2026-03-01
 
 ### ui(sales+finances): unified table style — matching ABC/XYZ
 
 **TopProductsTable** (SalesPage.tsx):
+
 - Rounded-2xl card container с title bar
 - `max-h-[600px]` scrollable area
 - Sticky header (vertical z-20) + sticky first column 'Товар' (horizontal, box-shadow)
@@ -344,17 +386,18 @@
 - Единые padding/font-size ячеек
 
 **ProductFinanceTable** (ProductFinanceTable.tsx):
+
 - Тот же rounded-2xl card + title bar + счётчик товаров
 - `max-h-[600px]` vertical scroll
 - Sticky header (z-20) + sticky first column + **sticky ИТОГО footer** (bottom-0)
 - Zebra striping, единые шрифты через HSL vars
-
 
 ## 2026-03-02
 
 ### docs: полный аудит и обновление архитектурной документации
 
 **06_FRONTEND.md:**
+
 - Добавлены секции ForecastPage (387 строк), WBProductsPage (644 строки), FinancesPage (1009 строк)
 - Routing diagram: 7 активных + 4 placeholder маршрута (ранее неполный)
 - Sidebar навигация: полная таблица с секциями, вложенным меню и статусами
@@ -363,20 +406,22 @@
 - API Layer: 9 модулей (добавлены forecast.ts, wb-products.ts)
 
 **01_OVERVIEW.md:**
+
 - Frontend routing diagram: 7 активных + 4 placeholder (ранее: 2 страницы)
 - API Layer: 9 модулей с перечислением
 
 **04_BACKEND_API.md:**
+
 - Добавлена секция «Товары WB» — 4 endpoints (GET list, PATCH cost, POST bulk, GET template)
 - Sales: +2 forecast endpoints (/ozon/forecast, /wb/forecast), итого 8
 - forecast_engine.py — внутренняя утилита (не роутер)
-
 
 ## 2026-03-02
 
 ### feat: LTV клиентов Ozon — полный раздел анализа повторных покупок
 
 **Backend (app/api/v1/ltv.py):**
+
 - 2 API endpoints: `GET /sales/ozon/ltv` и `GET /sales/ozon/ltv/chain`
 - KPI метрики: уникальные клиенты, повторные, retention rate, средний LTV, avg check
 - Когортная retention матрица (месячные когорты с % удержания до +6 мес)
@@ -386,6 +431,7 @@
 - ClickHouse-совместимые запросы (window functions, safe NaN handling)
 
 **Frontend:**
+
 - `ltv.ts` — API модуль с TypeScript типами
 - `LtvPage.tsx` (673 строки) — KPI карточки, cohort heatmap, interactive chain visualization, SKU table с сортировкой/поиском, histogram
 - Route `/customers/ltv` в App.tsx
