@@ -137,6 +137,7 @@ function CohortMatrix({ cohorts }: { cohorts: CohortRow[] }) {
 /* ══════════════════════════════════════════════════════
    ChainCard — informative product card in chain level
    Shows: offer_id, name, buyers, % of L1, avg revenue
+   All cards have same visual style — repeat marker is badge only
    ══════════════════════════════════════════════════════ */
 function ChainCard({ product, rank, isRepeat, l1Buyers }: {
   product: { sku: number; offer_id: string; name: string; buyers: number; avg_revenue: number; pct_of_l1: number }
@@ -144,19 +145,15 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
 }) {
   const barWidth = Math.max((product.buyers / Math.max(l1Buyers, 1)) * 100, 3)
   return (
-    <div className={`rounded-xl border p-3 transition-all ${
-      isRepeat
-        ? 'border-emerald-500/40 bg-emerald-500/5'
-        : 'border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.03)] hover:border-[hsl(var(--border)/0.4)]'
-    }`}>
+    <div className="rounded-xl border border-[hsl(var(--border)/0.35)] bg-[hsl(var(--card))] p-3.5 transition-all hover:border-violet-500/30">
       {/* Row 1: rank + offer_id + repeat badge */}
       <div className="flex items-center gap-1.5 mb-1.5">
-        <span className="text-[11px] font-bold text-violet-400/70">#{rank}</span>
-        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground))] truncate max-w-[140px]">
+        <span className="text-[11px] font-bold text-violet-400">#{rank}</span>
+        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.2)] text-[hsl(var(--muted-foreground)/0.8)] truncate max-w-[150px]">
           {product.offer_id}
         </span>
         {isRepeat && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 font-semibold whitespace-nowrap">
+          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-semibold whitespace-nowrap">
             🔁 Повтор
           </span>
         )}
@@ -167,28 +164,26 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
         {product.name}
       </p>
 
-      {/* Row 3: buyers count + % bar */}
+      {/* Row 3: buyers count + % */}
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
+        <span className="text-[15px] font-bold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
         <span className="text-[11px] font-semibold text-violet-400">{fmtPct(product.pct_of_l1)}</span>
         <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">от L1</span>
       </div>
 
-      {/* Progress bar */}
-      <div className="h-1 rounded-full bg-[hsl(var(--muted)/0.15)] overflow-hidden mb-1.5">
+      {/* Progress bar — always violet */}
+      <div className="h-1.5 rounded-full bg-[hsl(var(--muted)/0.15)] overflow-hidden mb-2">
         <div
           className="h-full rounded-full"
           style={{
             width: `${barWidth}%`,
-            background: isRepeat
-              ? 'linear-gradient(90deg, #10b981, #34d399)'
-              : 'linear-gradient(90deg, #8b5cf6, #a78bfa)',
+            background: 'linear-gradient(90deg, #8b5cf6, #a78bfa)',
           }}
         />
       </div>
 
       {/* Row 4: avg revenue */}
-      <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.7)]">
+      <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
         💰 {fmtMoney(product.avg_revenue)} / заказ
       </div>
     </div>
