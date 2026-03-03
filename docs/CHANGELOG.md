@@ -18,6 +18,17 @@
 - `frontend/src/api/wb_ltv.ts` — API модуль с типами
 - `LtvPage.tsx` расширена для WB: автовыбор API (Ozon/WB) по marketplace магазина
 
+### fix: WB LTV — артикулы и картинки из dim_products
+
+- **Было**: искал в несуществующей `dim_wb_products` → числовые артикулы `01-0001034`
+- **Стало**: `dim_products` (name, vendor_code) + CDN `wb_image_url(nm_id)` — как dashboard WB
+
+### docs: архитектурная документация LTV
+
+- `04_BACKEND_API.md`: секция «Клиентская аналитика (LTV)» — 4 endpoints, response schemas, логика Ozon/WB
+- `06_FRONTEND.md`: секция `LtvPage` (~710 строк), routing, sidebar «КЛИЕНТЫ»
+- Роутинг обновлён: 12 роутеров (добавлены ltv_router, wb_ltv_router)
+
 ---
 
 ## 2026-02-28

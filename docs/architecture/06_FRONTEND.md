@@ -39,6 +39,7 @@ graph TB
         Sales["/sales → SalesPage"]
         AbcXyz["/sales/abc-xyz → AbcXyzPage"]
         Forecast["/sales/forecast → ForecastPage"]
+        LTV["/customers/ltv → LtvPage"]
         Finances["/finances → FinancesPage"]
         Settings["/settings → SettingsPage"]
     end
@@ -392,6 +393,39 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 **Тогглы периода:** 30 дн. / 60 дн. / 90 дн.  
 **Тоггл ABC по:** Выручка / Чистая прибыль
 
+### `LtvPage` (~710 строк)
+
+Страница «Клиентская аналитика (LTV)». Универсальная для Ozon и WB.
+
+- Ozon → `GET /api/v1/sales/ozon/ltv` + `GET /api/v1/sales/ozon/ltv/chain`
+- WB → `GET /api/v1/sales/wb/ltv` + `GET /api/v1/sales/wb/ltv/chain`
+
+**4 KPI-карточки:**
+
+- Покупатели (total_clients)
+- Повторные (repeat_clients, repeat_rate %)
+- Ср. LTV (avg_ltv)
+- Ср. чек (avg_check)
+
+**Секции:**
+
+| Секция                     | Описание                                                          |
+| -------------------------- | ----------------------------------------------------------------- |
+| Когортная матрица          | Heatmap: % удержания клиентов по месяцам (зелёный/жёлтый/красный) |
+| Товары — повторные покупки | Таблица SKU: покупатели, повторы, conv_to_2/3, ср. дней, LTV      |
+| Дистрибуция времени        | Гистограмма: дни между покупками (0-7, 7-14, ... 90+)             |
+| Цепочка покупок L1→L5      | Sankey-карточки: что покупают после целевого товара, конверсии    |
+
+**Фичи:**
+
+- Клик по SKU в таблице → запрос `/chain` и отображение цепочки покупок
+- Поиск по артикулу в SKU таблице
+- Период: 30д / 90д / 6м / 1г / Всё время
+- Фото товаров: CDN-миниатюры с hover-увеличением
+- Ozon/WB авто-определение по `currentShop.marketplace`
+
+**API модули:** `src/api/ltv.ts` (Ozon), `src/api/wb_ltv.ts` (WB)
+
 ### `FinancesPage` (~1009 строк)
 
 Страница «Финансы». Полный P&L анализ для Ozon и WB.
@@ -472,6 +506,7 @@ Bоковая панель с вложенной навигацией (collapse 
 |                | Финансы          | `/finances`       | DollarSign      | ✅ Активен     |
 | **УПРАВЛЕНИЕ** | Реклама          | `/advertising`    | Megaphone       | 🚧 Placeholder |
 |                | События          | `/events`         | Activity        | 🚧 Placeholder |
+| **КЛИЕНТЫ**    | LTV              | `/customers/ltv`  | Users           | ✅ Активен     |
 | **СИСТЕМА**    | Настройки        | `/settings`       | Settings        | ✅ Активен     |
 
 ---
@@ -604,3 +639,10 @@ Bоковая панель с вложенной навигацией (collapse 
 - **Компоненты:** добавлены `ProductFinanceTable`, `DateRangePicker`, `Badge`
 - **Placeholder-страницы:** уточнено описание (активны в App.tsx, а не закомментированы)
 - **API Layer:** добавлены `forecast.ts`, `wb-products.ts` — 9 API-модулей вместо 7
+
+### 2026-03-03
+
+- **Добавлена секция `LtvPage`** (~710 строк): клиентская аналитика Ozon/WB — когорты, SKU повторы, цепочка L1→L5
+- **Routing diagram:** добавлен `/customers/ltv`
+- **Sidebar:** добавлена секция «КЛИЕНТЫ» с пунктом LTV
+- **API Layer:** добавлены `ltv.ts`, `wb_ltv.ts` — 11 API-модулей вместо 9

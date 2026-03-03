@@ -1,7 +1,7 @@
 # MP-CONTROL — Backend API
 
 > REST API на FastAPI. Все endpoints начинаются с `/api/v1/`.  
-> Файлы: `backend/app/api/v1/` (10 роутеров), `backend/app/schemas/auth.py`
+> Файлы: `backend/app/api/v1/` (12 роутеров), `backend/app/schemas/auth.py`
 
 ---
 
@@ -19,6 +19,8 @@ router.include_router(products_router)          # /api/v1/products/*
 router.include_router(wb_products_router)       # /api/v1/products/wb/*
 router.include_router(finances_router)          # /api/v1/finances/*
 router.include_router(sales_router)             # /api/v1/sales/*
+router.include_router(ltv_router)               # /api/v1/sales/ozon/ltv*
+router.include_router(wb_ltv_router)            # /api/v1/sales/wb/ltv*
 ```
 
 ---
@@ -391,6 +393,83 @@ use_profit: bool (default: false) — ABC по чистой прибыли вм�
 
 ---
 
+## Клиентская аналитика (LTV) — `/api/v1/sales`
+
+### Endpoints
+
+| Метод | Path                    | Описание                               | Auth   |
+| ----- | ----------------------- | -------------------------------------- | ------ |
+| `GET` | `/sales/ozon/ltv`       | KPI + когорты + SKU повторы + distrib. | Bearer |
+| `GET` | `/sales/ozon/ltv/chain` | Цепочка покупок L1→L5 по SKU (Ozon)    | Bearer |
+| `GET` | `/sales/wb/ltv`         | KPI + когорты + SKU повторы + distrib. | Bearer |
+| `GET` | `/sales/wb/ltv/chain`   | Цепочка покупок L1→L5 по SKU (WB)      | Bearer |
+
+### Query Parameters
+
+```
+shop_id: int (required)
+period: "30d" | "90d" | "6m" | "1y" | "all" (default: "6m")
+date_from: date (optional)
+date_to: date (optional)
+sku: int (required для /chain) — offer_id (Ozon) или nm_id (WB)
+```
+
+### Response Schema (GET /sales/{mp}/ltv)
+
+```
+{
+  kpi: {
+    total_clients, repeat_clients, repeat_rate,
+    avg_ltv, avg_check, avg_orders_per_client, total_revenue
+  },
+  cohort_matrix: [{
+    cohort: "2025-09",
+    size: 1234,
+    months: { "0": { clients, rate }, "1": { clients, rate }, ... }
+  }],
+  sku_table: [{
+    sku, offer_id, name, image_url,
+    total_buyers, total_qty, total_revenue,
+    repeat_buyers, buyers_3plus,
+    conv_to_2, conv_to_3,
+    avg_days_between, avg_ltv_repeat
+  }],
+  time_distribution: [{ bucket: "0-7", count, avg_days }]
+}
+```
+
+### Response Schema (GET /sales/{mp}/ltv/chain)
+
+```
+{
+  l1: { sku, offer_id, name, total_buyers, total_qty, total_revenue, avg_price },
+  chain: [{
+    level: 1..5,
+    total_buyers, conversion_from_prev, conversion_from_l1,
+    products: [{ sku, offer_id, name, buyers, pct_of_l1, pct_of_level, avg_revenue }]
+  }],
+  avg_days_between: { l1_to_l2, l2_to_l3, l3_to_l4, l4_to_l5 }
+}
+```
+
+### Ключевая логика
+
+**Ozon** (`ltv.py`):
+
+- Client ID = `splitByChar('-', posting_number)[1]` — первый сегмент posting_number
+- Источник: `fact_ozon_orders FINAL`
+- Обогащение: `dim_ozon_products` (PostgreSQL) → name, image_url
+
+**WB** (`wb_ltv.py`):
+
+- Buyer ID = `substring(splitByChar('.', srid)[1], 1, 8)` — первые 8 цифр числовой части srid
+- Фильтр: числовые srid длиной 16-19 символов (покрытие ~95%, точность 97%)
+- Источник: `fact_orders_raw FINAL`
+- Обогащение: `dim_products` (PostgreSQL) → name, vendor_code + CDN `wb_image_url(nm_id)`
+- Когортная матрица, SKU repeat table, time distribution, purchase chain — идентичная структура с Ozon
+
+---
+
 ## Финансы — `/api/v1/finances`
 
 ### Endpoints
@@ -498,3 +577,10 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **Sales endpoints:** добавлены `/sales/ozon/forecast` и `/sales/wb/forecast` (LightGBM, SKU-уровень)
 - **Sales:** итого 8 endpoints в секции (+ forecast)
 - **Forecast engine:** `forecast_engine.py` — внутренняя утилита для SKU-рекомендаций, не отдельный роутер
+
+### 2026-03-03
+
+- **Добавлена секция «Клиентская аналитика (LTV)»** — 4 endpoints: Ozon/WB LTV + Purchase Chain
+- **Роутинг обновлён:** 12 роутеров (добавлены `ltv_router`, `wb_ltv_router`)
+- **WB LTV** (`wb_ltv.py`): buyer_id из srid, когорты, SKU repeat, chain L1→L5
+- **WB LTV обогащение:** `dim_products` (name, vendor_code) + `wb_image_url(nm_id)` CDN (ранее: несуществующая `dim_wb_products`)
