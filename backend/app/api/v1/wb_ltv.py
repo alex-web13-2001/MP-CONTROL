@@ -298,25 +298,36 @@ async def get_wb_ltv(
 
         # ── Enrich with product names + images from PostgreSQL ──
         if sku_table:
+            from app.api.v1.dashboard import wb_image_url
             nm_ids = [s["sku"] for s in sku_table]
             try:
                 pg_result = await db.execute(
                     sa_text(
-                        "SELECT nm_id, name, main_image_url FROM dim_wb_products "
+                        "SELECT nm_id, name, vendor_code FROM dim_products "
                         "WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)"
                     ),
                     {"shop_id": shop_id, "nm_ids": nm_ids},
                 )
+                pg_map = {}
                 for row in pg_result.fetchall():
-                    nm_id = int(row[0])
-                    for item in sku_table:
-                        if item["sku"] == nm_id:
-                            if row[1]:
-                                item["name"] = str(row[1])[:80]
-                            if row[2]:
-                                item["image_url"] = str(row[2])
-            except Exception:
-                pass  # dim_wb_products may not exist yet
+                    pg_map[int(row[0])] = {
+                        "name": row[1] or "",
+                        "vendor_code": row[2] or "",
+                    }
+                for item in sku_table:
+                    nm_id = item["sku"]
+                    info = pg_map.get(nm_id, {})
+                    # Use vendor_code as article, name as display name
+                    if info.get("vendor_code"):
+                        item["offer_id"] = info["vendor_code"]
+                    if info.get("name"):
+                        item["name"] = str(info["name"])[:80]
+                    elif info.get("vendor_code"):
+                        item["name"] = info["vendor_code"]
+                    # Generate WB CDN image URL
+                    item["image_url"] = wb_image_url(nm_id)
+            except Exception as exc:
+                logger.warning("PG enrichment failed: %s", exc)
 
         # ══════════════════════════════════════════════
         # 4. Time-to-repeat distribution (histogram)
@@ -588,19 +599,45 @@ async def get_wb_purchase_chain(
         ch.close()
 
         # ── Build response ──
+        from app.api.v1.dashboard import wb_image_url
+
+        # Collect all nm_ids from chain + l1 for PG enrichment
+        all_chain_nm_ids = set()
+        for row in chain_data:
+            all_chain_nm_ids.add(int(row[1]))
+        all_chain_nm_ids.add(sku)  # target sku
+
+        # Fetch names from dim_products
+        pg_chain_map = {}
+        try:
+            pg_result = await db.execute(
+                sa_text(
+                    "SELECT nm_id, name, vendor_code FROM dim_products "
+                    "WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)"
+                ),
+                {"shop_id": shop_id, "nm_ids": list(all_chain_nm_ids)},
+            )
+            for row in pg_result.fetchall():
+                pg_chain_map[int(row[0])] = {
+                    "name": row[1] or "",
+                    "vendor_code": row[2] or "",
+                }
+        except Exception as exc:
+            logger.warning("PG chain enrichment failed: %s", exc)
+
         levels: dict[int, list] = {}
         for row in chain_data:
             lvl = int(row[0])
+            nm_id = int(row[1])
             article = str(row[2])
-            subject = str(row[3]) if row[3] else ""
-            brand = str(row[4]) if row[4] else ""
-            has_letters = bool(re.search(r'[а-яА-ЯёЁa-zA-Z]', article)) and not re.match(r'^\d{2}-\d+$', article)
-            name = article if has_letters else f"{brand} {subject}".strip() or article
+            info = pg_chain_map.get(nm_id, {})
+            offer_id = info.get("vendor_code") or article
+            name = info.get("name") or info.get("vendor_code") or article
             if lvl not in levels:
                 levels[lvl] = []
             levels[lvl].append({
-                "sku": int(row[1]),
-                "offer_id": article,
+                "sku": nm_id,
+                "offer_id": offer_id,
                 "name": name[:80],
                 "buyers": int(row[5] or 0),
                 "total_qty": int(row[6] or 0),
@@ -637,10 +674,9 @@ async def get_wb_purchase_chain(
             })
 
         l1_article = str(l1_stats[4]) if l1_stats[4] else ""
-        l1_subject = str(l1_stats[5]) if l1_stats[5] else ""
-        l1_brand = str(l1_stats[6]) if l1_stats[6] else ""
-        l1_has_letters = bool(re.search(r'[а-яА-ЯёЁa-zA-Z]', l1_article)) and not re.match(r'^\d{2}-\d+$', l1_article)
-        l1_name = l1_article if l1_has_letters else f"{l1_brand} {l1_subject}".strip() or l1_article
+        l1_info = pg_chain_map.get(sku, {})
+        l1_offer = l1_info.get("vendor_code") or l1_article
+        l1_name = l1_info.get("name") or l1_info.get("vendor_code") or l1_article
         return {
             "shop_id": shop_id,
             "target_sku": sku,
@@ -648,7 +684,7 @@ async def get_wb_purchase_chain(
             "date_range": {"start": str(start_date), "end": str(end_date)},
             "l1": {
                 "sku": sku,
-                "offer_id": l1_article,
+                "offer_id": l1_offer,
                 "name": l1_name[:80],
                 "total_buyers": l1_total,
                 "total_qty": int(l1_stats[1] or 0),
