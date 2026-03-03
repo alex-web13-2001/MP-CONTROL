@@ -12,6 +12,7 @@ Buyer identification method:
 """
 import logging
 import math
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -221,6 +222,8 @@ async def get_wb_ltv(
                     SELECT
                         nm_id,
                         supplier_article,
+                        subject,
+                        brand,
                         {BUYER_ID_EXPR} AS buyer_id,
                         toDate(date) AS order_date,
                         price_with_disc AS revenue,
@@ -236,6 +239,8 @@ async def get_wb_ltv(
                     SELECT
                         nm_id,
                         any(supplier_article) AS supplier_article,
+                        any(subject) AS subject,
+                        any(brand) AS brand,
                         buyer_id,
                         count() AS purchases,
                         sum(revenue) AS client_revenue,
@@ -248,6 +253,8 @@ async def get_wb_ltv(
             SELECT
                 nm_id,
                 any(supplier_article) AS article,
+                any(subject) AS subject,
+                any(brand) AS brand,
                 count() AS total_buyers,
                 sum(client_qty) AS total_qty,
                 sum(client_revenue) AS total_revenue,
@@ -266,19 +273,26 @@ async def get_wb_ltv(
 
         sku_table = []
         for r in sku_rows:
+            article = str(r[1])
+            subject = str(r[2]) if r[2] else ""
+            brand = str(r[3]) if r[3] else ""
+            # Build readable name: use article if it has Cyrillic/letters,
+            # otherwise use "brand subject" as fallback
+            has_letters = bool(re.search(r'[а-яА-ЯёЁa-zA-Z]', article)) and not re.match(r'^\d{2}-\d+$', article)
+            name = article if has_letters else f"{brand} {subject}".strip() or article
             sku_table.append({
                 "sku": int(r[0]),
-                "offer_id": str(r[1]),
-                "name": str(r[1]),  # WB: supplier_article is the name
-                "total_buyers": int(r[2] or 0),
-                "total_qty": int(r[3] or 0),
-                "total_revenue": _sf(r[4]),
-                "repeat_buyers": int(r[5] or 0),
-                "buyers_3plus": int(r[6] or 0),
-                "conv_to_2": _sf(r[7]),
-                "conv_to_3": _sf(r[8]),
-                "avg_days_between": int(_sf(r[9])),
-                "avg_ltv_repeat": _sf(r[10]),
+                "offer_id": article,
+                "name": name[:80],
+                "total_buyers": int(r[4] or 0),
+                "total_qty": int(r[5] or 0),
+                "total_revenue": _sf(r[6]),
+                "repeat_buyers": int(r[7] or 0),
+                "buyers_3plus": int(r[8] or 0),
+                "conv_to_2": _sf(r[9]),
+                "conv_to_3": _sf(r[10]),
+                "avg_days_between": int(_sf(r[11])),
+                "avg_ltv_repeat": _sf(r[12]),
                 "image_url": "",
             })
 
@@ -429,6 +443,8 @@ async def get_wb_purchase_chain(
                         {BUYER_ID_EXPR} AS buyer_id,
                         nm_id,
                         supplier_article,
+                        subject,
+                        brand,
                         toDate(date) AS order_date,
                         price_with_disc AS revenue,
                         1 AS qty
@@ -449,6 +465,8 @@ async def get_wb_purchase_chain(
                         ao.buyer_id,
                         ao.nm_id,
                         ao.supplier_article,
+                        ao.subject,
+                        ao.brand,
                         ao.order_date,
                         ao.revenue,
                         ao.qty,
@@ -470,6 +488,8 @@ async def get_wb_purchase_chain(
                         n.buyer_id,
                         n.nm_id,
                         n.supplier_article,
+                        n.subject,
+                        n.brand,
                         n.order_date,
                         n.revenue,
                         n.qty,
@@ -483,7 +503,8 @@ async def get_wb_purchase_chain(
                 level,
                 nm_id,
                 any(supplier_article) AS article,
-                any(supplier_article) AS name,
+                any(subject) AS subject,
+                any(brand) AS brand,
                 count(DISTINCT buyer_id) AS buyers,
                 sum(qty) AS total_qty,
                 round(sum(revenue), 0) AS total_revenue,
@@ -500,7 +521,9 @@ async def get_wb_purchase_chain(
                 sum(1) AS total_qty,
                 sum(price_with_disc) AS total_revenue,
                 round(avg(price_with_disc), 0) AS avg_price,
-                any(supplier_article) AS article
+                any(supplier_article) AS article,
+                any(subject) AS subject,
+                any(brand) AS brand
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {{shop_id:UInt32}}
               AND nm_id = {{target_sku:UInt64}}
@@ -568,16 +591,21 @@ async def get_wb_purchase_chain(
         levels: dict[int, list] = {}
         for row in chain_data:
             lvl = int(row[0])
+            article = str(row[2])
+            subject = str(row[3]) if row[3] else ""
+            brand = str(row[4]) if row[4] else ""
+            has_letters = bool(re.search(r'[а-яА-ЯёЁa-zA-Z]', article)) and not re.match(r'^\d{2}-\d+$', article)
+            name = article if has_letters else f"{brand} {subject}".strip() or article
             if lvl not in levels:
                 levels[lvl] = []
             levels[lvl].append({
                 "sku": int(row[1]),
-                "offer_id": str(row[2]),
-                "name": str(row[3])[:80],
-                "buyers": int(row[4] or 0),
-                "total_qty": int(row[5] or 0),
-                "total_revenue": _sf(row[6]),
-                "avg_revenue": _sf(row[7]),
+                "offer_id": article,
+                "name": name[:80],
+                "buyers": int(row[5] or 0),
+                "total_qty": int(row[6] or 0),
+                "total_revenue": _sf(row[7]),
+                "avg_revenue": _sf(row[8]),
             })
 
         # Calculate conversions
@@ -609,6 +637,10 @@ async def get_wb_purchase_chain(
             })
 
         l1_article = str(l1_stats[4]) if l1_stats[4] else ""
+        l1_subject = str(l1_stats[5]) if l1_stats[5] else ""
+        l1_brand = str(l1_stats[6]) if l1_stats[6] else ""
+        l1_has_letters = bool(re.search(r'[а-яА-ЯёЁa-zA-Z]', l1_article)) and not re.match(r'^\d{2}-\d+$', l1_article)
+        l1_name = l1_article if l1_has_letters else f"{l1_brand} {l1_subject}".strip() or l1_article
         return {
             "shop_id": shop_id,
             "target_sku": sku,
@@ -617,7 +649,7 @@ async def get_wb_purchase_chain(
             "l1": {
                 "sku": sku,
                 "offer_id": l1_article,
-                "name": l1_article[:80],
+                "name": l1_name[:80],
                 "total_buyers": l1_total,
                 "total_qty": int(l1_stats[1] or 0),
                 "total_revenue": _sf(l1_stats[2]),
