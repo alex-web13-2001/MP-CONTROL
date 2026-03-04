@@ -1229,6 +1229,12 @@ async def get_wb_products_finance(
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
                 ) AS ret_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ded_cur,
+                sumIf(acceptance_fee,
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS acc_cur,
                 sumIf(quantity,
                     operation_type = 'Возврат'
                     AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
@@ -1262,6 +1268,12 @@ async def get_wb_products_finance(
                 sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                     operation_type = 'Возврат' AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
                 ) AS ret_prev,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ded_prev,
+                sumIf(acceptance_fee,
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS acc_prev,
                 sumIf(quantity,
                     operation_type = 'Возврат'
                     AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
@@ -1292,16 +1304,21 @@ async def get_wb_products_finance(
             pen_cur = abs(float(r[7] or 0))
             sales_cur = int(r[8] or 0)
             ret_cur = abs(float(r[9] or 0))
-            ret_qty_cur = abs(int(r[10] or 0))
-            rev_prev = float(r[11] or 0)
-            pay_prev = float(r[12] or 0)
-            log_prev = abs(float(r[13] or 0))
-            stor_prev = abs(float(r[14] or 0))
-            acq_prev = abs(float(r[15] or 0))
-            pen_prev = abs(float(r[16] or 0))
-            sales_prev = int(r[17] or 0)
-            ret_prev = abs(float(r[18] or 0))
-            ret_qty_prev = abs(int(r[19] or 0))
+            ded_cur_v = abs(float(r[10] or 0))
+            acc_cur_v = abs(float(r[11] or 0))
+            ret_qty_cur = abs(int(r[12] or 0))
+            # Previous period
+            rev_prev = float(r[13] or 0)
+            pay_prev = float(r[14] or 0)
+            log_prev = abs(float(r[15] or 0))
+            stor_prev = abs(float(r[16] or 0))
+            acq_prev = abs(float(r[17] or 0))
+            pen_prev = abs(float(r[18] or 0))
+            sales_prev = int(r[19] or 0)
+            ret_prev = abs(float(r[20] or 0))
+            ded_prev_v = abs(float(r[21] or 0))
+            acc_prev_v = abs(float(r[22] or 0))
+            ret_qty_prev = abs(int(r[23] or 0))
 
             if vc not in products:
                 products[vc] = {
@@ -1309,15 +1326,16 @@ async def get_wb_products_finance(
                     "nm_id": nm,
                     "cur": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                             "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                            "returns_qty": 0, "ad_spend": 0, "cogs": 0},
+                            "returns_qty": 0, "ad_spend": 0, "cogs": 0,
+                            "deductions": 0, "acceptance": 0},
                     "prev": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                              "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                             "returns_qty": 0, "ad_spend": 0, "cogs": 0},
+                             "returns_qty": 0, "ad_spend": 0, "cogs": 0,
+                             "deductions": 0, "acceptance": 0},
                 }
             p = products[vc]
             if nm and not p["nm_id"]:
                 p["nm_id"] = nm
-            # Revenue = sales - returns (matching KPI logic)
             p["cur"]["revenue"] += rev_cur - ret_cur
             p["cur"]["payout"] += pay_cur
             p["cur"]["logistics"] += log_cur
@@ -1327,7 +1345,8 @@ async def get_wb_products_finance(
             p["cur"]["sales"] += sales_cur
             p["cur"]["returns"] += ret_cur
             p["cur"]["returns_qty"] += ret_qty_cur
-            # Revenue = sales - returns (matching KPI logic)
+            p["cur"]["deductions"] += ded_cur_v
+            p["cur"]["acceptance"] += acc_cur_v
             p["prev"]["revenue"] += rev_prev - ret_prev
             p["prev"]["payout"] += pay_prev
             p["prev"]["logistics"] += log_prev
@@ -1337,6 +1356,8 @@ async def get_wb_products_finance(
             p["prev"]["sales"] += sales_prev
             p["prev"]["returns"] += ret_prev
             p["prev"]["returns_qty"] += ret_qty_prev
+            p["prev"]["deductions"] += ded_prev_v
+            p["prev"]["acceptance"] += acc_prev_v
     except Exception as e:
         logger.warning("CH WB product finance query failed: %s", e)
 
@@ -1388,10 +1409,12 @@ async def get_wb_products_finance(
                     "nm_id": 0,
                     "cur": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                             "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                            "ad_spend": 0, "cogs": 0},
+                            "returns_qty": 0, "ad_spend": 0, "cogs": 0,
+                            "deductions": 0, "acceptance": 0},
                     "prev": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
                              "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                             "ad_spend": 0, "cogs": 0},
+                             "returns_qty": 0, "ad_spend": 0, "cogs": 0,
+                             "deductions": 0, "acceptance": 0},
                 }
             products["__unmatched_ads__"]["cur"]["ad_spend"] += unmatched_ads_cur
             products["__unmatched_ads__"]["prev"]["ad_spend"] += unmatched_ads_prev
@@ -1423,57 +1446,8 @@ async def get_wb_products_finance(
     except Exception as e:
         logger.warning("PG product_costs query failed: %s", e)
 
-    # ══════════════════════════════════════════════════════
-    # 3.5. Deductions + Acceptance (not tied to specific products)
-    #      These must be included so product-level profit sum matches KPI
-    # ══════════════════════════════════════════════════════
-    try:
-        ded_result = ch.query("""
-            SELECT
-                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
-                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
-                    AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
-                ) AS ded_cur,
-                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
-                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
-                    AND event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
-                ) AS ded_prev,
-                sumIf(acceptance_fee, event_date >= {d_start:Date} AND event_date <= {d_end:Date}) AS acc_cur,
-                sumIf(acceptance_fee, event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}) AS acc_prev
-            FROM mms_analytics.fact_finances FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND marketplace = 1
-              AND event_date >= {d_prev_start:Date}
-              AND event_date <= {d_end:Date}
-        """, parameters={
-            "shop_id": shop_id,
-            "d_start": d_start, "d_end": d_end,
-            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
-        })
-        if ded_result.result_rows:
-            dr = ded_result.result_rows[0]
-            ded_cur_val = abs(float(dr[0] or 0))
-            ded_prev_val = abs(float(dr[1] or 0))
-            acc_cur_val = abs(float(dr[2] or 0))
-            acc_prev_val = abs(float(dr[3] or 0))
-
-            no_prod_key = "__no_product__"
-            if no_prod_key not in products:
-                products[no_prod_key] = {
-                    "vendor_code": "Без привязки к товару",
-                    "nm_id": 0,
-                    "cur": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
-                            "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                            "ad_spend": 0, "cogs": 0},
-                    "prev": {"revenue": 0, "payout": 0, "logistics": 0, "storage": 0,
-                             "acquiring": 0, "penalties": 0, "sales": 0, "returns": 0,
-                             "ad_spend": 0, "cogs": 0},
-                }
-            # Deductions and acceptance reduce profit as negative payout adjustment
-            products[no_prod_key]["cur"]["payout"] -= (ded_cur_val + acc_cur_val)
-            products[no_prod_key]["prev"]["payout"] -= (ded_prev_val + acc_prev_val)
-    except Exception as e:
-        logger.warning("CH WB deductions for product table failed: %s", e)
+    # NOTE: Section 3.5 (deductions __no_product__) removed — deductions/acceptance
+    # are now collected per-product from the main SQL query.
 
     # ══════════════════════════════════════════════════════
     # 4. Build response
@@ -1483,12 +1457,10 @@ async def get_wb_products_finance(
         cur = p["cur"]
         prev = p["prev"]
 
-        # Profit formula must match KPI: revenue - commission - operating - ad_spend - cogs
-        # where commission = revenue - payout, operating = logistics + storage + acquiring + penalties
-        # Simplified: payout - logistics - storage - acquiring - penalties - ad_spend - cogs
-        # NOTE: This naturally matches KPI because KPI uses same subtraction logic
-        cur_profit = cur["payout"] - cur["logistics"] - cur["storage"] - cur["acquiring"] - cur["penalties"] - cur["ad_spend"] - cur["cogs"]
-        prev_profit = prev["payout"] - prev["logistics"] - prev["storage"] - prev["acquiring"] - prev["penalties"] - prev["ad_spend"] - prev["cogs"]
+        # Universal WB profit formula (matches waterfall):
+        # profit = payout - logistics - storage - deductions - acceptance - cogs
+        cur_profit = cur["payout"] - cur["logistics"] - cur["storage"] - cur["deductions"] - cur["acceptance"] - cur["cogs"]
+        prev_profit = prev["payout"] - prev["logistics"] - prev["storage"] - prev["deductions"] - prev["acceptance"] - prev["cogs"]
 
         current = {
             "sales": cur["sales"],
@@ -1500,6 +1472,8 @@ async def get_wb_products_finance(
             "penalties": round(cur["penalties"], 2),
             "returns": round(cur["returns"], 2),
             "ad_spend": round(cur["ad_spend"], 2),
+            "deductions": round(cur["deductions"], 2),
+            "acceptance": round(cur["acceptance"], 2),
             "cogs": round(cur["cogs"], 2),
             "profit": round(cur_profit, 2),
         }
@@ -1513,6 +1487,8 @@ async def get_wb_products_finance(
             "penalties": round(prev["penalties"], 2),
             "returns": round(prev["returns"], 2),
             "ad_spend": round(prev["ad_spend"], 2),
+            "deductions": round(prev["deductions"], 2),
+            "acceptance": round(prev["acceptance"], 2),
             "cogs": round(prev["cogs"], 2),
             "profit": round(prev_profit, 2),
         }
@@ -1524,7 +1500,7 @@ async def get_wb_products_finance(
         pct_of_rev = {}
         rev = current["revenue"]
         if rev > 0:
-            for key in ("logistics", "storage", "acquiring", "penalties", "ad_spend", "cogs", "profit", "returns"):
+            for key in ("logistics", "storage", "deductions", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
         result_products.append({
