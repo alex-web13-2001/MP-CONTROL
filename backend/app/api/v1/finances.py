@@ -900,19 +900,24 @@ async def get_wb_finances(
         logger.warning("WB COGS calculation failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # Compute derived metrics
+    # Compute derived metrics — Universal WB formula
     #
-    # WB API: penalty_total ≈ deduction, and deduction includes ads (ВБ.Продвижение).
-    # We use total_deductions (ALL deductions including ads) to match WB ЛК.
-    # Ads are NOT subtracted separately since they're already inside deductions.
-    # KPI ad_spend (from fact_advert_stats) is informational only.
+    # ppvz_for_pay (К перечислению) already includes deductions for:
+    #   - commission (ppvz_reward)
+    #   - acquiring (ppvz_kvw_prc)
+    #   - refunds / returns
+    #   - penalties
     #
-    # operating = logistics + storage + acquiring + acceptance + total_deductions
-    # mp_fees = commission + operating
-    # profit = revenue - mp_fees - cogs  (NO separate ads!)
+    # External expenses (subtracted from ppvz_for_pay to get bank transfer):
+    #   - logistics (wb_delivery_rub)
+    #   - storage (storage_fee)
+    #   - acceptance (acceptance_fee)
+    #   - deductions (deduction field — ads, reviews, transit, etc.)
+    #
+    # Итого к оплате = ppvz_for_pay - logistics - storage - acceptance - deductions
     # ══════════════════════════════════════════════════════
-    operating_cur = logistics_cur + storage_cur + acquiring_cur + acceptance_cur + total_deductions_cur
-    operating_prev = logistics_prev + storage_prev + acquiring_prev + acceptance_prev + total_deductions_prev
+    operating_cur = logistics_cur + storage_cur + acceptance_cur + total_deductions_cur
+    operating_prev = logistics_prev + storage_prev + acceptance_prev + total_deductions_prev
 
     mp_fees_cur = commission_cur + operating_cur
     mp_fees_prev = commission_prev + operating_prev
@@ -988,7 +993,7 @@ async def get_wb_finances(
         tded_d = dd.get("total_deductions", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        op_d = log_d + stor_d + acq_d + acc_d + tded_d  # total deductions (incl ads)
+        op_d = log_d + stor_d + acc_d + tded_d  # logistics + storage + acceptance + total_deductions
         mp_d = comm_d + op_d
 
         # Payout = ppvz_for_pay (к перечислению за товар)
@@ -1049,7 +1054,7 @@ async def get_wb_finances(
             rev = pt["revenue"]
             pay = pt["payout"] # This is the bank transfer
             comm = pt["commission"]
-            oper = pt["logistics"] + pt["storage"] + pt["acquiring"] + pt["acceptance"] + pt.get("total_deductions", 0)
+            oper = pt["logistics"] + pt["storage"] + pt["acceptance"] + pt.get("total_deductions", 0)
             mp_fees = comm + oper
             ads = ads_daily.get(ds, 0)
             cogs = cogs_daily.get(ds, 0)

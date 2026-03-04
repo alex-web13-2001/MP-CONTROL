@@ -254,10 +254,8 @@ const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?:
   { key: '_payout', label: 'К перечислению', color: '#3b82f6', type: 'subtotal' },
   { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
   { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
-  { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
   { key: 'deductions_ads', label: 'ВБ Продвижение', color: '#8b5cf6', type: 'expense' },
   { key: 'deductions_other', label: 'Пр. удержания', color: '#b91c1c', type: 'expense' },
-  { key: 'penalties', label: 'Штрафы', color: '#dc2626', type: 'expense' },
   { key: 'compensation', label: 'Плат. приёмка', color: '#a855f7', type: 'expense' },
   { key: '_bank_transfer', label: 'Итого к оплате', color: '#22d3ee', type: 'subtotal' },
   { key: 'cogs', label: 'Себестоимость', color: '#64748b', type: 'expense' },
@@ -283,15 +281,15 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           type: item.type || 'expense' as const,
         }
       }
-      // Virtual subtotal row for bank transfer (Итого к оплате)
+      // Virtual subtotal row for bank transfer — WB universal formula:
+      // Итого к оплате = ppvz_for_pay - логистика - хранение - приёмка - удержания
+      // NOTE: эквайринг, возвраты, штрафы уже внутри ppvz_for_pay!
       if (item.key === '_bank_transfer') {
         const bankVal = payoutVal
           - (data.logistics || 0)
           - (data.storage || 0)
-          - (data.acquiring || 0)
           - ((data as any).deductions_ads || 0)
           - ((data as any).deductions_other || 0)
-          - (data.penalties || 0)
           - (data.compensation || 0)
         const pct = revenue > 0 ? bankVal / revenue * 100 : 0
         return {
