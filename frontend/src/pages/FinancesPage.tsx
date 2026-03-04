@@ -259,6 +259,7 @@ const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?:
   { key: 'refunds', label: 'Возвраты', color: '#6366f1', type: 'expense' },
   { key: 'penalties', label: 'Штрафы', color: '#dc2626', type: 'expense' },
   { key: 'compensation', label: 'Плат. приёмка', color: '#a855f7', type: 'expense' },
+  { key: '_bank_transfer', label: 'Итого к оплате', color: '#22d3ee', type: 'subtotal' },
   { key: 'cogs', label: 'Себестоимость', color: '#64748b', type: 'expense' },
   { key: 'profit', label: 'Прибыль', color: '#10b981', type: 'result' },
 ]
@@ -277,6 +278,26 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           name: item.label,
           value: payoutVal,
           rawValue: payoutVal,
+          pct: Math.round(pct * 10) / 10,
+          color: item.color,
+          type: item.type || 'expense' as const,
+        }
+      }
+      // Virtual subtotal row for bank transfer (Итого к оплате)
+      if (item.key === '_bank_transfer') {
+        const bankVal = payoutVal
+          - (data.logistics || 0)
+          - (data.storage || 0)
+          - (data.acquiring || 0)
+          - (data.deductions || 0)
+          - (data.refunds || 0)
+          - (data.penalties || 0)
+          - (data.compensation || 0)
+        const pct = revenue > 0 ? bankVal / revenue * 100 : 0
+        return {
+          name: item.label,
+          value: Math.abs(bankVal),
+          rawValue: bankVal,
           pct: Math.round(pct * 10) / 10,
           color: item.color,
           type: item.type || 'expense' as const,
