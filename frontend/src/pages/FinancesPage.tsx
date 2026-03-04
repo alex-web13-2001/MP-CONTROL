@@ -250,8 +250,11 @@ function GroupBySelector({
 
 const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
   { key: 'revenue', label: 'Выручка', color: '#10b981', type: 'revenue' },
-  { key: 'commission', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
+  // Items ABOVE payout — already inside ppvz_for_pay
+  { key: '_commission_net', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
+  { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
   { key: '_payout', label: 'К перечислению', color: '#3b82f6', type: 'subtotal' },
+  // Items BELOW payout — external WB expenses
   { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
   { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
   { key: 'deductions_ads', label: 'ВБ Продвижение', color: '#8b5cf6', type: 'expense' },
@@ -266,10 +269,24 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
   const revenue = data.revenue || 1
   // Compute payout = revenue - commission for subtotal row
   const payoutVal = (data.revenue || 0) - (data.commission || 0)
+  // commission_net = commission - acquiring (acquiring shown separately above payout)
+  const commissionNet = (data.commission || 0) - (data.acquiring || 0)
 
   const items = BREAKDOWN_ITEMS
     .map((item) => {
-      // Virtual subtotal row for payout
+      // Virtual row: commission minus acquiring (acquiring shown separately)
+      if (item.key === '_commission_net') {
+        const pct = revenue > 0 ? commissionNet / revenue * 100 : 0
+        return {
+          name: item.label,
+          value: Math.abs(commissionNet),
+          rawValue: commissionNet,
+          pct: Math.round(pct * 10) / 10,
+          color: item.color,
+          type: item.type || 'expense' as const,
+        }
+      }
+      // Virtual subtotal: К перечислению = revenue - commission
       if (item.key === '_payout') {
         const pct = revenue > 0 ? payoutVal / revenue * 100 : 0
         return {
@@ -281,9 +298,8 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           type: item.type || 'expense' as const,
         }
       }
-      // Virtual subtotal row for bank transfer — WB universal formula:
-      // Итого к оплате = ppvz_for_pay - логистика - хранение - приёмка - удержания
-      // NOTE: эквайринг, возвраты, штрафы уже внутри ppvz_for_pay!
+      // Virtual subtotal: Итого к оплате — WB universal formula:
+      // ppvz_for_pay - логистика - хранение - приёмка - удержания
       if (item.key === '_bank_transfer') {
         const bankVal = payoutVal
           - (data.logistics || 0)
