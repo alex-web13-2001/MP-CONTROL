@@ -257,7 +257,6 @@ const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?:
   { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
   { key: 'deductions_ads', label: 'ВБ Продвижение', color: '#8b5cf6', type: 'expense' },
   { key: 'deductions_other', label: 'Пр. удержания', color: '#b91c1c', type: 'expense' },
-  { key: 'refunds', label: 'Возвраты', color: '#6366f1', type: 'expense' },
   { key: 'penalties', label: 'Штрафы', color: '#dc2626', type: 'expense' },
   { key: 'compensation', label: 'Плат. приёмка', color: '#a855f7', type: 'expense' },
   { key: '_bank_transfer', label: 'Итого к оплате', color: '#22d3ee', type: 'subtotal' },
@@ -292,7 +291,6 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           - (data.acquiring || 0)
           - ((data as any).deductions_ads || 0)
           - ((data as any).deductions_other || 0)
-          - (data.refunds || 0)
           - (data.penalties || 0)
           - (data.compensation || 0)
         const pct = revenue > 0 ? bankVal / revenue * 100 : 0
