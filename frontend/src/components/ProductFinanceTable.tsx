@@ -51,6 +51,7 @@ const WB_COLUMNS: Column[] = [
   { key: 'revenue', label: 'Выручка' },
   { key: 'logistics', label: 'Логистика', invert: true },
   { key: 'storage', label: 'Хранение', invert: true },
+  { key: 'deductions', label: 'Удержания', invert: true },
   { key: 'ad_spend', label: 'Реклама', invert: true },
   { key: 'cogs', label: 'Себестоимость', shortLabel: 'С/с', invert: true },
   { key: 'profit', label: 'Прибыль' },
