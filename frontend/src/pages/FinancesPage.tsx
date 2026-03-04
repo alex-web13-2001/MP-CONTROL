@@ -255,7 +255,8 @@ const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?:
   { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
   { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
   { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
-  { key: 'deductions', label: 'Пр. удержания', color: '#b91c1c', type: 'expense' },
+  { key: 'deductions_ads', label: 'ВБ Продвижение', color: '#8b5cf6', type: 'expense' },
+  { key: 'deductions_other', label: 'Пр. удержания', color: '#b91c1c', type: 'expense' },
   { key: 'refunds', label: 'Возвраты', color: '#6366f1', type: 'expense' },
   { key: 'penalties', label: 'Штрафы', color: '#dc2626', type: 'expense' },
   { key: 'compensation', label: 'Плат. приёмка', color: '#a855f7', type: 'expense' },
@@ -289,7 +290,8 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           - (data.logistics || 0)
           - (data.storage || 0)
           - (data.acquiring || 0)
-          - (data.deductions || 0)
+          - ((data as any).deductions_ads || 0)
+          - ((data as any).deductions_other || 0)
           - (data.refunds || 0)
           - (data.penalties || 0)
           - (data.compensation || 0)
@@ -664,7 +666,8 @@ const COMPARISON_ROWS = [
   { key: 'storage', label: '        • Хранение', isMoney: true, invert: true, indent: true },
   { key: 'acquiring', label: '        • Эквайринг', isMoney: true, invert: true, indent: true },
   { key: 'penalties', label: '        • Штрафы', isMoney: true, invert: true, indent: true },
-  { key: 'deductions', label: '        • Удержания', isMoney: true, invert: true, indent: true },
+  { key: 'deductions_ads', label: '        • ВБ Продвижение', isMoney: true, invert: true, indent: true },
+  { key: 'deductions_other', label: '        • Пр. удержания', isMoney: true, invert: true, indent: true },
   { key: 'acceptance', label: '        • Плат. приёмка', isMoney: true, invert: true, indent: true },
   { key: 'advertising', label: 'Реклама', isMoney: true, invert: true },
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
