@@ -946,17 +946,21 @@ async def get_wb_finances(
     }
 
     # ── Build breakdown ──
-    # NOTE: penalties = 0 because penalty_total duplicates deduction in WB API
+    # Split deductions: ads (ВБ Продвижение) vs other (transit, reviews, etc.)
+    deductions_ads_cur = total_deductions_cur - deductions_cur  # ВБ Продвижение portion
+    deductions_ads_prev = total_deductions_prev - deductions_prev
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
         "commission": round(commission_cur, 2),
         "logistics": round(logistics_cur, 2),
         "storage": round(storage_cur, 2),
         "acquiring": round(acquiring_cur, 2),
-        "advertising": round(ad_spend_cur, 2),
+        "advertising": round(ad_spend_cur, 2),  # from fact_advert_stats (informational KPI)
         "refunds": round(returns_cur, 2),
         "penalties": 0,
-        "deductions": round(total_deductions_cur, 2),  # Full deductions matching WB ЛК
+        "deductions": round(total_deductions_cur, 2),  # Full total for _bank_transfer calc
+        "deductions_ads": round(deductions_ads_cur, 2),  # ВБ Продвижение from deduction
+        "deductions_other": round(deductions_cur, 2),  # non-ad: transit delivery, reviews, etc.
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
@@ -1076,8 +1080,10 @@ async def get_wb_finances(
             "acquiring": round(acquiring_cur, 2),
             "advertising": round(ad_spend_cur, 2),
             "refunds": round(returns_cur, 2),
-            "penalties": 0,  # penalty_total = deduction in WB (double-counted)
-            "deductions": round(total_deductions_cur, 2),  # Full deductions matching WB ЛК
+            "penalties": 0,
+            "deductions": round(total_deductions_cur, 2),
+            "deductions_ads": round(deductions_ads_cur, 2),
+            "deductions_other": round(deductions_cur, 2),
             "compensation": round(acceptance_cur, 2),
             "cogs": round(cogs_cur, 2),
             "profit": round(profit_cur, 2),
@@ -1096,6 +1102,8 @@ async def get_wb_finances(
             "refunds": round(returns_prev, 2),
             "penalties": 0,
             "deductions": round(total_deductions_prev, 2),
+            "deductions_ads": round(deductions_ads_prev, 2),
+            "deductions_other": round(deductions_prev, 2),
             "compensation": round(acceptance_prev, 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
