@@ -34,6 +34,7 @@ export interface FinancesBreakdown {
   advertising: number
   refunds: number
   penalties: number
+  deductions: number
   compensation: number
   operating: number
   cogs: number
