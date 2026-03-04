@@ -1519,7 +1519,7 @@ async def get_wb_products_finance(
     total_cur = {}
     total_prev = {}
     for key in ("sales", "revenue", "payout", "logistics", "storage", "acquiring",
-                "penalties", "returns", "ad_spend", "cogs", "profit"):
+                "penalties", "returns", "ad_spend", "deductions", "acceptance", "cogs", "profit"):
         total_cur[key] = round(sum(p["current"][key] for p in result_products), 2)
         total_prev[key] = round(sum(p["previous"][key] for p in result_products), 2)
 
