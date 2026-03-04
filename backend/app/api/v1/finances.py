@@ -902,16 +902,17 @@ async def get_wb_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # Waterfall:  Revenue → -Commission → Payout → -Expenses → -Ads → -COGS → Profit
+    # IMPORTANT: In WB API, penalty_total ≈ deduction (same amounts!).
+    # deductions_cur already excludes ads (ВБ.Продвижение).
+    # So we use ONLY deductions (excl ads) and DO NOT add penalties
+    # to avoid double-counting.
     #
-    # mp_fees (display) = commission + logistics + storage + penalties + acquiring + acceptance + deductions
-    # operating_expenses = logistics + storage + penalties + acquiring + acceptance + deductions
-    # profit = payout - operating_expenses - ads - cogs
-    #
-    # NOTE: commission is NOT subtracted from payout (it's already excluded!)
+    # operating = logistics + storage + acquiring + acceptance + deductions(excl ads)
+    # mp_fees = commission + operating
+    # profit = revenue - mp_fees - ads - cogs
     # ══════════════════════════════════════════════════════
-    operating_cur = logistics_cur + storage_cur + acquiring_cur + penalties_cur + acceptance_cur + deductions_cur
-    operating_prev = logistics_prev + storage_prev + acquiring_prev + penalties_prev + acceptance_prev + deductions_prev
+    operating_cur = logistics_cur + storage_cur + acquiring_cur + acceptance_cur + deductions_cur
+    operating_prev = logistics_prev + storage_prev + acquiring_prev + acceptance_prev + deductions_prev
 
     mp_fees_cur = commission_cur + operating_cur
     mp_fees_prev = commission_prev + operating_prev
@@ -946,6 +947,7 @@ async def get_wb_finances(
     }
 
     # ── Build breakdown ──
+    # NOTE: penalties = 0 because penalty_total duplicates deduction in WB API
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
         "commission": round(commission_cur, 2),
@@ -954,7 +956,7 @@ async def get_wb_finances(
         "acquiring": round(acquiring_cur, 2),
         "advertising": round(ad_spend_cur, 2),
         "refunds": round(returns_cur, 2),
-        "penalties": round(penalties_cur, 2),
+        "penalties": 0,  # penalty_total = deduction in WB API (double-counted)
         "deductions": round(deductions_cur, 2),
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
@@ -983,7 +985,7 @@ async def get_wb_finances(
         tded_d = dd.get("total_deductions", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        op_d = log_d + stor_d + pen_d + acq_d + acc_d + ded_d
+        op_d = log_d + stor_d + acq_d + acc_d + ded_d
         mp_d = comm_d + op_d
 
         # Payout = ppvz_for_pay (к перечислению за товар)
@@ -1075,7 +1077,7 @@ async def get_wb_finances(
             "acquiring": round(acquiring_cur, 2),
             "advertising": round(ad_spend_cur, 2),
             "refunds": round(returns_cur, 2),
-            "penalties": round(penalties_cur, 2),
+            "penalties": 0,  # penalty_total = deduction in WB (double-counted)
             "deductions": round(deductions_cur, 2),
             "compensation": round(acceptance_cur, 2),
             "cogs": round(cogs_cur, 2),
@@ -1093,7 +1095,7 @@ async def get_wb_finances(
             "acquiring": round(acquiring_prev, 2),
             "advertising": round(ad_spend_prev, 2),
             "refunds": round(returns_prev, 2),
-            "penalties": round(penalties_prev, 2),
+            "penalties": 0,
             "deductions": round(deductions_prev, 2),
             "compensation": round(acceptance_prev, 2),
             "cogs": round(cogs_prev, 2),
