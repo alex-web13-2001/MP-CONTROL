@@ -902,27 +902,26 @@ async def get_wb_finances(
     # ══════════════════════════════════════════════════════
     # Compute derived metrics
     #
-    # IMPORTANT: In WB API, penalty_total ≈ deduction (same amounts!).
-    # deductions_cur already excludes ads (ВБ.Продвижение).
-    # So we use ONLY deductions (excl ads) and DO NOT add penalties
-    # to avoid double-counting.
+    # WB API: penalty_total ≈ deduction, and deduction includes ads (ВБ.Продвижение).
+    # We use total_deductions (ALL deductions including ads) to match WB ЛК.
+    # Ads are NOT subtracted separately since they're already inside deductions.
+    # KPI ad_spend (from fact_advert_stats) is informational only.
     #
-    # operating = logistics + storage + acquiring + acceptance + deductions(excl ads)
+    # operating = logistics + storage + acquiring + acceptance + total_deductions
     # mp_fees = commission + operating
-    # profit = revenue - mp_fees - ads - cogs
+    # profit = revenue - mp_fees - cogs  (NO separate ads!)
     # ══════════════════════════════════════════════════════
-    operating_cur = logistics_cur + storage_cur + acquiring_cur + acceptance_cur + deductions_cur
-    operating_prev = logistics_prev + storage_prev + acquiring_prev + acceptance_prev + deductions_prev
+    operating_cur = logistics_cur + storage_cur + acquiring_cur + acceptance_cur + total_deductions_cur
+    operating_prev = logistics_prev + storage_prev + acquiring_prev + acceptance_prev + total_deductions_prev
 
     mp_fees_cur = commission_cur + operating_cur
     mp_fees_prev = commission_prev + operating_prev
 
     # Payout = ppvz_for_pay (к перечислению за товар, до вычета логистики/хранения/удержаний)
-    # Это то, что WB показывает как «К перечислению за товар» в ЛК
 
-    # Profit
-    profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
-    profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
+    # Profit (ads already inside total_deductions, NOT subtracted separately)
+    profit_cur = revenue_cur - mp_fees_cur - cogs_cur
+    profit_prev = revenue_prev - mp_fees_prev - cogs_prev
     profit_pct = round(profit_cur / revenue_cur * 100, 1) if revenue_cur > 0 else 0.0
 
     # ── Build KPI ──
@@ -956,8 +955,8 @@ async def get_wb_finances(
         "acquiring": round(acquiring_cur, 2),
         "advertising": round(ad_spend_cur, 2),
         "refunds": round(returns_cur, 2),
-        "penalties": 0,  # penalty_total = deduction in WB API (double-counted)
-        "deductions": round(deductions_cur, 2),
+        "penalties": 0,
+        "deductions": round(total_deductions_cur, 2),  # Full deductions matching WB ЛК
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
@@ -985,13 +984,13 @@ async def get_wb_finances(
         tded_d = dd.get("total_deductions", 0)
         ads_d = ads_daily.get(ds, 0)
         cogs_d = cogs_daily.get(ds, 0)
-        op_d = log_d + stor_d + acq_d + acc_d + ded_d
+        op_d = log_d + stor_d + acq_d + acc_d + tded_d  # total deductions (incl ads)
         mp_d = comm_d + op_d
 
         # Payout = ppvz_for_pay (к перечислению за товар)
         bank_trans_d = pay
 
-        profit_d = rev - mp_d - ads_d - cogs_d
+        profit_d = rev - mp_d - cogs_d  # ads already in tded_d
 
         daily_raw.append({
             "date": ds,
@@ -1030,7 +1029,7 @@ async def get_wb_finances(
             grouped[key]["ad_spend"] += pt["ad_spend"]
             grouped[key]["cogs"] += pt["cogs"]
             grouped[key]["orders"] += pt["orders"]
-            grouped[key]["profit"] += prof
+            grouped[key]["profit"] += pt["profit"]
 
         daily_final = []
         for k in sorted(grouped.keys()):
@@ -1046,11 +1045,11 @@ async def get_wb_finances(
             rev = pt["revenue"]
             pay = pt["payout"] # This is the bank transfer
             comm = pt["commission"]
-            oper = pt["logistics"] + pt["storage"] + pt["penalties"] + pt["acquiring"] + pt["acceptance"] + pt["deductions"]
+            oper = pt["logistics"] + pt["storage"] + pt["acquiring"] + pt["acceptance"] + pt.get("total_deductions", 0)
             mp_fees = comm + oper
             ads = ads_daily.get(ds, 0)
             cogs = cogs_daily.get(ds, 0)
-            prof = rev - mp_fees - ads - cogs
+            prof = rev - mp_fees - cogs  # ads already in total_deductions
 
             daily_final.append({
                 "date": ds,
@@ -1078,7 +1077,7 @@ async def get_wb_finances(
             "advertising": round(ad_spend_cur, 2),
             "refunds": round(returns_cur, 2),
             "penalties": 0,  # penalty_total = deduction in WB (double-counted)
-            "deductions": round(deductions_cur, 2),
+            "deductions": round(total_deductions_cur, 2),  # Full deductions matching WB ЛК
             "compensation": round(acceptance_cur, 2),
             "cogs": round(cogs_cur, 2),
             "profit": round(profit_cur, 2),
@@ -1096,7 +1095,7 @@ async def get_wb_finances(
             "advertising": round(ad_spend_prev, 2),
             "refunds": round(returns_prev, 2),
             "penalties": 0,
-            "deductions": round(deductions_prev, 2),
+            "deductions": round(total_deductions_prev, 2),
             "compensation": round(acceptance_prev, 2),
             "cogs": round(cogs_prev, 2),
             "profit": round(profit_prev, 2),
