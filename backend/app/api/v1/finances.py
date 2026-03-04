@@ -916,10 +916,8 @@ async def get_wb_finances(
     mp_fees_cur = commission_cur + operating_cur
     mp_fees_prev = commission_prev + operating_prev
 
-    # Payout (Bank transfer): ppvz_for_pay - logistics - storage - penalties - acceptance - total_deductions (which includes ads)
-    # Note: Acquiring is already deducted from ppvz_for_pay by WB.
-    actual_payout_cur = payout_cur - (logistics_cur + storage_cur + penalties_cur + acceptance_cur + total_deductions_cur)
-    actual_payout_prev = payout_prev - (logistics_prev + storage_prev + penalties_prev + acceptance_prev + total_deductions_prev)
+    # Payout = ppvz_for_pay (к перечислению за товар, до вычета логистики/хранения/удержаний)
+    # Это то, что WB показывает как «К перечислению за товар» в ЛК
 
     # Profit
     profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
@@ -930,8 +928,8 @@ async def get_wb_finances(
     kpi = {
         "revenue": round(revenue_cur, 2),
         "revenue_delta": _safe_delta(revenue_cur, revenue_prev),
-        "payout": round(actual_payout_cur, 2),
-        "payout_delta": _safe_delta(actual_payout_cur, actual_payout_prev),
+        "payout": round(payout_cur, 2),
+        "payout_delta": _safe_delta(payout_cur, payout_prev),
         "mp_fees": round(mp_fees_cur, 2),
         "mp_fees_delta": _safe_delta(mp_fees_cur, mp_fees_prev),
         "operating": round(operating_cur, 2),
@@ -988,8 +986,8 @@ async def get_wb_finances(
         op_d = log_d + stor_d + pen_d + acq_d + acc_d + ded_d
         mp_d = comm_d + op_d
 
-        # Payout (bank transfer) logic
-        bank_trans_d = pay - (log_d + stor_d + pen_d + acc_d + tded_d)
+        # Payout = ppvz_for_pay (к перечислению за товар)
+        bank_trans_d = pay
 
         profit_d = rev - mp_d - ads_d - cogs_d
 
@@ -1023,11 +1021,8 @@ async def get_wb_finances(
             comm = max(rev - pt["payout"], 0) # Recalculate commission from daily_raw's payout
             oper = pt["mp_fees"] - comm # Recalculate operating from daily_raw's mp_fees and new comm
             mp_fees = comm + oper
-            actual_payout = rev - mp_fees
-            prof = rev - mp_fees - pt["ad_spend"] - pt["cogs"]
-
             grouped[key]["revenue"] += rev
-            grouped[key]["payout"] += actual_payout
+            grouped[key]["payout"] += pt["payout"]
             grouped[key]["mp_fees"] += mp_fees
             grouped[key]["operating"] += oper
             grouped[key]["ad_spend"] += pt["ad_spend"]
@@ -1053,13 +1048,12 @@ async def get_wb_finances(
             mp_fees = comm + oper
             ads = ads_daily.get(ds, 0)
             cogs = cogs_daily.get(ds, 0)
-            actual_payout = pay - (pt["logistics"] + pt["storage"] + pt["penalties"] + pt["acceptance"] + pt.get("total_deductions", 0))
             prof = rev - mp_fees - ads - cogs
 
             daily_final.append({
                 "date": ds,
                 "revenue": round(rev, 2),
-                "payout": round(actual_payout, 2),
+                "payout": round(pay, 2),
                 "mp_fees": round(mp_fees, 2),
                 "operating": round(oper, 2),
                 "ad_spend": round(ads, 2),
@@ -1072,7 +1066,7 @@ async def get_wb_finances(
     comparison = {
         "current": {
             "revenue": round(revenue_cur, 2),
-            "payout": round(actual_payout_cur, 2),
+            "payout": round(payout_cur, 2),
             "mp_fees": round(mp_fees_cur, 2),
             "operating": round(operating_cur, 2),
             "commission": round(commission_cur, 2),
@@ -1090,7 +1084,7 @@ async def get_wb_finances(
         },
         "previous": {
             "revenue": round(revenue_prev, 2),
-            "payout": round(actual_payout_prev, 2),
+            "payout": round(payout_prev, 2),
             "mp_fees": round(mp_fees_prev, 2),
             "operating": round(operating_prev, 2),
             "commission": round(commission_prev, 2),
