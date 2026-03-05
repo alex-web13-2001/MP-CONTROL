@@ -1447,50 +1447,110 @@ async def get_wb_products_finance(
         logger.warning("PG product_costs query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 3.5. Proportional distribution of account-level expenses
+    # 3.5. Link deductions to products by nm_id from bonus_type_name
     #
-    # WB doesn't tie storage, deductions, and acceptance to specific products
-    # (these records have empty vendor_code → __unknown__ bucket).
-    # We distribute them proportionally by revenue share across products.
+    # WB deduction records have nm_id=0 and empty vendor_code, BUT
+    # bonus_type_name often contains "товар NNNNNN" with the real nm_id.
+    # We parse it with ClickHouse regex and link to products via nm_to_vc.
+    #
+    # Storage records have NO product ID at all → distribute proportionally.
     # ══════════════════════════════════════════════════════
-    unknown = products.get("__unknown__")
-    if unknown:
-        # Collect account-level expenses from __unknown__
-        for period_key in ("cur", "prev"):
-            undist_storage = unknown[period_key].get("storage", 0)
-            undist_deductions = unknown[period_key].get("deductions", 0)
-            undist_acceptance = unknown[period_key].get("acceptance", 0)
+    # Zero out deductions from main SQL (they were grouped into __unknown__)
+    # — we'll recalculate properly below via parsed nm_id
+    unknown_p = products.get("__unknown__")
+    if unknown_p:
+        unknown_p["cur"]["deductions"] = 0
+        unknown_p["prev"]["deductions"] = 0
+    try:
+        ded_by_nm = ch.query("""
+            SELECT
+                toUInt64OrZero(extract(
+                    JSONExtractString(raw_payload, 'bonus_type_name'),
+                    'товар\\s+(\\d+)'
+                )) AS parsed_nm_id,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                ) AS ded_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    event_date >= {d_prev_start:Date} AND event_date <= {d_prev_end:Date}
+                ) AS ded_prev
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d_prev_start:Date}
+              AND event_date <= {d_end:Date}
+              AND JSONExtractFloat(raw_payload, 'deduction') != 0
+            GROUP BY parsed_nm_id
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
 
-            total_undist = undist_storage + undist_deductions + undist_acceptance
-            if total_undist == 0:
+        unlinked_ded_cur = 0.0
+        unlinked_ded_prev = 0.0
+        for r in ded_by_nm.result_rows:
+            nm = int(r[0] or 0)
+            d_cur = abs(float(r[1] or 0))
+            d_prev = abs(float(r[2] or 0))
+
+            vc = nm_to_vc.get(nm) if nm else None
+            if vc and vc in products:
+                products[vc]["cur"]["deductions"] += d_cur
+                products[vc]["prev"]["deductions"] += d_prev
+            else:
+                unlinked_ded_cur += d_cur
+                unlinked_ded_prev += d_prev
+
+    except Exception as e:
+        logger.warning("CH deductions by nm_id query failed: %s", e)
+        # Fallback: all deductions from __unknown__ stay as-is
+        unknown_p = products.get("__unknown__")
+        unlinked_ded_cur = unknown_p["cur"]["deductions"] if unknown_p else 0
+        unlinked_ded_prev = unknown_p["prev"]["deductions"] if unknown_p else 0
+
+    # ── Proportional distribution: unlinked deductions + storage + acceptance ──
+    unknown_p = products.get("__unknown__")
+    if unknown_p:
+        undist_storage_cur = unknown_p["cur"].get("storage", 0)
+        undist_storage_prev = unknown_p["prev"].get("storage", 0)
+        undist_acc_cur = unknown_p["cur"].get("acceptance", 0)
+        undist_acc_prev = unknown_p["prev"].get("acceptance", 0)
+    else:
+        undist_storage_cur = undist_storage_prev = 0
+        undist_acc_cur = undist_acc_prev = 0
+
+    for period_key, u_stor, u_ded, u_acc in [
+        ("cur", undist_storage_cur, unlinked_ded_cur, undist_acc_cur),
+        ("prev", undist_storage_prev, unlinked_ded_prev, undist_acc_prev),
+    ]:
+        total_undist = u_stor + u_ded + u_acc
+        if total_undist == 0:
+            continue
+        total_rev = sum(
+            p[period_key]["revenue"]
+            for vc, p in products.items()
+            if not vc.startswith("__") and p[period_key]["revenue"] > 0
+        )
+        if total_rev <= 0:
+            continue
+        for vc, p in products.items():
+            if vc.startswith("__"):
                 continue
-
-            # Calculate total revenue across real products (exclude special buckets)
-            total_rev = sum(
-                p[period_key]["revenue"]
-                for vc, p in products.items()
-                if not vc.startswith("__") and p[period_key]["revenue"] > 0
-            )
-            if total_rev <= 0:
+            rev = p[period_key]["revenue"]
+            if rev <= 0:
                 continue
+            share = rev / total_rev
+            p[period_key]["storage"] += round(u_stor * share, 2)
+            p[period_key]["deductions"] += round(u_ded * share, 2)
+            p[period_key]["acceptance"] += round(u_acc * share, 2)
 
-            # Distribute proportionally
-            for vc, p in products.items():
-                if vc.startswith("__"):
-                    continue
-                rev = p[period_key]["revenue"]
-                if rev <= 0:
-                    continue
-                share = rev / total_rev
-                p[period_key]["storage"] += round(undist_storage * share, 2)
-                p[period_key]["deductions"] += round(undist_deductions * share, 2)
-                p[period_key]["acceptance"] += round(undist_acceptance * share, 2)
-
-            # Zero out __unknown__ (redistributed)
-            unknown[period_key]["storage"] = 0
-            unknown[period_key]["deductions"] = 0
-            unknown[period_key]["acceptance"] = 0
-
+    # Zero out __unknown__ (redistributed)
+    if unknown_p:
+        for pk in ("cur", "prev"):
+            unknown_p[pk]["storage"] = 0
+            unknown_p[pk]["deductions"] = 0
+            unknown_p[pk]["acceptance"] = 0
     # ══════════════════════════════════════════════════════
     # 4. Build response
     # ══════════════════════════════════════════════════════
