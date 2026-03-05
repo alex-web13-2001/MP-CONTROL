@@ -1480,6 +1480,9 @@ async def get_wb_products_finance(
               AND event_date >= {d_prev_start:Date}
               AND event_date <= {d_end:Date}
               AND JSONExtractFloat(raw_payload, 'deduction') != 0
+              AND positionCaseInsensitiveUTF8(
+                  JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение'
+              ) = 0
             GROUP BY parsed_nm_id
         """, parameters={
             "shop_id": shop_id,
