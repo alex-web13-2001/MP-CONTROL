@@ -1509,22 +1509,20 @@ async def get_wb_products_finance(
         unlinked_ded_cur = unknown_p["cur"]["deductions"] if unknown_p else 0
         unlinked_ded_prev = unknown_p["prev"]["deductions"] if unknown_p else 0
 
-    # ── Proportional distribution: unlinked deductions + storage + acceptance ──
+    # ── Proportional distribution: ONLY storage + unlinked deductions ──
+    # NOTE: acceptance has vendor_code in WB API → already grouped correctly
     unknown_p = products.get("__unknown__")
     if unknown_p:
         undist_storage_cur = unknown_p["cur"].get("storage", 0)
         undist_storage_prev = unknown_p["prev"].get("storage", 0)
-        undist_acc_cur = unknown_p["cur"].get("acceptance", 0)
-        undist_acc_prev = unknown_p["prev"].get("acceptance", 0)
     else:
         undist_storage_cur = undist_storage_prev = 0
-        undist_acc_cur = undist_acc_prev = 0
 
-    for period_key, u_stor, u_ded, u_acc in [
-        ("cur", undist_storage_cur, unlinked_ded_cur, undist_acc_cur),
-        ("prev", undist_storage_prev, unlinked_ded_prev, undist_acc_prev),
+    for period_key, u_stor, u_ded in [
+        ("cur", undist_storage_cur, unlinked_ded_cur),
+        ("prev", undist_storage_prev, unlinked_ded_prev),
     ]:
-        total_undist = u_stor + u_ded + u_acc
+        total_undist = u_stor + u_ded
         if total_undist == 0:
             continue
         total_rev = sum(
@@ -1543,14 +1541,12 @@ async def get_wb_products_finance(
             share = rev / total_rev
             p[period_key]["storage"] += round(u_stor * share, 2)
             p[period_key]["deductions"] += round(u_ded * share, 2)
-            p[period_key]["acceptance"] += round(u_acc * share, 2)
 
-    # Zero out __unknown__ (redistributed)
+    # Zero out __unknown__ storage/deductions (redistributed)
     if unknown_p:
         for pk in ("cur", "prev"):
             unknown_p[pk]["storage"] = 0
             unknown_p[pk]["deductions"] = 0
-            unknown_p[pk]["acceptance"] = 0
     # ══════════════════════════════════════════════════════
     # 4. Build response
     # ══════════════════════════════════════════════════════
