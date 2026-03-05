@@ -1446,8 +1446,50 @@ async def get_wb_products_finance(
     except Exception as e:
         logger.warning("PG product_costs query failed: %s", e)
 
-    # NOTE: Section 3.5 (deductions __no_product__) removed — deductions/acceptance
-    # are now collected per-product from the main SQL query.
+    # ══════════════════════════════════════════════════════
+    # 3.5. Proportional distribution of account-level expenses
+    #
+    # WB doesn't tie storage, deductions, and acceptance to specific products
+    # (these records have empty vendor_code → __unknown__ bucket).
+    # We distribute them proportionally by revenue share across products.
+    # ══════════════════════════════════════════════════════
+    unknown = products.get("__unknown__")
+    if unknown:
+        # Collect account-level expenses from __unknown__
+        for period_key in ("cur", "prev"):
+            undist_storage = unknown[period_key].get("storage", 0)
+            undist_deductions = unknown[period_key].get("deductions", 0)
+            undist_acceptance = unknown[period_key].get("acceptance", 0)
+
+            total_undist = undist_storage + undist_deductions + undist_acceptance
+            if total_undist == 0:
+                continue
+
+            # Calculate total revenue across real products (exclude special buckets)
+            total_rev = sum(
+                p[period_key]["revenue"]
+                for vc, p in products.items()
+                if not vc.startswith("__") and p[period_key]["revenue"] > 0
+            )
+            if total_rev <= 0:
+                continue
+
+            # Distribute proportionally
+            for vc, p in products.items():
+                if vc.startswith("__"):
+                    continue
+                rev = p[period_key]["revenue"]
+                if rev <= 0:
+                    continue
+                share = rev / total_rev
+                p[period_key]["storage"] += round(undist_storage * share, 2)
+                p[period_key]["deductions"] += round(undist_deductions * share, 2)
+                p[period_key]["acceptance"] += round(undist_acceptance * share, 2)
+
+            # Zero out __unknown__ (redistributed)
+            unknown[period_key]["storage"] = 0
+            unknown[period_key]["deductions"] = 0
+            unknown[period_key]["acceptance"] = 0
 
     # ══════════════════════════════════════════════════════
     # 4. Build response
