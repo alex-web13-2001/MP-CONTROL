@@ -15,7 +15,7 @@ export function Header() {
   const logout = useAuthStore((s) => s.logout)
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--background)/0.85)] px-8 backdrop-blur-xl">
+    <header className="sticky top-0 z-50 flex h-16 shrink-0 items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--background)/0.85)] px-8 backdrop-blur-xl">
       {/* ── Left: Shop Selector ── */}
       <ShopSelector
         shops={shops}
