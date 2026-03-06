@@ -1,0 +1,372 @@
+"""
+Events API — Лента событий.
+
+GET /events/feed?shop_id=X&period=7d  — Event feed grouped by day
+"""
+import json
+import logging
+from collections import defaultdict
+from datetime import date, datetime as dt_datetime, timedelta
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.security import get_current_user
+from app.models.user import User
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/events", tags=["Events"])
+
+# ── Event category mapping ────────────────────────────────────────
+
+EVENT_CATEGORIES = {
+    # Advertising
+    "BID_CHANGE": "advertising",
+    "STATUS_CHANGE": "advertising",
+    "ITEM_ADD": "advertising",
+    "ITEM_REMOVE": "advertising",
+    "ITEM_INACTIVE": "advertising",
+    "OZON_BID_CHANGE": "advertising",
+    "OZON_STATUS_CHANGE": "advertising",
+    "OZON_BUDGET_CHANGE": "advertising",
+    "OZON_ITEM_ADD": "advertising",
+    "OZON_ITEM_REMOVE": "advertising",
+    # Content
+    "OZON_SEO_CHANGE": "content",
+    "OZON_PHOTO_CHANGE": "content",
+    "CONTENT_CHANGE": "content",
+    "CONTENT_TITLE_CHANGED": "content",
+    "CONTENT_DESC_CHANGED": "content",
+    "CONTENT_MAIN_PHOTO_CHANGED": "content",
+    "CONTENT_PHOTO_ORDER_CHANGED": "content",
+    # Commercial
+    "PRICE_CHANGE": "commercial",
+    "STOCK_OUT": "commercial",
+    "STOCK_REPLENISH": "commercial",
+}
+
+# Human-readable event descriptions (Russian)
+EVENT_LABELS = {
+    "OZON_BID_CHANGE": "Изменение ставки",
+    "OZON_STATUS_CHANGE": "Статус кампании изменён",
+    "OZON_BUDGET_CHANGE": "Бюджет кампании изменён",
+    "OZON_ITEM_ADD": "Товар добавлен в кампанию",
+    "OZON_ITEM_REMOVE": "Товар удалён из кампании",
+    "OZON_SEO_CHANGE": "SEO-контент изменён",
+    "OZON_PHOTO_CHANGE": "Изменение фото",
+    "BID_CHANGE": "Изменение ставки",
+    "STATUS_CHANGE": "Статус кампании изменён",
+    "ITEM_ADD": "Товар добавлен в кампанию",
+    "ITEM_REMOVE": "Товар удалён из кампании",
+    "ITEM_INACTIVE": "Товар неактивен",
+    "CONTENT_CHANGE": "Изменение контента",
+    "CONTENT_TITLE_CHANGED": "Заголовок изменён",
+    "CONTENT_DESC_CHANGED": "Описание изменено",
+    "CONTENT_MAIN_PHOTO_CHANGED": "Главное фото изменено",
+    "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
+    "PRICE_CHANGE": "Цена изменена",
+    "STOCK_OUT": "Товар закончился",
+    "STOCK_REPLENISH": "Поступление на склад",
+}
+
+PERIOD_DAYS = {
+    "today": 1,
+    "7d": 7,
+    "30d": 30,
+    "90d": 90,
+}
+
+
+def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict] = None) -> str:
+    """Format event value for display."""
+    if value is None:
+        return ""
+    # Bid changes: show in roubles
+    if event_type in ("OZON_BID_CHANGE",):
+        try:
+            return f"{float(value):.2f} ₽"
+        except (ValueError, TypeError):
+            return value
+    if event_type == "BID_CHANGE":
+        # WB bids in kopecks
+        try:
+            return f"{int(value)} коп."
+        except (ValueError, TypeError):
+            return value
+    if event_type in ("OZON_BUDGET_CHANGE",):
+        try:
+            return f"{float(value):,.0f} ₽"
+        except (ValueError, TypeError):
+            return value
+    if event_type == "PRICE_CHANGE":
+        try:
+            return f"{float(value):,.0f} ₽"
+        except (ValueError, TypeError):
+            return value
+    return value
+
+
+@router.get("/feed")
+async def get_events_feed(
+    shop_id: int = Query(..., description="Shop ID"),
+    period: str = Query("7d", description="Period: today, 7d, 30d, 90d"),
+    event_types: Optional[str] = Query(
+        None, description="Comma-separated event types filter"
+    ),
+    category: Optional[str] = Query(
+        None, description="Category filter: advertising, content, commercial"
+    ),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=10, le=200, description="Events per page"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get event feed grouped by day.
+
+    Returns events from event_log enriched with product data
+    (name, image) from dim_ozon_products / dim_products.
+    """
+    # ── Verify shop ownership ──────────────────────────
+    shop_result = await db.execute(
+        text("""
+            SELECT id, marketplace FROM shops
+            WHERE id = :shop_id AND user_id = :user_id
+        """),
+        {"shop_id": shop_id, "user_id": str(current_user.id)},
+    )
+    shop_row = shop_result.fetchone()
+    if not shop_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Магазин не найден",
+        )
+    marketplace = shop_row[1]
+
+    # ── Date range ─────────────────────────────────────
+    days = PERIOD_DAYS.get(period, 7)
+    today = date.today()
+    date_from = today - timedelta(days=days - 1)
+    date_to = today
+
+    # ── Build filters ──────────────────────────────────
+    filters = ["e.shop_id = :shop_id", "e.created_at >= :date_from", "e.created_at < :date_to_exclusive"]
+    params: dict = {
+        "shop_id": shop_id,
+        "date_from": dt_datetime.combine(date_from, dt_datetime.min.time()),
+        "date_to_exclusive": dt_datetime.combine(date_to + timedelta(days=1), dt_datetime.min.time()),
+    }
+
+    # Filter by event types
+    if event_types:
+        type_list = [t.strip() for t in event_types.split(",") if t.strip()]
+        if type_list:
+            filters.append("e.event_type = ANY(:type_list)")
+            params["type_list"] = type_list
+
+    # Filter by category
+    if category and category in ("advertising", "content", "commercial"):
+        cat_types = [k for k, v in EVENT_CATEGORIES.items() if v == category]
+        if cat_types:
+            filters.append("e.event_type = ANY(:cat_types)")
+            params["cat_types"] = cat_types
+
+    where_clause = " AND ".join(filters)
+    offset = (page - 1) * page_size
+
+    # ── Count total ────────────────────────────────────
+    count_result = await db.execute(
+        text(f"SELECT count(*) FROM event_log e WHERE {where_clause}"),
+        params,
+    )
+    total = count_result.scalar() or 0
+
+    # ── Fetch events ───────────────────────────────────
+    events_result = await db.execute(
+        text(f"""
+            SELECT
+                e.id,
+                e.created_at,
+                e.event_type,
+                e.shop_id,
+                e.advert_id,
+                e.nm_id,
+                e.old_value,
+                e.new_value,
+                e.event_metadata
+            FROM event_log e
+            WHERE {where_clause}
+            ORDER BY e.created_at DESC
+            LIMIT :limit OFFSET :offset
+        """),
+        {**params, "limit": page_size, "offset": offset},
+    )
+    raw_events = events_result.fetchall()
+
+    if not raw_events:
+        return {
+            "shop_id": shop_id,
+            "marketplace": marketplace,
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "days": [],
+        }
+
+    # ── Collect product IDs for enrichment ─────────────
+    nm_ids = set()
+    for ev in raw_events:
+        if ev[5]:  # nm_id
+            nm_ids.add(int(ev[5]))
+
+    # ── Enrich with product data ───────────────────────
+    product_map = {}
+    if nm_ids:
+        if marketplace == "ozon":
+            # nm_id in event_log maps to product_id in dim_ozon_products
+            pg_result = await db.execute(
+                text("""
+                    SELECT product_id, name, offer_id,
+                           COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
+                    FROM dim_ozon_products
+                    WHERE shop_id = :shop_id
+                      AND product_id = ANY(:nm_ids)
+                """),
+                {"shop_id": shop_id, "nm_ids": list(nm_ids)},
+            )
+            for row in pg_result:
+                product_map[int(row[0])] = {
+                    "name": row[1] or "",
+                    "offer_id": row[2] or "",
+                    "image_url": row[3] or "",
+                }
+        else:
+            # WB: nm_id maps to nm_id in dim_products
+            pg_result = await db.execute(
+                text("""
+                    SELECT nm_id, name, vendor_code, main_image_url
+                    FROM dim_products
+                    WHERE shop_id = :shop_id
+                      AND nm_id = ANY(:nm_ids)
+                """),
+                {"shop_id": shop_id, "nm_ids": list(nm_ids)},
+            )
+            for row in pg_result:
+                product_map[int(row[0])] = {
+                    "name": row[1] or "",
+                    "offer_id": row[2] or "",
+                    "image_url": row[3] or "",
+                }
+
+    # ── Build response grouped by day ──────────────────
+    days_map = defaultdict(list)
+
+    for ev in raw_events:
+        ev_id, created_at, event_type, ev_shop_id, advert_id, nm_id, old_value, new_value, metadata = ev
+
+        # Parse metadata
+        meta = {}
+        if metadata:
+            if isinstance(metadata, str):
+                try:
+                    meta = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+            elif isinstance(metadata, dict):
+                meta = metadata
+
+        event_category = EVENT_CATEGORIES.get(event_type, "other")
+        event_label = EVENT_LABELS.get(event_type, event_type)
+
+        # Product info
+        product = None
+        if nm_id:
+            nm_id_int = int(nm_id)
+            prod_info = product_map.get(nm_id_int, {})
+            product = {
+                "nm_id": nm_id_int,
+                "name": prod_info.get("name", ""),
+                "offer_id": prod_info.get("offer_id", ""),
+                "image_url": prod_info.get("image_url", ""),
+            }
+
+        # Format values for display
+        old_display = _format_value(event_type, old_value, meta)
+        new_display = _format_value(event_type, new_value, meta)
+
+        # Build detail string
+        detail = ""
+        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE"):
+            detail = f"{old_display} → {new_display}"
+            bid_field = meta.get("bid_field", "")
+            if bid_field:
+                field_label = "Поиск" if bid_field == "search" else "Рекомендации"
+                detail = f"{field_label}: {detail}"
+        elif event_type in ("OZON_BUDGET_CHANGE",):
+            detail = f"{old_display} → {new_display}"
+        elif event_type in ("OZON_STATUS_CHANGE", "STATUS_CHANGE"):
+            detail = f"{old_value} → {new_value}"
+        elif event_type in ("STOCK_OUT",):
+            warehouse = meta.get("warehouse_name", "")
+            detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")
+        elif event_type in ("STOCK_REPLENISH",):
+            warehouse = meta.get("warehouse_name", "")
+            delta = meta.get("delta", "")
+            detail = f"+{delta} шт." + (f" ({warehouse})" if warehouse else "")
+        elif event_type in ("OZON_SEO_CHANGE",):
+            field = meta.get("field", "")
+            field_label = {"title": "Заголовок", "description": "Описание"}.get(field, field)
+            detail = f"{field_label} изменён"
+        elif event_type in ("OZON_PHOTO_CHANGE",):
+            field = meta.get("field", "")
+            if field == "main_image":
+                detail = "Главное фото изменено"
+            elif field == "images_order":
+                detail = "Галерея изображений изменена"
+            elif field == "images":
+                detail = "Изображения изменены"
+            else:
+                detail = "Фото изменено"
+        elif event_type in ("CONTENT_TITLE_CHANGED",):
+            new_title = meta.get("new_title", "")
+            detail = f"Новый заголовок: {new_title}" if new_title else "Заголовок изменён"
+        elif event_type in ("CONTENT_MAIN_PHOTO_CHANGED", "CONTENT_PHOTO_ORDER_CHANGED"):
+            old_count = meta.get("old_count", "?")
+            new_count = meta.get("new_count", "?")
+            detail = f"Фото: {old_count} → {new_count} шт."
+
+        day_key = created_at.strftime("%Y-%m-%d") if created_at else str(date.today())
+
+        days_map[day_key].append({
+            "id": ev_id,
+            "created_at": created_at.isoformat() if created_at else None,
+            "event_type": event_type,
+            "category": event_category,
+            "label": event_label,
+            "detail": detail,
+            "advert_id": int(advert_id) if advert_id else None,
+            "old_value": old_value,
+            "new_value": new_value,
+            "metadata": meta,
+            "product": product,
+        })
+
+    # Sort days descending
+    sorted_days = sorted(days_map.keys(), reverse=True)
+    days_list = [
+        {"date": day, "events": days_map[day]}
+        for day in sorted_days
+    ]
+
+    return {
+        "shop_id": shop_id,
+        "marketplace": marketplace,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "days": days_list,
+    }

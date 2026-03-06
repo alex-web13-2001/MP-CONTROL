@@ -21,6 +21,7 @@ router.include_router(finances_router)          # /api/v1/finances/*
 router.include_router(sales_router)             # /api/v1/sales/*
 router.include_router(ltv_router)               # /api/v1/sales/ozon/ltv*
 router.include_router(wb_ltv_router)            # /api/v1/sales/wb/ltv*
+router.include_router(events_router)            # /api/v1/events/*
 ```
 
 ---
