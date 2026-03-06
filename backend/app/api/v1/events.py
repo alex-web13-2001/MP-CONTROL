@@ -233,23 +233,31 @@ async def get_events_feed(
     product_map = {}
     if nm_ids:
         if marketplace == "ozon":
-            # nm_id in event_log maps to SKU in dim_ozon_products (NOT product_id)
+            # nm_id can be either SKU or product_id depending on event source:
+            #   - Ad events (BID_CHANGE, ITEM_ADD) use SKU
+            #   - Price events (PRICE_CHANGE) use product_id
+            # Search by both fields to cover all cases
             pg_result = await db.execute(
                 text("""
-                    SELECT sku, name, offer_id,
+                    SELECT product_id, sku, name, offer_id,
                            COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
-                      AND sku = ANY(:nm_ids)
+                      AND (sku = ANY(:nm_ids) OR product_id = ANY(:nm_ids))
                 """),
                 {"shop_id": shop_id, "nm_ids": list(nm_ids)},
             )
             for row in pg_result:
-                product_map[int(row[0])] = {
-                    "name": row[1] or "",
-                    "offer_id": row[2] or "",
-                    "image_url": row[3] or "",
+                product_id, sku, name, offer_id, image_url = row
+                info = {
+                    "name": name or "",
+                    "offer_id": offer_id or "",
+                    "image_url": image_url or "",
                 }
+                # Map both product_id and sku so lookup works regardless
+                product_map[int(product_id)] = info
+                if sku:
+                    product_map[int(sku)] = info
         else:
             # WB: nm_id maps to nm_id in dim_products
             pg_result = await db.execute(
