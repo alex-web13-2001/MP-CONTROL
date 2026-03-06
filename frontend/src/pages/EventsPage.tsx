@@ -123,13 +123,16 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
   const style = EVENT_STYLE[event.event_type] || DEFAULT_STYLE
   const Icon = style.icon
   const catColor = CATEGORY_COLORS[event.category] || CATEGORY_COLORS.other
+  const [imgError, setImgError] = useState(false)
+
+  const hasImage = event.product?.image_url && !imgError
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.3) }}
-      className="group relative flex gap-3 rounded-xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-4
+      className="group relative flex gap-3.5 rounded-xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-3.5
                  hover:border-[hsl(var(--border)/0.7)] hover:shadow-lg hover:shadow-black/5
                  transition-all duration-200"
     >
@@ -139,23 +142,19 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
         style={{ background: catColor }}
       />
 
-      {/* Product image */}
-      <div className="shrink-0 ml-2">
-        {event.product?.image_url ? (
+      {/* Product image — 3:4 ratio */}
+      <div className="shrink-0 ml-1.5">
+        {hasImage ? (
           <img
-            src={event.product.image_url}
-            alt={event.product.name || 'Product'}
-            className="h-12 w-12 rounded-lg object-cover border border-[hsl(var(--border)/0.3)]"
+            src={event.product!.image_url}
+            alt={event.product!.name || 'Product'}
+            className="w-[54px] h-[72px] rounded-lg object-cover border border-[hsl(var(--border)/0.3)]"
             loading="lazy"
-            onError={(e) => {
-              ;(e.target as HTMLImageElement).style.display = 'none'
-              ;(e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden')
-            }}
+            onError={() => setImgError(true)}
           />
-        ) : null}
-        {(!event.product?.image_url) && (
-          <div className="h-12 w-12 rounded-lg bg-[hsl(var(--muted)/0.2)] flex items-center justify-center">
-            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.4)]" />
+        ) : (
+          <div className="w-[54px] h-[72px] rounded-lg bg-[hsl(var(--muted)/0.15)] flex items-center justify-center border border-[hsl(var(--border)/0.2)]">
+            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
           </div>
         )}
       </div>
@@ -163,50 +162,64 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       {/* Content */}
       <div className="flex-1 min-w-0">
         {/* Product name */}
-        {event.product && (
-          <p className="text-[13px] font-semibold text-[hsl(var(--foreground))] truncate leading-tight">
-            {event.product.name || event.product.offer_id || `ID ${event.product.nm_id}`}
+        {event.product && event.product.name ? (
+          <p className="text-[13px] font-semibold text-[hsl(var(--foreground))] leading-tight line-clamp-2">
+            {event.product.name}
+          </p>
+        ) : event.product ? (
+          <p className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.7)] leading-tight">
+            SKU {event.product.nm_id}
+          </p>
+        ) : null}
+
+        {/* Article (offer_id) */}
+        {event.product?.offer_id && (
+          <p className="mt-0.5 text-[11px] font-mono text-[hsl(var(--muted-foreground)/0.5)]">
+            {event.product.offer_id}
           </p>
         )}
 
-        {/* Event detail */}
-        <div className="flex items-center gap-2 mt-1">
+        {/* Event type + detail */}
+        <div className="flex items-center gap-2 mt-1.5">
           <div
-            className="shrink-0 h-6 w-6 rounded-md flex items-center justify-center"
+            className="shrink-0 h-5.5 w-5.5 rounded-md flex items-center justify-center"
             style={{ background: style.bg }}
           >
             <Icon className="h-3.5 w-3.5" style={{ color: style.color }} />
           </div>
-          <span className="text-[13px] font-medium" style={{ color: style.color }}>
+          <span className="text-[12.5px] font-medium" style={{ color: style.color }}>
             {event.label}
           </span>
         </div>
 
         {/* Detail text */}
         {event.detail && (
-          <p className="mt-1 text-[12px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+          <p className="mt-0.5 text-[12px] text-[hsl(var(--muted-foreground)/0.8)] leading-relaxed">
             {event.detail}
           </p>
         )}
 
-        {/* Meta: offer_id, advert_id */}
-        <div className="flex items-center gap-3 mt-1.5">
-          {event.product?.offer_id && (
-            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] font-mono">
-              {event.product.offer_id}
+        {/* Campaign info */}
+        {event.advert_id ? (
+          <div className="flex items-center gap-1.5 mt-1.5">
+            <Megaphone className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
+            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] truncate max-w-[400px]">
+              {event.campaign_title
+                ? `${event.campaign_title}`
+                : `Кампания #${event.advert_id}`}
             </span>
-          )}
-          {event.advert_id && (
-            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] font-mono">
-              Кампания #{event.advert_id}
-            </span>
-          )}
-        </div>
+            {event.campaign_title && (
+              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] font-mono">
+                #{event.advert_id}
+              </span>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {/* Time */}
-      <div className="shrink-0 text-right">
-        <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.6)]">
+      <div className="shrink-0 text-right pt-0.5">
+        <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">
           {event.created_at ? formatEventTime(event.created_at) : ''}
         </span>
       </div>

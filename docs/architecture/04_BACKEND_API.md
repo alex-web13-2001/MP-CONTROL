@@ -585,3 +585,90 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 - **Роутинг обновлён:** 12 роутеров (добавлены `ltv_router`, `wb_ltv_router`)
 - **WB LTV** (`wb_ltv.py`): buyer_id из srid, когорты, SKU repeat, chain L1→L5
 - **WB LTV обогащение:** `dim_products` (name, vendor_code) + `wb_image_url(nm_id)` CDN (ранее: несуществующая `dim_wb_products`)
+
+### 2026-03-06
+
+- **Добавлена секция «События — /api/v1/events»** — endpoint: GET `/events/feed` (лента событий)
+- **Роутинг обновлён:** 13 роутеров (добавлен `events_router`)
+- **Events feed:** обогащение товаров (фото, имя, артикул) из PG `dim_ozon_products`, campaign_title из 5-уровневого fallback (meta → STATUS_CHANGE → DB → Redis)
+
+---
+
+## Лента событий — `/api/v1/events`
+
+### Endpoints
+
+| Метод | Path           | Описание                               | Auth   |
+| ----- | -------------- | -------------------------------------- | ------ |
+| `GET` | `/events/feed` | Лента событий, сгруппированных по дням | Bearer |
+
+### Query Parameters
+
+```
+shop_id: int (required)  — ID магазина
+period: "today" | "7d" | "30d" | "90d"  — период (default: "7d")
+category: "all" | "advertising" | "content" | "commercial"  — фильтр по категории
+```
+
+### Response Schema
+
+```json
+{
+  "total": 41,
+  "period": "7d",
+  "days": [
+    {
+      "date": "2026-03-02",
+      "label": "2 марта — понедельник",
+      "events": [
+        {
+          "id": 1234,
+          "created_at": "2026-03-02T13:33:34",
+          "event_type": "OZON_BID_CHANGE",
+          "category": "advertising",
+          "label": "Изменение ставки",
+          "advert_id": 19642583,
+          "campaign_title": "АМ-СОБ-МЕЛ-ЯГ-1 — Поиск",
+          "product": {
+            "nm_id": 2064330323,
+            "name": "Amare Сухой полнорационный корм...",
+            "offer_id": "АМ-СОБ-МЕЛ-ЯГ-1",
+            "image_url": "https://..."
+          },
+          "old_value": "12.00 ₽",
+          "new_value": "18.00 ₽",
+          "detail": "12.00 ₽ → 18.00 ₽"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### Типы событий
+
+| event_type             | category    | Описание                       |
+| ---------------------- | ----------- | ------------------------------ |
+| `OZON_BID_CHANGE`      | advertising | Изменение ставки               |
+| `OZON_STATUS_CHANGE`   | advertising | Статус кампании изменён        |
+| `OZON_BUDGET_CHANGE`   | advertising | Бюджет кампании изменён        |
+| `OZON_ITEM_ADD`        | advertising | Товар добавлен в кампанию      |
+| `OZON_ITEM_REMOVE`     | advertising | Товар удалён из кампании       |
+| `ITEM_INACTIVE`        | advertising | Товар деактивирован в кампании |
+| `BID_CHANGE`           | advertising | Изменение ставки (WB)          |
+| `STATUS_CHANGE`        | advertising | Статус кампании изменён (WB)   |
+| `ITEM_ADD`             | advertising | Товар добавлен (WB)            |
+| `ITEM_REMOVE`          | advertising | Товар удалён (WB)              |
+| `CONTENT_CHANGE`       | content     | Контент изменён                |
+| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено       |
+| `PRICE_CHANGE`         | commercial  | Цена изменена                  |
+
+### Обогащение данных
+
+- **Товар:** JOIN `event_log.nm_id` → `dim_ozon_products.sku` → name, offer_id, image_url
+- **Campaign title:** 5-уровневый fallback:
+  1. `event_metadata.campaign_title` (новые события)
+  2. `event_metadata.title` только для STATUS_CHANGE/BUDGET_CHANGE
+  3. STATUS_CHANGE из БД (того же advert_id)
+  4. `campaign_title` из любых событий в БД
+  5. Redis-кеш (записывается трекером)

@@ -276,11 +276,26 @@ API для фронтенда — запрос финансовых данных
 
 ---
 
-### `ozon_ads_event_detector.py` (9.3 КБ)
+### `ozon_ads_event_detector.py` (9.8 КБ)
 
-Аналог `EventDetector` для Ozon. Детектирует: `OZON_BID_CHANGE`, `OZON_STATUS_CHANGE`, `OZON_ITEM_ADD`, `OZON_ITEM_REMOVE`.
+Аналог `EventDetector` для Ozon. Детектирует рекламные события через сравнение API-состояния с Redis-кешем.
 
----
+**Детектируемые события:**
+
+| Метод                     | Событие              | Уровень  | Metadata                            |
+| ------------------------- | -------------------- | -------- | ----------------------------------- |
+| `detect_campaign_changes` | `OZON_STATUS_CHANGE` | Кампания | `title` (campaign name)             |
+| `detect_campaign_changes` | `OZON_BUDGET_CHANGE` | Кампания | `title` (campaign name)             |
+| `detect_product_changes`  | `OZON_BID_CHANGE`    | Товар    | `title` (product), `campaign_title` |
+| `detect_product_changes`  | `OZON_ITEM_ADD`      | Товар    | `campaign_title`                    |
+| `detect_product_changes`  | `OZON_ITEM_REMOVE`   | Товар    | `campaign_title`                    |
+
+**Redis state (per campaign):** `bids`, `status`, `budget`, `items`, `title`
+
+**Потоки:**
+
+- `detect_all()` строит `campaign_titles` map из campaigns list → передаёт в `detect_product_changes()`
+- `set_ozon_campaign_state()` сохраняет `title` в Redis для последующего извлечения Events API
 
 ### `ozon_funnel_service.py` (8.9 КБ)
 
@@ -365,3 +380,8 @@ FBO + FBS возвраты Ozon.
 - Обновлена таблица методов и описание API endpoints
 - `wb_finance_loader.py`: добавлено поле `wb_acquiring` в `FactFinancesRow` и маппинг `acquiring_fee` → `wb_acquiring` в `WBReportParser`; обновлен `ClickHouseLoader.COLUMNS` и `_row_to_tuple`
 - Обновлена таблица API→DB маппинга: добавлены `ppvz_sales_commission`, `rebill_logistic_cost`, `acquiring_fee`
+
+### 2026-03-06
+
+- `ozon_ads_event_detector.py`: разделение `campaign_title` и `product title` — BID_CHANGE/ITEM_ADD/ITEM_REMOVE теперь содержат `campaign_title` в metadata отдельно
+- `redis_state.py`: `get/set_ozon_campaign_state` расширены полем `title` — кеширование campaign names для Events API

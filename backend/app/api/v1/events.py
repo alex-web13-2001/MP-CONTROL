@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
+from app.core.redis_state import RedisStateManager
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -217,24 +218,27 @@ async def get_events_feed(
             "days": [],
         }
 
-    # ── Collect product IDs for enrichment ─────────────
+    # ── Collect product IDs and advert IDs ──────────────
     nm_ids = set()
+    advert_ids = set()
     for ev in raw_events:
         if ev[5]:  # nm_id
             nm_ids.add(int(ev[5]))
+        if ev[4]:  # advert_id
+            advert_ids.add(int(ev[4]))
 
     # ── Enrich with product data ───────────────────────
     product_map = {}
     if nm_ids:
         if marketplace == "ozon":
-            # nm_id in event_log maps to product_id in dim_ozon_products
+            # nm_id in event_log maps to SKU in dim_ozon_products (NOT product_id)
             pg_result = await db.execute(
                 text("""
-                    SELECT product_id, name, offer_id,
+                    SELECT sku, name, offer_id,
                            COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
-                      AND product_id = ANY(:nm_ids)
+                      AND sku = ANY(:nm_ids)
                 """),
                 {"shop_id": shop_id, "nm_ids": list(nm_ids)},
             )
@@ -261,6 +265,92 @@ async def get_events_feed(
                     "offer_id": row[2] or "",
                     "image_url": row[3] or "",
                 }
+
+    # ── Collect campaign titles ──────────────────────────
+    # For campaign-level events (STATUS_CHANGE, BUDGET_CHANGE),
+    #   meta["title"] IS the campaign title.
+    # For product-level events (BID_CHANGE, ITEM_ADD, ITEM_REMOVE),
+    #   meta["title"] is the PRODUCT title (not campaign!),
+    #   meta["campaign_title"] is the campaign title (new field).
+    campaign_title_map: dict[int, str] = {}
+    for ev in raw_events:
+        adv_id = ev[4]
+        ev_type = ev[2]
+        metadata = ev[8]
+        if adv_id:
+            adv_id_int = int(adv_id)
+            if adv_id_int not in campaign_title_map:
+                meta = {}
+                if metadata:
+                    if isinstance(metadata, str):
+                        try:
+                            meta = json.loads(metadata)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    elif isinstance(metadata, dict):
+                        meta = metadata
+
+                # campaign_title field (new, explicit)
+                ct = meta.get("campaign_title", "")
+                if ct:
+                    campaign_title_map[adv_id_int] = ct
+                # For STATUS_CHANGE / BUDGET_CHANGE, meta["title"] IS the campaign title
+                elif ev_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+                    title = meta.get("title", "")
+                    if title:
+                        campaign_title_map[adv_id_int] = title
+
+    # For advert_ids still without titles, look up from STATUS_CHANGE events
+    missing_advert_ids = [a for a in advert_ids if a not in campaign_title_map and a != 0]
+    if missing_advert_ids:
+        title_result = await db.execute(
+            text("""
+                SELECT DISTINCT ON (advert_id) advert_id, event_metadata->>'title'
+                FROM event_log
+                WHERE shop_id = :shop_id
+                  AND advert_id = ANY(:advert_ids)
+                  AND event_type IN ('OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE')
+                  AND event_metadata->>'title' IS NOT NULL
+                  AND event_metadata->>'title' != ''
+                ORDER BY advert_id, created_at DESC
+            """),
+            {"shop_id": shop_id, "advert_ids": missing_advert_ids},
+        )
+        for row in title_result:
+            if row[0] and row[1]:
+                campaign_title_map[int(row[0])] = row[1]
+
+    # Last fallback: meta["campaign_title"] from ANY events
+    still_missing = [a for a in advert_ids if a not in campaign_title_map and a != 0]
+    if still_missing:
+        ct_result = await db.execute(
+            text("""
+                SELECT DISTINCT ON (advert_id) advert_id, event_metadata->>'campaign_title'
+                FROM event_log
+                WHERE shop_id = :shop_id
+                  AND advert_id = ANY(:advert_ids)
+                  AND event_metadata->>'campaign_title' IS NOT NULL
+                  AND event_metadata->>'campaign_title' != ''
+                ORDER BY advert_id, created_at DESC
+            """),
+            {"shop_id": shop_id, "advert_ids": still_missing},
+        )
+        for row in ct_result:
+            if row[0] and row[1]:
+                campaign_title_map[int(row[0])] = row[1]
+
+    # Redis fallback: campaign titles stored by tracker
+    still_missing2 = [a for a in advert_ids if a not in campaign_title_map and a != 0]
+    if still_missing2:
+        try:
+            redis_state = RedisStateManager()
+            for adv_id in still_missing2:
+                state = redis_state.get_ozon_campaign_state(shop_id, adv_id)
+                title = state.get("title", "")
+                if title:
+                    campaign_title_map[adv_id] = title
+        except Exception as e:
+            logger.warning("Redis campaign title lookup failed: %s", e)
 
     # ── Build response grouped by day ──────────────────
     days_map = defaultdict(list)
@@ -294,6 +384,19 @@ async def get_events_feed(
                 "image_url": prod_info.get("image_url", ""),
             }
 
+        # Campaign title
+        campaign_title = ""
+        adv_id_int = int(advert_id) if advert_id else 0
+        if adv_id_int:
+            # 1. From pre-built map (STATUS_CHANGE titles + campaign_title fields)
+            campaign_title = campaign_title_map.get(adv_id_int, "")
+            # 2. Fallback: campaign_title from this event's metadata
+            if not campaign_title:
+                campaign_title = meta.get("campaign_title", "")
+            # 3. For campaign-level events, meta["title"] IS the campaign title
+            if not campaign_title and event_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+                campaign_title = meta.get("title", "")
+
         # Format values for display
         old_display = _format_value(event_type, old_value, meta)
         new_display = _format_value(event_type, new_value, meta)
@@ -309,7 +412,21 @@ async def get_events_feed(
         elif event_type in ("OZON_BUDGET_CHANGE",):
             detail = f"{old_display} → {new_display}"
         elif event_type in ("OZON_STATUS_CHANGE", "STATUS_CHANGE"):
-            detail = f"{old_value} → {new_value}"
+            # Translate campaign states to Russian
+            status_labels = {
+                "CAMPAIGN_STATE_RUNNING": "Активна",
+                "CAMPAIGN_STATE_STOPPED": "Остановлена",
+                "CAMPAIGN_STATE_INACTIVE": "Неактивна",
+                "CAMPAIGN_STATE_ARCHIVED": "В архиве",
+                "9": "Активна", "11": "Остановлена",  # WB status codes
+            }
+            old_label = status_labels.get(old_value, old_value or "")
+            new_label = status_labels.get(new_value, new_value or "")
+            detail = f"{old_label} → {new_label}"
+        elif event_type in ("OZON_ITEM_ADD", "ITEM_ADD"):
+            detail = "Товар добавлен в кампанию"
+        elif event_type in ("OZON_ITEM_REMOVE", "ITEM_REMOVE", "ITEM_INACTIVE"):
+            detail = "Товар удалён из кампании"
         elif event_type in ("STOCK_OUT",):
             warehouse = meta.get("warehouse_name", "")
             detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")
@@ -331,9 +448,13 @@ async def get_events_feed(
                 detail = "Изображения изменены"
             else:
                 detail = "Фото изменено"
+        elif event_type in ("CONTENT_CHANGE",):
+            detail = "Контент товара изменён"
         elif event_type in ("CONTENT_TITLE_CHANGED",):
             new_title = meta.get("new_title", "")
             detail = f"Новый заголовок: {new_title}" if new_title else "Заголовок изменён"
+        elif event_type in ("CONTENT_DESC_CHANGED",):
+            detail = "Описание товара изменено"
         elif event_type in ("CONTENT_MAIN_PHOTO_CHANGED", "CONTENT_PHOTO_ORDER_CHANGED"):
             old_count = meta.get("old_count", "?")
             new_count = meta.get("new_count", "?")
@@ -348,10 +469,10 @@ async def get_events_feed(
             "category": event_category,
             "label": event_label,
             "detail": detail,
-            "advert_id": int(advert_id) if advert_id else None,
+            "advert_id": adv_id_int if adv_id_int else None,
+            "campaign_title": campaign_title,
             "old_value": old_value,
             "new_value": new_value,
-            "metadata": meta,
             "product": product,
         })
 

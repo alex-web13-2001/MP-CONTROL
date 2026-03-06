@@ -59,13 +59,23 @@ class OzonAdsEventDetector:
         """
         events = []
 
+        # Build campaign title map
+        campaign_titles: Dict[int, str] = {}
+        for camp in campaigns:
+            cid = int(camp.get("id", 0))
+            if cid:
+                campaign_titles[cid] = camp.get("title", "")
+
         # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE
         events.extend(self.detect_campaign_changes(shop_id, campaigns))
 
         # 2. Product-level: BID_CHANGE + ITEM_ADD/REMOVE
         for campaign_id, products in products_by_campaign.items():
             events.extend(
-                self.detect_product_changes(shop_id, campaign_id, products)
+                self.detect_product_changes(
+                    shop_id, campaign_id, products,
+                    campaign_title=campaign_titles.get(campaign_id, ""),
+                )
             )
 
         logger.info("Ozon EventDetector: %d events detected", len(events))
@@ -151,6 +161,7 @@ class OzonAdsEventDetector:
                     shop_id, campaign_id,
                     status=str(current_status) if current_status else None,
                     budget=current_budget,
+                    title=camp.get("title", ""),
                 )
 
             except Exception as e:
@@ -167,6 +178,7 @@ class OzonAdsEventDetector:
         shop_id: int,
         campaign_id: int,
         products: List[Dict[str, Any]],
+        campaign_title: str = "",
     ) -> List[Dict[str, Any]]:
         """
         Detect BID_CHANGE, ITEM_ADD, ITEM_REMOVE for a campaign's products.
@@ -216,6 +228,7 @@ class OzonAdsEventDetector:
                     "new_value": str(bid_rub),
                     "event_metadata": {
                         "title": p.get("title", ""),
+                        "campaign_title": campaign_title,
                     },
                 })
                 logger.info(
@@ -233,7 +246,9 @@ class OzonAdsEventDetector:
                 "event_type": "OZON_ITEM_ADD",
                 "old_value": None,
                 "new_value": str(sku),
-                "event_metadata": None,
+                "event_metadata": {
+                    "campaign_title": campaign_title,
+                },
             })
             logger.info(
                 "OZON_ITEM_ADD: campaign=%d sku=%d", campaign_id, sku,
@@ -249,7 +264,9 @@ class OzonAdsEventDetector:
                 "event_type": "OZON_ITEM_REMOVE",
                 "old_value": str(sku),
                 "new_value": None,
-                "event_metadata": None,
+                "event_metadata": {
+                    "campaign_title": campaign_title,
+                },
             })
             logger.info(
                 "OZON_ITEM_REMOVE: campaign=%d sku=%d", campaign_id, sku,

@@ -20,9 +20,9 @@ export interface EventItem {
   label: string
   detail: string
   advert_id: number | null
+  campaign_title: string
   old_value: string | null
   new_value: string | null
-  metadata: Record<string, unknown>
   product: EventProduct | null
 }
 

@@ -240,13 +240,13 @@ class RedisStateManager:
     def get_ozon_campaign_state(self, shop_id: int, campaign_id: int) -> Dict[str, Any]:
         """
         Get last state for an Ozon campaign.
-        Returns dict with bids (sku→bid_rub), status, budget, items.
+        Returns dict with bids (sku→bid_rub), status, budget, items, title.
         """
         key = self._ozon_key(shop_id, campaign_id)
         raw = self.client.hgetall(key)
 
         if not raw:
-            return {"bids": {}, "status": None, "budget": None, "items": []}
+            return {"bids": {}, "status": None, "budget": None, "items": [], "title": ""}
 
         bids = {}
         if raw.get("bids"):
@@ -257,6 +257,7 @@ class RedisStateManager:
 
         status = raw.get("status")
         budget = float(raw["budget"]) if raw.get("budget") else None
+        title = raw.get("title", "")
 
         items = []
         if raw.get("items"):
@@ -270,6 +271,7 @@ class RedisStateManager:
             "status": status,
             "budget": budget,
             "items": items,
+            "title": title,
         }
 
     def set_ozon_campaign_state(
@@ -280,6 +282,7 @@ class RedisStateManager:
         status: Optional[str] = None,
         budget: Optional[float] = None,
         items: Optional[List[int]] = None,
+        title: Optional[str] = None,
     ) -> None:
         """
         Update Ozon campaign state in Redis.
@@ -296,6 +299,8 @@ class RedisStateManager:
             mapping["budget"] = str(budget)
         if items is not None:
             mapping["items"] = json.dumps(items)
+        if title is not None:
+            mapping["title"] = title
 
         if mapping:
             self.client.hset(key, mapping=mapping)

@@ -2,7 +2,19 @@
 
 Все изменения в проекте документируются в этом файле.
 
-## [Unreleased] - 2026-03-01
+## [Unreleased] - 2026-03-06
+
+### Added — Лента событий (Events Feed)
+
+- **Backend / `events.py` [NEW]:** Endpoint `GET /api/v1/events/feed` — лента событий, сгруппированных по дням, 13 типов событий (Ozon + WB), обогащение товаров (фото, имя, артикул) из PG `dim_ozon_products`.
+- **Frontend / `EventsPage.tsx` [NEW]:** Страница «События» — лента с фильтрами (Все/Реклама/Контент/Коммерция), периоды (Сегодня/7д/30д/90д), карточки товаров 3:4, пагинация «Показать ещё».
+
+### Fixed — Названия рекламных кампаний Ozon
+
+- **Backend / `ozon_ads_event_detector.py` [FIX]:** `campaign_title` передаётся отдельно от product title — BID_CHANGE, ITEM_ADD, ITEM_REMOVE теперь содержат корректное `campaign_title` в metadata.
+- **Backend / `redis_state.py` [MODIFY]:** `get/set_ozon_campaign_state` расширены полем `title` — кеширование campaign names для Events API fallback.
+- **Backend / `events.py` [FIX]:** 5-уровневый fallback для campaign_title: meta[campaign_title] → STATUS_CHANGE meta[title] → DB fallback → DB campaign_title → Redis кеш.
+- **Результат:** Кампания #19641904 → «ОН-КШ-ЧВ-ИНД-10 — поиск», #19642583 → «АМ-СОБ-МЕЛ-ЯГ-1 — Поиск» (ранее отображалось название товара вместо кампании).
 
 ### Added — Прогноз продаж для Wildberries
 
