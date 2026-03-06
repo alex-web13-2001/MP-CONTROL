@@ -290,6 +290,12 @@ API для фронтенда — запрос финансовых данных
 | `detect_product_changes`  | `OZON_ITEM_ADD`      | Товар    | `campaign_title`                    |
 | `detect_product_changes`  | `OZON_ITEM_REMOVE`   | Товар    | `campaign_title`                    |
 
+**Защита от ложных событий (3 уровня):**
+
+1. **API error** — `get_campaign_products` возвращает `None` при ошибке API → кампания пропускается
+2. **First observation** — если в Redis нет состояния кампании → только инициализация, события не генерируются
+3. **Campaign restart** — при переходе STOPPED→RUNNING → ITEM_ADD/REMOVE пропускаются
+
 **Redis state (per campaign):** `bids`, `status`, `budget`, `items`, `title`
 
 **Потоки:**
@@ -384,4 +390,7 @@ FBO + FBS возвраты Ozon.
 ### 2026-03-06
 
 - `ozon_ads_event_detector.py`: разделение `campaign_title` и `product title` — BID_CHANGE/ITEM_ADD/ITEM_REMOVE теперь содержат `campaign_title` в metadata отдельно
+- `ozon_ads_event_detector.py`: добавлена 3-уровневая защита от ложных ITEM_ADD/REMOVE (API error → skip, first observation → init only, just restarted → skip)
+- `ozon_ads_service.py`: `get_campaign_products` возвращает `None` при ошибке API (не пустой список)
+- `ozon_products_service.py`: `upsert_ozon_products` теперь детектит OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE (в дополнение к OZON_PHOTO_CHANGE)
 - `redis_state.py`: `get/set_ozon_campaign_state` расширены полем `title` — кеширование campaign names для Events API

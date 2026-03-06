@@ -6,8 +6,22 @@
 
 ### Added — Лента событий (Events Feed)
 
-- **Backend / `events.py` [NEW]:** Endpoint `GET /api/v1/events/feed` — лента событий, сгруппированных по дням, 13 типов событий (Ozon + WB), обогащение товаров (фото, имя, артикул) из PG `dim_ozon_products`.
+- **Backend / `events.py` [NEW]:** Endpoint `GET /api/v1/events/feed` — лента событий, сгруппированных по дням, 20+ типов событий (Ozon + WB), обогащение товаров (фото, имя, артикул) из PG `dim_ozon_products`.
 - **Frontend / `EventsPage.tsx` [NEW]:** Страница «События» — лента с фильтрами (Все/Реклама/Контент/Коммерция), периоды (Сегодня/7д/30д/90д), карточки товаров 3:4, пагинация «Показать ещё».
+
+### Added — Новые типы событий Ozon
+
+- **Backend / `ozon_products_service.py` [FEAT]:** Детекция OZON_STOCK_OUT (остатки→0), OZON_STOCK_REPLENISH (0→остатки), OZON_CONTENT_CHANGE (название изменено) при каждом upsert товаров.
+- **Backend / `tasks.py` [FEAT]:** `sync_ozon_products` сохраняет все обнаруженные события (photo/stock/content) в event_log (ранее только логировались).
+- **Backend / `tasks.py` [FEAT]:** `sync_ozon_prices` детектирует OZON_PRICE_CHANGE (marketing_price vs Redis).
+- **Backend / `events.py` [FEAT]:** Product lookup по `product_id` OR `sku` (ценовые события используют product_id).
+- **Frontend / `EventsPage.tsx` [FEAT]:** Стили для OZON_PRICE_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE.
+- **Scripts / `backfill_ozon_price_events.py` [NEW]:** Бэкфилл OZON_PRICE_CHANGE из ClickHouse fact_ozon_prices.
+
+### Fixed — Ложные события ITEM_ADD/REMOVE
+
+- **Backend / `ozon_ads_event_detector.py` [FIX]:** 3-уровневая защита от ложных ITEM_ADD/REMOVE: API error→skip, first observation→init, campaign restart→skip.
+- **Backend / `ozon_ads_service.py` [FIX]:** `get_campaign_products` возвращает `None` при ошибке API (не пустой список).
 
 ### Fixed — Названия рекламных кампаний Ozon
 

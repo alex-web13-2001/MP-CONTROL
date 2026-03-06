@@ -477,22 +477,66 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
                 availability = avails[0].get("availability", "")
                 availability_source = avails[0].get("source", "")
 
-            # Check for image hash change
+            # Check for changes: images, stocks, name
             cursor.execute(
-                "SELECT images_hash FROM dim_ozon_products WHERE shop_id = %s AND product_id = %s",
+                """SELECT images_hash, name, stocks_fbo, stocks_fbs
+                   FROM dim_ozon_products
+                   WHERE shop_id = %s AND product_id = %s""",
                 (shop_id, product_id),
             )
             existing = cursor.fetchone()
-            if existing and existing[0] and existing[0] != images_hash and images_hash:
-                events.append({
-                    "shop_id": shop_id,
-                    "product_id": product_id,
-                    "offer_id": offer_id,
-                    "event_type": "OZON_PHOTO_CHANGE",
-                    "field": "images",
-                    "old_value": existing[0],
-                    "new_value": images_hash,
-                })
+            if existing:
+                old_hash, old_name, old_fbo, old_fbs = existing
+                old_total = (old_fbo or 0) + (old_fbs or 0)
+                new_total = fbo + fbs
+
+                # Image change
+                if old_hash and old_hash != images_hash and images_hash:
+                    events.append({
+                        "shop_id": shop_id,
+                        "product_id": product_id,
+                        "offer_id": offer_id,
+                        "event_type": "OZON_PHOTO_CHANGE",
+                        "field": "images",
+                        "old_value": old_hash,
+                        "new_value": images_hash,
+                    })
+
+                # Stock out: was > 0, now == 0
+                if old_total > 0 and new_total == 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "product_id": product_id,
+                        "offer_id": offer_id,
+                        "event_type": "OZON_STOCK_OUT",
+                        "field": "stocks",
+                        "old_value": str(old_total),
+                        "new_value": "0",
+                    })
+
+                # Stock replenish: was 0, now > 0
+                if old_total == 0 and new_total > 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "product_id": product_id,
+                        "offer_id": offer_id,
+                        "event_type": "OZON_STOCK_REPLENISH",
+                        "field": "stocks",
+                        "old_value": "0",
+                        "new_value": str(new_total),
+                    })
+
+                # Content (name) change
+                if old_name and old_name != name and name:
+                    events.append({
+                        "shop_id": shop_id,
+                        "product_id": product_id,
+                        "offer_id": offer_id,
+                        "event_type": "OZON_CONTENT_CHANGE",
+                        "field": "name",
+                        "old_value": old_name,
+                        "new_value": name,
+                    })
 
             cursor.execute("""
                 INSERT INTO dim_ozon_products

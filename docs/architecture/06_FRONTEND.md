@@ -646,3 +646,8 @@ Bоковая панель с вложенной навигацией (collapse 
 - **Routing diagram:** добавлен `/customers/ltv`
 - **Sidebar:** добавлена секция «КЛИЕНТЫ» с пунктом LTV
 - **API Layer:** добавлены `ltv.ts`, `wb_ltv.ts` — 11 API-модулей вместо 9
+
+### 2026-03-06
+
+- **`EventsPage`**: добавлены стили для OZON_PRICE_CHANGE ($ amber), OZON_STOCK_OUT (↓ red), OZON_STOCK_REPLENISH (↑ green), OZON_CONTENT_CHANGE (🎨 teal)
+- **EVENT_STYLE:** 20+ типов событий (покрытие WB + Ozon полностью)

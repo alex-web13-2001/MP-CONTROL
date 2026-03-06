@@ -39,6 +39,7 @@ EVENT_CATEGORIES = {
     # Content
     "OZON_SEO_CHANGE": "content",
     "OZON_PHOTO_CHANGE": "content",
+    "OZON_CONTENT_CHANGE": "content",
     "CONTENT_CHANGE": "content",
     "CONTENT_TITLE_CHANGED": "content",
     "CONTENT_DESC_CHANGED": "content",
@@ -46,6 +47,9 @@ EVENT_CATEGORIES = {
     "CONTENT_PHOTO_ORDER_CHANGED": "content",
     # Commercial
     "PRICE_CHANGE": "commercial",
+    "OZON_PRICE_CHANGE": "commercial",
+    "OZON_STOCK_OUT": "commercial",
+    "OZON_STOCK_REPLENISH": "commercial",
     "STOCK_OUT": "commercial",
     "STOCK_REPLENISH": "commercial",
 }
@@ -59,6 +63,7 @@ EVENT_LABELS = {
     "OZON_ITEM_REMOVE": "Товар удалён из кампании",
     "OZON_SEO_CHANGE": "SEO-контент изменён",
     "OZON_PHOTO_CHANGE": "Изменение фото",
+    "OZON_CONTENT_CHANGE": "Контент изменён",
     "BID_CHANGE": "Изменение ставки",
     "STATUS_CHANGE": "Статус кампании изменён",
     "ITEM_ADD": "Товар добавлен в кампанию",
@@ -70,6 +75,9 @@ EVENT_LABELS = {
     "CONTENT_MAIN_PHOTO_CHANGED": "Главное фото изменено",
     "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
     "PRICE_CHANGE": "Цена изменена",
+    "OZON_PRICE_CHANGE": "Цена изменена",
+    "OZON_STOCK_OUT": "Товар закончился",
+    "OZON_STOCK_REPLENISH": "Поступление на склад",
     "STOCK_OUT": "Товар закончился",
     "STOCK_REPLENISH": "Поступление на склад",
 }
@@ -103,7 +111,7 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
             return f"{float(value):,.0f} ₽"
         except (ValueError, TypeError):
             return value
-    if event_type == "PRICE_CHANGE":
+    if event_type in ("PRICE_CHANGE", "OZON_PRICE_CHANGE"):
         try:
             return f"{float(value):,.0f} ₽"
         except (ValueError, TypeError):
@@ -231,23 +239,31 @@ async def get_events_feed(
     product_map = {}
     if nm_ids:
         if marketplace == "ozon":
-            # nm_id in event_log maps to SKU in dim_ozon_products (NOT product_id)
+            # nm_id can be either SKU or product_id depending on event source:
+            #   - Ad events (BID_CHANGE, ITEM_ADD) use SKU
+            #   - Price events (PRICE_CHANGE) use product_id
+            # Search by both fields to cover all cases
             pg_result = await db.execute(
                 text("""
-                    SELECT sku, name, offer_id,
+                    SELECT product_id, sku, name, offer_id,
                            COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
-                      AND sku = ANY(:nm_ids)
+                      AND (sku = ANY(:nm_ids) OR product_id = ANY(:nm_ids))
                 """),
                 {"shop_id": shop_id, "nm_ids": list(nm_ids)},
             )
             for row in pg_result:
-                product_map[int(row[0])] = {
-                    "name": row[1] or "",
-                    "offer_id": row[2] or "",
-                    "image_url": row[3] or "",
+                product_id, sku, name, offer_id, image_url = row
+                info = {
+                    "name": name or "",
+                    "offer_id": offer_id or "",
+                    "image_url": image_url or "",
                 }
+                # Map both product_id and sku so lookup works regardless
+                product_map[int(product_id)] = info
+                if sku:
+                    product_map[int(sku)] = info
         else:
             # WB: nm_id maps to nm_id in dim_products
             pg_result = await db.execute(
@@ -403,7 +419,7 @@ async def get_events_feed(
 
         # Build detail string
         detail = ""
-        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE"):
+        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE", "OZON_PRICE_CHANGE"):
             detail = f"{old_display} → {new_display}"
             bid_field = meta.get("bid_field", "")
             if bid_field:

@@ -217,14 +217,15 @@ class OzonAdsService:
     async def get_campaign_products(
         self,
         campaign_id: int,
-    ) -> List[dict]:
+    ) -> Optional[List[dict]]:
         """
         Get products with their current bids.
 
         GET /api/client/campaign/{id}/v2/products
 
-        Returns: [{sku, bid, title}, ...]
-        bid is in microroubles (14000000 = 14 RUB).
+        Returns:
+            [{sku, bid, title}, ...] on success (bid in microroubles)
+            None on API error (caller must skip event detection!)
         """
         response = await self._request(
             "GET",
@@ -233,10 +234,11 @@ class OzonAdsService:
 
         if not response.is_success:
             logger.warning(
-                "Ozon products error for campaign %d: %s %s",
+                "Ozon products error for campaign %d: %s %s — "
+                "skipping event detection for this campaign",
                 campaign_id, response.status_code, response.error,
             )
-            return []
+            return None  # None = error, [] = truly empty campaign
 
         data = response.data if isinstance(response.data, dict) else {}
         products = data.get("products", [])
