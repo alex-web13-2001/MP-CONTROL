@@ -46,6 +46,7 @@ EVENT_CATEGORIES = {
     "CONTENT_PHOTO_ORDER_CHANGED": "content",
     # Commercial
     "PRICE_CHANGE": "commercial",
+    "OZON_PRICE_CHANGE": "commercial",
     "STOCK_OUT": "commercial",
     "STOCK_REPLENISH": "commercial",
 }
@@ -70,6 +71,7 @@ EVENT_LABELS = {
     "CONTENT_MAIN_PHOTO_CHANGED": "Главное фото изменено",
     "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
     "PRICE_CHANGE": "Цена изменена",
+    "OZON_PRICE_CHANGE": "Цена изменена",
     "STOCK_OUT": "Товар закончился",
     "STOCK_REPLENISH": "Поступление на склад",
 }
@@ -103,7 +105,7 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
             return f"{float(value):,.0f} ₽"
         except (ValueError, TypeError):
             return value
-    if event_type == "PRICE_CHANGE":
+    if event_type in ("PRICE_CHANGE", "OZON_PRICE_CHANGE"):
         try:
             return f"{float(value):,.0f} ₽"
         except (ValueError, TypeError):
@@ -403,7 +405,7 @@ async def get_events_feed(
 
         # Build detail string
         detail = ""
-        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE"):
+        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE", "OZON_PRICE_CHANGE"):
             detail = f"{old_display} → {new_display}"
             bid_field = meta.get("bid_field", "")
             if bid_field:

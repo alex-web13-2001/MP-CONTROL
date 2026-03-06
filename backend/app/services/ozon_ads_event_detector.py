@@ -13,6 +13,11 @@ Event types:
     OZON_BUDGET_CHANGE: Daily budget changed (5000 → 10000)
     OZON_ITEM_ADD:      SKU added to campaign
     OZON_ITEM_REMOVE:   SKU removed from campaign
+
+Protection against false events:
+    - First-ever observation of a campaign → initialize state only, no events
+    - API error for get_campaign_products → caller skips campaign entirely
+    - Campaign just transitioned to RUNNING → skip ITEM_ADD/REMOVE for this cycle
 """
 
 import logging
@@ -53,6 +58,8 @@ class OzonAdsEventDetector:
             shop_id: Shop ID
             campaigns: List from GET /api/client/campaign
             products_by_campaign: {campaign_id: [products from /v2/products]}
+                Only campaigns with successful API responses should be here.
+                Campaigns with API errors are skipped by the caller.
 
         Returns:
             List of event dicts ready for event_log insertion.
@@ -66,8 +73,15 @@ class OzonAdsEventDetector:
             if cid:
                 campaign_titles[cid] = camp.get("title", "")
 
+        # Track which campaigns just transitioned to RUNNING
+        # (to skip ITEM_ADD/REMOVE false positives)
+        just_started_campaigns: Set[int] = set()
+
         # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE
-        events.extend(self.detect_campaign_changes(shop_id, campaigns))
+        campaign_events, just_started_campaigns = self.detect_campaign_changes(
+            shop_id, campaigns
+        )
+        events.extend(campaign_events)
 
         # 2. Product-level: BID_CHANGE + ITEM_ADD/REMOVE
         for campaign_id, products in products_by_campaign.items():
@@ -75,6 +89,7 @@ class OzonAdsEventDetector:
                 self.detect_product_changes(
                     shop_id, campaign_id, products,
                     campaign_title=campaign_titles.get(campaign_id, ""),
+                    just_started=campaign_id in just_started_campaigns,
                 )
             )
 
@@ -85,14 +100,17 @@ class OzonAdsEventDetector:
         self,
         shop_id: int,
         campaigns: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    ) -> tuple:
         """
         Detect STATUS_CHANGE and BUDGET_CHANGE from campaign list.
 
-        Campaign dict from API:
-            {id, title, state, advObjectType, dailyBudget, ...}
+        Returns:
+            (events_list, just_started_campaign_ids)
+            just_started_campaign_ids: campaigns that transitioned to RUNNING
+                in this cycle (skip ITEM_ADD/REMOVE for them).
         """
         events = []
+        just_started: Set[int] = set()
 
         for camp in campaigns:
             try:
@@ -137,6 +155,10 @@ class OzonAdsEventDetector:
                             campaign_id, old_status, current_status,
                         )
 
+                        # Track campaigns that JUST became RUNNING
+                        if str(current_status) == "CAMPAIGN_STATE_RUNNING":
+                            just_started.add(campaign_id)
+
                 # ── BUDGET_CHANGE ──
                 if current_budget is not None and old_budget is not None:
                     if abs(current_budget - old_budget) > 0.01:
@@ -171,7 +193,7 @@ class OzonAdsEventDetector:
                 )
                 continue
 
-        return events
+        return events, just_started
 
     def detect_product_changes(
         self,
@@ -179,13 +201,16 @@ class OzonAdsEventDetector:
         campaign_id: int,
         products: List[Dict[str, Any]],
         campaign_title: str = "",
+        just_started: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Detect BID_CHANGE, ITEM_ADD, ITEM_REMOVE for a campaign's products.
 
-        Product dict from API (/v2/products):
-            {sku, bid, title, ...}
-            bid is in microroubles.
+        Protection against false events:
+            1. First observation (no old state) → save state, skip all events
+            2. Campaign just transitioned to RUNNING → skip ITEM_ADD/REMOVE
+               (items didn't change, we just started tracking them again)
+            3. API error → caller skips this campaign entirely (products=None)
         """
         events = []
 
@@ -195,6 +220,17 @@ class OzonAdsEventDetector:
         )
         old_bids = old_state.get("bids", {})  # {str(sku): bid_rub}
         old_items = set(int(x) for x in old_state.get("items", []))
+
+        # Check if this is first-ever observation (no previous state)
+        is_first_observation = (not old_bids and not old_items
+                                and old_state.get("status") is None)
+
+        if is_first_observation:
+            logger.info(
+                "First observation for campaign %d — initializing state, "
+                "no events generated",
+                campaign_id,
+            )
 
         # Build current state
         current_bids = {}
@@ -216,61 +252,73 @@ class OzonAdsEventDetector:
 
             current_bids[str(sku)] = bid_rub
 
-            # ── BID_CHANGE ──
-            old_bid = old_bids.get(str(sku))
-            if old_bid is not None and abs(old_bid - bid_rub) > 0.01:
+            # ── BID_CHANGE ── (always detect, even on first observation
+            # is fine because old_bid will be None)
+            if not is_first_observation:
+                old_bid = old_bids.get(str(sku))
+                if old_bid is not None and abs(old_bid - bid_rub) > 0.01:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": campaign_id,
+                        "nm_id": sku,
+                        "event_type": "OZON_BID_CHANGE",
+                        "old_value": str(old_bid),
+                        "new_value": str(bid_rub),
+                        "event_metadata": {
+                            "title": p.get("title", ""),
+                            "campaign_title": campaign_title,
+                        },
+                    })
+                    logger.info(
+                        "OZON_BID_CHANGE: campaign=%d sku=%d %.2f → %.2f",
+                        campaign_id, sku, old_bid, bid_rub,
+                    )
+
+        # ── ITEM_ADD / ITEM_REMOVE ──
+        # Skip if: first observation OR campaign just started (STOPPED→RUNNING)
+        if is_first_observation or just_started:
+            if just_started:
+                logger.info(
+                    "Campaign %d just started — skipping ITEM_ADD/REMOVE "
+                    "(state re-initialization)",
+                    campaign_id,
+                )
+        else:
+            # Real ITEM_ADD detection
+            added = current_items - old_items
+            for sku in added:
                 events.append({
                     "shop_id": shop_id,
                     "advert_id": campaign_id,
                     "nm_id": sku,
-                    "event_type": "OZON_BID_CHANGE",
-                    "old_value": str(old_bid),
-                    "new_value": str(bid_rub),
+                    "event_type": "OZON_ITEM_ADD",
+                    "old_value": None,
+                    "new_value": str(sku),
                     "event_metadata": {
-                        "title": p.get("title", ""),
                         "campaign_title": campaign_title,
                     },
                 })
                 logger.info(
-                    "OZON_BID_CHANGE: campaign=%d sku=%d %.2f → %.2f",
-                    campaign_id, sku, old_bid, bid_rub,
+                    "OZON_ITEM_ADD: campaign=%d sku=%d", campaign_id, sku,
                 )
 
-        # ── ITEM_ADD ──
-        added = current_items - old_items
-        for sku in added:
-            events.append({
-                "shop_id": shop_id,
-                "advert_id": campaign_id,
-                "nm_id": sku,
-                "event_type": "OZON_ITEM_ADD",
-                "old_value": None,
-                "new_value": str(sku),
-                "event_metadata": {
-                    "campaign_title": campaign_title,
-                },
-            })
-            logger.info(
-                "OZON_ITEM_ADD: campaign=%d sku=%d", campaign_id, sku,
-            )
-
-        # ── ITEM_REMOVE ──
-        removed = old_items - current_items
-        for sku in removed:
-            events.append({
-                "shop_id": shop_id,
-                "advert_id": campaign_id,
-                "nm_id": sku,
-                "event_type": "OZON_ITEM_REMOVE",
-                "old_value": str(sku),
-                "new_value": None,
-                "event_metadata": {
-                    "campaign_title": campaign_title,
-                },
-            })
-            logger.info(
-                "OZON_ITEM_REMOVE: campaign=%d sku=%d", campaign_id, sku,
-            )
+            # Real ITEM_REMOVE detection
+            removed = old_items - current_items
+            for sku in removed:
+                events.append({
+                    "shop_id": shop_id,
+                    "advert_id": campaign_id,
+                    "nm_id": sku,
+                    "event_type": "OZON_ITEM_REMOVE",
+                    "old_value": str(sku),
+                    "new_value": None,
+                    "event_metadata": {
+                        "campaign_title": campaign_title,
+                    },
+                })
+                logger.info(
+                    "OZON_ITEM_REMOVE: campaign=%d sku=%d", campaign_id, sku,
+                )
 
         # Update product-level state in Redis
         self.state_manager.set_ozon_campaign_state(

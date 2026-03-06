@@ -3191,19 +3191,32 @@ def sync_ozon_prices(
     client_id: str,
 ):
     """
-    Snapshot Ozon product prices and commissions.
-    Run daily or twice daily for price tracking.
+    Snapshot Ozon product prices and commissions + detect OZON_PRICE_CHANGE events.
+
+    Pipeline:
+        1. Fetch prices from Ozon API (/v5/product/info/prices)
+        2. Detect OZON_PRICE_CHANGE (compare marketing_price with Redis state)
+        3. Save events to PostgreSQL event_log
+        4. Update Redis price state
+        5. Insert price snapshots into ClickHouse fact_ozon_prices
+
+    Run daily or twice daily via sync_all_frequent.
     """
     import asyncio
+    import json
     import os
+    import logging
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from app.config import get_settings
     from app.services.ozon_price_service import OzonPriceService, OzonPriceLoader
+    from app.core.redis_state import RedisStateManager
 
+    logger = logging.getLogger(__name__)
     settings = get_settings()
     ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
     ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
     async def run_sync():
         engine = create_async_engine(settings.database_url)
@@ -3216,12 +3229,92 @@ def sync_ozon_prices(
                 )
                 rows = await service.fetch_prices()
 
+            if not rows:
+                await engine.dispose()
+                return {"status": "completed", "rows_inserted": 0, "price_events": 0}
+
+            # ── Step 2: Detect OZON_PRICE_CHANGE (before updating Redis!) ──
+            self.update_state(state="PROGRESS", meta={"status": "Detecting price events..."})
+
+            state_mgr = RedisStateManager(redis_url)
+            price_events = []
+
+            for row in rows:
+                sku = row["sku"]
+                # marketing_price is the real buyer-facing price
+                current_price = float(row["marketing_price"])
+
+                if current_price <= 0:
+                    continue
+
+                old_price = state_mgr.get_price(shop_id, sku)
+
+                if old_price is not None and abs(old_price - current_price) > 0.01:
+                    price_events.append({
+                        "shop_id": shop_id,
+                        "advert_id": 0,  # Not ad-related
+                        "nm_id": sku,
+                        "event_type": "OZON_PRICE_CHANGE",
+                        "old_value": str(old_price),
+                        "new_value": str(current_price),
+                        "event_metadata": {
+                            "offer_id": row.get("offer_id", ""),
+                            "product_id": row.get("product_id", 0),
+                            "base_price": str(row.get("price", 0)),
+                        },
+                    })
+
+            logger.info("Detected %d OZON_PRICE_CHANGE events", len(price_events))
+
+            # ── Step 3: Save events to PostgreSQL ──
+            events_saved = 0
+            if price_events:
+                import psycopg2
+                try:
+                    conn = psycopg2.connect(**settings.psycopg2_conn_params)
+                    cursor = conn.cursor()
+                    for event in price_events:
+                        cursor.execute("""
+                            INSERT INTO event_log
+                                (shop_id, advert_id, nm_id, event_type,
+                                 old_value, new_value, event_metadata)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            event["shop_id"],
+                            event["advert_id"],
+                            event["nm_id"],
+                            event["event_type"],
+                            event["old_value"],
+                            event["new_value"],
+                            json.dumps(event["event_metadata"]),
+                        ))
+                    conn.commit()
+                    cursor.close()
+                    conn.close()
+                    events_saved = len(price_events)
+                    logger.info("Saved %d Ozon price events to event_log", events_saved)
+                except Exception as e:
+                    logger.error("Error saving Ozon price events: %s", e)
+
+            # ── Step 4: Update Redis price state (after detection!) ──
+            for row in rows:
+                sku = row["sku"]
+                current_price = float(row["marketing_price"])
+                if current_price > 0:
+                    state_mgr.set_price(shop_id, sku, current_price)
+
+            # ── Step 5: Insert into ClickHouse ──
             with OzonPriceLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
                 stats = loader.get_stats(shop_id)
 
             await engine.dispose()
-            return {"status": "completed", "rows_inserted": inserted, **stats}
+            return {
+                "status": "completed",
+                "rows_inserted": inserted,
+                "price_events": events_saved,
+                **stats,
+            }
         except Exception as e:
             await engine.dispose()
             raise e
@@ -3725,6 +3818,7 @@ def monitor_ozon_bids(
                 # 2. Get products per campaign (for bid/item tracking)
                 products_by_campaign = {}
                 all_bids = []
+                api_errors = 0
 
                 for camp in running_campaigns:
                     campaign_id = camp.get("id")
@@ -3732,6 +3826,17 @@ def monitor_ozon_bids(
                         continue
 
                     products = await service.get_campaign_products(campaign_id)
+
+                    # None = API error → skip this campaign entirely
+                    # to prevent false ITEM_REMOVE events
+                    if products is None:
+                        api_errors += 1
+                        logger.warning(
+                            "Skipping campaign %s for event detection (API error)",
+                            campaign_id,
+                        )
+                        continue
+
                     products_by_campaign[int(campaign_id)] = products
 
                     for p in products:
@@ -3746,8 +3851,10 @@ def monitor_ozon_bids(
                     await asyncio.sleep(0.3)
 
                 logger.info(
-                    "Ozon: fetched %d bids across %d campaigns for shop %d",
-                    len(all_bids), len(running_campaigns), shop_id,
+                    "Ozon: fetched %d bids across %d campaigns "
+                    "(%d API errors) for shop %d",
+                    len(all_bids), len(running_campaigns),
+                    api_errors, shop_id,
                 )
 
                 # 3. Event Detection (BID_CHANGE, STATUS_CHANGE, BUDGET_CHANGE, ITEM_ADD/REMOVE)
@@ -3790,6 +3897,7 @@ def monitor_ozon_bids(
                     "shop_id": shop_id,
                     "bids_fetched": 0, "bids_changed": 0,
                     "events_detected": events_saved,
+                    "api_errors": api_errors,
                 }
 
             # 5. Delta-check for ClickHouse insertion (same as before)
@@ -3841,6 +3949,7 @@ def monitor_ozon_bids(
                 "bids_changed": len(changed_bids),
                 "bids_inserted": inserted,
                 "events_detected": events_saved,
+                "api_errors": api_errors,
             }
 
         finally:

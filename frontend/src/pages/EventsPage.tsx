@@ -69,6 +69,7 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   CONTENT_PHOTO_ORDER_CHANGED: { icon: Image, color: '#f97316', bg: '#f9731620' },
   // Commercial
   PRICE_CHANGE:         { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
+  OZON_PRICE_CHANGE:    { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
   STOCK_OUT:            { icon: TrendingDown,color: '#ef4444', bg: '#ef444420' },
   STOCK_REPLENISH:      { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
 }
