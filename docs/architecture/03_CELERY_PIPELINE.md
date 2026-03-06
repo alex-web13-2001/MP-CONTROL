@@ -218,14 +218,21 @@ Per-request timeout: 120 сек. Rate limit: пауза между неделя�
 ```
 1. POST /v3/product/list → all product_ids (paginated via last_id)
 2. POST /v3/product/info/list → detailed info (batches of 100)
-3. Upsert → dim_ozon_products (PostgreSQL) + detect image changes
+3. Upsert → dim_ozon_products (PostgreSQL)
+   + detect changes: OZON_PHOTO_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE
+   + save detected events → event_log (PostgreSQL)
 4. POST /v5/product/info/prices → marketing_seller_price (paginated via cursor)
    → UPDATE dim_ozon_products SET marketing_price = marketing_seller_price
 ```
 
 > [!NOTE]
+> Шаг 3 сравнивает текущие данные API с предыдущим состоянием в dim_ozon_products:
+>
+> - `images_hash` → OZON_PHOTO_CHANGE
+> - `stocks_fbo + stocks_fbs` → OZON_STOCK_OUT (>0→0) / OZON_STOCK_REPLENISH (0→>0)
+> - `name` → OZON_CONTENT_CHANGE
+>
 > Шаг 4 необходим, т.к. `/v3/product/info/list` не возвращает `marketing_seller_price`.
-> Это реальная «Ваша цена» с учётом скидок Ozon (Эластичный бустинг, промоакции и др.).
 
 ### `sync_ozon_orders` (30 мин)
 
@@ -432,3 +439,9 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 - `sync_ozon_products`: добавлен шаг 4 — загрузка `marketing_seller_price` из `/v5/product/info/prices`
 - Обновлён pipeline: 3 шага → 4 шага (добавлен UPDATE marketing_price)
 - `sync_all_daily` (WB): добавлен dispatch `sync_wb_finance_history(days_back=30)` — ежедневное обновление финансовых отчётов WB (TTL 23ч, скип уже загруженных недель)
+
+### 2026-03-06
+
+- `sync_ozon_products`: шаг 3 расширен — детекция OZON_PHOTO_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE + сохранение событий в event_log
+- `sync_ozon_prices`: добавлена детекция OZON_PRICE_CHANGE через сравнение marketing_price с Redis-состоянием
+- `monitor_ozon_bids`: 3-уровневая защита от ложных ITEM_ADD/REMOVE

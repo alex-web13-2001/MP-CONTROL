@@ -654,21 +654,37 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 | `OZON_BUDGET_CHANGE`   | advertising | Бюджет кампании изменён        |
 | `OZON_ITEM_ADD`        | advertising | Товар добавлен в кампанию      |
 | `OZON_ITEM_REMOVE`     | advertising | Товар удалён из кампании       |
-| `ITEM_INACTIVE`        | advertising | Товар деактивирован в кампании |
+| `OZON_SEO_CHANGE`      | content     | SEO-контент изменён            |
+| `OZON_PHOTO_CHANGE`    | content     | Фото изменено                  |
+| `OZON_CONTENT_CHANGE`  | content     | Контент (название) изменён     |
+| `OZON_PRICE_CHANGE`    | commercial  | Цена изменена                  |
+| `OZON_STOCK_OUT`       | commercial  | Товар закончился (остатки → 0) |
+| `OZON_STOCK_REPLENISH` | commercial  | Поступление на склад (0 → N)   |
+| `ITEM_INACTIVE`        | advertising | Товар деактивирован (WB)       |
 | `BID_CHANGE`           | advertising | Изменение ставки (WB)          |
 | `STATUS_CHANGE`        | advertising | Статус кампании изменён (WB)   |
 | `ITEM_ADD`             | advertising | Товар добавлен (WB)            |
 | `ITEM_REMOVE`          | advertising | Товар удалён (WB)              |
-| `CONTENT_CHANGE`       | content     | Контент изменён                |
-| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено       |
-| `PRICE_CHANGE`         | commercial  | Цена изменена                  |
+| `CONTENT_CHANGE`       | content     | Контент изменён (WB)           |
+| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено (WB)  |
+| `PRICE_CHANGE`         | commercial  | Цена изменена (WB)             |
+| `STOCK_OUT`            | commercial  | Товар закончился (WB)          |
+| `STOCK_REPLENISH`      | commercial  | Поступление на склад (WB)      |
 
 ### Обогащение данных
 
-- **Товар:** JOIN `event_log.nm_id` → `dim_ozon_products.sku` → name, offer_id, image_url
+- **Товар:** JOIN `event_log.nm_id` → `dim_ozon_products` по `sku` ИЛИ `product_id` → name, offer_id, image_url
 - **Campaign title:** 5-уровневый fallback:
   1. `event_metadata.campaign_title` (новые события)
   2. `event_metadata.title` только для STATUS_CHANGE/BUDGET_CHANGE
   3. STATUS_CHANGE из БД (того же advert_id)
   4. `campaign_title` из любых событий в БД
   5. Redis-кеш (записывается трекером)
+
+### Changelog
+
+#### 2026-03-06
+
+- Добавлены типы: OZON_PRICE_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE
+- Product lookup: поиск по `product_id` OR `sku` (ценовые события используют product_id)
+- `_format_value`: OZON_PRICE_CHANGE форматируется как `X ₽`
