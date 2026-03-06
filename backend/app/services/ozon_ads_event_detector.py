@@ -119,14 +119,23 @@ class OzonAdsEventDetector:
                     continue
 
                 current_status = camp.get("state")
-                current_budget = camp.get("dailyBudget")
+
+                # Ozon Performance API uses weeklyBudget (microroubles)
+                # for PRODUCT_CAMPAIGN_BUDGET_TYPE_WEEKLY campaigns.
+                # dailyBudget is always "0" for these.
+                raw_budget = camp.get("weeklyBudget") or camp.get("dailyBudget")
 
                 # Convert budget from microroubles if numeric
-                if current_budget is not None:
+                current_budget = None
+                if raw_budget is not None:
                     try:
-                        current_budget = float(current_budget) / MICROROUBLES
+                        val = float(raw_budget)
+                        if val > 0:
+                            current_budget = val / MICROROUBLES
+                        else:
+                            current_budget = 0.0
                     except (ValueError, TypeError):
-                        current_budget = None
+                        pass
 
                 # Get last state from Redis
                 old_state = self.state_manager.get_ozon_campaign_state(
