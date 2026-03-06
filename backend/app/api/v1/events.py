@@ -39,6 +39,7 @@ EVENT_CATEGORIES = {
     # Content
     "OZON_SEO_CHANGE": "content",
     "OZON_PHOTO_CHANGE": "content",
+    "OZON_CONTENT_CHANGE": "content",
     "CONTENT_CHANGE": "content",
     "CONTENT_TITLE_CHANGED": "content",
     "CONTENT_DESC_CHANGED": "content",
@@ -47,6 +48,8 @@ EVENT_CATEGORIES = {
     # Commercial
     "PRICE_CHANGE": "commercial",
     "OZON_PRICE_CHANGE": "commercial",
+    "OZON_STOCK_OUT": "commercial",
+    "OZON_STOCK_REPLENISH": "commercial",
     "STOCK_OUT": "commercial",
     "STOCK_REPLENISH": "commercial",
 }
@@ -60,6 +63,7 @@ EVENT_LABELS = {
     "OZON_ITEM_REMOVE": "Товар удалён из кампании",
     "OZON_SEO_CHANGE": "SEO-контент изменён",
     "OZON_PHOTO_CHANGE": "Изменение фото",
+    "OZON_CONTENT_CHANGE": "Контент изменён",
     "BID_CHANGE": "Изменение ставки",
     "STATUS_CHANGE": "Статус кампании изменён",
     "ITEM_ADD": "Товар добавлен в кампанию",
@@ -72,6 +76,8 @@ EVENT_LABELS = {
     "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
     "PRICE_CHANGE": "Цена изменена",
     "OZON_PRICE_CHANGE": "Цена изменена",
+    "OZON_STOCK_OUT": "Товар закончился",
+    "OZON_STOCK_REPLENISH": "Поступление на склад",
     "STOCK_OUT": "Товар закончился",
     "STOCK_REPLENISH": "Поступление на склад",
 }

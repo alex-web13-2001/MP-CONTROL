@@ -2436,14 +2436,41 @@ def sync_ozon_products(
                 service = OzonProductsService(db=db, shop_id=shop_id, api_key=api_key, client_id=client_id)
                 products_info = await service.fetch_product_info(product_ids)
 
-            # 3. Upsert into PostgreSQL (returns count + image change events)
+            # 3. Upsert into PostgreSQL (returns count + change events)
             self.update_state(state='PROGRESS', meta={'status': 'Upserting into dim_ozon_products...'})
             from app.config import get_settings
             conn_params = get_settings().psycopg2_conn_params
             count, events = upsert_ozon_products(conn_params, shop_id, products_info)
 
             if events:
-                logger.info(f"Detected {len(events)} image change events")
+                logger.info(f"Detected {len(events)} product change events (photo/stock/content)")
+                # Save events to event_log
+                import psycopg2 as _pg2
+                import json as _json
+                _conn = _pg2.connect(**conn_params)
+                _cur = _conn.cursor()
+                for ev in events:
+                    _cur.execute("""
+                        INSERT INTO event_log
+                            (shop_id, advert_id, nm_id, event_type, old_value, new_value, event_metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        ev.get("shop_id"),
+                        None,
+                        ev.get("product_id"),
+                        ev.get("event_type"),
+                        ev.get("old_value"),
+                        ev.get("new_value"),
+                        _json.dumps({
+                            "field": ev.get("field"),
+                            "offer_id": ev.get("offer_id", ""),
+                            "platform": "ozon",
+                        }),
+                    ))
+                _conn.commit()
+                _cur.close()
+                _conn.close()
+                logger.info(f"Saved {len(events)} events to event_log")
 
             # 4. Fetch real seller prices from /v5/product/info/prices
             #    (marketing_seller_price = actual price after Ozon discounts)

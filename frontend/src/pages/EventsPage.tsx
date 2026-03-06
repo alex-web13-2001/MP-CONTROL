@@ -55,6 +55,7 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   // Ozon Content
   OZON_SEO_CHANGE:      { icon: Palette,     color: '#14b8a6', bg: '#14b8a620' },
   OZON_PHOTO_CHANGE:    { icon: Image,       color: '#f97316', bg: '#f9731620' },
+  OZON_CONTENT_CHANGE:  { icon: Palette,     color: '#14b8a6', bg: '#14b8a620' },
   // WB Ads
   BID_CHANGE:           { icon: TrendingUp,  color: '#3b82f6', bg: '#3b82f620' },
   STATUS_CHANGE:        { icon: Activity,    color: '#6366f1', bg: '#6366f120' },
@@ -70,6 +71,8 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   // Commercial
   PRICE_CHANGE:         { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
   OZON_PRICE_CHANGE:    { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
+  OZON_STOCK_OUT:       { icon: TrendingDown,color: '#ef4444', bg: '#ef444420' },
+  OZON_STOCK_REPLENISH: { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
   STOCK_OUT:            { icon: TrendingDown,color: '#ef4444', bg: '#ef444420' },
   STOCK_REPLENISH:      { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
 }
