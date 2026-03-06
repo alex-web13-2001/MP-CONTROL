@@ -3837,6 +3837,8 @@ def monitor_ozon_bids(
 
                 # 1. Get all campaigns (for status/budget tracking)
                 campaigns = await service.get_campaigns()
+                if not campaigns:
+                    campaigns = []
                 running_campaigns = [
                     c for c in campaigns
                     if c.get("state") == "CAMPAIGN_STATE_RUNNING"
