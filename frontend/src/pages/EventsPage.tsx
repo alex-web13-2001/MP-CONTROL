@@ -20,6 +20,9 @@ import {
   ChevronDown,
   Filter,
   Package,
+  ArrowRight,
+  ArrowDown,
+  ArrowUp,
   type LucideIcon,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -119,9 +122,85 @@ function formatEventTime(isoStr: string): string {
   return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Event Card Component
-   ═══════════════════════════════════════════════════════════ */
+/** Contextual placeholder icon based on event category */
+const CATEGORY_PLACEHOLDER: Record<string, LucideIcon> = {
+  advertising: Megaphone,
+  content: Palette,
+  commercial: DollarSign,
+  other: Activity,
+}
+
+/** Numeric event types where we show old→new with delta */
+const NUMERIC_EVENT_TYPES = new Set([
+  'OZON_BID_CHANGE', 'BID_CHANGE',
+  'OZON_BUDGET_CHANGE',
+  'PRICE_CHANGE', 'OZON_PRICE_CHANGE',
+])
+
+/** Parse a numeric string, stripping currency symbols */
+function parseNum(val: string | null): number | null {
+  if (!val) return null
+  const cleaned = val.replace(/[^\d.,\-]/g, '').replace(',', '.')
+  const n = parseFloat(cleaned)
+  return isFinite(n) ? n : null
+}
+
+/** Format number for display */
+function fmtNum(n: number, suffix = ''): string {
+  if (Math.abs(n) >= 1000) {
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + suffix
+  }
+  return n.toFixed(2).replace(/\.?0+$/, '') + suffix
+}
+
+/** Value Change display — shows old→new with colored delta */
+function ValueChange({ event }: { event: EventItem }) {
+  const oldNum = parseNum(event.old_value)
+  const newNum = parseNum(event.new_value)
+
+  if (oldNum === null || newNum === null) return null
+
+  const delta = newNum - oldNum
+  const isUp = delta > 0
+  const isDown = delta < 0
+  const pct = oldNum !== 0 ? Math.abs((delta / oldNum) * 100) : 0
+
+  // Determine suffix from event type
+  const suffix = event.event_type.includes('BID') ? ' ₽'
+    : event.event_type.includes('BUDGET') ? ' ₽'
+    : event.event_type.includes('PRICE') ? ' ₽'
+    : ''
+
+  return (
+    <div className="flex items-center gap-3 mt-2.5">
+      {/* Old value */}
+      <span className="text-[15px] font-medium text-[hsl(var(--muted-foreground)/0.7)] line-through decoration-[hsl(var(--muted-foreground)/0.3)]">
+        {fmtNum(oldNum, suffix)}
+      </span>
+
+      <ArrowRight className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.4)] shrink-0" />
+
+      {/* New value */}
+      <span className={`text-[16px] font-bold ${isUp ? 'text-emerald-400' : isDown ? 'text-red-400' : 'text-[hsl(var(--foreground))]'}`}>
+        {fmtNum(newNum, suffix)}
+      </span>
+
+      {/* Delta badge */}
+      {delta !== 0 && (
+        <span
+          className={`inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md text-[12px] font-semibold
+            ${isUp
+              ? 'bg-emerald-500/15 text-emerald-400'
+              : 'bg-red-500/15 text-red-400'
+            }`}
+        >
+          {isUp ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+          {pct >= 0.1 ? `${pct.toFixed(1)}%` : `${isUp ? '+' : ''}${fmtNum(delta, suffix)}`}
+        </span>
+      )}
+    </div>
+  )
+}
 
 function EventCard({ event, index }: { event: EventItem; index: number }) {
   const style = EVENT_STYLE[event.event_type] || DEFAULT_STYLE
@@ -130,6 +209,10 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
   const [imgError, setImgError] = useState(false)
 
   const hasImage = event.product?.image_url && !imgError
+  const isNumericEvent = NUMERIC_EVENT_TYPES.has(event.event_type)
+
+  // Contextual placeholder
+  const PlaceholderIcon = CATEGORY_PLACEHOLDER[event.category] || Activity
 
   return (
     <motion.div
@@ -146,7 +229,7 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
         style={{ background: catColor }}
       />
 
-      {/* Product image — 3:4 ratio */}
+      {/* Product image or contextual placeholder */}
       <div className="shrink-0 ml-2">
         {hasImage ? (
           <img
@@ -157,49 +240,58 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
             onError={() => setImgError(true)}
           />
         ) : (
-          <div className="w-[64px] h-[85px] rounded-xl bg-[hsl(var(--muted)/0.15)] flex items-center justify-center border border-[hsl(var(--border)/0.2)]">
-            <Package className="h-6 w-6 text-[hsl(var(--muted-foreground)/0.3)]" />
+          <div
+            className="w-[64px] h-[85px] rounded-xl flex items-center justify-center border"
+            style={{
+              background: `${catColor}12`,
+              borderColor: `${catColor}30`,
+            }}
+          >
+            <PlaceholderIcon className="h-7 w-7" style={{ color: catColor, opacity: 0.6 }} />
           </div>
         )}
       </div>
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        {/* Product name */}
-        {event.product && event.product.name ? (
-          <p className="text-[15px] font-semibold text-[hsl(var(--foreground))] leading-snug line-clamp-2">
-            {event.product.name}
-          </p>
-        ) : event.product ? (
-          <p className="text-[15px] font-semibold text-[hsl(var(--foreground)/0.7)] leading-snug">
-            SKU {event.product.nm_id}
-          </p>
-        ) : null}
-
-        {/* Article (offer_id) */}
-        {event.product?.offer_id && (
-          <p className="mt-1 text-[12px] font-medium font-mono text-[hsl(var(--muted-foreground)/0.6)] tracking-wide">
-            {event.product.offer_id}
-          </p>
-        )}
-
-        {/* Event type badge */}
-        <div className="flex items-center gap-2.5 mt-3">
+        {/* Row 1: Event type badge */}
+        <div className="flex items-center gap-2.5">
           <div
             className="shrink-0 h-7 w-7 rounded-lg flex items-center justify-center"
             style={{ background: style.bg }}
           >
             <Icon className="h-4 w-4" style={{ color: style.color }} />
           </div>
-          <span className="text-[14px] font-semibold" style={{ color: style.color }}>
+          <span className="text-[15px] font-semibold" style={{ color: style.color }}>
             {event.label}
           </span>
         </div>
 
-        {/* Detail text */}
-        {event.detail && (
-          <p className="mt-1.5 text-[13px] text-[hsl(var(--muted-foreground)/0.85)] leading-relaxed">
+        {/* Row 2: Detail text (non-numeric events) */}
+        {event.detail && !isNumericEvent && (
+          <p className="mt-1.5 text-[14px] text-[hsl(var(--foreground)/0.8)] leading-relaxed font-medium">
             {event.detail}
+          </p>
+        )}
+
+        {/* Row 2b: Value change (numeric events) */}
+        {isNumericEvent && <ValueChange event={event} />}
+
+        {/* Row 3: Product name */}
+        {event.product && event.product.name ? (
+          <p className="mt-2.5 text-[14px] font-medium text-[hsl(var(--foreground)/0.85)] leading-snug line-clamp-2">
+            {event.product.name}
+          </p>
+        ) : event.product ? (
+          <p className="mt-2.5 text-[14px] font-medium text-[hsl(var(--foreground)/0.6)] leading-snug">
+            SKU {event.product.nm_id}
+          </p>
+        ) : null}
+
+        {/* Row 4: Article (offer_id) */}
+        {event.product?.offer_id && (
+          <p className="mt-1 text-[12px] font-semibold font-mono text-[hsl(var(--muted-foreground)/0.7)] tracking-wide uppercase">
+            {event.product.offer_id}
           </p>
         )}
 
