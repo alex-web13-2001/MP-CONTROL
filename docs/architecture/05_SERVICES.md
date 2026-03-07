@@ -394,3 +394,8 @@ FBO + FBS возвраты Ozon.
 - `ozon_ads_service.py`: `get_campaign_products` возвращает `None` при ошибке API (не пустой список)
 - `ozon_products_service.py`: `upsert_ozon_products` теперь детектит OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE (в дополнение к OZON_PHOTO_CHANGE)
 - `redis_state.py`: `get/set_ozon_campaign_state` расширены полем `title` — кеширование campaign names для Events API
+
+### 2026-03-07
+
+- `ozon_products_service.py`: `upsert_ozon_content` — убран `sorted()` из расчёта `images_hash`, теперь порядок фото учитывается для детектирования изменений в галерее
+- `ozon_products_service.py`: OZON_PHOTO_CHANGE теперь записывается с `field: main_image` или `field: gallery` (ранее `images_order`) — два разных типа фото-изменений

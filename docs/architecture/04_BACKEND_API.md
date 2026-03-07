@@ -647,29 +647,29 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 
 ### Типы событий
 
-| event_type             | category    | Описание                       |
-| ---------------------- | ----------- | ------------------------------ |
-| `OZON_BID_CHANGE`      | advertising | Изменение ставки               |
-| `OZON_STATUS_CHANGE`   | advertising | Статус кампании изменён        |
-| `OZON_BUDGET_CHANGE`   | advertising | Бюджет кампании изменён        |
-| `OZON_ITEM_ADD`        | advertising | Товар добавлен в кампанию      |
-| `OZON_ITEM_REMOVE`     | advertising | Товар удалён из кампании       |
-| `OZON_SEO_CHANGE`      | content     | SEO-контент изменён            |
-| `OZON_PHOTO_CHANGE`    | content     | Фото изменено                  |
-| `OZON_CONTENT_CHANGE`  | content     | Контент (название) изменён     |
-| `OZON_PRICE_CHANGE`    | commercial  | Цена изменена                  |
-| `OZON_STOCK_OUT`       | commercial  | Товар закончился (остатки → 0) |
-| `OZON_STOCK_REPLENISH` | commercial  | Поступление на склад (0 → N)   |
-| `ITEM_INACTIVE`        | advertising | Товар деактивирован (WB)       |
-| `BID_CHANGE`           | advertising | Изменение ставки (WB)          |
-| `STATUS_CHANGE`        | advertising | Статус кампании изменён (WB)   |
-| `ITEM_ADD`             | advertising | Товар добавлен (WB)            |
-| `ITEM_REMOVE`          | advertising | Товар удалён (WB)              |
-| `CONTENT_CHANGE`       | content     | Контент изменён (WB)           |
-| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено (WB)  |
-| `PRICE_CHANGE`         | commercial  | Цена изменена (WB)             |
-| `STOCK_OUT`            | commercial  | Товар закончился (WB)          |
-| `STOCK_REPLENISH`      | commercial  | Поступление на склад (WB)      |
+| event_type             | category    | Описание                                          |
+| ---------------------- | ----------- | ------------------------------------------------- |
+| `OZON_BID_CHANGE`      | advertising | Изменение ставки                                  |
+| `OZON_STATUS_CHANGE`   | advertising | Статус кампании изменён                           |
+| `OZON_BUDGET_CHANGE`   | advertising | Бюджет кампании изменён                           |
+| `OZON_ITEM_ADD`        | advertising | Товар добавлен в кампанию                         |
+| `OZON_ITEM_REMOVE`     | advertising | Товар удалён из кампании                          |
+| `OZON_SEO_CHANGE`      | content     | SEO-контент изменён                               |
+| `OZON_PHOTO_CHANGE`    | content     | Фото изменено (`field`: `main_image` / `gallery`) |
+| `OZON_CONTENT_CHANGE`  | content     | Контент (название) изменён                        |
+| `OZON_PRICE_CHANGE`    | commercial  | Цена изменена                                     |
+| `OZON_STOCK_OUT`       | commercial  | Товар закончился (остатки → 0)                    |
+| `OZON_STOCK_REPLENISH` | commercial  | Поступление на склад (0 → N)                      |
+| `ITEM_INACTIVE`        | advertising | Товар деактивирован (WB)                          |
+| `BID_CHANGE`           | advertising | Изменение ставки (WB)                             |
+| `STATUS_CHANGE`        | advertising | Статус кампании изменён (WB)                      |
+| `ITEM_ADD`             | advertising | Товар добавлен (WB)                               |
+| `ITEM_REMOVE`          | advertising | Товар удалён (WB)                                 |
+| `CONTENT_CHANGE`       | content     | Контент изменён (WB)                              |
+| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено (WB)                     |
+| `PRICE_CHANGE`         | commercial  | Цена изменена (WB)                                |
+| `STOCK_OUT`            | commercial  | Товар закончился (WB)                             |
+| `STOCK_REPLENISH`      | commercial  | Поступление на склад (WB)                         |
 
 ### Обогащение данных
 
@@ -688,3 +688,8 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 - Добавлены типы: OZON_PRICE_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE
 - Product lookup: поиск по `product_id` OR `sku` (ценовые события используют product_id)
 - `_format_value`: OZON_PRICE_CHANGE форматируется как `X ₽`
+
+#### 2026-03-07
+
+- OZON_PHOTO_CHANGE: поддержка `field: gallery` (ранее только `images_order`) в detail-тексте
+- `advert_id` больше не обязателен — контентные события (OZON_PHOTO_CHANGE и др.) корректно записываются с `advert_id = NULL`

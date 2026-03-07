@@ -651,3 +651,14 @@ Bоковая панель с вложенной навигацией (collapse 
 
 - **`EventsPage`**: добавлены стили для OZON_PRICE_CHANGE ($ amber), OZON_STOCK_OUT (↓ red), OZON_STOCK_REPLENISH (↑ green), OZON_CONTENT_CHANGE (🎨 teal)
 - **EVENT_STYLE:** 20+ типов событий (покрытие WB + Ozon полностью)
+
+### 2026-03-07
+
+- **EventCard UX-редизайн:**
+  - Шрифты увеличены: название 15px, тип события 15px semibold, detail 14px, артикул 12px bold uppercase
+  - Padding карточки 20px, image 64×85, icon badge 28px, accent bar 4px
+  - **ValueChange** — новый компонент: зачёркнутое старое → жирное цветное новое + бейдж дельты (↑ зелёный / ↓ красный с %)
+  - Контекстные placeholder-иконки: Megaphone (реклама), Palette (контент), DollarSign (коммерция) вместо Package
+  - Кампания: отдельный блок с фоном, имя 13px font-semibold, ID в mono-бейдже
+  - Иерархия: тип события → значения → товар → артикул → кампания
+- **DayGroup:** заголовок 17px, gap между карточками 12px, mb 16px

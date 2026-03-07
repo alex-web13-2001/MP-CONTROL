@@ -2,6 +2,24 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-03-07
+
+### Fixed — Трекинг изменений фото Ozon
+
+- **Backend / `ozon_products_service.py` [FIX]:** Убран `sorted()` из расчёта `images_hash` — теперь детектирует изменения порядка фото в галерее.
+- **Backend / `ozon_products_service.py` [FIX]:** OZON_PHOTO_CHANGE записывается с `field: main_image` или `field: gallery` (ранее `images_order`).
+- **Database / `init.sql` [FIX]:** `event_log.advert_id` стал NULLABLE — контентные события (фото, СЕО) записываются без привязки к рекламной кампании.
+- **Backend / `events.py` [FIX]:** Поддержка `field: gallery` в detail-тексте OZON_PHOTO_CHANGE.
+
+### Changed — UX-редизайн ленты событий
+
+- **Frontend / `EventsPage.tsx` [REDESIGN]:** Шрифты увеличены (15px тип события, 14px детали, 12px артикул bold uppercase), padding карточки 20px, image 64×85.
+- **Frontend / `EventsPage.tsx` [FEAT]:** Компонент `ValueChange` — зачёркнутое старое → жирное цветное новое + бейдж дельты (↑ зелёный / ↓ красный с %).
+- **Frontend / `EventsPage.tsx` [FEAT]:** Контекстные placeholder-иконки (Megaphone/Palette/DollarSign) вместо Package.
+- **Frontend / `EventsPage.tsx` [FEAT]:** Блок кампании с фоном, имя 13px font-semibold, ID в mono-бейдже.
+
+---
+
 ## [Unreleased] - 2026-03-06
 
 ### Added — Лента событий (Events Feed)

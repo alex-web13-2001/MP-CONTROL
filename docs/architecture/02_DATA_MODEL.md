@@ -137,7 +137,7 @@ erDiagram
     event_log {
         SERIAL id PK
         INT shop_id
-        BIGINT advert_id
+        BIGINT advert_id "NULLABLE"
         BIGINT nm_id
         VARCHAR event_type
         TEXT old_value
@@ -207,13 +207,15 @@ erDiagram
 | `is_rate_limited`       | BOOLEAN   | Активна ли задержка |
 | `consecutive_429_count` | INTEGER   | Серия 429 ошибок    |
 
-#### `event_log` — лог рекламных событий
+#### `event_log` — лог событий (реклама + контент + коммерция)
 
-| Поле                      | Тип         | Описание                                                                  |
-| ------------------------- | ----------- | ------------------------------------------------------------------------- |
-| `event_type`              | VARCHAR(50) | `BID_CHANGE`, `STATUS_CHANGE`, `ITEM_ADD`, `ITEM_REMOVE`, `ITEM_INACTIVE` |
-| `old_value` / `new_value` | TEXT        | Значения до/после                                                         |
-| `event_metadata`          | JSONB       | Контекст (campaign_type, reason)                                          |
+| Поле                      | Тип         | Описание                                                                                    |
+| ------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `advert_id`               | BIGINT      | **NULLABLE** — рекламные события имеют ID кампании, контентные/коммерческие — NULL          |
+| `nm_id`                   | BIGINT      | SKU / product_id товара                                                                     |
+| `event_type`              | VARCHAR(50) | `BID_CHANGE`, `STATUS_CHANGE`, `OZON_PHOTO_CHANGE`, `PRICE_CHANGE`, `STOCK_OUT` и др. (20+) |
+| `old_value` / `new_value` | TEXT        | Значения до/после                                                                           |
+| `event_metadata`          | JSONB       | Контекст: `field` (main_image/gallery), `campaign_title`, `bid_field` и т.д.                |
 
 #### `dim_products` — справочник WB товаров
 
@@ -264,14 +266,14 @@ SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProduct`
 
 SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
 
-| Поле               | Тип         | Описание                            |
-| ------------------ | ----------- | ----------------------------------- |
-| `product_id`       | INT FK      | → dim_ozon_products                 |
-| `shop_id`          | INT FK UK   | Уникальность: (product_id, shop_id) |
-| `title_hash`       | VARCHAR(32) | MD5 заголовка                       |
-| `description_hash` | VARCHAR(32) | MD5 описания                        |
-| `images_hash`      | VARCHAR(32) | MD5(sorted image URLs JSON)         |
-| `images_count`     | INTEGER     | Количество фото                     |
+| Поле               | Тип         | Описание                                  |
+| ------------------ | ----------- | ----------------------------------------- |
+| `product_id`       | INT FK      | → dim_ozon_products                       |
+| `shop_id`          | INT FK UK   | Уникальность: (product_id, shop_id)       |
+| `title_hash`       | VARCHAR(32) | MD5 заголовка                             |
+| `description_hash` | VARCHAR(32) | MD5 описания                              |
+| `images_hash`      | VARCHAR(32) | MD5(image URLs JSON, порядок учитывается) |
+| `images_count`     | INTEGER     | Количество фото                           |
 
 ---
 
@@ -496,3 +498,9 @@ alembic revision --autogenerate -m "описание"
 
 - `fact_finances`: добавлена колонка `wb_acquiring Decimal(18,2) DEFAULT 0` — банковский эквайринг WB (поле `acquiring_fee` из API `reportDetailByPeriod`, ~3-4% от продажи)
 - Выполнен backfill: 2 162 исторических строки обновлены через `JSONExtractFloat(raw_payload, 'acquiring_fee')` — суммарно восстановлено **34 326 ₽** эквайринга
+
+### 2026-03-07
+
+- `event_log.advert_id` стал **NULLABLE** — контентные (OZON_PHOTO_CHANGE) и коммерческие события не привязаны к рекламной кампании
+- `dim_ozon_product_content.images_hash` теперь учитывает порядок фото (убран `sorted()`) — позволяет детектить перестановку галереи
+- Обновлено описание `event_log`: 20+ типов событий, JSONB metadata расширен полями `field`, `campaign_title`
