@@ -647,7 +647,8 @@ def upsert_ozon_content(
 
             title_hash = _md5(name)
             description_hash = _md5(desc) if desc else ""
-            images_hash = _md5("|".join(sorted(images))) if images else ""
+            # Don't sort — order matters for gallery tracking
+            images_hash = _md5("|".join(images)) if images else ""
             images_count = len(images)
 
             # Check existing
