@@ -297,18 +297,16 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
 
         {/* Campaign info */}
         {event.advert_id ? (
-          <div className="flex items-center gap-2 mt-2.5">
-            <Megaphone className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.4)]" />
-            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] truncate max-w-[400px]">
+          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
+            <Megaphone className="h-4 w-4 shrink-0" style={{ color: catColor, opacity: 0.7 }} />
+            <span className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.8)] truncate max-w-[450px]">
               {event.campaign_title
-                ? `${event.campaign_title}`
+                ? event.campaign_title
                 : `Кампания #${event.advert_id}`}
             </span>
-            {event.campaign_title && (
-              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.35)] font-mono">
-                #{event.advert_id}
-              </span>
-            )}
+            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.6)]">
+              #{event.advert_id}
+            </span>
           </div>
         ) : null}
       </div>
