@@ -19,7 +19,6 @@ import {
   RefreshCw,
   ChevronDown,
   Filter,
-  Package,
   ArrowRight,
   ArrowDown,
   ArrowUp,
