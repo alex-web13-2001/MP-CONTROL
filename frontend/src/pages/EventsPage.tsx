@@ -136,29 +136,29 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.3) }}
-      className="group relative flex gap-3.5 rounded-xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-3.5
+      className="group relative flex gap-4 rounded-2xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-5
                  hover:border-[hsl(var(--border)/0.7)] hover:shadow-lg hover:shadow-black/5
                  transition-all duration-200"
     >
       {/* Category accent line */}
       <div
-        className="absolute left-0 top-3 bottom-3 w-[3px] rounded-full"
+        className="absolute left-0 top-4 bottom-4 w-[4px] rounded-full"
         style={{ background: catColor }}
       />
 
       {/* Product image — 3:4 ratio */}
-      <div className="shrink-0 ml-1.5">
+      <div className="shrink-0 ml-2">
         {hasImage ? (
           <img
             src={event.product!.image_url}
             alt={event.product!.name || 'Product'}
-            className="w-[54px] h-[72px] rounded-lg object-cover border border-[hsl(var(--border)/0.3)]"
+            className="w-[64px] h-[85px] rounded-xl object-cover border border-[hsl(var(--border)/0.3)]"
             loading="lazy"
             onError={() => setImgError(true)}
           />
         ) : (
-          <div className="w-[54px] h-[72px] rounded-lg bg-[hsl(var(--muted)/0.15)] flex items-center justify-center border border-[hsl(var(--border)/0.2)]">
-            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
+          <div className="w-[64px] h-[85px] rounded-xl bg-[hsl(var(--muted)/0.15)] flex items-center justify-center border border-[hsl(var(--border)/0.2)]">
+            <Package className="h-6 w-6 text-[hsl(var(--muted-foreground)/0.3)]" />
           </div>
         )}
       </div>
@@ -167,53 +167,53 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       <div className="flex-1 min-w-0">
         {/* Product name */}
         {event.product && event.product.name ? (
-          <p className="text-[13px] font-semibold text-[hsl(var(--foreground))] leading-tight line-clamp-2">
+          <p className="text-[15px] font-semibold text-[hsl(var(--foreground))] leading-snug line-clamp-2">
             {event.product.name}
           </p>
         ) : event.product ? (
-          <p className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.7)] leading-tight">
+          <p className="text-[15px] font-semibold text-[hsl(var(--foreground)/0.7)] leading-snug">
             SKU {event.product.nm_id}
           </p>
         ) : null}
 
         {/* Article (offer_id) */}
         {event.product?.offer_id && (
-          <p className="mt-0.5 text-[11px] font-mono text-[hsl(var(--muted-foreground)/0.5)]">
+          <p className="mt-1 text-[12px] font-medium font-mono text-[hsl(var(--muted-foreground)/0.6)] tracking-wide">
             {event.product.offer_id}
           </p>
         )}
 
-        {/* Event type + detail */}
-        <div className="flex items-center gap-2 mt-1.5">
+        {/* Event type badge */}
+        <div className="flex items-center gap-2.5 mt-3">
           <div
-            className="shrink-0 h-5.5 w-5.5 rounded-md flex items-center justify-center"
+            className="shrink-0 h-7 w-7 rounded-lg flex items-center justify-center"
             style={{ background: style.bg }}
           >
-            <Icon className="h-3.5 w-3.5" style={{ color: style.color }} />
+            <Icon className="h-4 w-4" style={{ color: style.color }} />
           </div>
-          <span className="text-[12.5px] font-medium" style={{ color: style.color }}>
+          <span className="text-[14px] font-semibold" style={{ color: style.color }}>
             {event.label}
           </span>
         </div>
 
         {/* Detail text */}
         {event.detail && (
-          <p className="mt-0.5 text-[12px] text-[hsl(var(--muted-foreground)/0.8)] leading-relaxed">
+          <p className="mt-1.5 text-[13px] text-[hsl(var(--muted-foreground)/0.85)] leading-relaxed">
             {event.detail}
           </p>
         )}
 
         {/* Campaign info */}
         {event.advert_id ? (
-          <div className="flex items-center gap-1.5 mt-1.5">
-            <Megaphone className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
-            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] truncate max-w-[400px]">
+          <div className="flex items-center gap-2 mt-2.5">
+            <Megaphone className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.4)]" />
+            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] truncate max-w-[400px]">
               {event.campaign_title
                 ? `${event.campaign_title}`
                 : `Кампания #${event.advert_id}`}
             </span>
             {event.campaign_title && (
-              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.35)] font-mono">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.35)] font-mono">
                 #{event.advert_id}
               </span>
             )}
@@ -222,8 +222,8 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       </div>
 
       {/* Time */}
-      <div className="shrink-0 text-right pt-0.5">
-        <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">
+      <div className="shrink-0 text-right pt-1">
+        <span className="text-[13px] font-medium text-[hsl(var(--muted-foreground)/0.5)]">
           {event.created_at ? formatEventTime(event.created_at) : ''}
         </span>
       </div>
@@ -243,18 +243,18 @@ function DayGroup({ day, dayIndex }: { day: EventDay; dayIndex: number }) {
       transition={{ duration: 0.4, delay: dayIndex * 0.1 }}
     >
       {/* Day header */}
-      <div className="flex items-center gap-3 mb-3">
-        <h3 className="text-[15px] font-bold text-[hsl(var(--foreground))]">
+      <div className="flex items-center gap-3 mb-4">
+        <h3 className="text-[17px] font-bold text-[hsl(var(--foreground))]">
           {formatDayHeader(day.date)}
         </h3>
-        <span className="inline-flex items-center justify-center rounded-full bg-[hsl(var(--muted)/0.3)] px-2.5 py-0.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">
+        <span className="inline-flex items-center justify-center rounded-full bg-[hsl(var(--muted)/0.3)] px-3 py-0.5 text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">
           {day.events.length}
         </span>
         <div className="flex-1 h-px bg-[hsl(var(--border)/0.3)]" />
       </div>
 
       {/* Events */}
-      <div className="space-y-2 pl-0">
+      <div className="space-y-3 pl-0">
         {day.events.map((event, i) => (
           <EventCard key={event.id} event={event} index={i} />
         ))}
