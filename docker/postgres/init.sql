@@ -198,7 +198,7 @@ CREATE TABLE IF NOT EXISTS event_log (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW() NOT NULL,
     
     shop_id INTEGER NOT NULL,
-    advert_id BIGINT NOT NULL,
+    advert_id BIGINT,
     nm_id BIGINT,  -- NULL for campaign-level events
     
     event_type VARCHAR(50) NOT NULL,  -- BID_CHANGE, STATUS_CHANGE, ITEM_ADD, ITEM_REMOVE, ITEM_INACTIVE
