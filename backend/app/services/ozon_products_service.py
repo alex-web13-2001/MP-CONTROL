@@ -697,7 +697,7 @@ def upsert_ozon_content(
                         "shop_id": shop_id,
                         "product_id": product_id,
                         "event_type": "OZON_PHOTO_CHANGE",
-                        "field": "images_order",
+                        "field": "gallery",
                         "old_value": old_images,
                         "new_value": images_hash,
                     })
