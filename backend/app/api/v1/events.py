@@ -458,7 +458,7 @@ async def get_events_feed(
             field = meta.get("field", "")
             if field == "main_image":
                 detail = "Главное фото изменено"
-            elif field == "images_order":
+            elif field in ("gallery", "images_order"):
                 detail = "Галерея изображений изменена"
             elif field == "images":
                 detail = "Изображения изменены"
