@@ -903,7 +903,7 @@ class ContentEventDetector:
                 logger.info(f"Detected CONTENT_DESC_CHANGED: nm={nm_id}")
 
             # === CONTENT_MAIN_PHOTO_CHANGED ===
-            # Most important for CTR! Uses photo_id (not full URL)
+            # Most important for CTR! Uses Content-Length fingerprint.
             if (
                 card["main_photo_id"]
                 and old.get("main_photo_id")
@@ -923,27 +923,40 @@ class ContentEventDetector:
                 })
                 logger.info(f"Detected CONTENT_MAIN_PHOTO_CHANGED: nm={nm_id}")
 
-            # === CONTENT_PHOTO_ORDER_CHANGED ===
-            # Detects added/removed/reordered secondary photos (affects CR)
-            # Only fires if main photo is unchanged (otherwise MAIN_PHOTO_CHANGED covers it)
-            elif (
+            # === Gallery photo changes ===
+            # Fires INDEPENDENTLY from main photo (not elif).
+            # Sub-typed by count difference:
+            #   CONTENT_PHOTO_ADDED   — photos were added to gallery
+            #   CONTENT_PHOTO_REMOVED — photos were removed from gallery
+            #   CONTENT_PHOTO_ORDER_CHANGED — same count, but photos replaced/reordered
+            if (
                 card["photos_hash"]
                 and old.get("photos_hash")
                 and card["photos_hash"] != old["photos_hash"]
             ):
+                old_count = old.get("photos_count", 0)
+                new_count = card["photos_count"]
+
+                if new_count > old_count:
+                    gallery_event_type = "CONTENT_PHOTO_ADDED"
+                elif new_count < old_count:
+                    gallery_event_type = "CONTENT_PHOTO_REMOVED"
+                else:
+                    gallery_event_type = "CONTENT_PHOTO_ORDER_CHANGED"
+
                 events.append({
                     "shop_id": shop_id,
                     "advert_id": 0,
                     "nm_id": nm_id,
-                    "event_type": "CONTENT_PHOTO_ORDER_CHANGED",
+                    "event_type": gallery_event_type,
                     "old_value": old["photos_hash"],
                     "new_value": card["photos_hash"],
                     "event_metadata": {
-                        "old_count": old.get("photos_count", 0),
-                        "new_count": card["photos_count"],
+                        "old_count": old_count,
+                        "new_count": new_count,
                     },
                 })
-                logger.info(f"Detected CONTENT_PHOTO_ORDER_CHANGED: nm={nm_id}")
+                logger.info(f"Detected {gallery_event_type}: nm={nm_id} ({old_count}->{new_count})")
 
         logger.info(
             f"Content audit: {len(events)} events detected "

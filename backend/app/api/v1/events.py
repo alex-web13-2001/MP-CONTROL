@@ -44,6 +44,8 @@ EVENT_CATEGORIES = {
     "CONTENT_TITLE_CHANGED": "content",
     "CONTENT_DESC_CHANGED": "content",
     "CONTENT_MAIN_PHOTO_CHANGED": "content",
+    "CONTENT_PHOTO_ADDED": "content",
+    "CONTENT_PHOTO_REMOVED": "content",
     "CONTENT_PHOTO_ORDER_CHANGED": "content",
     # Commercial
     "PRICE_CHANGE": "commercial",
@@ -73,7 +75,9 @@ EVENT_LABELS = {
     "CONTENT_TITLE_CHANGED": "Заголовок изменён",
     "CONTENT_DESC_CHANGED": "Описание изменено",
     "CONTENT_MAIN_PHOTO_CHANGED": "Главное фото изменено",
-    "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
+    "CONTENT_PHOTO_ADDED": "Фото добавлено в галерею",
+    "CONTENT_PHOTO_REMOVED": "Фото удалено из галереи",
+    "CONTENT_PHOTO_ORDER_CHANGED": "Фото галереи изменено",
     "PRICE_CHANGE": "Цена изменена",
     "OZON_PRICE_CHANGE": "Цена изменена",
     "OZON_STOCK_OUT": "Товар закончился",
@@ -471,10 +475,26 @@ async def get_events_feed(
             detail = f"Новый заголовок: {new_title}" if new_title else "Заголовок изменён"
         elif event_type in ("CONTENT_DESC_CHANGED",):
             detail = "Описание товара изменено"
-        elif event_type in ("CONTENT_MAIN_PHOTO_CHANGED", "CONTENT_PHOTO_ORDER_CHANGED"):
+        elif event_type == "CONTENT_MAIN_PHOTO_CHANGED":
             old_count = meta.get("old_count", "?")
             new_count = meta.get("new_count", "?")
-            detail = f"Фото: {old_count} → {new_count} шт."
+            if old_count != new_count:
+                detail = f"Главное фото заменено. Фото: {old_count} → {new_count} шт."
+            else:
+                detail = "Главное фото заменено"
+        elif event_type == "CONTENT_PHOTO_ADDED":
+            old_count = meta.get("old_count", "?")
+            new_count = meta.get("new_count", "?")
+            diff = (new_count - old_count) if isinstance(new_count, int) and isinstance(old_count, int) else '?'
+            detail = f"+{diff} фото ({old_count} → {new_count} шт.)"
+        elif event_type == "CONTENT_PHOTO_REMOVED":
+            old_count = meta.get("old_count", "?")
+            new_count = meta.get("new_count", "?")
+            diff = (old_count - new_count) if isinstance(new_count, int) and isinstance(old_count, int) else '?'
+            detail = f"−{diff} фото ({old_count} → {new_count} шт.)"
+        elif event_type == "CONTENT_PHOTO_ORDER_CHANGED":
+            count = meta.get("new_count", "?")
+            detail = f"Фото галереи заменены ({count} шт.)"
 
         day_key = created_at.strftime("%Y-%m-%d") if created_at else str(date.today())
 

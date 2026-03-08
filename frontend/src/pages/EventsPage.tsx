@@ -69,6 +69,8 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   CONTENT_TITLE_CHANGED:    { icon: Palette, color: '#14b8a6', bg: '#14b8a620' },
   CONTENT_DESC_CHANGED:     { icon: Palette, color: '#0ea5e9', bg: '#0ea5e920' },
   CONTENT_MAIN_PHOTO_CHANGED:  { icon: Image, color: '#f97316', bg: '#f9731620' },
+  CONTENT_PHOTO_ADDED:         { icon: Plus,  color: '#10b981', bg: '#10b98120' },
+  CONTENT_PHOTO_REMOVED:       { icon: Minus, color: '#ef4444', bg: '#ef444420' },
   CONTENT_PHOTO_ORDER_CHANGED: { icon: Image, color: '#f97316', bg: '#f9731620' },
   // Commercial
   PRICE_CHANGE:         { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
