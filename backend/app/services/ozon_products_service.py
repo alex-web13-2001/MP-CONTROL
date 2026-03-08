@@ -463,9 +463,9 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
             moderate_status = statuses.get("moderate_status", "")
             status_name = statuses.get("status_name", "")
 
-            # Images hash
+            # Don't sort — order matters for gallery tracking
             all_images_json = _json.dumps(images) if images else "[]"
-            images_hash = _md5("|".join(sorted(images))) if images else ""
+            images_hash = _md5("|".join(images)) if images else ""
             primary_imgs = item.get("primary_image", [])
             primary_image_url = primary_imgs[0] if primary_imgs else main_image
 
@@ -643,7 +643,14 @@ def upsert_ozon_content(
             name = item.get("name", "")
             desc = descriptions.get(product_id, "")
             images = item.get("images", [])
-            main_image = images[0] if images else ""
+            # Use primary_image from API (seller's main photo), not images[0]
+            primary_img = item.get("primary_image")
+            if isinstance(primary_img, list):
+                main_image = primary_img[0] if primary_img else ""
+            elif isinstance(primary_img, str) and primary_img:
+                main_image = primary_img
+            else:
+                main_image = images[0] if images else ""
 
             title_hash = _md5(name)
             description_hash = _md5(desc) if desc else ""
