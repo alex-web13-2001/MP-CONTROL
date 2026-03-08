@@ -18,6 +18,7 @@ import {
   Minus,
   RefreshCw,
   ChevronDown,
+  ChevronUp,
   Filter,
   ArrowRight,
   ArrowDown,
@@ -222,6 +223,49 @@ function ValueChange({ event }: { event: EventItem }) {
   )
 }
 
+/** Campaign items list for CAMPAIGN_CREATED events */
+function CampaignItemsList({ items }: { items: { offer_id: string; nm_id: string; name: string }[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const VISIBLE = 3
+  const shown = expanded ? items : items.slice(0, VISIBLE)
+  const hasMore = items.length > VISIBLE
+
+  return (
+    <div className="mt-3 rounded-xl border border-[hsl(var(--border)/0.25)] overflow-hidden">
+      <div className="px-3 py-1.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground)/0.5)] uppercase tracking-wider bg-[hsl(var(--muted)/0.08)]">
+        Товары в кампании
+      </div>
+      <div className="divide-y divide-[hsl(var(--border)/0.15)]">
+        {shown.map((it, i) => (
+          <div key={it.nm_id + i} className={`flex items-center gap-3 px-3 py-2 ${i % 2 === 0 ? 'bg-transparent' : 'bg-[hsl(var(--muted)/0.04)]'}`}>
+            <span className="text-[12px] font-mono font-semibold text-[hsl(var(--foreground)/0.75)] shrink-0 w-[140px] truncate uppercase">
+              {it.offer_id || '—'}
+            </span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.55)] shrink-0">
+              #{it.nm_id}
+            </span>
+            <span className="text-[12px] text-[hsl(var(--foreground)/0.6)] truncate">
+              {it.name}
+            </span>
+          </div>
+        ))}
+      </div>
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="w-full flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-[hsl(var(--primary)/0.8)] hover:text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted)/0.08)] transition-colors"
+        >
+          {expanded ? (
+            <><ChevronUp className="h-3 w-3" /> Свернуть</>
+          ) : (
+            <><ChevronDown className="h-3 w-3" /> Ещё {items.length - VISIBLE}</>
+          )}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function EventCard({ event, index }: { event: EventItem; index: number }) {
   const style = EVENT_STYLE[event.event_type] || DEFAULT_STYLE
   const Icon = style.icon
@@ -318,6 +362,11 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
           <p className="mt-1 text-[12px] font-semibold font-mono text-[hsl(var(--muted-foreground)/0.7)] tracking-wide uppercase">
             {event.product.offer_id}
           </p>
+        )}
+
+        {/* Campaign items list */}
+        {event.campaign_items && event.campaign_items.length > 0 && (
+          <CampaignItemsList items={event.campaign_items} />
         )}
 
         {/* Campaign info */}

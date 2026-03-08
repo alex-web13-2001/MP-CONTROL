@@ -24,6 +24,7 @@ export interface EventItem {
   old_value: string | null
   new_value: string | null
   product: EventProduct | null
+  campaign_items?: { offer_id: string; nm_id: string; name: string }[] | null
 }
 
 export interface EventDay {

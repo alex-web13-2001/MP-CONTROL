@@ -102,6 +102,17 @@ PERIOD_DAYS = {
     "90d": 90,
 }
 
+def _pluralize(n: int) -> str:
+    """Russian plural for товар"""
+    if 11 <= n % 100 <= 19:
+        return "ов"
+    r = n % 10
+    if r == 1:
+        return ""
+    if 2 <= r <= 4:
+        return "а"
+    return "ов"
+
 
 def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict] = None) -> str:
     """Format event value for display."""
@@ -454,6 +465,8 @@ async def get_events_feed(
 
         # Build detail string
         detail = ""
+        campaign_items_list = []
+        items = meta.get("items", [])
         if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE", "OZON_PRICE_CHANGE"):
             detail = f"{old_display} → {new_display}"
             bid_field = meta.get("bid_field", "")
@@ -488,27 +501,25 @@ async def get_events_feed(
             status_label = status_labels.get(new_value, "")
             detail = f"Создана кампания" + (f" · {status_label}" if status_label else "")
             
-            # Build items list for display
-            items = meta.get("items", [])
+            # Build structured items list for frontend
+            campaign_items_list = []
             if items:
-                item_lines = []
                 for it in items:
                     nm_id = it.get("nm_id") or it.get("sku", "")
-                    # Try to get product info from product_map
                     prod_info = product_map.get(int(nm_id)) if nm_id else None
                     if prod_info:
-                        vendor_code = prod_info.get("offer_id", "")
-                        name = prod_info.get("name", "")
-                        item_lines.append(f"{vendor_code} (#{nm_id})" + (f" — {name}" if name else ""))
+                        campaign_items_list.append({
+                            "offer_id": prod_info.get("offer_id", ""),
+                            "nm_id": str(nm_id),
+                            "name": prod_info.get("name", ""),
+                        })
                     else:
-                        # Ozon: use offer_id and title from metadata
-                        offer_id = it.get("offer_id", "")
-                        title = it.get("title", "") or it.get("subject", "")
-                        if offer_id:
-                            item_lines.append(f"{offer_id} (#{nm_id})" + (f" — {title}" if title else ""))
-                        else:
-                            item_lines.append(f"#{nm_id}" + (f" — {title}" if title else ""))
-                detail += " | Товары: " + "; ".join(item_lines)
+                        campaign_items_list.append({
+                            "offer_id": it.get("offer_id", ""),
+                            "nm_id": str(nm_id),
+                            "name": it.get("title", "") or it.get("subject", ""),
+                        })
+                detail += f" · {len(campaign_items_list)} товар{_pluralize(len(campaign_items_list))}"
         elif event_type in ("STOCK_OUT",):
             warehouse = meta.get("warehouse_name", "")
             detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")
@@ -575,6 +586,7 @@ async def get_events_feed(
             "old_value": old_value,
             "new_value": new_value,
             "product": product,
+            "campaign_items": campaign_items_list if event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED") else None,
         })
 
     # Sort days descending
