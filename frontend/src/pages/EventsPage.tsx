@@ -30,17 +30,19 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import { getEventsFeedApi, type EventsFeedResponse, type EventItem, type EventDay } from '@/api/events'
+import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 
 /* ═══════════════════════════════════════════════════════════
    Constants
    ═══════════════════════════════════════════════════════════ */
 
-const PERIOD_OPTIONS = [
-  { key: 'today', label: 'Сегодня' },
-  { key: '7d', label: '7 дней' },
-  { key: '30d', label: '30 дней' },
-  { key: '90d', label: '90 дней' },
-] as const
+
+function fmtDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 const CATEGORY_OPTIONS = [
   { key: '', label: 'Все', icon: Activity, color: '#a78bfa' },
@@ -444,7 +446,9 @@ export default function EventsPage() {
   const [data, setData] = useState<EventsFeedResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [period, setPeriod] = useState('7d')
+  const [periodValue, setPeriodValue] = useState<PeriodValue>({
+    mode: 'quick', period: 7, dateRange: null
+  })
   const [category, setCategory] = useState('')
   const [page, setPage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -460,13 +464,21 @@ export default function EventsPage() {
     setError(null)
 
     try {
-      const result = await getEventsFeedApi({
+      const apiParams: Parameters<typeof getEventsFeedApi>[0] = {
         shop_id: shopId,
-        period,
         category: category || undefined,
         page: pageNum,
         page_size: 50,
-      })
+      }
+
+      if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
+        apiParams.date_from = fmtDate(periodValue.dateRange.from)
+        apiParams.date_to = fmtDate(periodValue.dateRange.to ?? periodValue.dateRange.from)
+      } else {
+        apiParams.period = periodValue.period === 7 ? '7d' : '30d'
+      }
+
+      const result = await getEventsFeedApi(apiParams)
 
       if (append && data) {
         // Merge days
@@ -493,14 +505,14 @@ export default function EventsPage() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [shopId, period, category, data])
+  }, [shopId, periodValue, category, data])
 
   // Reset and fetch on filter change
   useEffect(() => {
     setPage(1)
     setData(null)
     fetchData(1, false)
-  }, [shopId, period, category]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shopId, periodValue, category]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalLoadedEvents = data?.days.reduce((sum, d) => sum + d.events.length, 0) || 0
   const hasMore = data ? totalLoadedEvents < data.total : false
@@ -535,21 +547,7 @@ export default function EventsPage() {
         </div>
 
         {/* Period selector */}
-        <div className="flex items-center gap-1 bg-[hsl(var(--muted)/0.15)] rounded-xl p-1">
-          {PERIOD_OPTIONS.map(opt => (
-            <button
-              key={opt.key}
-              onClick={() => setPeriod(opt.key)}
-              className={`px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${
-                period === opt.key
-                  ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
-                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        <PeriodSelector value={periodValue} onChange={setPeriodValue} />
       </div>
 
       {/* ── Category filter ── */}
@@ -580,7 +578,7 @@ export default function EventsPage() {
       <AnimatePresence mode="wait">
         {data && data.days.length > 0 ? (
           <motion.div
-            key={`${period}-${category}`}
+            key={`${JSON.stringify(periodValue)}-${category}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

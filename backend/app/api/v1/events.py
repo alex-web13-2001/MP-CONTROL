@@ -140,11 +140,13 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
 async def get_events_feed(
     shop_id: int = Query(..., description="Shop ID"),
     period: str = Query("7d", description="Period: today, 7d, 30d, 90d"),
+    date_from: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
     event_types: Optional[str] = Query(
         None, description="Comma-separated event types filter"
     ),
     category: Optional[str] = Query(
-        None, description="Category filter: advertising, content, commercial"
+        None, description="Category filter: advertising, content, commercial, stock"
     ),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=10, le=200, description="Events per page"),
@@ -174,17 +176,26 @@ async def get_events_feed(
     marketplace = shop_row[1]
 
     # ── Date range ─────────────────────────────────────
-    days = PERIOD_DAYS.get(period, 7)
     today = date.today()
-    date_from = today - timedelta(days=days - 1)
-    date_to = today
+    if date_from and date_to:
+        # Custom range from calendar
+        try:
+            d_from = date.fromisoformat(date_from)
+            d_to = date.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    else:
+        # Quick period
+        days = PERIOD_DAYS.get(period, 7)
+        d_from = today - timedelta(days=days - 1)
+        d_to = today
 
     # ── Build filters ──────────────────────────────────
     filters = ["e.shop_id = :shop_id", "e.created_at >= :date_from", "e.created_at < :date_to_exclusive"]
     params: dict = {
         "shop_id": shop_id,
-        "date_from": dt_datetime.combine(date_from, dt_datetime.min.time()),
-        "date_to_exclusive": dt_datetime.combine(date_to + timedelta(days=1), dt_datetime.min.time()),
+        "date_from": dt_datetime.combine(d_from, dt_datetime.min.time()),
+        "date_to_exclusive": dt_datetime.combine(d_to + timedelta(days=1), dt_datetime.min.time()),
     }
 
     # Filter by event types
