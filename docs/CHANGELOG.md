@@ -1,3 +1,27 @@
+## 2026-03-08
+
+### feat(wb): Content-Length based photo change detection
+
+**Проблема**: WB CDN не меняет URL при замене фото — файл перезаписывается по тому же пути.
+`extract_photo_id` извлекал `vol/part/nmID/N` — идентичный до и после замены.
+ETag и Last-Modified нестабильны (round-robin между CDN нодами).
+
+**Решение**: `Content-Length` из HTTP HEAD запросов — единственный стабильный заголовок
+между CDN нодами, меняется только при реальной замене файла.
+
+- `wb_content_service.py`: async HEAD запросы к CDN (`_fetch_photo_fingerprints`)
+  - 20 параллельных запросов, timeout 5с, fallback на path-based ID
+  - `main_photo_id` = Content-Length главного фото
+  - `photos_hash` = MD5 от JSON массива Content-Length всех фото
+- `event_detector.py`: `elif` → `if` — main photo и gallery детектируются независимо
+  - `CONTENT_PHOTO_ADDED` — фото добавлено (count↑)
+  - `CONTENT_PHOTO_REMOVED` — фото удалено (count↓)
+  - `CONTENT_PHOTO_ORDER_CHANGED` — фото заменено (count=, hash≠)
+- `events.py`: категории, лейблы, детализация для новых типов
+- `EventsPage.tsx`: иконки — зелёный Plus (добавлено), красный Minus (удалено)
+
+---
+
 ## 2026-03-03
 
 ### feat: WB LTV — полный модуль анализа повторных покупок
