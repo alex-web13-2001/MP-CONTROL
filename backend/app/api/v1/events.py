@@ -479,8 +479,29 @@ async def get_events_feed(
                 "9": "Активна", "11": "Остановлена", "7": "В архиве",
             }
             status_label = status_labels.get(new_value, "")
-            ct = meta.get("campaign_title", "") or meta.get("title", "")
             detail = f"Создана кампания" + (f" · {status_label}" if status_label else "")
+            
+            # Build items list for display
+            items = meta.get("items", [])
+            if items:
+                item_lines = []
+                for it in items:
+                    nm_id = it.get("nm_id") or it.get("sku", "")
+                    # Try to get product info from product_map
+                    prod_info = product_map.get(int(nm_id)) if nm_id else None
+                    if prod_info:
+                        vendor_code = prod_info.get("offer_id", "")
+                        name = prod_info.get("name", "")
+                        item_lines.append(f"{vendor_code} (#{nm_id})" + (f" — {name}" if name else ""))
+                    else:
+                        # Ozon: use offer_id and title from metadata
+                        offer_id = it.get("offer_id", "")
+                        title = it.get("title", "") or it.get("subject", "")
+                        if offer_id:
+                            item_lines.append(f"{offer_id} (#{nm_id})" + (f" — {title}" if title else ""))
+                        else:
+                            item_lines.append(f"#{nm_id}" + (f" — {title}" if title else ""))
+                detail += " | Товары: " + "; ".join(item_lines)
         elif event_type in ("STOCK_OUT",):
             warehouse = meta.get("warehouse_name", "")
             detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")

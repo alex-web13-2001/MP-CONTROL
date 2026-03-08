@@ -77,10 +77,23 @@ class OzonAdsEventDetector:
         # (to skip ITEM_ADD/REMOVE false positives)
         just_started_campaigns: Set[int] = set()
 
-        # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE
+        # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE + CAMPAIGN_CREATED
         campaign_events, just_started_campaigns = self.detect_campaign_changes(
             shop_id, campaigns
         )
+        # Enrich CAMPAIGN_CREATED events with product items
+        for ev in campaign_events:
+            if ev["event_type"] == "OZON_CAMPAIGN_CREATED":
+                cid = ev.get("advert_id", 0)
+                products = products_by_campaign.get(cid, [])
+                items = []
+                for p in products:
+                    items.append({
+                        "sku": p.get("id") or p.get("sku", ""),
+                        "offer_id": p.get("offer_id", ""),
+                        "title": p.get("title", ""),
+                    })
+                ev.setdefault("event_metadata", {})["items"] = items
         events.extend(campaign_events)
 
         # 2. Product-level: BID_CHANGE + ITEM_ADD/REMOVE

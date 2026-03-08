@@ -443,6 +443,17 @@ class EventDetector:
                 
                 # New campaign detected (no previous state in Redis)
                 if old_status is None:
+                    # Collect items in this campaign from nm_settings
+                    nm_settings = advert.get("nm_settings") or []
+                    campaign_items = []
+                    for ns in nm_settings:
+                        nm = ns.get("nm_id")
+                        if nm:
+                            campaign_items.append({
+                                "nm_id": nm,
+                                "subject": (ns.get("subject") or {}).get("name", ""),
+                            })
+                    
                     events.append({
                         "shop_id": shop_id,
                         "advert_id": advert_id,
@@ -453,9 +464,10 @@ class EventDetector:
                         "event_metadata": {
                             "campaign_title": campaign_name,
                             "campaign_type": campaign_type,
+                            "items": campaign_items,
                         }
                     })
-                    logger.info(f"Detected CAMPAIGN_CREATED: advert={advert_id} name='{campaign_name}'")
+                    logger.info(f"Detected CAMPAIGN_CREATED: advert={advert_id} name='{campaign_name}' items={len(campaign_items)}")
                 elif status != old_status:
                     events.append({
                         "shop_id": shop_id,
