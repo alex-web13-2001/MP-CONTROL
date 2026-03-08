@@ -56,7 +56,7 @@ class RedisStateManager:
         raw = self.client.hgetall(key)
         
         if not raw:
-            return {"cpm": None, "status": None, "items": [], "campaign_type": None}
+            return {"cpm": None, "status": None, "items": [], "campaign_type": None, "campaign_name": ""}
         
         # Parse stored values
         cpm = float(raw["cpm"]) if raw.get("cpm") else None
@@ -74,7 +74,8 @@ class RedisStateManager:
             "cpm": cpm,
             "status": status,
             "items": items,
-            "campaign_type": campaign_type
+            "campaign_type": campaign_type,
+            "campaign_name": raw.get("campaign_name", ""),
         }
     
     def set_state(
@@ -84,7 +85,8 @@ class RedisStateManager:
         cpm: Optional[float] = None,
         status: Optional[int] = None,
         items: Optional[List[int]] = None,
-        campaign_type: Optional[int] = None
+        campaign_type: Optional[int] = None,
+        campaign_name: Optional[str] = None
     ) -> None:
         """
         Update state fields using HSET.
@@ -101,6 +103,8 @@ class RedisStateManager:
             mapping["items"] = json.dumps(items)
         if campaign_type is not None:
             mapping["campaign_type"] = str(campaign_type)
+        if campaign_name is not None:
+            mapping["campaign_name"] = campaign_name
         
         if mapping:
             self.client.hset(key, mapping=mapping)

@@ -590,7 +590,8 @@ class EventDetector:
                     cpm=float(max_bid) if max_bid > 0 else None,
                     status=status,
                     items=current_items if current_items else None,
-                    campaign_type=campaign_type
+                    campaign_type=campaign_type,
+                    campaign_name=campaign_name if campaign_name else None,
                 )
             
             except Exception as e:

@@ -389,10 +389,17 @@ async def get_events_feed(
         try:
             redis_state = RedisStateManager()
             for adv_id in still_missing2:
-                state = redis_state.get_ozon_campaign_state(shop_id, adv_id)
-                title = state.get("title", "")
+                # Try Ozon state first
+                ozon_state = redis_state.get_ozon_campaign_state(shop_id, adv_id)
+                title = ozon_state.get("title", "")
                 if title:
                     campaign_title_map[adv_id] = title
+                    continue
+                # Try WB state
+                wb_state = redis_state.get_state(shop_id, adv_id)
+                wb_name = wb_state.get("campaign_name", "")
+                if wb_name:
+                    campaign_title_map[adv_id] = wb_name
         except Exception as e:
             logger.warning("Redis campaign title lookup failed: %s", e)
 
