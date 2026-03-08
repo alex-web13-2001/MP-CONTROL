@@ -350,7 +350,20 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
           </span>
         </div>
 
-        {/* Row 2: Detail text (non-numeric events) */}
+        {/* Row 2: Campaign name (most important after event type) */}
+        {event.advert_id ? (
+          <div className="flex items-center gap-2 mt-1.5">
+            <Megaphone className="h-3.5 w-3.5 shrink-0" style={{ color: catColor, opacity: 0.6 }} />
+            <span className="text-[14px] font-semibold text-[hsl(var(--foreground)/0.85)] truncate">
+              {event.campaign_title || `Кампания #${event.advert_id}`}
+            </span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.5)]">
+              #{event.advert_id}
+            </span>
+          </div>
+        ) : null}
+
+        {/* Row 3: Detail text (non-numeric events) */}
         {event.detail && !isNumericEvent && (
           <p className="mt-1.5 text-[14px] text-[hsl(var(--foreground)/0.8)] leading-relaxed font-medium">
             {event.detail}
@@ -383,20 +396,7 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
           <CampaignItemsList items={event.campaign_items} />
         )}
 
-        {/* Campaign info */}
-        {event.advert_id ? (
-          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
-            <Megaphone className="h-4 w-4 shrink-0" style={{ color: catColor, opacity: 0.7 }} />
-            <span className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.8)] truncate max-w-[450px]">
-              {event.campaign_title
-                ? event.campaign_title
-                : `Кампания #${event.advert_id}`}
-            </span>
-            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.6)]">
-              #{event.advert_id}
-            </span>
-          </div>
-        ) : null}
+
       </div>
 
       {/* Time */}
