@@ -231,34 +231,46 @@ function CampaignItemsList({ items }: { items: { offer_id: string; nm_id: string
   const hasMore = items.length > VISIBLE
 
   return (
-    <div className="mt-3 rounded-xl border border-[hsl(var(--border)/0.25)] overflow-hidden">
-      <div className="px-3 py-1.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground)/0.5)] uppercase tracking-wider bg-[hsl(var(--muted)/0.08)]">
-        Товары в кампании
-      </div>
-      <div className="divide-y divide-[hsl(var(--border)/0.15)]">
-        {shown.map((it, i) => (
-          <div key={it.nm_id + i} className={`flex items-center gap-3 px-3 py-2 ${i % 2 === 0 ? 'bg-transparent' : 'bg-[hsl(var(--muted)/0.04)]'}`}>
-            <span className="text-[12px] font-mono font-semibold text-[hsl(var(--foreground)/0.75)] shrink-0 w-[140px] truncate uppercase">
-              {it.offer_id || '—'}
-            </span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.55)] shrink-0">
-              #{it.nm_id}
-            </span>
-            <span className="text-[12px] text-[hsl(var(--foreground)/0.6)] truncate">
-              {it.name}
-            </span>
-          </div>
-        ))}
+    <div className="mt-3">
+      <div className="flex flex-wrap gap-x-1 gap-y-1.5">
+        {shown.map((it, i) => {
+          // Truncate long product names
+          const shortName = it.name.length > 55 ? it.name.slice(0, 52) + '…' : it.name
+          // Primary label: offer_id if exists, otherwise short name
+          const hasArticle = it.offer_id && it.offer_id !== '—'
+
+          return (
+            <div
+              key={it.nm_id + i}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)] max-w-full"
+            >
+              {hasArticle && (
+                <span className="text-[11px] font-mono font-bold text-[hsl(var(--primary)/0.85)] shrink-0 uppercase">
+                  {it.offer_id}
+                </span>
+              )}
+              {hasArticle && (
+                <span className="text-[hsl(var(--border)/0.5)] text-[10px]">·</span>
+              )}
+              <span className="text-[11px] text-[hsl(var(--foreground)/0.6)] truncate" title={it.name}>
+                {shortName}
+              </span>
+              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.4)] shrink-0 ml-auto">
+                {it.nm_id}
+              </span>
+            </div>
+          )
+        })}
       </div>
       {hasMore && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center justify-center gap-1 px-3 py-1.5 text-[11px] font-medium text-[hsl(var(--primary)/0.8)] hover:text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted)/0.08)] transition-colors"
+          className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-[hsl(var(--primary)/0.7)] hover:text-[hsl(var(--primary))] transition-colors"
         >
           {expanded ? (
             <><ChevronUp className="h-3 w-3" /> Свернуть</>
           ) : (
-            <><ChevronDown className="h-3 w-3" /> Ещё {items.length - VISIBLE}</>
+            <><ChevronDown className="h-3 w-3" /> Ещё {items.length - VISIBLE} товар{items.length - VISIBLE === 1 ? '' : items.length - VISIBLE < 5 ? 'а' : 'ов'}</>
           )}
         </button>
       )}
