@@ -50,12 +50,13 @@ EVENT_CATEGORIES = {
     # Commercial
     "PRICE_CHANGE": "commercial",
     "OZON_PRICE_CHANGE": "commercial",
-    "OZON_STOCK_OUT": "commercial",
-    "OZON_STOCK_REPLENISH": "commercial",
-    "STOCK_OUT": "commercial",
-    "STOCK_REPLENISH": "commercial",
-    "STOCK_OUT_FBO_TOTAL": "commercial",
-    "STOCK_OUT_FBS_TOTAL": "commercial",
+    # Stock / Warehouse
+    "OZON_STOCK_OUT": "stock",
+    "OZON_STOCK_REPLENISH": "stock",
+    "STOCK_OUT": "stock",
+    "STOCK_REPLENISH": "stock",
+    "STOCK_OUT_FBO_TOTAL": "stock",
+    "STOCK_OUT_FBS_TOTAL": "stock",
 }
 
 # Human-readable event descriptions (Russian)
@@ -190,7 +191,7 @@ async def get_events_feed(
             params["type_list"] = type_list
 
     # Filter by category
-    if category and category in ("advertising", "content", "commercial"):
+    if category and category in ("advertising", "content", "commercial", "stock"):
         cat_types = [k for k, v in EVENT_CATEGORIES.items() if v == category]
         if cat_types:
             filters.append("e.event_type = ANY(:cat_types)")

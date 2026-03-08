@@ -23,6 +23,7 @@ import {
   ArrowDown,
   ArrowUp,
   AlertTriangle,
+  Package,
   type LucideIcon,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,6 +46,7 @@ const CATEGORY_OPTIONS = [
   { key: 'advertising', label: 'Реклама', icon: Megaphone, color: '#3b82f6' },
   { key: 'content', label: 'Контент', icon: Palette, color: '#10b981' },
   { key: 'commercial', label: 'Коммерция', icon: DollarSign, color: '#f59e0b' },
+  { key: 'stock', label: 'Склад', icon: Package, color: '#f97316' },
 ] as const
 
 /** Icon + color per event type */
@@ -91,6 +93,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   advertising: '#3b82f6',
   content: '#10b981',
   commercial: '#f59e0b',
+  stock: '#f97316',
   other: '#a78bfa',
 }
 
@@ -132,6 +135,7 @@ const CATEGORY_PLACEHOLDER: Record<string, LucideIcon> = {
   advertising: Megaphone,
   content: Palette,
   commercial: DollarSign,
+  stock: Package,
   other: Activity,
 }
 
