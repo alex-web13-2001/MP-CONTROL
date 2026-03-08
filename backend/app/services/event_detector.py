@@ -548,20 +548,22 @@ class EventDetector:
                     self.state_manager.set_bid(shop_id, advert_id, nm_id, "recommendations", bid_reco)
                 
                 # ===== ITEM_ADD / ITEM_REMOVE =====
+                # Skip for brand-new campaigns (items already in CAMPAIGN_CREATED metadata)
                 old_items = set(old_state.get("items") or [])
                 current_items_set = set(current_items)
                 
-                for nm_id in current_items_set - old_items:
-                    events.append({
-                        "shop_id": shop_id,
-                        "advert_id": advert_id,
-                        "nm_id": nm_id,
-                        "event_type": "ITEM_ADD",
-                        "old_value": None,
-                        "new_value": str(nm_id),
-                        "event_metadata": None
-                    })
-                    logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
+                if old_status is not None:
+                    for nm_id in current_items_set - old_items:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "ITEM_ADD",
+                            "old_value": None,
+                            "new_value": str(nm_id),
+                            "event_metadata": None
+                        })
+                        logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
                 for nm_id in old_items - current_items_set:
                     events.append({

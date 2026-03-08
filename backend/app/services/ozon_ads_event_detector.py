@@ -176,6 +176,8 @@ class OzonAdsEventDetector:
                         "OZON_CAMPAIGN_CREATED: campaign=%d '%s'",
                         campaign_id, camp.get("title", ""),
                     )
+                    # Skip ITEM_ADD for this campaign (products in CAMPAIGN_CREATED metadata)
+                    just_started.add(campaign_id)
 
                 # ── STATUS_CHANGE ──
                 elif current_status is not None and old_status is not None:
