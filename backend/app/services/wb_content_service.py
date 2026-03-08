@@ -7,13 +7,18 @@ Domain: content-api.wildberries.ru
 Updates PostgreSQL dim_products: name, main_image_url, dimensions, category.
 Manages dim_product_content: title/desc/photos hashes for SEO audit.
 Frequency: once per day (content rarely changes).
+
+Photo change detection uses HTTP HEAD requests to WB CDN to get ETag/Content-Length
+per image, since WB CDN does NOT change URLs when photos are replaced.
 """
+import asyncio
 import hashlib
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +26,10 @@ from app.core.marketplace_client import MarketplaceClient
 from app.core.redis_state import RedisStateManager
 
 logger = logging.getLogger(__name__)
+
+# Concurrency limit for HEAD requests to WB CDN
+CDN_HEAD_CONCURRENCY = 20
+CDN_HEAD_TIMEOUT = 5.0
 
 
 def extract_photo_id(url: str) -> str:
@@ -76,16 +85,70 @@ class WBContentService:
         self.api_key = api_key
         self.state_manager = RedisStateManager(redis_url)
 
+    async def _fetch_photo_fingerprints(
+        self, photo_urls: List[str]
+    ) -> Dict[str, str]:
+        """
+        Fetch stable fingerprint for each photo URL via async HEAD requests.
+        
+        WB CDN does NOT change URLs when photos are replaced — the file at
+        the same path is overwritten.
+        
+        We use ONLY Content-Length as fingerprint because:
+        - ETag is UNSTABLE: contains CDN-node-specific timestamp
+        - Last-Modified is UNSTABLE: differs between CDN nodes (round-robin)
+        - Content-Length is STABLE: determined by actual file content,
+          consistent across all CDN nodes. Only changes when the image
+          file is actually replaced with a different one.
+        
+        Returns:
+            {url: content_length_str} for each successfully fetched URL.
+        """
+        if not photo_urls:
+            return {}
+
+        results: Dict[str, str] = {}
+        semaphore = asyncio.Semaphore(CDN_HEAD_CONCURRENCY)
+
+        async def _head(client: httpx.AsyncClient, url: str) -> None:
+            async with semaphore:
+                try:
+                    resp = await client.head(url)
+                    clen = resp.headers.get("content-length", "")
+                    if clen:
+                        results[url] = clen
+                except Exception:
+                    # CDN timeout / error — fall back to URL-based ID
+                    pass
+
+        async with httpx.AsyncClient(
+            timeout=CDN_HEAD_TIMEOUT,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=CDN_HEAD_CONCURRENCY),
+        ) as client:
+            tasks = [_head(client, url) for url in photo_urls]
+            await asyncio.gather(*tasks)
+
+        logger.info(
+            f"Fetched fingerprints for {len(results)}/{len(photo_urls)} photos"
+        )
+        return results
+
     async def fetch_all_cards(self) -> List[Dict[str, Any]]:
         """
         Fetch all product cards with cursor pagination.
+        
+        After fetching cards from WB Content API, performs async HEAD
+        requests to CDN for each photo to get ETag. Uses ETag (not URL
+        path) for photo change detection, since WB CDN overwrites files
+        at the same URL when photos are replaced.
         
         Returns:
             List of dicts with: nm_id, title, description, main_image_url,
             photos (full list), photo_ids, length, width, height, category,
             title_hash, description_hash, main_photo_id, photos_hash, photos_count
         """
-        all_cards = []
+        all_cards_raw = []
         cursor = {"limit": self.PAGE_SIZE}
         total_cursor = None
 
@@ -124,76 +187,11 @@ class WBContentService:
                 if not cards:
                     break
 
-                for card in cards:
-                    nm_id = card.get("nmID")
-                    if not nm_id:
-                        continue
-
-                    # === Extract photos ===
-                    photos_raw = card.get("photos", [])
-                    photo_urls = []
-                    photo_ids = []
-                    main_image_url = ""
-                    main_photo_id = ""
-
-                    for photo in photos_raw:
-                        if isinstance(photo, dict):
-                            url = photo.get("big", "") or photo.get("tm", "")
-                            if url:
-                                photo_urls.append(url)
-                                photo_ids.append(extract_photo_id(url))
-
-                    if photo_urls:
-                        main_image_url = photo_urls[0]
-                        main_photo_id = photo_ids[0]
-
-                    # === Extract text content ===
-                    title = card.get("title", "")
-                    description = card.get("description", "")
-
-                    # === Extract dimensions ===
-                    dimensions = card.get("dimensions", {})
-                    length = dimensions.get("length", 0) if isinstance(dimensions, dict) else 0
-                    width = dimensions.get("width", 0) if isinstance(dimensions, dict) else 0
-                    height = dimensions.get("height", 0) if isinstance(dimensions, dict) else 0
-
-                    # === Extract category ===
-                    category = ""
-                    characteristics = card.get("characteristics", [])
-                    for char in characteristics:
-                        if isinstance(char, dict) and char.get("id") == "Предмет":
-                            category = str(char.get("value", ""))
-                            break
-                    if not category:
-                        category = card.get("subjectName", "")
-
-                    # === Compute hashes ===
-                    title_hash = compute_hash(title) if title else ""
-                    desc_hash = compute_hash(description) if description else ""
-                    # Sort photo_ids for stable hash (order matters for order change detection)
-                    photos_hash = compute_hash(json.dumps(photo_ids)) if photo_ids else ""
-
-                    all_cards.append({
-                        "nm_id": nm_id,
-                        "title": title,
-                        "description": description,
-                        "main_image_url": main_image_url,
-                        "photo_ids": photo_ids,
-                        "photos_count": len(photo_ids),
-                        "length": length,
-                        "width": width,
-                        "height": height,
-                        "category": category,
-                        # Hashes for change detection
-                        "title_hash": title_hash,
-                        "description_hash": desc_hash,
-                        "main_photo_id": main_photo_id,
-                        "photos_hash": photos_hash,
-                    })
+                all_cards_raw.extend(cards)
 
                 logger.info(
                     f"Fetched {len(cards)} content cards, "
-                    f"total so far: {len(all_cards)}"
+                    f"total so far: {len(all_cards_raw)}"
                 )
 
                 # Check cursor for next page
@@ -203,8 +201,108 @@ class WBContentService:
 
                 total_cursor = cursor_resp
                 total = cursor_resp.get("total", 0)
-                if len(all_cards) >= total and total > 0:
+                if len(all_cards_raw) >= total and total > 0:
                     break
+
+        if not all_cards_raw:
+            logger.info(f"No content cards found for shop {self.shop_id}")
+            return []
+
+        # --- Collect all photo URLs for batch ETag fetch ---
+        cards_photo_data: List[Tuple[int, List[str], List[str]]] = []  # (nm_id, urls, path_ids)
+        all_photo_urls: List[str] = []
+
+        for card in all_cards_raw:
+            nm_id = card.get("nmID")
+            if not nm_id:
+                continue
+
+            photos_raw = card.get("photos", [])
+            photo_urls = []
+            photo_path_ids = []
+
+            for photo in photos_raw:
+                if isinstance(photo, dict):
+                    url = photo.get("big", "") or photo.get("tm", "")
+                    if url:
+                        photo_urls.append(url)
+                        photo_path_ids.append(extract_photo_id(url))
+
+            cards_photo_data.append((nm_id, photo_urls, photo_path_ids))
+            all_photo_urls.extend(photo_urls)
+
+        # --- Batch HEAD requests for ETag ---
+        etag_map = await self._fetch_photo_fingerprints(all_photo_urls)
+
+        # --- Build final cards with ETag-based hashes ---
+        all_cards = []
+        card_idx = 0
+
+        for card in all_cards_raw:
+            nm_id = card.get("nmID")
+            if not nm_id:
+                continue
+
+            _, photo_urls, photo_path_ids = cards_photo_data[card_idx]
+            card_idx += 1
+
+            main_image_url = photo_urls[0] if photo_urls else ""
+
+            # Build photo fingerprints: prefer ETag, fall back to path ID
+            photo_fingerprints = []
+            for i, url in enumerate(photo_urls):
+                etag_sig = etag_map.get(url)
+                if etag_sig:
+                    photo_fingerprints.append(etag_sig)
+                else:
+                    # Fallback to URL path ID if HEAD failed
+                    photo_fingerprints.append(photo_path_ids[i] if i < len(photo_path_ids) else url)
+
+            main_photo_id = photo_fingerprints[0] if photo_fingerprints else ""
+
+            # === Extract text content ===
+            title = card.get("title", "")
+            description = card.get("description", "")
+
+            # === Extract dimensions ===
+            dimensions = card.get("dimensions", {})
+            length = dimensions.get("length", 0) if isinstance(dimensions, dict) else 0
+            width = dimensions.get("width", 0) if isinstance(dimensions, dict) else 0
+            height = dimensions.get("height", 0) if isinstance(dimensions, dict) else 0
+
+            # === Extract category ===
+            category = ""
+            characteristics = card.get("characteristics", [])
+            for char in characteristics:
+                if isinstance(char, dict) and char.get("id") == "Предмет":
+                    category = str(char.get("value", ""))
+                    break
+            if not category:
+                category = card.get("subjectName", "")
+
+            # === Compute hashes ===
+            title_hash = compute_hash(title) if title else ""
+            desc_hash = compute_hash(description) if description else ""
+            # photos_hash from ETag fingerprints (order-sensitive)
+            photos_hash = compute_hash(json.dumps(photo_fingerprints)) if photo_fingerprints else ""
+
+            all_cards.append({
+                "nm_id": nm_id,
+                "title": title,
+                "description": description,
+                "main_image_url": main_image_url,
+                "photo_ids": photo_path_ids,  # Keep path IDs for reference
+                "photos_count": len(photo_fingerprints),
+                "length": length,
+                "width": width,
+                "height": height,
+                "category": category,
+                # Hashes for change detection (ETag-based)
+                "title_hash": title_hash,
+                "description_hash": desc_hash,
+                "main_photo_id": main_photo_id,
+                "photos_hash": photos_hash,
+            })
 
         logger.info(f"Total content cards fetched: {len(all_cards)} for shop {self.shop_id}")
         return all_cards

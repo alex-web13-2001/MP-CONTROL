@@ -77,10 +77,23 @@ class OzonAdsEventDetector:
         # (to skip ITEM_ADD/REMOVE false positives)
         just_started_campaigns: Set[int] = set()
 
-        # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE
+        # 1. Campaign-level: STATUS_CHANGE + BUDGET_CHANGE + CAMPAIGN_CREATED
         campaign_events, just_started_campaigns = self.detect_campaign_changes(
             shop_id, campaigns
         )
+        # Enrich CAMPAIGN_CREATED events with product items
+        for ev in campaign_events:
+            if ev["event_type"] == "OZON_CAMPAIGN_CREATED":
+                cid = ev.get("advert_id", 0)
+                products = products_by_campaign.get(cid, [])
+                items = []
+                for p in products:
+                    items.append({
+                        "sku": p.get("id") or p.get("sku", ""),
+                        "offer_id": p.get("offer_id", ""),
+                        "title": p.get("title", ""),
+                    })
+                ev.setdefault("event_metadata", {})["items"] = items
         events.extend(campaign_events)
 
         # 2. Product-level: BID_CHANGE + ITEM_ADD/REMOVE
@@ -144,8 +157,30 @@ class OzonAdsEventDetector:
                 old_status = old_state.get("status")
                 old_budget = old_state.get("budget")
 
+                # ── CAMPAIGN_CREATED (new campaign) ──
+                if current_status is not None and old_status is None:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": campaign_id,
+                        "nm_id": None,
+                        "event_type": "OZON_CAMPAIGN_CREATED",
+                        "old_value": "",
+                        "new_value": str(current_status),
+                        "event_metadata": {
+                            "title": camp.get("title", ""),
+                            "campaign_title": camp.get("title", ""),
+                            "type": camp.get("advObjectType", ""),
+                        },
+                    })
+                    logger.info(
+                        "OZON_CAMPAIGN_CREATED: campaign=%d '%s'",
+                        campaign_id, camp.get("title", ""),
+                    )
+                    # Skip ITEM_ADD for this campaign (products in CAMPAIGN_CREATED metadata)
+                    just_started.add(campaign_id)
+
                 # ── STATUS_CHANGE ──
-                if current_status is not None and old_status is not None:
+                elif current_status is not None and old_status is not None:
                     if str(current_status) != str(old_status):
                         events.append({
                             "shop_id": shop_id,

@@ -56,7 +56,7 @@ class RedisStateManager:
         raw = self.client.hgetall(key)
         
         if not raw:
-            return {"cpm": None, "status": None, "items": [], "campaign_type": None}
+            return {"cpm": None, "status": None, "items": [], "campaign_type": None, "campaign_name": ""}
         
         # Parse stored values
         cpm = float(raw["cpm"]) if raw.get("cpm") else None
@@ -74,7 +74,8 @@ class RedisStateManager:
             "cpm": cpm,
             "status": status,
             "items": items,
-            "campaign_type": campaign_type
+            "campaign_type": campaign_type,
+            "campaign_name": raw.get("campaign_name", ""),
         }
     
     def set_state(
@@ -84,7 +85,8 @@ class RedisStateManager:
         cpm: Optional[float] = None,
         status: Optional[int] = None,
         items: Optional[List[int]] = None,
-        campaign_type: Optional[int] = None
+        campaign_type: Optional[int] = None,
+        campaign_name: Optional[str] = None
     ) -> None:
         """
         Update state fields using HSET.
@@ -101,6 +103,8 @@ class RedisStateManager:
             mapping["items"] = json.dumps(items)
         if campaign_type is not None:
             mapping["campaign_type"] = str(campaign_type)
+        if campaign_name is not None:
+            mapping["campaign_name"] = campaign_name
         
         if mapping:
             self.client.hset(key, mapping=mapping)
@@ -181,6 +185,17 @@ class RedisStateManager:
     def set_stock(self, shop_id: int, nm_id: int, warehouse: str, quantity: int) -> None:
         """Store current stock quantity for a product at a specific warehouse."""
         key = f"state:stock:{shop_id}:{nm_id}:{warehouse}"
+        self.client.setex(key, self.COMMERCIAL_TTL, str(quantity))
+
+    def get_total_stock(self, shop_id: int, nm_id: int, supply_type: str) -> Optional[int]:
+        """Get last known TOTAL stock across all warehouses of a supply type (fbo/fbs)."""
+        key = f"state:stock_total:{shop_id}:{nm_id}:{supply_type}"
+        val = self.client.get(key)
+        return int(val) if val else None
+
+    def set_total_stock(self, shop_id: int, nm_id: int, supply_type: str, quantity: int) -> None:
+        """Store current total stock across all warehouses of a supply type (fbo/fbs)."""
+        key = f"state:stock_total:{shop_id}:{nm_id}:{supply_type}"
         self.client.setex(key, self.COMMERCIAL_TTL, str(quantity))
 
     def get_image_url(self, shop_id: int, nm_id: int) -> Optional[str]:

@@ -2,6 +2,36 @@
 
 Все изменения в проекте документируются в этом файле.
 
+## [Unreleased] - 2026-03-09
+
+### Added — Создание кампании (WB + Ozon)
+
+- **Backend / `event_detector.py` [FEAT]:** Пропуск дубль-события `ITEM_ADD` для новых WB кампаний (`old_status is None`) — товары уже включены в `CAMPAIGN_CREATED` metadata.
+- **Backend / `ozon_ads_event_detector.py` [FEAT]:** Аналогичная защита от дублирования `ITEM_ADD` при `OZON_CAMPAIGN_CREATED` — новые кампании добавляются в `just_started` set.
+- **Backend / `events.py` [FEAT]:** `campaign_items` — структурированный массив товаров кампании `[{offer_id, nm_id, name}]` для CAMPAIGN_CREATED/OZON_CAMPAIGN_CREATED.
+- **Backend / `events.py` [FEAT]:** nm_ids из `metadata.items` добавляются в product_map → offer_id обогащается из `dim_products`/`dim_ozon_products`.
+- **Backend / `events.py` [FEAT]:** `_pluralize()` — helper для склонения «товар/товара/товаров».
+- **Frontend / `EventsPage.tsx` [FEAT]:** `CampaignItemsList` — вертикальный список товаров кампании (артикул + название + sku), expandable > 3, zebra-striping.
+
+### Added — Выбор дат в событиях
+
+- **Frontend / `EventsPage.tsx` [FEAT]:** Интеграция `PeriodSelector` с поддержкой `date_from`/`date_to` для произвольного диапазона дат.
+- **Backend / `events.py` [FEAT]:** `date_from`/`date_to` query parameters (переопределяют `period`).
+- **Frontend / `EventsPage.tsx` [FIX]:** UTC-смещение в `fmtDate` — используются локальные компоненты даты.
+
+### Fixed — Названия WB кампаний в событиях
+
+- **Backend / `redis_state.py` [FIX]:** `get_state`/`set_state` расширены полем `campaign_name` для WB.
+- **Backend / `event_detector.py` [FIX]:** V2 передаёт `campaign_name` в `set_state()` при каждом sync.
+- **Backend / `events.py` [FIX]:** WB Redis fallback — `get_state().campaign_name` (ранее — только Ozon через `get_ozon_campaign_state().title`).
+
+### Changed — UX-иерархия EventCard
+
+- **Frontend / `EventsPage.tsx` [UX]:** Название кампании перемещено на Row 2 — сразу после типа события (ранее — внизу карточки).
+- **Backend / `events.py` [FIX]:** Убран дублирующий 🚀 emoji из лейблов CAMPAIGN_CREATED.
+
+---
+
 ## [Unreleased] - 2026-03-07
 
 ### Fixed — Трекинг изменений фото Ozon

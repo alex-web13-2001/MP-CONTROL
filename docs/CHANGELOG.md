@@ -1,3 +1,48 @@
+## 2026-03-08
+
+### feat(wb): критические события полного отсутствия на складах
+
+- `STOCK_OUT_FBO_TOTAL` — товар закончился на **всех** складах ФБО
+- `STOCK_OUT_FBS_TOTAL` — товар закончился на **всех** складах ФБС
+- Агрегация: суммирует остатки по всем складам каждого типа (FBO/FBS)
+- Redis: `state:stock_total:{shop_id}:{nm_id}:{fbo|fbs}` — хранит предыдущий агрегат
+- Фронтенд: ⚠️ AlertTriangle, красная рамка + ring, визуально отличается от обычного STOCK_OUT
+
+### fix(wb-ads): названия кампаний + ставки в рублях
+
+**Проблема 1**: Рекламные события показывали только ID кампании (напр. «Кампания #34293797»)
+без названия.
+
+**Решение**: `event_detector.py` V1/V2 — добавлен `campaign_title` из `campaign.name`
+в `event_metadata` для всех `BID_CHANGE` и `STATUS_CHANGE` событий.
+
+**Проблема 2**: Ставки WB хранятся в копейках (100000 = 1000₽), но отображались как
+«100 000 ₽» (без деления на 100).
+
+**Решение**: `events.py` — `_format_value` конвертирует kopecks ÷ 100 → «1000 ₽».
+
+### feat(wb): Content-Length based photo change detection
+
+**Проблема**: WB CDN не меняет URL при замене фото — файл перезаписывается по тому же пути.
+`extract_photo_id` извлекал `vol/part/nmID/N` — идентичный до и после замены.
+ETag и Last-Modified нестабильны (round-robin между CDN нодами).
+
+**Решение**: `Content-Length` из HTTP HEAD запросов — единственный стабильный заголовок
+между CDN нодами, меняется только при реальной замене файла.
+
+- `wb_content_service.py`: async HEAD запросы к CDN (`_fetch_photo_fingerprints`)
+  - 20 параллельных запросов, timeout 5с, fallback на path-based ID
+  - `main_photo_id` = Content-Length главного фото
+  - `photos_hash` = MD5 от JSON массива Content-Length всех фото
+- `event_detector.py`: `elif` → `if` — main photo и gallery детектируются независимо
+  - `CONTENT_PHOTO_ADDED` — фото добавлено (count↑)
+  - `CONTENT_PHOTO_REMOVED` — фото удалено (count↓)
+  - `CONTENT_PHOTO_ORDER_CHANGED` — фото заменено (count=, hash≠)
+- `events.py`: категории, лейблы, детализация для новых типов
+- `EventsPage.tsx`: иконки — зелёный Plus (добавлено), красный Minus (удалено)
+
+---
+
 ## 2026-03-03
 
 ### feat: WB LTV — полный модуль анализа повторных покупок

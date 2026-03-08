@@ -18,32 +18,39 @@ import {
   Minus,
   RefreshCw,
   ChevronDown,
+  ChevronUp,
   Filter,
   ArrowRight,
   ArrowDown,
   ArrowUp,
+  AlertTriangle,
+  Package,
+  Rocket,
   type LucideIcon,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import { getEventsFeedApi, type EventsFeedResponse, type EventItem, type EventDay } from '@/api/events'
+import { PeriodSelector, type PeriodValue } from '@/components/DateRangePicker'
 
 /* ═══════════════════════════════════════════════════════════
    Constants
    ═══════════════════════════════════════════════════════════ */
 
-const PERIOD_OPTIONS = [
-  { key: 'today', label: 'Сегодня' },
-  { key: '7d', label: '7 дней' },
-  { key: '30d', label: '30 дней' },
-  { key: '90d', label: '90 дней' },
-] as const
+
+function fmtDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 const CATEGORY_OPTIONS = [
   { key: '', label: 'Все', icon: Activity, color: '#a78bfa' },
   { key: 'advertising', label: 'Реклама', icon: Megaphone, color: '#3b82f6' },
   { key: 'content', label: 'Контент', icon: Palette, color: '#10b981' },
   { key: 'commercial', label: 'Коммерция', icon: DollarSign, color: '#f59e0b' },
+  { key: 'stock', label: 'Склад', icon: Package, color: '#f97316' },
 ] as const
 
 /** Icon + color per event type */
@@ -54,6 +61,7 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   OZON_BUDGET_CHANGE:   { icon: DollarSign,  color: '#8b5cf6', bg: '#8b5cf620' },
   OZON_ITEM_ADD:        { icon: Plus,        color: '#10b981', bg: '#10b98120' },
   OZON_ITEM_REMOVE:     { icon: Minus,       color: '#ef4444', bg: '#ef444420' },
+  OZON_CAMPAIGN_CREATED:{ icon: Rocket,      color: '#22c55e', bg: '#22c55e25' },
   // Ozon Content
   OZON_SEO_CHANGE:      { icon: Palette,     color: '#14b8a6', bg: '#14b8a620' },
   OZON_PHOTO_CHANGE:    { icon: Image,       color: '#f97316', bg: '#f9731620' },
@@ -64,11 +72,14 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   ITEM_ADD:             { icon: Plus,        color: '#10b981', bg: '#10b98120' },
   ITEM_REMOVE:          { icon: Minus,       color: '#ef4444', bg: '#ef444420' },
   ITEM_INACTIVE:        { icon: Minus,       color: '#f59e0b', bg: '#f59e0b20' },
+  CAMPAIGN_CREATED:     { icon: Rocket,      color: '#22c55e', bg: '#22c55e25' },
   // WB Content
   CONTENT_CHANGE:           { icon: Palette, color: '#14b8a6', bg: '#14b8a620' },
   CONTENT_TITLE_CHANGED:    { icon: Palette, color: '#14b8a6', bg: '#14b8a620' },
   CONTENT_DESC_CHANGED:     { icon: Palette, color: '#0ea5e9', bg: '#0ea5e920' },
   CONTENT_MAIN_PHOTO_CHANGED:  { icon: Image, color: '#f97316', bg: '#f9731620' },
+  CONTENT_PHOTO_ADDED:         { icon: Plus,  color: '#10b981', bg: '#10b98120' },
+  CONTENT_PHOTO_REMOVED:       { icon: Minus, color: '#ef4444', bg: '#ef444420' },
   CONTENT_PHOTO_ORDER_CHANGED: { icon: Image, color: '#f97316', bg: '#f9731620' },
   // Commercial
   PRICE_CHANGE:         { icon: DollarSign,  color: '#f59e0b', bg: '#f59e0b20' },
@@ -77,6 +88,9 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   OZON_STOCK_REPLENISH: { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
   STOCK_OUT:            { icon: TrendingDown,color: '#ef4444', bg: '#ef444420' },
   STOCK_REPLENISH:      { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
+  // Critical total stockout
+  STOCK_OUT_FBO_TOTAL:  { icon: AlertTriangle, color: '#dc2626', bg: '#dc262640' },
+  STOCK_OUT_FBS_TOTAL:  { icon: AlertTriangle, color: '#dc2626', bg: '#dc262640' },
 }
 
 const DEFAULT_STYLE = { icon: Activity, color: '#a78bfa', bg: '#a78bfa20' }
@@ -85,6 +99,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   advertising: '#3b82f6',
   content: '#10b981',
   commercial: '#f59e0b',
+  stock: '#f97316',
   other: '#a78bfa',
 }
 
@@ -126,6 +141,7 @@ const CATEGORY_PLACEHOLDER: Record<string, LucideIcon> = {
   advertising: Megaphone,
   content: Palette,
   commercial: DollarSign,
+  stock: Package,
   other: Activity,
 }
 
@@ -154,10 +170,16 @@ function fmtNum(n: number, suffix = ''): string {
 
 /** Value Change display — shows old→new with colored delta */
 function ValueChange({ event }: { event: EventItem }) {
-  const oldNum = parseNum(event.old_value)
-  const newNum = parseNum(event.new_value)
+  let oldNum = parseNum(event.old_value)
+  let newNum = parseNum(event.new_value)
 
   if (oldNum === null || newNum === null) return null
+
+  // WB BID_CHANGE: values stored in kopecks → convert to rubles
+  if (event.event_type === 'BID_CHANGE') {
+    oldNum = oldNum / 100
+    newNum = newNum / 100
+  }
 
   const delta = newNum - oldNum
   const isUp = delta > 0
@@ -201,6 +223,63 @@ function ValueChange({ event }: { event: EventItem }) {
   )
 }
 
+/** Campaign items list for CAMPAIGN_CREATED events */
+function CampaignItemsList({ items }: { items: { offer_id: string; nm_id: string; name: string }[] }) {
+  const [expanded, setExpanded] = useState(false)
+  const VISIBLE = 3
+  const shown = expanded ? items : items.slice(0, VISIBLE)
+  const hasMore = items.length > VISIBLE
+
+  return (
+    <div className="mt-3 rounded-xl border border-[hsl(var(--border)/0.3)] overflow-hidden">
+      {shown.map((it, i) => {
+        const shortName = it.name.length > 60 ? it.name.slice(0, 57) + '…' : it.name
+        const hasArticle = !!(it.offer_id && it.offer_id !== '—')
+
+        return (
+          <div
+            key={it.nm_id + i}
+            className={`flex items-center gap-3 px-3 py-2.5 ${
+              i % 2 === 1 ? 'bg-[hsl(var(--muted)/0.06)]' : ''
+            } ${i > 0 ? 'border-t border-[hsl(var(--border)/0.15)]' : ''}`}
+          >
+            {/* Article code */}
+            <span className={`text-[13px] font-mono font-bold shrink-0 min-w-[130px] uppercase ${
+              hasArticle
+                ? 'text-[hsl(var(--primary)/0.9)]'
+                : 'text-[hsl(var(--muted-foreground)/0.3)] italic font-normal normal-case'
+            }`}>
+              {hasArticle ? it.offer_id : 'нет артикула'}
+            </span>
+
+            {/* Product name */}
+            <span className="text-[13px] text-[hsl(var(--foreground)/0.7)] truncate flex-1" title={it.name}>
+              {shortName}
+            </span>
+
+            {/* SKU badge */}
+            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.45)] shrink-0">
+              #{it.nm_id}
+            </span>
+          </div>
+        )
+      })}
+      {hasMore && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[12px] font-medium text-[hsl(var(--primary)/0.7)] hover:text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted)/0.06)] border-t border-[hsl(var(--border)/0.15)] transition-colors"
+        >
+          {expanded ? (
+            <><ChevronUp className="h-3.5 w-3.5" /> Свернуть</>
+          ) : (
+            <><ChevronDown className="h-3.5 w-3.5" /> Ещё {items.length - VISIBLE} товар{items.length - VISIBLE === 1 ? '' : items.length - VISIBLE < 5 ? 'а' : 'ов'}</>
+          )}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function EventCard({ event, index }: { event: EventItem; index: number }) {
   const style = EVENT_STYLE[event.event_type] || DEFAULT_STYLE
   const Icon = style.icon
@@ -209,6 +288,7 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
 
   const hasImage = event.product?.image_url && !imgError
   const isNumericEvent = NUMERIC_EVENT_TYPES.has(event.event_type)
+  const isCritical = event.event_type === 'STOCK_OUT_FBO_TOTAL' || event.event_type === 'STOCK_OUT_FBS_TOTAL'
 
   // Contextual placeholder
   const PlaceholderIcon = CATEGORY_PLACEHOLDER[event.category] || Activity
@@ -218,14 +298,18 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.3) }}
-      className="group relative flex gap-4 rounded-2xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-5
-                 hover:border-[hsl(var(--border)/0.7)] hover:shadow-lg hover:shadow-black/5
-                 transition-all duration-200"
+      className={`group relative flex gap-4 rounded-2xl border p-5
+                 hover:shadow-lg hover:shadow-black/5
+                 transition-all duration-200
+                 ${isCritical
+                   ? 'border-red-500/60 bg-red-500/5 hover:border-red-500/80 ring-1 ring-red-500/20'
+                   : 'border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] hover:border-[hsl(var(--border)/0.7)]'
+                 }`}
     >
       {/* Category accent line */}
       <div
         className="absolute left-0 top-4 bottom-4 w-[4px] rounded-full"
-        style={{ background: catColor }}
+        style={{ background: isCritical ? '#dc2626' : catColor }}
       />
 
       {/* Product image or contextual placeholder */}
@@ -266,7 +350,20 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
           </span>
         </div>
 
-        {/* Row 2: Detail text (non-numeric events) */}
+        {/* Row 2: Campaign name (most important after event type) */}
+        {event.advert_id ? (
+          <div className="flex items-center gap-2 mt-1.5">
+            <Megaphone className="h-3.5 w-3.5 shrink-0" style={{ color: catColor, opacity: 0.6 }} />
+            <span className="text-[14px] font-semibold text-[hsl(var(--foreground)/0.85)] truncate">
+              {event.campaign_title || `Кампания #${event.advert_id}`}
+            </span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.5)]">
+              #{event.advert_id}
+            </span>
+          </div>
+        ) : null}
+
+        {/* Row 3: Detail text (non-numeric events) */}
         {event.detail && !isNumericEvent && (
           <p className="mt-1.5 text-[14px] text-[hsl(var(--foreground)/0.8)] leading-relaxed font-medium">
             {event.detail}
@@ -294,20 +391,12 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
           </p>
         )}
 
-        {/* Campaign info */}
-        {event.advert_id ? (
-          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
-            <Megaphone className="h-4 w-4 shrink-0" style={{ color: catColor, opacity: 0.7 }} />
-            <span className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.8)] truncate max-w-[450px]">
-              {event.campaign_title
-                ? event.campaign_title
-                : `Кампания #${event.advert_id}`}
-            </span>
-            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground)/0.6)]">
-              #{event.advert_id}
-            </span>
-          </div>
-        ) : null}
+        {/* Campaign items list */}
+        {event.campaign_items && event.campaign_items.length > 0 && (
+          <CampaignItemsList items={event.campaign_items} />
+        )}
+
+
       </div>
 
       {/* Time */}
@@ -420,7 +509,9 @@ export default function EventsPage() {
   const [data, setData] = useState<EventsFeedResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [period, setPeriod] = useState('7d')
+  const [periodValue, setPeriodValue] = useState<PeriodValue>({
+    mode: 'quick', period: 7, dateRange: null
+  })
   const [category, setCategory] = useState('')
   const [page, setPage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -436,13 +527,21 @@ export default function EventsPage() {
     setError(null)
 
     try {
-      const result = await getEventsFeedApi({
+      const apiParams: Parameters<typeof getEventsFeedApi>[0] = {
         shop_id: shopId,
-        period,
         category: category || undefined,
         page: pageNum,
         page_size: 50,
-      })
+      }
+
+      if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
+        apiParams.date_from = fmtDate(periodValue.dateRange.from)
+        apiParams.date_to = fmtDate(periodValue.dateRange.to ?? periodValue.dateRange.from)
+      } else {
+        apiParams.period = periodValue.period === 7 ? '7d' : '30d'
+      }
+
+      const result = await getEventsFeedApi(apiParams)
 
       if (append && data) {
         // Merge days
@@ -469,14 +568,14 @@ export default function EventsPage() {
       setLoading(false)
       setLoadingMore(false)
     }
-  }, [shopId, period, category, data])
+  }, [shopId, periodValue, category, data])
 
   // Reset and fetch on filter change
   useEffect(() => {
     setPage(1)
     setData(null)
     fetchData(1, false)
-  }, [shopId, period, category]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shopId, periodValue, category]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalLoadedEvents = data?.days.reduce((sum, d) => sum + d.events.length, 0) || 0
   const hasMore = data ? totalLoadedEvents < data.total : false
@@ -511,21 +610,7 @@ export default function EventsPage() {
         </div>
 
         {/* Period selector */}
-        <div className="flex items-center gap-1 bg-[hsl(var(--muted)/0.15)] rounded-xl p-1">
-          {PERIOD_OPTIONS.map(opt => (
-            <button
-              key={opt.key}
-              onClick={() => setPeriod(opt.key)}
-              className={`px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 ${
-                period === opt.key
-                  ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
-                  : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
+        <PeriodSelector value={periodValue} onChange={setPeriodValue} />
       </div>
 
       {/* ── Category filter ── */}
@@ -556,7 +641,7 @@ export default function EventsPage() {
       <AnimatePresence mode="wait">
         {data && data.days.length > 0 ? (
           <motion.div
-            key={`${period}-${category}`}
+            key={`${JSON.stringify(periodValue)}-${category}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

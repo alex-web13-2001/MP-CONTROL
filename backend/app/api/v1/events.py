@@ -31,11 +31,13 @@ EVENT_CATEGORIES = {
     "ITEM_ADD": "advertising",
     "ITEM_REMOVE": "advertising",
     "ITEM_INACTIVE": "advertising",
+    "CAMPAIGN_CREATED": "advertising",
     "OZON_BID_CHANGE": "advertising",
     "OZON_STATUS_CHANGE": "advertising",
     "OZON_BUDGET_CHANGE": "advertising",
     "OZON_ITEM_ADD": "advertising",
     "OZON_ITEM_REMOVE": "advertising",
+    "OZON_CAMPAIGN_CREATED": "advertising",
     # Content
     "OZON_SEO_CHANGE": "content",
     "OZON_PHOTO_CHANGE": "content",
@@ -44,14 +46,19 @@ EVENT_CATEGORIES = {
     "CONTENT_TITLE_CHANGED": "content",
     "CONTENT_DESC_CHANGED": "content",
     "CONTENT_MAIN_PHOTO_CHANGED": "content",
+    "CONTENT_PHOTO_ADDED": "content",
+    "CONTENT_PHOTO_REMOVED": "content",
     "CONTENT_PHOTO_ORDER_CHANGED": "content",
     # Commercial
     "PRICE_CHANGE": "commercial",
     "OZON_PRICE_CHANGE": "commercial",
-    "OZON_STOCK_OUT": "commercial",
-    "OZON_STOCK_REPLENISH": "commercial",
-    "STOCK_OUT": "commercial",
-    "STOCK_REPLENISH": "commercial",
+    # Stock / Warehouse
+    "OZON_STOCK_OUT": "stock",
+    "OZON_STOCK_REPLENISH": "stock",
+    "STOCK_OUT": "stock",
+    "STOCK_REPLENISH": "stock",
+    "STOCK_OUT_FBO_TOTAL": "stock",
+    "STOCK_OUT_FBS_TOTAL": "stock",
 }
 
 # Human-readable event descriptions (Russian)
@@ -61,6 +68,7 @@ EVENT_LABELS = {
     "OZON_BUDGET_CHANGE": "Бюджет кампании изменён",
     "OZON_ITEM_ADD": "Товар добавлен в кампанию",
     "OZON_ITEM_REMOVE": "Товар удалён из кампании",
+    "OZON_CAMPAIGN_CREATED": "Новая кампания",
     "OZON_SEO_CHANGE": "SEO-контент изменён",
     "OZON_PHOTO_CHANGE": "Изменение фото",
     "OZON_CONTENT_CHANGE": "Контент изменён",
@@ -69,17 +77,22 @@ EVENT_LABELS = {
     "ITEM_ADD": "Товар добавлен в кампанию",
     "ITEM_REMOVE": "Товар удалён из кампании",
     "ITEM_INACTIVE": "Товар неактивен",
+    "CAMPAIGN_CREATED": "Новая кампания",
     "CONTENT_CHANGE": "Изменение контента",
     "CONTENT_TITLE_CHANGED": "Заголовок изменён",
     "CONTENT_DESC_CHANGED": "Описание изменено",
     "CONTENT_MAIN_PHOTO_CHANGED": "Главное фото изменено",
-    "CONTENT_PHOTO_ORDER_CHANGED": "Порядок фото изменён",
+    "CONTENT_PHOTO_ADDED": "Фото добавлено в галерею",
+    "CONTENT_PHOTO_REMOVED": "Фото удалено из галереи",
+    "CONTENT_PHOTO_ORDER_CHANGED": "Фото галереи изменено",
     "PRICE_CHANGE": "Цена изменена",
     "OZON_PRICE_CHANGE": "Цена изменена",
     "OZON_STOCK_OUT": "Товар закончился",
     "OZON_STOCK_REPLENISH": "Поступление на склад",
     "STOCK_OUT": "Товар закончился",
     "STOCK_REPLENISH": "Поступление на склад",
+    "STOCK_OUT_FBO_TOTAL": "⚠️ Нет остатков ФБО",
+    "STOCK_OUT_FBS_TOTAL": "⚠️ Нет остатков ФБС",
 }
 
 PERIOD_DAYS = {
@@ -88,6 +101,17 @@ PERIOD_DAYS = {
     "30d": 30,
     "90d": 90,
 }
+
+def _pluralize(n: int) -> str:
+    """Russian plural for товар"""
+    if 11 <= n % 100 <= 19:
+        return "ов"
+    r = n % 10
+    if r == 1:
+        return ""
+    if 2 <= r <= 4:
+        return "а"
+    return "ов"
 
 
 def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict] = None) -> str:
@@ -101,9 +125,13 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
         except (ValueError, TypeError):
             return value
     if event_type == "BID_CHANGE":
-        # WB bids in kopecks
+        # WB bids stored in kopecks — convert to rubles for display
         try:
-            return f"{int(value)} коп."
+            kopecks = int(value)
+            rubles = kopecks / 100
+            if rubles == int(rubles):
+                return f"{int(rubles)} ₽"
+            return f"{rubles:.2f} ₽"
         except (ValueError, TypeError):
             return value
     if event_type in ("OZON_BUDGET_CHANGE",):
@@ -123,11 +151,13 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
 async def get_events_feed(
     shop_id: int = Query(..., description="Shop ID"),
     period: str = Query("7d", description="Period: today, 7d, 30d, 90d"),
+    date_from: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
     event_types: Optional[str] = Query(
         None, description="Comma-separated event types filter"
     ),
     category: Optional[str] = Query(
-        None, description="Category filter: advertising, content, commercial"
+        None, description="Category filter: advertising, content, commercial, stock"
     ),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=10, le=200, description="Events per page"),
@@ -157,17 +187,26 @@ async def get_events_feed(
     marketplace = shop_row[1]
 
     # ── Date range ─────────────────────────────────────
-    days = PERIOD_DAYS.get(period, 7)
     today = date.today()
-    date_from = today - timedelta(days=days - 1)
-    date_to = today
+    if date_from and date_to:
+        # Custom range from calendar
+        try:
+            d_from = date.fromisoformat(date_from)
+            d_to = date.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(400, "Invalid date format, use YYYY-MM-DD")
+    else:
+        # Quick period
+        days = PERIOD_DAYS.get(period, 7)
+        d_from = today - timedelta(days=days - 1)
+        d_to = today
 
     # ── Build filters ──────────────────────────────────
     filters = ["e.shop_id = :shop_id", "e.created_at >= :date_from", "e.created_at < :date_to_exclusive"]
     params: dict = {
         "shop_id": shop_id,
-        "date_from": dt_datetime.combine(date_from, dt_datetime.min.time()),
-        "date_to_exclusive": dt_datetime.combine(date_to + timedelta(days=1), dt_datetime.min.time()),
+        "date_from": dt_datetime.combine(d_from, dt_datetime.min.time()),
+        "date_to_exclusive": dt_datetime.combine(d_to + timedelta(days=1), dt_datetime.min.time()),
     }
 
     # Filter by event types
@@ -178,7 +217,7 @@ async def get_events_feed(
             params["type_list"] = type_list
 
     # Filter by category
-    if category and category in ("advertising", "content", "commercial"):
+    if category and category in ("advertising", "content", "commercial", "stock"):
         cat_types = [k for k, v in EVENT_CATEGORIES.items() if v == category]
         if cat_types:
             filters.append("e.event_type = ANY(:cat_types)")
@@ -234,6 +273,19 @@ async def get_events_feed(
             nm_ids.add(int(ev[5]))
         if ev[4]:  # advert_id
             advert_ids.add(int(ev[4]))
+        # Extract nm_ids from CAMPAIGN_CREATED metadata items
+        event_type = ev[2]
+        if event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED"):
+            meta_raw = ev[8]
+            if meta_raw:
+                try:
+                    m = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                    for item in (m.get("items") or []):
+                        item_id = item.get("nm_id") or item.get("sku")
+                        if item_id:
+                            nm_ids.add(int(item_id))
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
 
     # ── Enrich with product data ───────────────────────
     product_map = {}
@@ -311,7 +363,7 @@ async def get_events_feed(
                 if ct:
                     campaign_title_map[adv_id_int] = ct
                 # For STATUS_CHANGE / BUDGET_CHANGE, meta["title"] IS the campaign title
-                elif ev_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+                elif ev_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE", "STATUS_CHANGE"):
                     title = meta.get("title", "")
                     if title:
                         campaign_title_map[adv_id_int] = title
@@ -325,7 +377,7 @@ async def get_events_feed(
                 FROM event_log
                 WHERE shop_id = :shop_id
                   AND advert_id = ANY(:advert_ids)
-                  AND event_type IN ('OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE')
+                  AND event_type IN ('OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE', 'STATUS_CHANGE')
                   AND event_metadata->>'title' IS NOT NULL
                   AND event_metadata->>'title' != ''
                 ORDER BY advert_id, created_at DESC
@@ -361,10 +413,17 @@ async def get_events_feed(
         try:
             redis_state = RedisStateManager()
             for adv_id in still_missing2:
-                state = redis_state.get_ozon_campaign_state(shop_id, adv_id)
-                title = state.get("title", "")
+                # Try Ozon state first
+                ozon_state = redis_state.get_ozon_campaign_state(shop_id, adv_id)
+                title = ozon_state.get("title", "")
                 if title:
                     campaign_title_map[adv_id] = title
+                    continue
+                # Try WB state
+                wb_state = redis_state.get_state(shop_id, adv_id)
+                wb_name = wb_state.get("campaign_name", "")
+                if wb_name:
+                    campaign_title_map[adv_id] = wb_name
         except Exception as e:
             logger.warning("Redis campaign title lookup failed: %s", e)
 
@@ -410,7 +469,7 @@ async def get_events_feed(
             if not campaign_title:
                 campaign_title = meta.get("campaign_title", "")
             # 3. For campaign-level events, meta["title"] IS the campaign title
-            if not campaign_title and event_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+            if not campaign_title and event_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE", "STATUS_CHANGE"):
                 campaign_title = meta.get("title", "")
 
         # Format values for display
@@ -419,6 +478,8 @@ async def get_events_feed(
 
         # Build detail string
         detail = ""
+        campaign_items_list = []
+        items = meta.get("items", [])
         if event_type in ("OZON_BID_CHANGE", "BID_CHANGE", "PRICE_CHANGE", "OZON_PRICE_CHANGE"):
             detail = f"{old_display} → {new_display}"
             bid_field = meta.get("bid_field", "")
@@ -443,6 +504,35 @@ async def get_events_feed(
             detail = "Товар добавлен в кампанию"
         elif event_type in ("OZON_ITEM_REMOVE", "ITEM_REMOVE", "ITEM_INACTIVE"):
             detail = "Товар удалён из кампании"
+        elif event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED"):
+            status_labels = {
+                "CAMPAIGN_STATE_RUNNING": "Активна",
+                "CAMPAIGN_STATE_STOPPED": "Остановлена",
+                "CAMPAIGN_STATE_INACTIVE": "Неактивна",
+                "9": "Активна", "11": "Остановлена", "7": "В архиве",
+            }
+            status_label = status_labels.get(new_value, "")
+            detail = f"Создана кампания" + (f" · {status_label}" if status_label else "")
+            
+            # Build structured items list for frontend
+            campaign_items_list = []
+            if items:
+                for it in items:
+                    nm_id = it.get("nm_id") or it.get("sku", "")
+                    prod_info = product_map.get(int(nm_id)) if nm_id else None
+                    if prod_info:
+                        campaign_items_list.append({
+                            "offer_id": prod_info.get("offer_id", ""),
+                            "nm_id": str(nm_id),
+                            "name": prod_info.get("name", ""),
+                        })
+                    else:
+                        campaign_items_list.append({
+                            "offer_id": it.get("offer_id", ""),
+                            "nm_id": str(nm_id),
+                            "name": it.get("title", "") or it.get("subject", ""),
+                        })
+                detail += f" · {len(campaign_items_list)} товар{_pluralize(len(campaign_items_list))}"
         elif event_type in ("STOCK_OUT",):
             warehouse = meta.get("warehouse_name", "")
             detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")
@@ -450,6 +540,9 @@ async def get_events_feed(
             warehouse = meta.get("warehouse_name", "")
             delta = meta.get("delta", "")
             detail = f"+{delta} шт." + (f" ({warehouse})" if warehouse else "")
+        elif event_type in ("STOCK_OUT_FBO_TOTAL", "STOCK_OUT_FBS_TOTAL"):
+            supply = meta.get("supply_type", "")
+            detail = f"Товар полностью закончился на всех складах {supply} (было {old_value} шт.)"
         elif event_type in ("OZON_SEO_CHANGE",):
             field = meta.get("field", "")
             field_label = {"title": "Заголовок", "description": "Описание"}.get(field, field)
@@ -471,10 +564,26 @@ async def get_events_feed(
             detail = f"Новый заголовок: {new_title}" if new_title else "Заголовок изменён"
         elif event_type in ("CONTENT_DESC_CHANGED",):
             detail = "Описание товара изменено"
-        elif event_type in ("CONTENT_MAIN_PHOTO_CHANGED", "CONTENT_PHOTO_ORDER_CHANGED"):
+        elif event_type == "CONTENT_MAIN_PHOTO_CHANGED":
             old_count = meta.get("old_count", "?")
             new_count = meta.get("new_count", "?")
-            detail = f"Фото: {old_count} → {new_count} шт."
+            if old_count != new_count:
+                detail = f"Главное фото заменено. Фото: {old_count} → {new_count} шт."
+            else:
+                detail = "Главное фото заменено"
+        elif event_type == "CONTENT_PHOTO_ADDED":
+            old_count = meta.get("old_count", "?")
+            new_count = meta.get("new_count", "?")
+            diff = (new_count - old_count) if isinstance(new_count, int) and isinstance(old_count, int) else '?'
+            detail = f"+{diff} фото ({old_count} → {new_count} шт.)"
+        elif event_type == "CONTENT_PHOTO_REMOVED":
+            old_count = meta.get("old_count", "?")
+            new_count = meta.get("new_count", "?")
+            diff = (old_count - new_count) if isinstance(new_count, int) and isinstance(old_count, int) else '?'
+            detail = f"−{diff} фото ({old_count} → {new_count} шт.)"
+        elif event_type == "CONTENT_PHOTO_ORDER_CHANGED":
+            count = meta.get("new_count", "?")
+            detail = f"Фото галереи заменены ({count} шт.)"
 
         day_key = created_at.strftime("%Y-%m-%d") if created_at else str(date.today())
 
@@ -490,6 +599,7 @@ async def get_events_feed(
             "old_value": old_value,
             "new_value": new_value,
             "product": product,
+            "campaign_items": campaign_items_list if event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED") else None,
         })
 
     # Sort days descending

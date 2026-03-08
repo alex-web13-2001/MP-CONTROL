@@ -16,7 +16,7 @@ export interface EventItem {
   id: number
   created_at: string
   event_type: string
-  category: 'advertising' | 'content' | 'commercial' | 'other'
+  category: 'advertising' | 'content' | 'commercial' | 'stock' | 'other'
   label: string
   detail: string
   advert_id: number | null
@@ -24,6 +24,7 @@ export interface EventItem {
   old_value: string | null
   new_value: string | null
   product: EventProduct | null
+  campaign_items?: { offer_id: string; nm_id: string; name: string }[] | null
 }
 
 export interface EventDay {
@@ -45,6 +46,8 @@ export interface EventsFeedResponse {
 export async function getEventsFeedApi(params: {
   shop_id: number
   period?: string
+  date_from?: string
+  date_to?: string
   event_types?: string
   category?: string
   page?: number

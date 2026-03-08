@@ -64,6 +64,7 @@ class EventDetector:
                 # Parse current values with validation
                 raw_status = campaign.get("status")
                 campaign_type = campaign.get("type")
+                campaign_name = campaign.get("name", "") or campaign.get("advertName", "")
                 
                 # Extract CPM from unitedParams (new format as of Oct 2025)
                 raw_cpm = self._extract_cpm(campaign)
@@ -95,7 +96,10 @@ class EventDetector:
                             "event_type": "BID_CHANGE",
                             "old_value": str(old_cpm),
                             "new_value": str(current_cpm),
-                            "event_metadata": {"campaign_type": campaign_type}
+                            "event_metadata": {
+                                "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
+                            }
                         })
                         logger.info(f"Detected BID_CHANGE: advert={advert_id} {old_cpm} -> {current_cpm}")
                 
@@ -109,7 +113,9 @@ class EventDetector:
                             "event_type": "STATUS_CHANGE",
                             "old_value": str(old_status),
                             "new_value": str(current_status),
-                            "event_metadata": None
+                            "event_metadata": {
+                                "campaign_title": campaign_name,
+                            }
                         })
                         logger.info(f"Detected STATUS_CHANGE: advert={advert_id} {old_status} -> {current_status}")
                 
@@ -429,12 +435,40 @@ class EventDetector:
                 # Parse current values
                 status = int(advert.get("status") or 0)
                 campaign_type = type_map.get(advert_id, 0)
+                campaign_name = (advert.get("settings") or {}).get("name", "") or advert.get("name", "")
                 
                 # ===== STATUS_CHANGE =====
                 old_state = self.state_manager.get_state(shop_id, advert_id)
                 old_status = old_state.get("status")
                 
-                if old_status is not None and status != old_status:
+                # New campaign detected (no previous state in Redis)
+                if old_status is None:
+                    # Collect items in this campaign from nm_settings
+                    nm_settings = advert.get("nm_settings") or []
+                    campaign_items = []
+                    for ns in nm_settings:
+                        nm = ns.get("nm_id")
+                        if nm:
+                            campaign_items.append({
+                                "nm_id": nm,
+                                "subject": (ns.get("subject") or {}).get("name", ""),
+                            })
+                    
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": None,
+                        "event_type": "CAMPAIGN_CREATED",
+                        "old_value": "",
+                        "new_value": str(status),
+                        "event_metadata": {
+                            "campaign_title": campaign_name,
+                            "campaign_type": campaign_type,
+                            "items": campaign_items,
+                        }
+                    })
+                    logger.info(f"Detected CAMPAIGN_CREATED: advert={advert_id} name='{campaign_name}' items={len(campaign_items)}")
+                elif status != old_status:
                     events.append({
                         "shop_id": shop_id,
                         "advert_id": advert_id,
@@ -442,7 +476,9 @@ class EventDetector:
                         "event_type": "STATUS_CHANGE",
                         "old_value": str(old_status),
                         "new_value": str(status),
-                        "event_metadata": None
+                        "event_metadata": {
+                            "campaign_title": campaign_name,
+                        }
                     })
                     logger.info(f"Detected STATUS_CHANGE: advert={advert_id} {old_status} -> {status}")
                 
@@ -478,6 +514,7 @@ class EventDetector:
                             "event_metadata": {
                                 "bid_field": "search",
                                 "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
                                 "unit": "kopecks",
                             }
                         })
@@ -497,6 +534,7 @@ class EventDetector:
                             "event_metadata": {
                                 "bid_field": "recommendations",
                                 "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
                                 "unit": "kopecks",
                             }
                         })
@@ -510,20 +548,22 @@ class EventDetector:
                     self.state_manager.set_bid(shop_id, advert_id, nm_id, "recommendations", bid_reco)
                 
                 # ===== ITEM_ADD / ITEM_REMOVE =====
+                # Skip for brand-new campaigns (items already in CAMPAIGN_CREATED metadata)
                 old_items = set(old_state.get("items") or [])
                 current_items_set = set(current_items)
                 
-                for nm_id in current_items_set - old_items:
-                    events.append({
-                        "shop_id": shop_id,
-                        "advert_id": advert_id,
-                        "nm_id": nm_id,
-                        "event_type": "ITEM_ADD",
-                        "old_value": None,
-                        "new_value": str(nm_id),
-                        "event_metadata": None
-                    })
-                    logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
+                if old_status is not None:
+                    for nm_id in current_items_set - old_items:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "ITEM_ADD",
+                            "old_value": None,
+                            "new_value": str(nm_id),
+                            "event_metadata": None
+                        })
+                        logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
                 for nm_id in old_items - current_items_set:
                     events.append({
@@ -550,7 +590,8 @@ class EventDetector:
                     cpm=float(max_bid) if max_bid > 0 else None,
                     status=status,
                     items=current_items if current_items else None,
-                    campaign_type=campaign_type
+                    campaign_type=campaign_type,
+                    campaign_name=campaign_name if campaign_name else None,
                 )
             
             except Exception as e:
@@ -740,6 +781,67 @@ class CommercialEventDetector:
             f"Detected {len([e for e in events if e['event_type'] == 'STOCK_OUT'])} STOCK_OUT "
             f"and {len([e for e in events if e['event_type'] == 'STOCK_REPLENISH'])} STOCK_REPLENISH events"
         )
+
+        # ===== TOTAL STOCKOUT: all FBO or all FBS warehouses = 0 =====
+        # Group current stocks by nm_id and supply type (FBO/FBS)
+        from collections import defaultdict
+        fbo_totals: Dict[int, int] = defaultdict(int)  # nm_id → total FBO qty
+        fbs_totals: Dict[int, int] = defaultdict(int)  # nm_id → total FBS qty
+        fbo_nms: set = set()
+        fbs_nms: set = set()
+
+        for item in stocks_data:
+            nm_id = item["nm_id"]
+            wh = item["warehouse_name"]
+            qty = item["amount"]
+            if wh.startswith("FBS:"):
+                fbs_totals[nm_id] += qty
+                fbs_nms.add(nm_id)
+            else:
+                fbo_totals[nm_id] += qty
+                fbo_nms.add(nm_id)
+
+        # Check each nm_id: if total = 0 now but was > 0 before
+        for nm_id in fbo_nms:
+            if fbo_totals[nm_id] == 0:
+                old_total = self.state_manager.get_total_stock(shop_id, nm_id, "fbo")
+                if old_total is not None and old_total > 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": 0,
+                        "nm_id": nm_id,
+                        "event_type": "STOCK_OUT_FBO_TOTAL",
+                        "old_value": str(old_total),
+                        "new_value": "0",
+                        "event_metadata": {"supply_type": "FBO"},
+                    })
+                    logger.warning(f"CRITICAL STOCK_OUT_FBO_TOTAL: nm={nm_id} (was {old_total})")
+
+        for nm_id in fbs_nms:
+            if fbs_totals[nm_id] == 0:
+                old_total = self.state_manager.get_total_stock(shop_id, nm_id, "fbs")
+                if old_total is not None and old_total > 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": 0,
+                        "nm_id": nm_id,
+                        "event_type": "STOCK_OUT_FBS_TOTAL",
+                        "old_value": str(old_total),
+                        "new_value": "0",
+                        "event_metadata": {"supply_type": "FBS"},
+                    })
+                    logger.warning(f"CRITICAL STOCK_OUT_FBS_TOTAL: nm={nm_id} (was {old_total})")
+
+        # Update total stock state in Redis (after detection)
+        for nm_id in fbo_nms:
+            self.state_manager.set_total_stock(shop_id, nm_id, "fbo", fbo_totals[nm_id])
+        for nm_id in fbs_nms:
+            self.state_manager.set_total_stock(shop_id, nm_id, "fbs", fbs_totals[nm_id])
+
+        total_critical = len([e for e in events if e["event_type"].startswith("STOCK_OUT_F")])
+        if total_critical:
+            logger.warning(f"CRITICAL: {total_critical} total stockout events!")
+
         return events
 
     def detect_content_changes(
@@ -903,7 +1005,7 @@ class ContentEventDetector:
                 logger.info(f"Detected CONTENT_DESC_CHANGED: nm={nm_id}")
 
             # === CONTENT_MAIN_PHOTO_CHANGED ===
-            # Most important for CTR! Uses photo_id (not full URL)
+            # Most important for CTR! Uses Content-Length fingerprint.
             if (
                 card["main_photo_id"]
                 and old.get("main_photo_id")
@@ -923,27 +1025,40 @@ class ContentEventDetector:
                 })
                 logger.info(f"Detected CONTENT_MAIN_PHOTO_CHANGED: nm={nm_id}")
 
-            # === CONTENT_PHOTO_ORDER_CHANGED ===
-            # Detects added/removed/reordered secondary photos (affects CR)
-            # Only fires if main photo is unchanged (otherwise MAIN_PHOTO_CHANGED covers it)
-            elif (
+            # === Gallery photo changes ===
+            # Fires INDEPENDENTLY from main photo (not elif).
+            # Sub-typed by count difference:
+            #   CONTENT_PHOTO_ADDED   — photos were added to gallery
+            #   CONTENT_PHOTO_REMOVED — photos were removed from gallery
+            #   CONTENT_PHOTO_ORDER_CHANGED — same count, but photos replaced/reordered
+            if (
                 card["photos_hash"]
                 and old.get("photos_hash")
                 and card["photos_hash"] != old["photos_hash"]
             ):
+                old_count = old.get("photos_count", 0)
+                new_count = card["photos_count"]
+
+                if new_count > old_count:
+                    gallery_event_type = "CONTENT_PHOTO_ADDED"
+                elif new_count < old_count:
+                    gallery_event_type = "CONTENT_PHOTO_REMOVED"
+                else:
+                    gallery_event_type = "CONTENT_PHOTO_ORDER_CHANGED"
+
                 events.append({
                     "shop_id": shop_id,
                     "advert_id": 0,
                     "nm_id": nm_id,
-                    "event_type": "CONTENT_PHOTO_ORDER_CHANGED",
+                    "event_type": gallery_event_type,
                     "old_value": old["photos_hash"],
                     "new_value": card["photos_hash"],
                     "event_metadata": {
-                        "old_count": old.get("photos_count", 0),
-                        "new_count": card["photos_count"],
+                        "old_count": old_count,
+                        "new_count": new_count,
                     },
                 })
-                logger.info(f"Detected CONTENT_PHOTO_ORDER_CHANGED: nm={nm_id}")
+                logger.info(f"Detected {gallery_event_type}: nm={nm_id} ({old_count}->{new_count})")
 
         logger.info(
             f"Content audit: {len(events)} events detected "

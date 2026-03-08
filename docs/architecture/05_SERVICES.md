@@ -399,3 +399,10 @@ FBO + FBS возвраты Ozon.
 
 - `ozon_products_service.py`: `upsert_ozon_content` — убран `sorted()` из расчёта `images_hash`, теперь порядок фото учитывается для детектирования изменений в галерее
 - `ozon_products_service.py`: OZON_PHOTO_CHANGE теперь записывается с `field: main_image` или `field: gallery` (ранее `images_order`) — два разных типа фото-изменений
+
+### 2026-03-09
+
+- **`event_detector.py`**: V2 `detect_changes_v2` — пропуск `ITEM_ADD` для новых кампаний (`old_status is None`), товары уже в `CAMPAIGN_CREATED` metadata
+- **`event_detector.py`**: V2 теперь передаёт `campaign_name` в `set_state()` для хранения названий WB кампаний в Redis
+- **`ozon_ads_event_detector.py`**: новые кампании добавляются в `just_started` set → предотвращение дублирующих `ITEM_ADD` событий при `OZON_CAMPAIGN_CREATED`
+- **`redis_state.py`**: `get_state`/`set_state` расширены полем `campaign_name` — кеширование названий WB кампаний для Events API fallback

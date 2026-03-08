@@ -608,6 +608,8 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 shop_id: int (required)  — ID магазина
 period: "today" | "7d" | "30d" | "90d"  — период (default: "7d")
 category: "all" | "advertising" | "content" | "commercial"  — фильтр по категории
+date_from: date (optional) — начало кастомного диапазона (переопределяет period)
+date_to: date (optional) — конец кастомного диапазона (переопределяет period)
 ```
 
 ### Response Schema
@@ -637,7 +639,24 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
           },
           "old_value": "12.00 ₽",
           "new_value": "18.00 ₽",
-          "detail": "12.00 ₽ → 18.00 ₽"
+          "detail": "12.00 ₽ → 18.00 ₽",
+          "campaign_items": null
+        },
+        {
+          "id": 1235,
+          "event_type": "OZON_CAMPAIGN_CREATED",
+          "category": "advertising",
+          "label": "Новая кампания",
+          "campaign_title": "тест 111",
+          "detail": "Создана кампания · Активна · 8 товаров",
+          "campaign_items": [
+            {
+              "offer_id": "АМ-КШ-СТЕР-КР-10",
+              "nm_id": "2947854852",
+              "name": "Amare Корм..."
+            },
+            { "offer_id": "", "nm_id": "2946710642", "name": "Amare Корм..." }
+          ]
         }
       ]
     }
@@ -647,39 +666,42 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 
 ### Типы событий
 
-| event_type             | category    | Описание                                          |
-| ---------------------- | ----------- | ------------------------------------------------- |
-| `OZON_BID_CHANGE`      | advertising | Изменение ставки                                  |
-| `OZON_STATUS_CHANGE`   | advertising | Статус кампании изменён                           |
-| `OZON_BUDGET_CHANGE`   | advertising | Бюджет кампании изменён                           |
-| `OZON_ITEM_ADD`        | advertising | Товар добавлен в кампанию                         |
-| `OZON_ITEM_REMOVE`     | advertising | Товар удалён из кампании                          |
-| `OZON_SEO_CHANGE`      | content     | SEO-контент изменён                               |
-| `OZON_PHOTO_CHANGE`    | content     | Фото изменено (`field`: `main_image` / `gallery`) |
-| `OZON_CONTENT_CHANGE`  | content     | Контент (название) изменён                        |
-| `OZON_PRICE_CHANGE`    | commercial  | Цена изменена                                     |
-| `OZON_STOCK_OUT`       | commercial  | Товар закончился (остатки → 0)                    |
-| `OZON_STOCK_REPLENISH` | commercial  | Поступление на склад (0 → N)                      |
-| `ITEM_INACTIVE`        | advertising | Товар деактивирован (WB)                          |
-| `BID_CHANGE`           | advertising | Изменение ставки (WB)                             |
-| `STATUS_CHANGE`        | advertising | Статус кампании изменён (WB)                      |
-| `ITEM_ADD`             | advertising | Товар добавлен (WB)                               |
-| `ITEM_REMOVE`          | advertising | Товар удалён (WB)                                 |
-| `CONTENT_CHANGE`       | content     | Контент изменён (WB)                              |
-| `CONTENT_DESC_CHANGED` | content     | Описание товара изменено (WB)                     |
-| `PRICE_CHANGE`         | commercial  | Цена изменена (WB)                                |
-| `STOCK_OUT`            | commercial  | Товар закончился (WB)                             |
-| `STOCK_REPLENISH`      | commercial  | Поступление на склад (WB)                         |
+| event_type              | category    | Описание                                          |
+| ----------------------- | ----------- | ------------------------------------------------- |
+| `OZON_BID_CHANGE`       | advertising | Изменение ставки                                  |
+| `OZON_STATUS_CHANGE`    | advertising | Статус кампании изменён                           |
+| `OZON_BUDGET_CHANGE`    | advertising | Бюджет кампании изменён                           |
+| `OZON_ITEM_ADD`         | advertising | Товар добавлен в кампанию                         |
+| `OZON_ITEM_REMOVE`      | advertising | Товар удалён из кампании                          |
+| `OZON_CAMPAIGN_CREATED` | advertising | Новая кампания Ozon (с `campaign_items`)          |
+| `OZON_SEO_CHANGE`       | content     | SEO-контент изменён                               |
+| `OZON_PHOTO_CHANGE`     | content     | Фото изменено (`field`: `main_image` / `gallery`) |
+| `OZON_CONTENT_CHANGE`   | content     | Контент (название) изменён                        |
+| `OZON_PRICE_CHANGE`     | commercial  | Цена изменена                                     |
+| `OZON_STOCK_OUT`        | commercial  | Товар закончился (остатки → 0)                    |
+| `OZON_STOCK_REPLENISH`  | commercial  | Поступление на склад (0 → N)                      |
+| `ITEM_INACTIVE`         | advertising | Товар деактивирован (WB)                          |
+| `BID_CHANGE`            | advertising | Изменение ставки (WB)                             |
+| `STATUS_CHANGE`         | advertising | Статус кампании изменён (WB)                      |
+| `ITEM_ADD`              | advertising | Товар добавлен (WB)                               |
+| `ITEM_REMOVE`           | advertising | Товар удалён (WB)                                 |
+| `CAMPAIGN_CREATED`      | advertising | Новая кампания WB (с `campaign_items`)            |
+| `CONTENT_CHANGE`        | content     | Контент изменён (WB)                              |
+| `CONTENT_DESC_CHANGED`  | content     | Описание товара изменено (WB)                     |
+| `PRICE_CHANGE`          | commercial  | Цена изменена (WB)                                |
+| `STOCK_OUT`             | commercial  | Товар закончился (WB)                             |
+| `STOCK_REPLENISH`       | commercial  | Поступление на склад (WB)                         |
 
 ### Обогащение данных
 
 - **Товар:** JOIN `event_log.nm_id` → `dim_ozon_products` по `sku` ИЛИ `product_id` → name, offer_id, image_url
+- **Товары кампании (CAMPAIGN_CREATED):** nm_ids из `metadata.items` тоже добавляются в product_map lookup → offer_id обогащается из БД
 - **Campaign title:** 5-уровневый fallback:
   1. `event_metadata.campaign_title` (новые события)
   2. `event_metadata.title` только для STATUS_CHANGE/BUDGET_CHANGE
   3. STATUS_CHANGE из БД (того же advert_id)
   4. `campaign_title` из любых событий в БД
-  5. Redis-кеш (записывается трекером)
+  5. Redis-кеш: Ozon → `get_ozon_campaign_state().title`, WB → `get_state().campaign_name`
 
 ### Changelog
 
@@ -693,3 +715,12 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 
 - OZON_PHOTO_CHANGE: поддержка `field: gallery` (ранее только `images_order`) в detail-тексте
 - `advert_id` больше не обязателен — контентные события (OZON_PHOTO_CHANGE и др.) корректно записываются с `advert_id = NULL`
+
+#### 2026-03-09
+
+- **`date_from`/`date_to`**: добавлены query parameters для кастомного диапазона дат (переопределяют `period`)
+- **`campaign_items`**: новое поле в response — структурированный список товаров для `CAMPAIGN_CREATED`/`OZON_CAMPAIGN_CREATED` (`[{offer_id, nm_id, name}]`)
+- **`_pluralize()`**: helper для русского склонения «товар/товара/товаров» в detail-строке
+- **Product enrichment**: nm_ids из `CAMPAIGN_CREATED` metadata.items добавляются в `product_map` lookup → offer_id обогащается из `dim_products`/`dim_ozon_products`
+- **WB Redis fallback**: `get_state().campaign_name` используется для резолва названий WB кампаний (ранее — только Ozon через `get_ozon_campaign_state().title`)
+- **Emoji cleanup**: убран дублирующий 🚀 из лейблов CAMPAIGN_CREATED/OZON_CAMPAIGN_CREATED (иконка уже в EVENT_STYLE)
