@@ -14,6 +14,7 @@ import AbcXyzPage from '@/pages/AbcXyzPage'
 import ForecastPage from '@/pages/ForecastPage'
 import LtvPage from '@/pages/LtvPage'
 import EventsPage from '@/pages/EventsPage'
+import EventsGraphPage from '@/pages/EventsGraphPage'
 
 export default function App() {
   return (
@@ -51,6 +52,7 @@ export default function App() {
           <Route path="/customers/ltv" element={<LtvPage />} />
           <Route path="/finances" element={<FinancesPage />} />
           <Route path="/events" element={<EventsPage />} />
+          <Route path="/events/graph" element={<EventsGraphPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
           <Route path="/funnel" element={<FunnelPage />} />

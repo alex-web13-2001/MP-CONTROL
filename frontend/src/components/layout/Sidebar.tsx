@@ -74,7 +74,15 @@ const navSections: NavSection[] = [
     title: 'Управление',
     items: [
       { path: '/advertising', label: 'Реклама', icon: Megaphone },
-      { path: '/events', label: 'События', icon: Activity },
+      {
+        path: '/events',
+        label: 'События',
+        icon: Activity,
+        children: [
+          { path: '/events', label: 'Лента событий', icon: Activity },
+          { path: '/events/graph', label: 'График событий', icon: LineChart },
+        ],
+      },
     ],
   },
   {

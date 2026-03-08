@@ -15,6 +15,7 @@ from app.api.v1.sales import router as sales_router
 from app.api.v1.ltv import router as ltv_router
 from app.api.v1.wb_ltv import router as wb_ltv_router
 from app.api.v1.events import router as events_router
+from app.api.v1.events_graph import router as events_graph_router
 
 api_router = APIRouter()
 
@@ -34,6 +35,7 @@ api_router.include_router(sales_router)
 api_router.include_router(ltv_router)
 api_router.include_router(wb_ltv_router)
 api_router.include_router(events_router)
+api_router.include_router(events_graph_router)
 
 
 @api_router.get("/")
