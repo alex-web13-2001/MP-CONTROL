@@ -22,6 +22,7 @@ import {
   ArrowRight,
   ArrowDown,
   ArrowUp,
+  AlertTriangle,
   type LucideIcon,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -79,6 +80,9 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   OZON_STOCK_REPLENISH: { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
   STOCK_OUT:            { icon: TrendingDown,color: '#ef4444', bg: '#ef444420' },
   STOCK_REPLENISH:      { icon: TrendingUp,  color: '#10b981', bg: '#10b98120' },
+  // Critical total stockout
+  STOCK_OUT_FBO_TOTAL:  { icon: AlertTriangle, color: '#dc2626', bg: '#dc262640' },
+  STOCK_OUT_FBS_TOTAL:  { icon: AlertTriangle, color: '#dc2626', bg: '#dc262640' },
 }
 
 const DEFAULT_STYLE = { icon: Activity, color: '#a78bfa', bg: '#a78bfa20' }
@@ -217,6 +221,7 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
 
   const hasImage = event.product?.image_url && !imgError
   const isNumericEvent = NUMERIC_EVENT_TYPES.has(event.event_type)
+  const isCritical = event.event_type === 'STOCK_OUT_FBO_TOTAL' || event.event_type === 'STOCK_OUT_FBS_TOTAL'
 
   // Contextual placeholder
   const PlaceholderIcon = CATEGORY_PLACEHOLDER[event.category] || Activity
@@ -226,14 +231,18 @@ function EventCard({ event, index }: { event: EventItem; index: number }) {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, delay: Math.min(index * 0.03, 0.3) }}
-      className="group relative flex gap-4 rounded-2xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-5
-                 hover:border-[hsl(var(--border)/0.7)] hover:shadow-lg hover:shadow-black/5
-                 transition-all duration-200"
+      className={`group relative flex gap-4 rounded-2xl border p-5
+                 hover:shadow-lg hover:shadow-black/5
+                 transition-all duration-200
+                 ${isCritical
+                   ? 'border-red-500/60 bg-red-500/5 hover:border-red-500/80 ring-1 ring-red-500/20'
+                   : 'border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] hover:border-[hsl(var(--border)/0.7)]'
+                 }`}
     >
       {/* Category accent line */}
       <div
         className="absolute left-0 top-4 bottom-4 w-[4px] rounded-full"
-        style={{ background: catColor }}
+        style={{ background: isCritical ? '#dc2626' : catColor }}
       />
 
       {/* Product image or contextual placeholder */}

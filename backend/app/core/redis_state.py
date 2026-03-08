@@ -183,6 +183,17 @@ class RedisStateManager:
         key = f"state:stock:{shop_id}:{nm_id}:{warehouse}"
         self.client.setex(key, self.COMMERCIAL_TTL, str(quantity))
 
+    def get_total_stock(self, shop_id: int, nm_id: int, supply_type: str) -> Optional[int]:
+        """Get last known TOTAL stock across all warehouses of a supply type (fbo/fbs)."""
+        key = f"state:stock_total:{shop_id}:{nm_id}:{supply_type}"
+        val = self.client.get(key)
+        return int(val) if val else None
+
+    def set_total_stock(self, shop_id: int, nm_id: int, supply_type: str, quantity: int) -> None:
+        """Store current total stock across all warehouses of a supply type (fbo/fbs)."""
+        key = f"state:stock_total:{shop_id}:{nm_id}:{supply_type}"
+        self.client.setex(key, self.COMMERCIAL_TTL, str(quantity))
+
     def get_image_url(self, shop_id: int, nm_id: int) -> Optional[str]:
         """Get last known main image URL for a product."""
         key = f"state:image:{shop_id}:{nm_id}"

@@ -54,6 +54,8 @@ EVENT_CATEGORIES = {
     "OZON_STOCK_REPLENISH": "commercial",
     "STOCK_OUT": "commercial",
     "STOCK_REPLENISH": "commercial",
+    "STOCK_OUT_FBO_TOTAL": "commercial",
+    "STOCK_OUT_FBS_TOTAL": "commercial",
 }
 
 # Human-readable event descriptions (Russian)
@@ -84,6 +86,8 @@ EVENT_LABELS = {
     "OZON_STOCK_REPLENISH": "Поступление на склад",
     "STOCK_OUT": "Товар закончился",
     "STOCK_REPLENISH": "Поступление на склад",
+    "STOCK_OUT_FBO_TOTAL": "⚠️ Нет остатков ФБО",
+    "STOCK_OUT_FBS_TOTAL": "⚠️ Нет остатков ФБС",
 }
 
 PERIOD_DAYS = {
@@ -458,6 +462,9 @@ async def get_events_feed(
             warehouse = meta.get("warehouse_name", "")
             delta = meta.get("delta", "")
             detail = f"+{delta} шт." + (f" ({warehouse})" if warehouse else "")
+        elif event_type in ("STOCK_OUT_FBO_TOTAL", "STOCK_OUT_FBS_TOTAL"):
+            supply = meta.get("supply_type", "")
+            detail = f"Товар полностью закончился на всех складах {supply} (было {old_value} шт.)"
         elif event_type in ("OZON_SEO_CHANGE",):
             field = meta.get("field", "")
             field_label = {"title": "Заголовок", "description": "Описание"}.get(field, field)

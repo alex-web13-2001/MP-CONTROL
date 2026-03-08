@@ -751,6 +751,67 @@ class CommercialEventDetector:
             f"Detected {len([e for e in events if e['event_type'] == 'STOCK_OUT'])} STOCK_OUT "
             f"and {len([e for e in events if e['event_type'] == 'STOCK_REPLENISH'])} STOCK_REPLENISH events"
         )
+
+        # ===== TOTAL STOCKOUT: all FBO or all FBS warehouses = 0 =====
+        # Group current stocks by nm_id and supply type (FBO/FBS)
+        from collections import defaultdict
+        fbo_totals: Dict[int, int] = defaultdict(int)  # nm_id → total FBO qty
+        fbs_totals: Dict[int, int] = defaultdict(int)  # nm_id → total FBS qty
+        fbo_nms: set = set()
+        fbs_nms: set = set()
+
+        for item in stocks_data:
+            nm_id = item["nm_id"]
+            wh = item["warehouse_name"]
+            qty = item["amount"]
+            if wh.startswith("FBS:"):
+                fbs_totals[nm_id] += qty
+                fbs_nms.add(nm_id)
+            else:
+                fbo_totals[nm_id] += qty
+                fbo_nms.add(nm_id)
+
+        # Check each nm_id: if total = 0 now but was > 0 before
+        for nm_id in fbo_nms:
+            if fbo_totals[nm_id] == 0:
+                old_total = self.state_manager.get_total_stock(shop_id, nm_id, "fbo")
+                if old_total is not None and old_total > 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": 0,
+                        "nm_id": nm_id,
+                        "event_type": "STOCK_OUT_FBO_TOTAL",
+                        "old_value": str(old_total),
+                        "new_value": "0",
+                        "event_metadata": {"supply_type": "FBO"},
+                    })
+                    logger.warning(f"CRITICAL STOCK_OUT_FBO_TOTAL: nm={nm_id} (was {old_total})")
+
+        for nm_id in fbs_nms:
+            if fbs_totals[nm_id] == 0:
+                old_total = self.state_manager.get_total_stock(shop_id, nm_id, "fbs")
+                if old_total is not None and old_total > 0:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": 0,
+                        "nm_id": nm_id,
+                        "event_type": "STOCK_OUT_FBS_TOTAL",
+                        "old_value": str(old_total),
+                        "new_value": "0",
+                        "event_metadata": {"supply_type": "FBS"},
+                    })
+                    logger.warning(f"CRITICAL STOCK_OUT_FBS_TOTAL: nm={nm_id} (was {old_total})")
+
+        # Update total stock state in Redis (after detection)
+        for nm_id in fbo_nms:
+            self.state_manager.set_total_stock(shop_id, nm_id, "fbo", fbo_totals[nm_id])
+        for nm_id in fbs_nms:
+            self.state_manager.set_total_stock(shop_id, nm_id, "fbs", fbs_totals[nm_id])
+
+        total_critical = len([e for e in events if e["event_type"].startswith("STOCK_OUT_F")])
+        if total_critical:
+            logger.warning(f"CRITICAL: {total_critical} total stockout events!")
+
         return events
 
     def detect_content_changes(
