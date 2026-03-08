@@ -64,6 +64,7 @@ class EventDetector:
                 # Parse current values with validation
                 raw_status = campaign.get("status")
                 campaign_type = campaign.get("type")
+                campaign_name = campaign.get("name", "") or campaign.get("advertName", "")
                 
                 # Extract CPM from unitedParams (new format as of Oct 2025)
                 raw_cpm = self._extract_cpm(campaign)
@@ -95,7 +96,10 @@ class EventDetector:
                             "event_type": "BID_CHANGE",
                             "old_value": str(old_cpm),
                             "new_value": str(current_cpm),
-                            "event_metadata": {"campaign_type": campaign_type}
+                            "event_metadata": {
+                                "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
+                            }
                         })
                         logger.info(f"Detected BID_CHANGE: advert={advert_id} {old_cpm} -> {current_cpm}")
                 
@@ -109,7 +113,9 @@ class EventDetector:
                             "event_type": "STATUS_CHANGE",
                             "old_value": str(old_status),
                             "new_value": str(current_status),
-                            "event_metadata": None
+                            "event_metadata": {
+                                "campaign_title": campaign_name,
+                            }
                         })
                         logger.info(f"Detected STATUS_CHANGE: advert={advert_id} {old_status} -> {current_status}")
                 
@@ -429,6 +435,7 @@ class EventDetector:
                 # Parse current values
                 status = int(advert.get("status") or 0)
                 campaign_type = type_map.get(advert_id, 0)
+                campaign_name = advert.get("name", "") or ""
                 
                 # ===== STATUS_CHANGE =====
                 old_state = self.state_manager.get_state(shop_id, advert_id)
@@ -442,7 +449,9 @@ class EventDetector:
                         "event_type": "STATUS_CHANGE",
                         "old_value": str(old_status),
                         "new_value": str(status),
-                        "event_metadata": None
+                        "event_metadata": {
+                            "campaign_title": campaign_name,
+                        }
                     })
                     logger.info(f"Detected STATUS_CHANGE: advert={advert_id} {old_status} -> {status}")
                 
@@ -478,6 +487,7 @@ class EventDetector:
                             "event_metadata": {
                                 "bid_field": "search",
                                 "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
                                 "unit": "kopecks",
                             }
                         })
@@ -497,6 +507,7 @@ class EventDetector:
                             "event_metadata": {
                                 "bid_field": "recommendations",
                                 "campaign_type": campaign_type,
+                                "campaign_title": campaign_name,
                                 "unit": "kopecks",
                             }
                         })

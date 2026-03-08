@@ -105,9 +105,13 @@ def _format_value(event_type: str, value: Optional[str], metadata: Optional[dict
         except (ValueError, TypeError):
             return value
     if event_type == "BID_CHANGE":
-        # WB bids in kopecks
+        # WB bids stored in kopecks — convert to rubles for display
         try:
-            return f"{int(value)} коп."
+            kopecks = int(value)
+            rubles = kopecks / 100
+            if rubles == int(rubles):
+                return f"{int(rubles)} ₽"
+            return f"{rubles:.2f} ₽"
         except (ValueError, TypeError):
             return value
     if event_type in ("OZON_BUDGET_CHANGE",):
@@ -315,7 +319,7 @@ async def get_events_feed(
                 if ct:
                     campaign_title_map[adv_id_int] = ct
                 # For STATUS_CHANGE / BUDGET_CHANGE, meta["title"] IS the campaign title
-                elif ev_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+                elif ev_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE", "STATUS_CHANGE"):
                     title = meta.get("title", "")
                     if title:
                         campaign_title_map[adv_id_int] = title
@@ -329,7 +333,7 @@ async def get_events_feed(
                 FROM event_log
                 WHERE shop_id = :shop_id
                   AND advert_id = ANY(:advert_ids)
-                  AND event_type IN ('OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE')
+                  AND event_type IN ('OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE', 'STATUS_CHANGE')
                   AND event_metadata->>'title' IS NOT NULL
                   AND event_metadata->>'title' != ''
                 ORDER BY advert_id, created_at DESC
@@ -414,7 +418,7 @@ async def get_events_feed(
             if not campaign_title:
                 campaign_title = meta.get("campaign_title", "")
             # 3. For campaign-level events, meta["title"] IS the campaign title
-            if not campaign_title and event_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE"):
+            if not campaign_title and event_type in ("OZON_STATUS_CHANGE", "OZON_BUDGET_CHANGE", "STATUS_CHANGE"):
                 campaign_title = meta.get("title", "")
 
         # Format values for display
