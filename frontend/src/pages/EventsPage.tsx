@@ -24,6 +24,7 @@ import {
   ArrowUp,
   AlertTriangle,
   Package,
+  Rocket,
   type LucideIcon,
 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -57,6 +58,7 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   OZON_BUDGET_CHANGE:   { icon: DollarSign,  color: '#8b5cf6', bg: '#8b5cf620' },
   OZON_ITEM_ADD:        { icon: Plus,        color: '#10b981', bg: '#10b98120' },
   OZON_ITEM_REMOVE:     { icon: Minus,       color: '#ef4444', bg: '#ef444420' },
+  OZON_CAMPAIGN_CREATED:{ icon: Rocket,      color: '#22c55e', bg: '#22c55e25' },
   // Ozon Content
   OZON_SEO_CHANGE:      { icon: Palette,     color: '#14b8a6', bg: '#14b8a620' },
   OZON_PHOTO_CHANGE:    { icon: Image,       color: '#f97316', bg: '#f9731620' },
@@ -67,6 +69,7 @@ const EVENT_STYLE: Record<string, { icon: LucideIcon; color: string; bg: string 
   ITEM_ADD:             { icon: Plus,        color: '#10b981', bg: '#10b98120' },
   ITEM_REMOVE:          { icon: Minus,       color: '#ef4444', bg: '#ef444420' },
   ITEM_INACTIVE:        { icon: Minus,       color: '#f59e0b', bg: '#f59e0b20' },
+  CAMPAIGN_CREATED:     { icon: Rocket,      color: '#22c55e', bg: '#22c55e25' },
   // WB Content
   CONTENT_CHANGE:           { icon: Palette, color: '#14b8a6', bg: '#14b8a620' },
   CONTENT_TITLE_CHANGED:    { icon: Palette, color: '#14b8a6', bg: '#14b8a620' },

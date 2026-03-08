@@ -31,11 +31,13 @@ EVENT_CATEGORIES = {
     "ITEM_ADD": "advertising",
     "ITEM_REMOVE": "advertising",
     "ITEM_INACTIVE": "advertising",
+    "CAMPAIGN_CREATED": "advertising",
     "OZON_BID_CHANGE": "advertising",
     "OZON_STATUS_CHANGE": "advertising",
     "OZON_BUDGET_CHANGE": "advertising",
     "OZON_ITEM_ADD": "advertising",
     "OZON_ITEM_REMOVE": "advertising",
+    "OZON_CAMPAIGN_CREATED": "advertising",
     # Content
     "OZON_SEO_CHANGE": "content",
     "OZON_PHOTO_CHANGE": "content",
@@ -66,6 +68,7 @@ EVENT_LABELS = {
     "OZON_BUDGET_CHANGE": "Бюджет кампании изменён",
     "OZON_ITEM_ADD": "Товар добавлен в кампанию",
     "OZON_ITEM_REMOVE": "Товар удалён из кампании",
+    "OZON_CAMPAIGN_CREATED": "🚀 Новая кампания",
     "OZON_SEO_CHANGE": "SEO-контент изменён",
     "OZON_PHOTO_CHANGE": "Изменение фото",
     "OZON_CONTENT_CHANGE": "Контент изменён",
@@ -74,6 +77,7 @@ EVENT_LABELS = {
     "ITEM_ADD": "Товар добавлен в кампанию",
     "ITEM_REMOVE": "Товар удалён из кампании",
     "ITEM_INACTIVE": "Товар неактивен",
+    "CAMPAIGN_CREATED": "🚀 Новая кампания",
     "CONTENT_CHANGE": "Изменение контента",
     "CONTENT_TITLE_CHANGED": "Заголовок изменён",
     "CONTENT_DESC_CHANGED": "Описание изменено",
@@ -456,6 +460,16 @@ async def get_events_feed(
             detail = "Товар добавлен в кампанию"
         elif event_type in ("OZON_ITEM_REMOVE", "ITEM_REMOVE", "ITEM_INACTIVE"):
             detail = "Товар удалён из кампании"
+        elif event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED"):
+            status_labels = {
+                "CAMPAIGN_STATE_RUNNING": "Активна",
+                "CAMPAIGN_STATE_STOPPED": "Остановлена",
+                "CAMPAIGN_STATE_INACTIVE": "Неактивна",
+                "9": "Активна", "11": "Остановлена", "7": "В архиве",
+            }
+            status_label = status_labels.get(new_value, "")
+            ct = meta.get("campaign_title", "") or meta.get("title", "")
+            detail = f"Создана кампания" + (f" · {status_label}" if status_label else "")
         elif event_type in ("STOCK_OUT",):
             warehouse = meta.get("warehouse_name", "")
             detail = f"Остаток: {old_value} → 0" + (f" ({warehouse})" if warehouse else "")

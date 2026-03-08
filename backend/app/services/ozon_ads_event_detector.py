@@ -144,8 +144,28 @@ class OzonAdsEventDetector:
                 old_status = old_state.get("status")
                 old_budget = old_state.get("budget")
 
+                # ── CAMPAIGN_CREATED (new campaign) ──
+                if current_status is not None and old_status is None:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": campaign_id,
+                        "nm_id": None,
+                        "event_type": "OZON_CAMPAIGN_CREATED",
+                        "old_value": "",
+                        "new_value": str(current_status),
+                        "event_metadata": {
+                            "title": camp.get("title", ""),
+                            "campaign_title": camp.get("title", ""),
+                            "type": camp.get("advObjectType", ""),
+                        },
+                    })
+                    logger.info(
+                        "OZON_CAMPAIGN_CREATED: campaign=%d '%s'",
+                        campaign_id, camp.get("title", ""),
+                    )
+
                 # ── STATUS_CHANGE ──
-                if current_status is not None and old_status is not None:
+                elif current_status is not None and old_status is not None:
                     if str(current_status) != str(old_status):
                         events.append({
                             "shop_id": shop_id,

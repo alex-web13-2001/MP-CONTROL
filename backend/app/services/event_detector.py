@@ -441,7 +441,22 @@ class EventDetector:
                 old_state = self.state_manager.get_state(shop_id, advert_id)
                 old_status = old_state.get("status")
                 
-                if old_status is not None and status != old_status:
+                # New campaign detected (no previous state in Redis)
+                if old_status is None:
+                    events.append({
+                        "shop_id": shop_id,
+                        "advert_id": advert_id,
+                        "nm_id": None,
+                        "event_type": "CAMPAIGN_CREATED",
+                        "old_value": "",
+                        "new_value": str(status),
+                        "event_metadata": {
+                            "campaign_title": campaign_name,
+                            "campaign_type": campaign_type,
+                        }
+                    })
+                    logger.info(f"Detected CAMPAIGN_CREATED: advert={advert_id} name='{campaign_name}'")
+                elif status != old_status:
                     events.append({
                         "shop_id": shop_id,
                         "advert_id": advert_id,
