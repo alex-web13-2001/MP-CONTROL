@@ -74,13 +74,116 @@ MAX_BRIEF_PER_CATEGORY = 2
 
 def _event_brief_text(event_type: str, old_value: str | None, new_value: str | None,
                        metadata: dict | None) -> str:
-    """Build short text for tooltip, e.g. 'Ставка 12→18₽'."""
-    label = EVENT_LABELS.get(event_type, event_type)
-    if old_value and new_value:
-        return f"{label} {old_value}→{new_value}"
-    if new_value:
-        return f"{label}: {new_value}"
-    return label
+    """Build short human-readable text for tooltip."""
+    meta = metadata or {}
+
+    # ── Status changes ──
+    if event_type in ("OZON_STATUS_CHANGE", "STATUS_CHANGE"):
+        status_labels = {
+            "CAMPAIGN_STATE_RUNNING": "Активна",
+            "CAMPAIGN_STATE_STOPPED": "Остановлена",
+            "CAMPAIGN_STATE_INACTIVE": "Неактивна",
+            "CAMPAIGN_STATE_ARCHIVED": "В архиве",
+            "9": "Активна", "11": "Остановлена", "7": "В архиве",
+        }
+        new_label = status_labels.get(new_value or "", new_value or "")
+        return f"Кампания → {new_label}"
+
+    # ── Campaign created ──
+    if event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED"):
+        items = meta.get("items", [])
+        n = len(items)
+        return f"Новая кампания · {n} товар." if n else "Новая кампания"
+
+    # ── Bid changes ──
+    if event_type == "OZON_BID_CHANGE":
+        try:
+            old_f = f"{float(old_value):.0f}" if old_value else "?"
+            new_f = f"{float(new_value):.0f}" if new_value else "?"
+            bid_field = meta.get("bid_field", "")
+            prefix = "Поиск" if bid_field == "search" else "Рек." if bid_field else ""
+            return f"Ставка {prefix} {old_f}→{new_f} ₽".strip()
+        except (ValueError, TypeError):
+            return "Ставка изменена"
+
+    if event_type == "BID_CHANGE":
+        try:
+            old_r = int(old_value) // 100 if old_value else "?"
+            new_r = int(new_value) // 100 if new_value else "?"
+            return f"Ставка {old_r}→{new_r} ₽"
+        except (ValueError, TypeError):
+            return "Ставка изменена"
+
+    # ── Budget changes ──
+    if event_type == "OZON_BUDGET_CHANGE":
+        try:
+            old_f = f"{float(old_value):,.0f}".replace(",", " ") if old_value else "?"
+            new_f = f"{float(new_value):,.0f}".replace(",", " ") if new_value else "?"
+            return f"Бюджет {old_f}→{new_f} ₽"
+        except (ValueError, TypeError):
+            return "Бюджет изменён"
+
+    # ── Price changes ──
+    if event_type in ("PRICE_CHANGE", "OZON_PRICE_CHANGE"):
+        try:
+            old_f = f"{float(old_value):,.0f}".replace(",", " ") if old_value else "?"
+            new_f = f"{float(new_value):,.0f}".replace(",", " ") if new_value else "?"
+            arrow = "↑" if old_value and new_value and float(new_value) > float(old_value) else "↓"
+            return f"Цена {arrow} {old_f}→{new_f} ₽"
+        except (ValueError, TypeError):
+            return "Цена изменена"
+
+    # ── Item add/remove ──
+    if event_type in ("OZON_ITEM_ADD", "ITEM_ADD"):
+        return "Товар добавлен в кампанию"
+    if event_type in ("OZON_ITEM_REMOVE", "ITEM_REMOVE", "ITEM_INACTIVE"):
+        return "Товар удалён из кампании"
+
+    # ── Content changes — hide hashes/IDs ──
+    if event_type == "OZON_SEO_CHANGE":
+        field = meta.get("field", "")
+        return {"title": "SEO: заголовок", "description": "SEO: описание"}.get(field, "SEO изменён")
+
+    if event_type == "OZON_PHOTO_CHANGE":
+        field = meta.get("field", "")
+        if field == "main_image":
+            return "Главное фото заменено"
+        if field in ("gallery", "images_order", "images"):
+            return "Галерея изменена"
+        return "Фото изменено"
+
+    if event_type == "OZON_CONTENT_CHANGE":
+        return "Контент изменён"
+    if event_type == "CONTENT_CHANGE":
+        return "Контент изменён"
+    if event_type == "CONTENT_TITLE_CHANGED":
+        return "Заголовок изменён"
+    if event_type == "CONTENT_DESC_CHANGED":
+        return "Описание изменено"
+    if event_type == "CONTENT_MAIN_PHOTO_CHANGED":
+        return "Главное фото заменено"
+    if event_type == "CONTENT_PHOTO_ADDED":
+        old_c = meta.get("old_count", "?")
+        new_c = meta.get("new_count", "?")
+        return f"Фото добавлено ({old_c}→{new_c} шт.)"
+    if event_type == "CONTENT_PHOTO_REMOVED":
+        return "Фото удалено"
+    if event_type == "CONTENT_PHOTO_ORDER_CHANGED":
+        return "Галерея изменена"
+
+    # ── Stock events ──
+    if event_type in ("OZON_STOCK_OUT", "STOCK_OUT"):
+        warehouse = meta.get("warehouse_name", "")
+        return f"Нет остатков" + (f" ({warehouse})" if warehouse else "")
+    if event_type in ("OZON_STOCK_REPLENISH", "STOCK_REPLENISH"):
+        delta = meta.get("delta", "")
+        return f"Поступление +{delta} шт." if delta else "Поступление на склад"
+    if event_type in ("STOCK_OUT_FBO_TOTAL", "STOCK_OUT_FBS_TOTAL"):
+        supply = meta.get("supply_type", "")
+        return f"⚠️ Нет остатков {supply}"
+
+    # Fallback — just label, no raw values
+    return EVENT_LABELS.get(event_type, event_type)
 
 
 def _group_key(d: date, group_by: str) -> str:
