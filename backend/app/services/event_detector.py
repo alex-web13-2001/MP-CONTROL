@@ -435,7 +435,7 @@ class EventDetector:
                 # Parse current values
                 status = int(advert.get("status") or 0)
                 campaign_type = type_map.get(advert_id, 0)
-                campaign_name = advert.get("name", "") or ""
+                campaign_name = (advert.get("settings") or {}).get("name", "") or advert.get("name", "")
                 
                 # ===== STATUS_CHANGE =====
                 old_state = self.state_manager.get_state(shop_id, advert_id)

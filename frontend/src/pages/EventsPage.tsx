@@ -156,10 +156,16 @@ function fmtNum(n: number, suffix = ''): string {
 
 /** Value Change display — shows old→new with colored delta */
 function ValueChange({ event }: { event: EventItem }) {
-  const oldNum = parseNum(event.old_value)
-  const newNum = parseNum(event.new_value)
+  let oldNum = parseNum(event.old_value)
+  let newNum = parseNum(event.new_value)
 
   if (oldNum === null || newNum === null) return null
+
+  // WB BID_CHANGE: values stored in kopecks → convert to rubles
+  if (event.event_type === 'BID_CHANGE') {
+    oldNum = oldNum / 100
+    newNum = newNum / 100
+  }
 
   const delta = newNum - oldNum
   const isUp = delta > 0
