@@ -231,46 +231,48 @@ function CampaignItemsList({ items }: { items: { offer_id: string; nm_id: string
   const hasMore = items.length > VISIBLE
 
   return (
-    <div className="mt-3">
-      <div className="flex flex-wrap gap-x-1 gap-y-1.5">
-        {shown.map((it, i) => {
-          // Truncate long product names
-          const shortName = it.name.length > 55 ? it.name.slice(0, 52) + '…' : it.name
-          // Primary label: offer_id if exists, otherwise short name
-          const hasArticle = it.offer_id && it.offer_id !== '—'
+    <div className="mt-3 rounded-xl border border-[hsl(var(--border)/0.3)] overflow-hidden">
+      {shown.map((it, i) => {
+        const shortName = it.name.length > 60 ? it.name.slice(0, 57) + '…' : it.name
+        const hasArticle = !!(it.offer_id && it.offer_id !== '—')
 
-          return (
-            <div
-              key={it.nm_id + i}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)] max-w-full"
-            >
-              {hasArticle && (
-                <span className="text-[11px] font-mono font-bold text-[hsl(var(--primary)/0.85)] shrink-0 uppercase">
-                  {it.offer_id}
-                </span>
-              )}
-              {hasArticle && (
-                <span className="text-[hsl(var(--border)/0.5)] text-[10px]">·</span>
-              )}
-              <span className="text-[11px] text-[hsl(var(--foreground)/0.6)] truncate" title={it.name}>
-                {shortName}
-              </span>
-              <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.4)] shrink-0 ml-auto">
-                {it.nm_id}
-              </span>
-            </div>
-          )
-        })}
-      </div>
+        return (
+          <div
+            key={it.nm_id + i}
+            className={`flex items-center gap-3 px-3 py-2.5 ${
+              i % 2 === 1 ? 'bg-[hsl(var(--muted)/0.06)]' : ''
+            } ${i > 0 ? 'border-t border-[hsl(var(--border)/0.15)]' : ''}`}
+          >
+            {/* Article code */}
+            <span className={`text-[13px] font-mono font-bold shrink-0 min-w-[130px] uppercase ${
+              hasArticle
+                ? 'text-[hsl(var(--primary)/0.9)]'
+                : 'text-[hsl(var(--muted-foreground)/0.3)] italic font-normal normal-case'
+            }`}>
+              {hasArticle ? it.offer_id : 'нет артикула'}
+            </span>
+
+            {/* Product name */}
+            <span className="text-[13px] text-[hsl(var(--foreground)/0.7)] truncate flex-1" title={it.name}>
+              {shortName}
+            </span>
+
+            {/* SKU badge */}
+            <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.12)] text-[hsl(var(--muted-foreground)/0.45)] shrink-0">
+              #{it.nm_id}
+            </span>
+          </div>
+        )
+      })}
       {hasMore && (
         <button
           onClick={() => setExpanded(!expanded)}
-          className="mt-1.5 flex items-center gap-1 text-[11px] font-medium text-[hsl(var(--primary)/0.7)] hover:text-[hsl(var(--primary))] transition-colors"
+          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-[12px] font-medium text-[hsl(var(--primary)/0.7)] hover:text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted)/0.06)] border-t border-[hsl(var(--border)/0.15)] transition-colors"
         >
           {expanded ? (
-            <><ChevronUp className="h-3 w-3" /> Свернуть</>
+            <><ChevronUp className="h-3.5 w-3.5" /> Свернуть</>
           ) : (
-            <><ChevronDown className="h-3 w-3" /> Ещё {items.length - VISIBLE} товар{items.length - VISIBLE === 1 ? '' : items.length - VISIBLE < 5 ? 'а' : 'ов'}</>
+            <><ChevronDown className="h-3.5 w-3.5" /> Ещё {items.length - VISIBLE} товар{items.length - VISIBLE === 1 ? '' : items.length - VISIBLE < 5 ? 'а' : 'ов'}</>
           )}
         </button>
       )}

@@ -273,6 +273,19 @@ async def get_events_feed(
             nm_ids.add(int(ev[5]))
         if ev[4]:  # advert_id
             advert_ids.add(int(ev[4]))
+        # Extract nm_ids from CAMPAIGN_CREATED metadata items
+        event_type = ev[2]
+        if event_type in ("CAMPAIGN_CREATED", "OZON_CAMPAIGN_CREATED"):
+            meta_raw = ev[8]
+            if meta_raw:
+                try:
+                    m = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
+                    for item in (m.get("items") or []):
+                        item_id = item.get("nm_id") or item.get("sku")
+                        if item_id:
+                            nm_ids.add(int(item_id))
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
 
     # ── Enrich with product data ───────────────────────
     product_map = {}
