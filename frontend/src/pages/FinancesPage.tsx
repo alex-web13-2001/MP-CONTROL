@@ -675,7 +675,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
    Comparison Table
    ═══════════════════════════════════════════════════════════ */
 
-const COMPARISON_ROWS = [
+const COMPARISON_ROWS: Array<{ key: string; label: string; isMoney: boolean; invert?: boolean; bold?: boolean; indent?: boolean; mp?: 'wb' | 'ozon' }> = [
   { key: 'revenue', label: 'Выручка', isMoney: true },
   { key: 'orders', label: 'Заказы', isMoney: false },
   { key: 'payout', label: 'К перечислению', isMoney: true },
@@ -686,16 +686,18 @@ const COMPARISON_ROWS = [
   { key: 'storage', label: '        • Хранение', isMoney: true, invert: true, indent: true },
   { key: 'acquiring', label: '        • Эквайринг', isMoney: true, invert: true, indent: true },
   { key: 'penalties', label: '        • Штрафы', isMoney: true, invert: true, indent: true },
-  { key: 'deductions_ads', label: '        • ВБ Продвижение', isMoney: true, invert: true, indent: true },
-  { key: 'deductions_other', label: '        • Пр. удержания', isMoney: true, invert: true, indent: true },
-  { key: 'acceptance', label: '        • Плат. приёмка', isMoney: true, invert: true, indent: true },
+  { key: 'deductions_ads', label: '        • ВБ Продвижение', isMoney: true, invert: true, indent: true, mp: 'wb' },
+  { key: 'deductions_other', label: '        • Пр. удержания', isMoney: true, invert: true, indent: true, mp: 'wb' },
+  { key: 'acceptance', label: '        • Плат. приёмка', isMoney: true, invert: true, indent: true, mp: 'wb' },
   { key: 'advertising', label: 'Реклама', isMoney: true, invert: true },
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
   { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
   { key: 'profit', label: 'Чистая прибыль', isMoney: true, bold: true },
 ]
 
-function ComparisonTable({ comparison }: { comparison: FinancesResponse['comparison'] }) {
+function ComparisonTable({ comparison, marketplace }: { comparison: FinancesResponse['comparison']; marketplace?: string }) {
+  const mpKey = marketplace === 'wildberries' ? 'wb' : marketplace === 'ozon' ? 'ozon' : undefined
+  const rows = COMPARISON_ROWS.filter(r => !r.mp || r.mp === mpKey)
   return (
     <div className="overflow-x-auto -mx-5">
       <table className="w-full text-sm">
@@ -716,7 +718,7 @@ function ComparisonTable({ comparison }: { comparison: FinancesResponse['compari
           </tr>
         </thead>
         <tbody>
-          {COMPARISON_ROWS.map((row) => {
+          {rows.map((row) => {
             const curVal = comparison.current[row.key] ?? 0
             const prevVal = comparison.previous[row.key] ?? 0
             const delta = comparison.delta_pct[row.key] ?? 0
@@ -1155,7 +1157,7 @@ export default function FinancesPage() {
                 </p>
               </CardHeader>
               <CardContent>
-                <ComparisonTable comparison={data.comparison} />
+                <ComparisonTable comparison={data.comparison} marketplace={currentShop?.marketplace} />
               </CardContent>
             </Card>
           </motion.div>
