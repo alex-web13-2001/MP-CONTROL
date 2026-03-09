@@ -341,7 +341,7 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
     doc.roundedRect(chartX, y, barW, barH, 1, 1, 'F')
 
     // Value inside bar or next to it
-    const valueText = fmtMoney(Math.abs(item.value))
+    const valueText = fmtMoney(item.isBold ? item.value : Math.abs(item.value))
     doc.setFont('Roboto', 'bold')
     doc.setFontSize(6.5)
     if (barW > 30) {
