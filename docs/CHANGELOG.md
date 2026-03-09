@@ -1,3 +1,29 @@
+## 2026-03-09
+
+### feat: ИИ-анализ событий — Gemini 2.5 Flash (kie.ai)
+
+**Backend** (`events_analysis.py`):
+
+- `POST /events/analysis` — SSE streaming endpoint
+- Собирает события из PostgreSQL + KPI из ClickHouse
+- Формирует промпт с данными, отправляет в Gemini 2.5 Flash через kie.ai API
+- Стримит ответ обратно клиенту как Server-Sent Events
+- Поддержка Ozon и WB (таблицы заказов/рекламы per marketplace)
+
+**Frontend** (`EventsGraphPage.tsx`, `events_graph.ts`):
+
+- Кнопка «Запустить анализ» в блоке «ИИ-анализ событий»
+- SSE-клиент на базе `fetch` + `ReadableStream`
+- Стриминг текста с markdown-рендерингом (заголовки, списки, bold)
+- Loading state, кнопка «Остановить», перезапуск анализа
+
+**Конфигурация**:
+
+- `KIE_AI_API_KEY` в `.env`
+- `router.py`: подключён `events_analysis_router`
+
+---
+
 ## 2026-03-08
 
 ### feat(wb): критические события полного отсутствия на складах
