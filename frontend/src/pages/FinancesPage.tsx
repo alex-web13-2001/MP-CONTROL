@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { generatePnlReport } from '@/utils/generatePnlReport'
 import { motion } from 'framer-motion'
 import {
   ShoppingCart,
@@ -12,6 +13,8 @@ import {
   ArrowDownRight,
   RefreshCw,
   CalendarRange,
+  Download,
+  Loader2,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -811,6 +814,7 @@ export default function FinancesPage() {
   const [productData, setProductData] = useState<ProductFinanceResponse | null>(null)
   const [weeklyData, setWeeklyData] = useState<WeeklyReportResponse | null>(null)
   const [weeklyLoading, setWeeklyLoading] = useState(false)
+  const [pdfGenerating, setPdfGenerating] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [groupBy, setGroupBy] = useState('day')
@@ -956,6 +960,42 @@ export default function FinancesPage() {
             <>
               <GroupBySelector current={groupBy} onChange={setGroupBy} />
               <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+              <button
+                onClick={async () => {
+                  if (!data || pdfGenerating) return
+                  setPdfGenerating(true)
+                  try {
+                    // Load weekly data if not loaded yet
+                    let wData = weeklyData
+                    if (!wData && showWeeklyTab) {
+                      try {
+                        const apiFn = isOzon ? getOzonWeeklyReportApi : getWbWeeklyReportApi
+                        wData = await apiFn({ shop_id: shopId! })
+                        setWeeklyData(wData)
+                      } catch (e) {
+                        console.warn('Weekly data fetch for PDF failed:', e)
+                      }
+                    }
+                    await generatePnlReport({
+                      data,
+                      weeklyData: wData,
+                      shopName: currentShop?.name || 'Магазин',
+                      marketplace: currentShop?.marketplace || 'wildberries',
+                    })
+                  } finally {
+                    setPdfGenerating(false)
+                  }
+                }}
+                disabled={pdfGenerating || !data}
+                className="inline-flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--muted)/0.15)] disabled:opacity-50"
+              >
+                {pdfGenerating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                PDF
+              </button>
             </>
           )}
         </div>
@@ -1061,7 +1101,9 @@ export default function FinancesPage() {
                 </p>
               </CardHeader>
               <CardContent>
-                <BreakdownChart data={data.breakdown} />
+                <div data-pdf="breakdown-chart">
+                  <BreakdownChart data={data.breakdown} />
+                </div>
               </CardContent>
             </Card>
           </motion.div>
@@ -1091,7 +1133,9 @@ export default function FinancesPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <DynamicsChart data={data.daily} />
+                <div data-pdf="dynamics-chart">
+                  <DynamicsChart data={data.daily} />
+                </div>
               </CardContent>
             </Card>
           </motion.div>
