@@ -2386,38 +2386,38 @@ async def get_wb_weekly_report(
                 countIf(operation_type = 'Продажа') AS qty,
 
                 -- Retail price (Цена розничная)
-                sumIf(retail_amount, operation_type = 'Продажа') AS retail_amount,
+                sumIf(retail_amount, operation_type = 'Продажа') AS total_retail,
 
                 -- WB ppvz_for_pay (Реализовано / к перечислению за товар)
-                sumIf(wb_ppvz_for_pay, operation_type = 'Продажа') AS ppvz_for_pay,
+                sumIf(wb_ppvz_for_pay, operation_type = 'Продажа') AS total_ppvz,
 
                 -- Commission
-                sumIf(commission_amount, operation_type = 'Продажа') AS commission,
+                sumIf(commission_amount, operation_type = 'Продажа') AS total_commission,
 
                 -- Returns (qty and amount) — Возврат
                 countIf(operation_type = 'Возврат') AS returns_qty,
-                sumIf(abs(retail_amount), operation_type = 'Возврат') AS returns_amount,
+                sumIf(abs(retail_amount), operation_type = 'Возврат') AS total_returns,
 
                 -- Logistics (Логистика + Коррекция логистики)
-                sumIf(abs(logistics_total), operation_type IN ('Логистика', 'Коррекция логистики')) AS logistics,
+                sumIf(abs(logistics_total), operation_type IN ('Логистика', 'Коррекция логистики')) AS total_logistics,
 
                 -- Storage (Хранение)
-                sumIf(abs(storage_fee), operation_type = 'Хранение') AS storage,
+                sumIf(abs(storage_fee), operation_type = 'Хранение') AS total_storage,
 
                 -- Penalties / Deductions (Удержания = штрафы + прочие)
-                sumIf(abs(penalty_total), operation_type = 'Удержание') AS deductions,
+                sumIf(abs(penalty_total), operation_type = 'Удержание') AS total_deductions,
 
                 -- Acceptance (Приёмка + Обработка)
-                sumIf(abs(acceptance_fee), operation_type IN ('Платная приемка', 'Обработка товара')) AS acceptance,
+                sumIf(abs(acceptance_fee), operation_type IN ('Платная приемка', 'Обработка товара')) AS total_acceptance,
 
                 -- Compensations (positive = WB pays seller)
-                sumIf(abs(logistics_total), operation_type = 'Возмещение издержек по перевозке/по складским операциям с товаром') AS compensations,
+                sumIf(abs(logistics_total), operation_type = 'Возмещение издержек по перевозке/по складским операциям с товаром') AS total_compensations,
 
                 -- Compensation for returns
-                sumIf(abs(payout_amount), operation_type = 'Возмещение за выдачу и возврат товаров на ПВЗ') AS returns_compensation,
+                sumIf(abs(payout_amount), operation_type = 'Возмещение за выдачу и возврат товаров на ПВЗ') AS total_returns_comp,
 
                 -- Net payout — sum of all payout_amount
-                sum(payout_amount) AS payout
+                sum(payout_amount) AS total_payout
 
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
@@ -2443,7 +2443,7 @@ async def get_wb_weekly_report(
                 "compensations": float(r[11] or 0),
                 "returns_compensation": float(r[12] or 0),
                 "payout": float(r[13] or 0),
-                "marketing": 0,  # filled from ad stats
+                "marketing": 0,
                 "cogs": 0,
             }
     except Exception as e:
