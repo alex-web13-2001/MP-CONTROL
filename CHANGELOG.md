@@ -2,7 +2,30 @@
 
 Все изменения в проекте документируются в этом файле.
 
-## [Unreleased] - 2026-03-09
+## [Unreleased] - 2026-03-10
+
+### Added — PDF отчёт P&L v3
+
+- **Frontend / `generatePnlReport.ts` [REWRITE]:** Полная переработка PDF генератора: нативные графики (jsPDF drawing, без html2canvas), 7 страниц, светлая тема, Roboto кириллица
+  - Нативный водопад расходов: горизонтальные бары из FinancesBreakdown с % и цветами
+  - Нативная динамика: линия выручки + столбцы прибыли/убытка по дням
+  - SKU таблица: топ-30 товаров по выручке (маржа цветом)
+  - Понедельный отчёт: 15 колонок WB, 12 недель, ИТОГО, **альбомная ориентация**
+  - Маркетплейс-фильтрация: WB-строки скрыты для Ozon
+- **Frontend / `FinancesPage.tsx` [MODIFY]:** Передача `productData` и `marketplace` в `generatePnlReport`
+
+### Fixed — Ozon comparison: «Расходы МП (ОПЕКС)» показывала 0₽
+
+- **Backend / `finances.py` [FIX]:** Добавлен ключ `operating` в Ozon `comparison.current` / `comparison.previous` (ранее был только в KPI, но отсутствовал в comparison dict)
+- **Формула:** `operating = services_total + bulk_charges (excl. marketing)`
+
+### Fixed — WB-специфичные строки в Ozon таблице сравнения
+
+- **Frontend / `FinancesPage.tsx` [FIX]:** `COMPARISON_ROWS` получили поле `mp?: 'wb' | 'ozon'` — строки «ВБ Продвижение», «Пр. удержания», «Плат. приёмка» скрыты для Ozon
+- **Frontend / `FinancesPage.tsx` [MODIFY]:** `ComparisonTable` принимает `marketplace` проп и фильтрует строки
+- **Frontend / `generatePnlReport.ts` [FIX]:** Аналогичная фильтрация в PDF comparison table
+
+---
 
 ### Fixed — FBO warehouse stocks не загружались (только FBS)
 

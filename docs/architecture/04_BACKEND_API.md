@@ -894,3 +894,9 @@ data: [DONE]
 - **`_resolve_hub()`** — определение приоритетного склада отгрузки для кластера спроса
 - **Excel Sheet 1:** добавлены колонки «Склад отгрузки» + «Доставка, ч» с цветовой индикацией
 - **Excel Sheet 5:** «Объединённые кластеры» — сводная поставка по 9 хабам
+
+### 2026-03-10
+
+- **Ozon comparison:** Добавлен ключ `operating` в `comparison.current` / `comparison.previous` — строка «Расходы МП (ОПЕКС)» ранее показывала 0₽
+- **Ozon comparison:** Добавлены ключи `penalties`, `refunds` (ранее отсутствовали)
+- **Формула:** `operating = services + bulk_charges (excl. marketing)`
