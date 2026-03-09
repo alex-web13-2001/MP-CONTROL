@@ -2510,11 +2510,11 @@ async def get_wb_weekly_report(
                 SELECT
                     toMonday(event_date) AS week_start,
                     vendor_code,
-                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS qty
+                    sumIf(quantity, operation_type = 'Продажа') - sumIf(quantity, operation_type = 'Возврат') AS qty
                 FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND marketplace = 1
-                  AND operation_type = 'Продажа'
+                  AND operation_type IN ('Продажа', 'Возврат')
                   AND vendor_code != ''
                 GROUP BY week_start, vendor_code
             """, parameters={"shop_id": shop_id})
