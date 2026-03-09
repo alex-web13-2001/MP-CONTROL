@@ -677,3 +677,9 @@ Bоковая панель с вложенной навигацией (collapse 
   - Название кампании перемещено на Row 2 — сразу после типа события (ранее — внизу карточки)
   - Иерархия: тип события → кампания → detail/values → товар → товары кампании
 - **API тип:** `EventItem.campaign_items?: {offer_id, nm_id, name}[]` — новое поле
+- **EventsGraphPage — ИИ-анализ:**
+  - Карточка «ИИ-анализ событий» (Gemini 2.5 Flash) с кнопкой «Запустить анализ» / «Перезапустить анализ»
+  - SSE streaming через `streamEventsAnalysis()` (api `events_graph.ts`)
+  - Markdown рендеринг: жирный, списки, таблицы, emoji-заголовки
+  - **Сброс при смене магазина:** `useEffect` по `[shop, period, groupBy]` — abort stream + reset `analysisText`, `analysisError`, `analysisLoading`, `analysisDone`
+  - Spinner во время стрима, пульсирующий курсор в конце текста

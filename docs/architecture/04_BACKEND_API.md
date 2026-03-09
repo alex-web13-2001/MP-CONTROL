@@ -724,3 +724,71 @@ date_to: date (optional) — конец кастомного диапазона 
 - **Product enrichment**: nm_ids из `CAMPAIGN_CREATED` metadata.items добавляются в `product_map` lookup → offer_id обогащается из `dim_products`/`dim_ozon_products`
 - **WB Redis fallback**: `get_state().campaign_name` используется для резолва названий WB кампаний (ранее — только Ozon через `get_ozon_campaign_state().title`)
 - **Emoji cleanup**: убран дублирующий 🚀 из лейблов CAMPAIGN_CREATED/OZON_CAMPAIGN_CREATED (иконка уже в EVENT_STYLE)
+
+---
+
+## ИИ-анализ событий — `/api/v1/events/analysis`
+
+### Endpoint
+
+| Метод  | Path               | Описание                                        | Auth   |
+| ------ | ------------------ | ----------------------------------------------- | ------ |
+| `POST` | `/events/analysis` | SSE-стрим ИИ-анализа событий (Gemini 2.5 Flash) | Bearer |
+
+### Request Body
+
+```json
+{
+  "shop_id": 18,
+  "period": "30d",
+  "group_by": "day"
+}
+```
+
+### Механизм
+
+1. **Каталог товаров** (PostgreSQL):
+   - WB: `dim_products` → `nm_id`, `name`, `vendor_code`
+   - Ozon: `dim_ozon_products` → `product_id`, `name`, `offer_id`
+
+2. **События** (PostgreSQL `event_log`):
+   - Все события за period → формат: `[дата] [категория] тип | товар: Название (артикул) | old → new`
+   - Привязка к товарам через `nm_id` → lookup в каталоге
+
+3. **KPI-метрики** (ClickHouse):
+   - Заказы + выручка из `fact_ozon_orders` / `fact_orders_raw`
+   - Реклама из `fact_ozon_ad_daily` / `fact_advert_stats_v3`
+   - Группировка по bucket (день/неделя)
+
+4. **Per-product funnel** (ClickHouse):
+   - TOP-50 товаров по рекламному расходу
+   - Ozon: `fact_ozon_ad_daily` → `sku`, views, clicks, add_to_cart, orders, money_spent
+   - WB: `fact_advert_stats_v3` → `nm_id`, views, clicks, atbs, orders, spend
+   - Расчёт: CTR%, CR→корзину%, CR→заказ%
+
+5. **Промпт → Gemini 2.5 Flash** (через `api.kie.ai`):
+   - System prompt с инструкциями анализа
+   - User prompt: каталог + события + KPI таблица + per-product funnel таблица
+
+6. **SSE streaming**: ответ стримится клиенту chunk-by-chunk
+
+### Response (Server-Sent Events)
+
+```
+data: {"content": "## 🔍 Ключевые находки\n\n"}
+data: {"content": "За период наблюдалось..."}
+...
+data: [DONE]
+```
+
+### Зависимости
+
+- **API ключ**: `KIE_AI_API_KEY` в `.env`
+- **Модель**: `gemini-2.5-flash` через `https://api.kie.ai/gemini-2.5-flash/v1/chat/completions`
+
+### Changelog
+
+#### 2026-03-09
+
+- Создан endpoint `POST /events/analysis`
+- Обогащение: каталог товаров (имена + артикулы), события привязаны к товарам, per-product funnel (CTR, CR, DRR)

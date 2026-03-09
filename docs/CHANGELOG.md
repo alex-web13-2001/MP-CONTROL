@@ -6,6 +6,9 @@
 
 - `POST /events/analysis` — SSE streaming endpoint
 - Собирает события из PostgreSQL + KPI из ClickHouse
+- **Каталог товаров**: названия + артикулы продавца из `dim_products` / `dim_ozon_products`
+- **Привязка событий к товарам**: каждое событие содержит название товара по nm_id
+- **Per-product funnel**: показы, клики, корзины, заказы, CTR%, CR→корз%, CR→заказ%
 - Формирует промпт с данными, отправляет в Gemini 2.5 Flash через kie.ai API
 - Стримит ответ обратно клиенту как Server-Sent Events
 - Поддержка Ozon и WB (таблицы заказов/рекламы per marketplace)
@@ -14,13 +17,19 @@
 
 - Кнопка «Запустить анализ» в блоке «ИИ-анализ событий»
 - SSE-клиент на базе `fetch` + `ReadableStream`
-- Стриминг текста с markdown-рендерингом (заголовки, списки, bold)
+- Стриминг текста с markdown-рендерингом (заголовки, списки, bold, таблицы)
 - Loading state, кнопка «Остановить», перезапуск анализа
+- **Сброс анализа при смене магазина**: abort stream + reset state в useEffect по `[shop, period, groupBy]`
 
 **Конфигурация**:
 
 - `KIE_AI_API_KEY` в `.env`
 - `router.py`: подключён `events_analysis_router`
+
+**Документация**:
+
+- `04_BACKEND_API.md`: секция «ИИ-анализ событий — /api/v1/events/analysis» — endpoint, request, механизм, SSE response
+- `06_FRONTEND.md`: секция EventsGraphPage — AI analysis card, SSE streaming, сброс при смене магазина
 
 ---
 
