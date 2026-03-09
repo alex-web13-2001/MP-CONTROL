@@ -885,11 +885,11 @@ export async function generatePnlReport(opts: PnlReportOptions): Promise<void> {
     drawProductTable(doc, productData, marketplace, y)
   }
 
-  // ── Page 6: Weekly Report ──
+  // ── Weekly Report (landscape) ──
   if (weeklyData && weeklyData.weeks.length > 0) {
-    doc.addPage()
+    doc.addPage('a4', 'l')  // landscape
     drawPageBg(doc)
-    y = drawSectionHeader(doc, 'Понедельный отчёт', 25, 'Последние 12 недель — детализация по всем показателям')
+    y = drawSectionHeader(doc, 'Понедельный отчёт', 20, 'Последние 12 недель — детализация по всем показателям')
     drawWeeklyTable(doc, weeklyData, marketplace, y)
   }
 
