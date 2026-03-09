@@ -484,24 +484,29 @@ function drawDynamicsChart(doc: jsPDF, data: FinancesResponse, startY: number): 
 
 // ── Comparison Table ──────────────────────────────────────────
 
-function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number): number {
+function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: string, startY: number): number {
   const comparison = data.comparison
-  const rows = [
+  const isWb = marketplace === 'wildberries' || marketplace === 'wb'
+  const allRows: Array<{ key: string; label: string; isMoney?: boolean; bold?: boolean; wbOnly?: boolean }> = [
     { key: 'revenue', label: 'Выручка', bold: true },
     { key: 'orders', label: 'Заказы', isMoney: false },
     { key: 'payout', label: 'К перечислению' },
-    { key: 'mp_fees', label: 'Удержания МП', bold: true },
+    { key: 'mp_fees', label: 'Удержания маркетплейса', bold: true },
     { key: 'commission', label: '  └ Комиссия + скидки' },
+    { key: 'operating', label: '  └ Расходы МП (ОПЕКС)' },
     { key: 'logistics', label: '     • Логистика' },
     { key: 'storage', label: '     • Хранение' },
     { key: 'acquiring', label: '     • Эквайринг' },
-    { key: 'deductions_ads', label: '     • ВБ Продвижение' },
-    { key: 'deductions_other', label: '     • Пр. удержания' },
-    { key: 'acceptance', label: '     • Плат. приёмка' },
+    { key: 'penalties', label: '     • Штрафы' },
+    { key: 'deductions_ads', label: '     • ВБ Продвижение', wbOnly: true },
+    { key: 'deductions_other', label: '     • Пр. удержания', wbOnly: true },
+    { key: 'acceptance', label: '     • Плат. приёмка', wbOnly: true },
     { key: 'advertising', label: 'Реклама' },
+    { key: 'refunds', label: 'Возвраты' },
     { key: 'cogs', label: 'Себестоимость' },
     { key: 'profit', label: 'Чистая прибыль', bold: true },
   ]
+  const rows = allRows.filter(r => !r.wbOnly || isWb)
 
   const tableBody = rows.map(r => {
     const cur = comparison.current[r.key] ?? 0
@@ -875,7 +880,7 @@ export async function generatePnlReport(opts: PnlReportOptions): Promise<void> {
   doc.addPage()
   drawPageBg(doc)
   y = drawSectionHeader(doc, 'Сравнение периодов', 25, 'Текущий vs предыдущий период')
-  drawComparisonTable(doc, data, y)
+  drawComparisonTable(doc, data, marketplace, y)
 
   // ── Page 5: Product SKU ──
   if (productData && productData.products.length > 0) {
