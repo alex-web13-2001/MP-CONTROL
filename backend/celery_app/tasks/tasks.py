@@ -3191,11 +3191,11 @@ def sync_ozon_warehouse_stocks(
                     db=db, shop_id=shop_id,
                     api_key=api_key, client_id=client_id,
                 )
-                # Fetch FBO+FBS stocks via /v4/product/info/stocks
-                rows = await service.fetch_product_stocks()
-                # Fallback: also get FBO-focused warehouse stocks
-                if not rows:
-                    rows = await service.fetch_warehouse_stocks()
+                # Fetch FBS stocks via /v4/product/info/stocks
+                rows_fbs = await service.fetch_product_stocks()
+                # Fetch FBO per-warehouse stocks via /v2/analytics/stock_on_warehouses
+                rows_fbo = await service.fetch_warehouse_stocks()
+                rows = rows_fbs + rows_fbo
 
             with OzonWarehouseStocksLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
                 inserted = loader.insert_rows(shop_id, rows)
