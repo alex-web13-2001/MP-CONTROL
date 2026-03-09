@@ -1,5 +1,53 @@
 ## 2026-03-09
 
+### feat(warehouses): Консолидация поставок по приоритетным кластерам Ozon
+
+**Backend** (`backend/app/api/v1/warehouses.py`):
+
+- Матрица `DELIVERY_HOURS` 25×25 — нормативное время доставки между кластерами (из Ozon 01/2026)
+- `_resolve_hub()` — определение оптимального склада отгрузки для кластера спроса
+- `hub` / `hub_hours` поля в `SupplyCluster` response
+- `hubs` — агрегация поставки по складам отгрузки (HubSummary)
+- Excel-экспорт: новый 4-й лист «Поставка по кластерам»
+- Excel-экспорт: новый 5-й лист **«Объединённые кластеры»** — 9 хабов вместо 25, сводная поставка
+- Excel лист 1: добавлены колонки «Склад отгрузки» и «Доставка, ч» с цветовой индикацией
+- `CONSOLIDATED_GROUPS` — 9 объединённых групп кластеров (Москва+Тверь+Ярославль+Беларусь и т.д.)
+
+**Frontend**:
+
+- Новые типы `HubItem`, `HubSummary` в `warehouses.ts`
+- Табы «По SKU» / «По кластерам» — переключение между таблицами
+- Компонент `HubTable` — collapsible список складов → SKU с need > 0
+- Цветовая индикация времени доставки (28ч зелёный, 45ч жёлтый)
+
+---
+
+### feat(warehouses): Раздел «Поставки FBO» — рекомендации по SKU × кластер
+
+**Backend** (`backend/app/api/v1/warehouses.py`):
+
+- `GET /warehouses/ozon/supply` — JSON-рекомендации по SKU × кластер
+  - 4 запроса ClickHouse: FBO stocks, sales × cluster, ad boost (7d vs prev 7d), ad metrics
+  - Product info из PostgreSQL (dim_ozon_products)
+  - Параметры: `sales_period` (14-90), `target_days` (14-90), `safety` (1.0-2.0), `use_ad_boost`
+  - Формула: `daily × target_days × safety − FBO_stock × доля`
+  - Ad boost: `min(рост_7д / prev_7д, 2.0)`, для новых SKU с рекламой = 1.3x
+- `GET /warehouses/ozon/supply/export` — Excel (3 листа: Рекомендации, Сводка, Методология)
+- Зарегистрирован `warehouses_router` в `router.py`
+
+**Frontend**:
+
+- `warehouses.ts` — API клиент + TypeScript типы (SupplyItem, SupplyCluster, SupplyResponse)
+- `WarehouseSupplyPage.tsx` — полная страница:
+  - 4 KPI карточки: Итого поставить, Критические SKU, На внимании, Средний запас
+  - Панель настроек: горизонт (14/30/45/60/90), период продаж, safety (0-30%), ad boost toggle
+  - Таблица SKU с сортировкой, статус-бейджами, раскрытием кластеров по клику
+  - Кнопка «Скачать Excel» (blob download)
+- Sidebar: «Склады» → collapsible с children «Поставки»
+- App.tsx: роут `/warehouses/supply`
+
+---
+
 ### feat: ИИ-анализ событий — Gemini 2.5 Flash (kie.ai)
 
 **Backend** (`events_analysis.py`):

@@ -4,6 +4,11 @@
 
 ## [Unreleased] - 2026-03-09
 
+### Fixed — FBO warehouse stocks не загружались (только FBS)
+
+- **Backend / `tasks.py` [FIX]:** `sync_ozon_warehouse_stocks` — `fetch_warehouse_stocks()` (FBO, `/v2/analytics/stock_on_warehouses`) вызывался только как fallback при пустом ответе `fetch_product_stocks()` (FBS, `/v4/product/info/stocks`). Поскольку FBS всегда возвращал данные, FBO-стоки грузились случайно (6 дней из 20). Исправлено: оба эндпоинта вызываются параллельно, результаты объединяются.
+- **Результат:** FBO данные загружены: **321 запись, 39 SKU, 2 952 ед., 22 склада** на 2026-03-09 (ранее — 0 с 26 февраля).
+
 ### Added — Создание кампании (WB + Ozon)
 
 - **Backend / `event_detector.py` [FEAT]:** Пропуск дубль-события `ITEM_ADD` для новых WB кампаний (`old_status is None`) — товары уже включены в `CAMPAIGN_CREATED` metadata.

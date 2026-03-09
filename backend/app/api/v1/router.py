@@ -17,6 +17,7 @@ from app.api.v1.wb_ltv import router as wb_ltv_router
 from app.api.v1.events import router as events_router
 from app.api.v1.events_graph import router as events_graph_router
 from app.api.v1.events_analysis import router as events_analysis_router
+from app.api.v1.warehouses import router as warehouses_router
 
 api_router = APIRouter()
 
@@ -33,6 +34,7 @@ api_router.include_router(products_router)
 api_router.include_router(wb_products_router)
 api_router.include_router(finances_router)
 api_router.include_router(sales_router)
+api_router.include_router(warehouses_router)
 api_router.include_router(ltv_router)
 api_router.include_router(wb_ltv_router)
 api_router.include_router(events_router)

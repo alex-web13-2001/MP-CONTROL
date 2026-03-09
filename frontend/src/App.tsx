@@ -15,6 +15,7 @@ import ForecastPage from '@/pages/ForecastPage'
 import LtvPage from '@/pages/LtvPage'
 import EventsPage from '@/pages/EventsPage'
 import EventsGraphPage from '@/pages/EventsGraphPage'
+import WarehouseSupplyPage from '@/pages/WarehouseSupplyPage'
 
 export default function App() {
   return (
@@ -56,9 +57,9 @@ export default function App() {
           <Route path="/settings" element={<SettingsPage />} />
           {/* Future routes will be added here:
           <Route path="/funnel" element={<FunnelPage />} />
-          <Route path="/warehouses" element={<WarehousesPage />} />
           <Route path="/advertising" element={<AdvertisingPage />} />
           */}
+          <Route path="/warehouses/supply" element={<WarehouseSupplyPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

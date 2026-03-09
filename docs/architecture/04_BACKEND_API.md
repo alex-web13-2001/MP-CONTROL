@@ -22,6 +22,7 @@ router.include_router(sales_router)             # /api/v1/sales/*
 router.include_router(ltv_router)               # /api/v1/sales/ozon/ltv*
 router.include_router(wb_ltv_router)            # /api/v1/sales/wb/ltv*
 router.include_router(events_router)            # /api/v1/events/*
+router.include_router(warehouses_router)         # /api/v1/warehouses/*
 ```
 
 ---
@@ -504,7 +505,98 @@ get_db()            → AsyncSession (PostgreSQL)
 get_current_user()  → User (JWT decode → SELECT user + shops)
 ```
 
-`get_current_user` используется как `Depends()` в auth/shops/dashboard/products/sales/finances endpoints.
+`get_current_user` используется как `Depends()` в auth/shops/dashboard/products/sales/finances/warehouses endpoints.
+
+---
+
+## Склады (Поставки FBO) — `/api/v1/warehouses`
+
+### Endpoints
+
+| Метод | Path                           | Описание                        | Auth   |
+| ----- | ------------------------------ | ------------------------------- | ------ |
+| `GET` | `/warehouses/ozon/supply`      | Рекомендации по поставке (JSON) | Bearer |
+| `GET` | `/warehouses/ozon/supply/xlsx` | Excel-экспорт (5 листов)        | Bearer |
+
+### Query Parameters
+
+```
+shop_id: int (required)
+sales_period: int (default: 30)      — период анализа продаж (дни)
+target_days: int (default: 60)       — на сколько дней формировать запас
+safety: float (default: 1.15)        — коэффициент безопасности
+use_ad_boost: bool (default: true)   — учитывать рекламный буст
+```
+
+### Response Schema (GET /supply)
+
+```
+{
+  items: [{
+    offer_id, sku, name, image_url,
+    fbo_stock, days_supply, total_sold, total_need,
+    boost, status: "critical" | "attention" | "ok",
+    ad_spend_7d, ad_views_7d, ad_clicks_7d, ad_carts_7d, ad_orders_7d,
+    clusters: [{
+      cluster, sold, share, daily, daily_boosted,
+      est_stock, need, revenue,
+      hub, hub_hours              // приоритетный склад отгрузки
+    }]
+  }],
+  hubs: [{
+    hub: str,                     // склад отгрузки
+    total_need: int,
+    total_revenue: float,
+    items: [{
+      offer_id, name, image_url, cluster,
+      hub_hours, daily_boosted, need, revenue
+    }]
+  }],
+  summary: { total_skus, total_need, critical, attention }
+}
+```
+
+### Матрица доставки (DELIVERY_HOURS)
+
+25×25 кластеров Ozon. Источник: «Нормативное время доставки 01/2026».
+
+- Собственный кластер = 28ч, ближайшие = 45ч, далёкие = 60–75ч
+- `_resolve_hub(cluster)` — ищет кластер-источник с min часов доставки
+
+### Объединённые группы (CONSOLIDATED_GROUPS)
+
+9 хабов вместо 25 отдельных точек поставки:
+
+| Хаб          | Обслуживает                                |
+| ------------ | ------------------------------------------ |
+| Москва       | Москва, Тверь, Ярославль, Беларусь         |
+| СПб          | СПб                                        |
+| Казань       | Казань, Самара, Уфа                        |
+| Екатеринбург | Екатеринбург, Пермь, Тюмень, Оренбург      |
+| Воронеж      | Воронеж, Саратов                           |
+| Ростов       | Ростов, Краснодар, Невинномысск, Махачкала |
+| Красноярск   | Красноярск, Новосибирск, Омск, ДВ          |
+| Калининград  | Калининград                                |
+| Астана       | Астана, Алматы                             |
+
+### Excel-экспорт (5 листов)
+
+| Лист | Название              | Содержимое                                                    |
+| ---- | --------------------- | ------------------------------------------------------------- |
+| 1    | Рекомендации          | SKU × кластер: status, sold, daily, need, revenue, hub, hours |
+| 2    | Сводка                | 1 строка на SKU: итого need, status, кол-во кластеров         |
+| 3    | Параметры             | Период, target_days, safety, boost — мета-информация          |
+| 4    | Поставка по кластерам | Группировка по hub → SKU с need > 0                           |
+| 5    | Объединённые кластеры | 9 хабов → SKU × кластер спроса, ∑need по хабу, время доставки |
+
+### Ключевая логика
+
+1. `fact_ozon_fbo_supply` (ClickHouse) → FBO остатки по кластерам
+2. `fact_ozon_orders` (ClickHouse) → продажи по кластерам за `sales_period`
+3. `fact_ozon_ad_daily` (ClickHouse) → рекламная статистика 7д
+4. `dim_ozon_products` (PostgreSQL) → имена, изображения
+5. `need = max(0, ceil(daily_boosted × target_days × safety − est_stock))`
+6. `boost = (views > 0) ? max(1.0, min(5.0, (ad_carts × 3) / daily)) : 1.0`
 
 ---
 
@@ -792,3 +884,13 @@ data: [DONE]
 
 - Создан endpoint `POST /events/analysis`
 - Обогащение: каталог товаров (имена + артикулы), события привязаны к товарам, per-product funnel (CTR, CR, DRR)
+
+### 2026-03-09 (Склады)
+
+- **Новый роутер:** `warehouses_router` — `/api/v1/warehouses/*`
+- **2 endpoints:** `GET /ozon/supply` (JSON) + `GET /ozon/supply/xlsx` (Excel 5 листов)
+- **DELIVERY_HOURS** 25×25 — матрица нормативного времени доставки между кластерами Ozon
+- **CONSOLIDATED_GROUPS** — 9 объединённых групп кластеров для минимизации точек поставки
+- **`_resolve_hub()`** — определение приоритетного склада отгрузки для кластера спроса
+- **Excel Sheet 1:** добавлены колонки «Склад отгрузки» + «Доставка, ч» с цветовой индикацией
+- **Excel Sheet 5:** «Объединённые кластеры» — сводная поставка по 9 хабам

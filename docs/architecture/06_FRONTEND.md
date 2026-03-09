@@ -46,7 +46,7 @@ graph TB
 
     subgraph "Placeholder (в App.tsx)"
         Funnel["/funnel → FunnelPage"]
-        Warehouses["/warehouses → WarehousesPage"]
+        Warehouses["/warehouses/supply → WarehouseSupplyPage"]
         Advertising["/advertising → AdvertisingPage"]
         Events["/events → EventsPage"]
     end
@@ -466,6 +466,45 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Marketplace badge (WB/Ozon с разными цветами)
 - Status badge: active (зелёный), syncing (синий), auth_error (красный), paused (жёлтый)
 
+### `WarehouseSupplyPage` (~830 строк)
+
+Страница «Поставки FBO». Рекомендации по поставке товаров на склады Ozon.
+
+- API: `GET /api/v1/warehouses/ozon/supply`
+- Export: `GET /api/v1/warehouses/ozon/supply/xlsx`
+
+**5 KPI-карточек:**
+
+- Всего SKU, К поставке (ед.), Критичных, Требует внимания, Дн. запаса (ср.)
+
+**Настройки:**
+
+| Параметр           | UI                  | Default |
+| ------------------ | ------------------- | ------- |
+| Период продаж      | Ползунок 7-90 дн.   | 30      |
+| Целевой запас      | Ползунок 14-120 дн. | 60      |
+| Коэф. безопасности | Ползунок 1.0-2.0    | 1.15    |
+| Учитывать рекламу  | Чекбокс             | ✅      |
+
+**Табы:**
+
+| Таб          | Компонент     | Описание                                   |
+| ------------ | ------------- | ------------------------------------------ |
+| По SKU       | `SupplyTable` | Группировка по SKU → кластеры (expandable) |
+| По кластерам | `HubTable`    | Группировка по складу отгрузки → SKU       |
+
+**SupplyTable** — expandable rows:
+
+- Статус (🔴/🟡/🟢), артикул, FBO stock, дн.запаса, ∑need, boost
+- Раскрытие: кластеры с sold, share, daily, need, revenue
+
+**HubTable** — expandable список складов отгрузки:
+
+- Склад, кол-во позиций, выручка, total_need
+- Раскрытие: товары с cluster спроса, delivery hours (цвет: 28ч зелёный, 45ч жёлтый), need
+
+**API модуль:** `src/api/warehouses.ts` — типы `SupplyItem`, `SupplyCluster`, `HubSummary`, `HubItem`, `SupplyResponse`
+
 ---
 
 ## Компоненты
@@ -493,21 +532,22 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 Bоковая панель с вложенной навигацией (collapse + expand):
 
-| Секция         | Пункт            | Путь              | Иконка          | Статус         |
-| -------------- | ---------------- | ----------------- | --------------- | -------------- |
-| **АНАЛИТИКА**  | Обзор            | `/`               | LayoutDashboard | ✅ Активен     |
-|                | Товары           | `/products`       | Package         | ✅ Активен     |
-|                | Продажи ▾        |                   | ShoppingCart    | ✅ Группа      |
-|                | └ Обзор продаж   | `/sales`          | TrendingUp      | ✅ Активен     |
-|                | └ ABC/XYZ анализ | `/sales/abc-xyz`  | Grid3X3         | ✅ Активен     |
-|                | └ Прогноз        | `/sales/forecast` | LineChart       | ✅ Активен     |
-|                | Воронка          | `/funnel`         | BarChart3       | 🚧 Placeholder |
-|                | Склады           | `/warehouses`     | Warehouse       | 🚧 Placeholder |
-|                | Финансы          | `/finances`       | DollarSign      | ✅ Активен     |
-| **УПРАВЛЕНИЕ** | Реклама          | `/advertising`    | Megaphone       | 🚧 Placeholder |
-|                | События          | `/events`         | Activity        | 🚧 Placeholder |
-| **КЛИЕНТЫ**    | LTV              | `/customers/ltv`  | Users           | ✅ Активен     |
-| **СИСТЕМА**    | Настройки        | `/settings`       | Settings        | ✅ Активен     |
+| Секция         | Пункт            | Путь                 | Иконка          | Статус         |
+| -------------- | ---------------- | -------------------- | --------------- | -------------- |
+| **АНАЛИТИКА**  | Обзор            | `/`                  | LayoutDashboard | ✅ Активен     |
+|                | Товары           | `/products`          | Package         | ✅ Активен     |
+|                | Продажи ▾        |                      | ShoppingCart    | ✅ Группа      |
+|                | └ Обзор продаж   | `/sales`             | TrendingUp      | ✅ Активен     |
+|                | └ ABC/XYZ анализ | `/sales/abc-xyz`     | Grid3X3         | ✅ Активен     |
+|                | └ Прогноз        | `/sales/forecast`    | LineChart       | ✅ Активен     |
+|                | Воронка          | `/funnel`            | BarChart3       | 🚧 Placeholder |
+|                | Склады ▾         |                      | Warehouse       | ✅ Группа      |
+|                | └ Поставки       | `/warehouses/supply` | TrendingUp      | ✅ Активен     |
+|                | Финансы          | `/finances`          | DollarSign      | ✅ Активен     |
+| **УПРАВЛЕНИЕ** | Реклама          | `/advertising`       | Megaphone       | 🚧 Placeholder |
+|                | События          | `/events`            | Activity        | 🚧 Placeholder |
+| **КЛИЕНТЫ**    | LTV              | `/customers/ltv`     | Users           | ✅ Активен     |
+| **СИСТЕМА**    | Настройки        | `/settings`          | Settings        | ✅ Активен     |
 
 ---
 
@@ -556,7 +596,6 @@ Bоковая панель с вложенной навигацией (collapse 
 
 ```typescript
 <Route path="/funnel" element={<FunnelPage />} />
-<Route path="/warehouses" element={<WarehousesPage />} />
 <Route path="/advertising" element={<AdvertisingPage />} />
 <Route path="/events" element={<EventsPage />} />
 ```
@@ -683,3 +722,12 @@ Bоковая панель с вложенной навигацией (collapse 
   - Markdown рендеринг: жирный, списки, таблицы, emoji-заголовки
   - **Сброс при смене магазина:** `useEffect` по `[shop, period, groupBy]` — abort stream + reset `analysisText`, `analysisError`, `analysisLoading`, `analysisDone`
   - Spinner во время стрима, пульсирующий курсор в конце текста
+
+### 2026-03-09 (Склады)
+
+- **`WarehouseSupplyPage`** (~830 строк): рекомендации по поставке FBO, 5 KPI, настройки, Excel-экспорт
+- **Табы «По SKU» / «По кластерам»** — переключение между `SupplyTable` и `HubTable`
+- **`HubTable`**: collapsible список складов отгрузки → SKU с need > 0, цвет delivery hours
+- **API модуль:** `warehouses.ts` — типы `HubItem`, `HubSummary`, `SupplyCluster`
+- **Sidebar:** «Склады» → collapsible группа, подпункт «Поставки» (`/warehouses/supply`)
+- **Routing:** `/warehouses/supply` → `WarehouseSupplyPage`
