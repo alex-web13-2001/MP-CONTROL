@@ -2458,14 +2458,14 @@ async def get_wb_weekly_report(
         return {"shop_id": shop_id, "weeks": [], "totals": {}}
 
     # ══════════════════════════════════════════════════════
-    # 2. Ad spend from fact_advert_stats
+    # 2. Ad spend from fact_advert_stats_v3 (same as P&L)
     # ══════════════════════════════════════════════════════
     try:
         ad_weekly = ch.query("""
             SELECT
                 toMonday(date) AS week_start,
                 sum(spend) AS total_spend
-            FROM mms_analytics.fact_advert_stats FINAL
+            FROM mms_analytics.fact_advert_stats_v3
             WHERE shop_id = {shop_id:UInt32}
             GROUP BY week_start
         """, parameters={"shop_id": shop_id})
@@ -2478,11 +2478,11 @@ async def get_wb_weekly_report(
             else:
                 weeks[ws] = {
                     "week_start": ws,
-                    "qty": 0, "retail_amount": 0, "ppvz_for_pay": 0,
+                    "qty": 0, "revenue": 0, "payout": 0,
                     "commission": 0, "returns_qty": 0, "returns_amount": 0,
-                    "logistics": 0, "storage": 0, "deductions": 0,
-                    "acceptance": 0, "compensations": 0, "returns_compensation": 0,
-                    "payout": 0, "marketing": ad_val, "cogs": 0,
+                    "logistics": 0, "storage": 0, "acquiring": 0,
+                    "acceptance": 0, "deductions": 0, "wb_promo": 0,
+                    "marketing": ad_val, "cogs": 0,
                 }
     except Exception as e:
         logger.warning("CH WB weekly ads query failed: %s", e)
