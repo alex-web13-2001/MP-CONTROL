@@ -2,7 +2,8 @@
  * WeeklyReportTable — Понедельный финансовый отчёт.
  *
  * Two-panel layout: fixed left (year/week/period) + scrollable right.
- * Theme-aware colors — works on both light and dark themes.
+ * Right panel uses a SINGLE scroll container with sticky thead/tfoot
+ * so header, body, and footer all scroll together horizontally.
  */
 
 import { useState, useRef, useCallback } from 'react'
@@ -54,7 +55,7 @@ interface Col {
 }
 
 const VALUE_COLS: Col[] = [
-  { key: 'qty',              label: 'Кол-во',        width: 70,  type: 'count',  section: 'values' },
+  { key: 'qty',              label: 'Кол-во',        width: 72,  type: 'count',  section: 'values' },
   { key: 'sales',            label: 'Σ Продажи',     width: 110, type: 'money',  section: 'values', accent: true },
   { key: 'returns',          label: 'Возврат',        width: 90,  type: 'money',  section: 'values' },
   { key: 'commission',       label: 'Комиссия',       width: 100, type: 'money',  section: 'values' },
@@ -71,15 +72,16 @@ const VALUE_COLS: Col[] = [
 ]
 
 const PCT_COLS: Col[] = [
-  { key: 'commission_pct',    label: 'Комиссия %',  width: 90, type: 'pct', section: 'pct' },
-  { key: 'marketing_pct',     label: 'Промо %',     width: 80, type: 'pct', section: 'pct' },
+  { key: 'commission_pct',    label: 'Комиссия %',  width: 95, type: 'pct', section: 'pct' },
+  { key: 'marketing_pct',     label: 'Промо %',     width: 85, type: 'pct', section: 'pct' },
   { key: 'fbo_pct',           label: 'ФБО %',       width: 75, type: 'pct', section: 'pct' },
-  { key: 'delivery_pct',      label: 'Доставка %',  width: 90, type: 'pct', section: 'pct' },
-  { key: 'cogs_pct',          label: 'Себест. %',   width: 85, type: 'pct', section: 'pct' },
-  { key: 'gross_profit_pct',  label: 'ВАЛ %',       width: 75, type: 'pct', section: 'pct' },
+  { key: 'delivery_pct',      label: 'Доставка %',  width: 95, type: 'pct', section: 'pct' },
+  { key: 'cogs_pct',          label: 'Себест. %',   width: 90, type: 'pct', section: 'pct' },
+  { key: 'gross_profit_pct',  label: 'ВАЛ %',       width: 78, type: 'pct', section: 'pct' },
 ]
 
 const ALL_COLS = [...VALUE_COLS, ...PCT_COLS]
+const TABLE_MIN_W = ALL_COLS.reduce((s, c) => s + c.width, 0)
 
 type SortDir = 'asc' | 'desc' | null
 
@@ -93,8 +95,10 @@ interface Props {
 export default function WeeklyReportTable({ weeks, totals }: Props) {
   const [sortKey, setSortKey] = useState<string>('week_start')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const fixedBodyRef = useRef<HTMLDivElement>(null)
+
+  // Refs for syncing vertical scroll between fixed left and scrollable right
+  const rightScrollRef = useRef<HTMLDivElement>(null)
+  const leftBodyRef = useRef<HTMLDivElement>(null)
 
   const handleSort = (key: string) => {
     const k = key === '_period' ? 'week_start' : key
@@ -114,9 +118,10 @@ export default function WeeklyReportTable({ weeks, totals }: Props) {
     return sortDir === 'asc' ? ak - bk : bk - ak
   })
 
-  const onScroll = useCallback(() => {
-    if (scrollRef.current && fixedBodyRef.current) {
-      fixedBodyRef.current.scrollTop = scrollRef.current.scrollTop
+  // Sync vertical scroll: right panel drives left panel
+  const onRightScroll = useCallback(() => {
+    if (rightScrollRef.current && leftBodyRef.current) {
+      leftBodyRef.current.scrollTop = rightScrollRef.current.scrollTop
     }
   }, [])
 
@@ -127,9 +132,8 @@ export default function WeeklyReportTable({ weeks, totals }: Props) {
     return v === 0 ? '—' : String(v)
   }
 
-  const profitColor = (row: WeeklyReportRow): string => {
-    return row.gross_profit > 0 ? 'profit-positive' : row.gross_profit < 0 ? 'profit-negative' : ''
-  }
+  const profitColorCls = (gp: number): string =>
+    gp > 0 ? 'wrt-profit-pos' : gp < 0 ? 'wrt-profit-neg' : ''
 
   const exportCsv = () => {
     const headers = ['Год', 'Нед.', 'Начало', 'Конец', ...ALL_COLS.map(c => c.label)].join(';')
@@ -146,14 +150,16 @@ export default function WeeklyReportTable({ weeks, totals }: Props) {
     URL.revokeObjectURL(url)
   }
 
-  const SortIndicator = ({ colKey }: { colKey: string }) => {
+  const SortIcon = ({ colKey }: { colKey: string }) => {
     const k = colKey === '_period' ? 'week_start' : colKey
     const active = sortKey === k
-    const Icon = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
-    return <Icon className={`h-3 w-3 shrink-0 inline-block ml-1 ${active ? 'opacity-80' : 'opacity-25'}`} />
+    const I = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
+    return <I className={`h-3 w-3 shrink-0 inline-block ml-1 ${active ? 'opacity-70' : 'opacity-20'}`} />
   }
 
-  const ROW_H = 34
+  const ROW_H = 33
+  const HEAD_H = 40
+  const FOOT_H = 40
 
   return (
     <motion.div
@@ -161,51 +167,44 @@ export default function WeeklyReportTable({ weeks, totals }: Props) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, ease: 'easeOut' }}
     >
-      {/* ── Inline styles for theme-aware colors ── */}
+      {/* ── Theme-aware styles ── */}
       <style>{`
-        .wrt-header-bg { background: hsl(var(--muted) / 0.15); }
+        /* Base */
+        .wrt-card { background: hsl(var(--card)); color: hsl(var(--foreground)); }
+        .wrt-hdr { background: hsl(var(--muted) / 0.12); }
         .wrt-cell { color: hsl(var(--foreground) / 0.75); }
         .wrt-cell-accent { color: hsl(var(--foreground)); font-weight: 600; }
-        .wrt-row-alt { background: hsl(var(--muted) / 0.06); }
-        .wrt-row:hover { background: hsl(var(--accent) / 0.08) !important; }
-        .wrt-border { border-color: hsl(var(--border) / 0.4); }
-        .wrt-border-light { border-color: hsl(var(--border) / 0.15); }
+        .wrt-row-alt { background: hsl(var(--muted) / 0.05); }
+        .wrt-row:hover { background: hsl(var(--accent) / 0.07) !important; }
         .wrt-muted { color: hsl(var(--muted-foreground)); }
         .wrt-muted-soft { color: hsl(var(--muted-foreground) / 0.6); }
+        .wrt-footer { background: hsl(var(--muted) / 0.1); }
 
-        /* % section — green tint that works on both themes */
-        .wrt-pct-bg { background: hsl(152 60% 50% / 0.07); }
-        .wrt-pct-header { background: hsl(152 60% 50% / 0.12); }
-        .wrt-pct-text { color: hsl(152 60% 35%); font-weight: 500; }
-        .wrt-pct-border { border-left: 2px solid hsl(152 60% 50% / 0.25); }
-        .wrt-pct-total { color: hsl(152 60% 30%); font-weight: 700; }
+        /* % section */
+        .wrt-pct-bg { background: hsl(152 55% 48% / 0.06); }
+        .wrt-pct-hdr { background: hsl(152 55% 48% / 0.12); }
+        .wrt-pct-text { color: hsl(152 55% 32%); font-weight: 500; }
+        .wrt-pct-foot { color: hsl(152 55% 28%); font-weight: 700; }
+        .wrt-pct-sep { border-left: 2px solid hsl(152 55% 48% / 0.22); }
 
-        /* dark mode overrides */
-        .dark .wrt-pct-text { color: hsl(152 60% 65%); }
-        .dark .wrt-pct-total { color: hsl(152 60% 70%); }
-        .dark .wrt-pct-bg { background: hsl(152 60% 50% / 0.05); }
-        .dark .wrt-pct-header { background: hsl(152 60% 50% / 0.1); }
+        .dark .wrt-pct-text { color: hsl(152 55% 62%); }
+        .dark .wrt-pct-foot { color: hsl(152 55% 68%); }
+        .dark .wrt-pct-bg { background: hsl(152 55% 48% / 0.04); }
+        .dark .wrt-pct-hdr { background: hsl(152 55% 48% / 0.08); }
 
-        /* Profit coloring — both themes */
-        .profit-positive { color: hsl(152 60% 38%) !important; }
-        .profit-negative { color: hsl(0 72% 50%) !important; }
-        .dark .profit-positive { color: hsl(152 60% 60%) !important; }
-        .dark .profit-negative { color: hsl(0 72% 65%) !important; }
+        /* Profit */
+        .wrt-profit-pos { color: hsl(152 55% 35%) !important; }
+        .wrt-profit-neg { color: hsl(0 70% 48%) !important; }
+        .dark .wrt-profit-pos { color: hsl(152 55% 58%) !important; }
+        .dark .wrt-profit-neg { color: hsl(0 70% 62%) !important; }
 
-        /* Footer highlight */
-        .wrt-footer-bg { background: hsl(var(--muted) / 0.12); }
-        .wrt-footer-text { color: hsl(var(--foreground)); font-weight: 700; }
-
-        /* Fixed panel bg */
-        .wrt-fixed-bg { background: hsl(var(--card)); }
-
-        /* Scrollbar - minimal */
-        .wrt-scroll::-webkit-scrollbar { height: 6px; width: 6px; }
-        .wrt-scroll::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
-        .wrt-scroll::-webkit-scrollbar-track { background: transparent; }
+        /* Scrollbar */
+        .wrt-scr::-webkit-scrollbar { height: 7px; width: 7px; }
+        .wrt-scr::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 4px; }
+        .wrt-scr::-webkit-scrollbar-track { background: transparent; }
       `}</style>
 
-      {/* ── Title bar ── */}
+      {/* ── Title ── */}
       <div className="flex items-center justify-between mb-3">
         <div>
           <h3 className="text-lg font-bold" style={{ color: 'hsl(var(--foreground))' }}>
@@ -226,182 +225,184 @@ export default function WeeklyReportTable({ weeks, totals }: Props) {
         </button>
       </div>
 
-      {/* ── Table ── */}
+      {/* ══════════════ TABLE ══════════════ */}
       <div
-        className="flex rounded-xl overflow-hidden wrt-border"
-        style={{ border: '1px solid hsl(var(--border) / 0.4)' }}
+        className="flex rounded-xl overflow-hidden wrt-card"
+        style={{ border: '1px solid hsl(var(--border) / 0.35)' }}
       >
 
-        {/* ▌ FIXED LEFT ▌ */}
-        <div
-          className="shrink-0 flex flex-col wrt-fixed-bg"
-          style={{ width: 220, borderRight: '2px solid hsl(var(--border) / 0.3)' }}
-        >
-          {/* Header */}
-          <div className="flex wrt-header-bg" style={{ height: 42, borderBottom: '1px solid hsl(var(--border) / 0.3)' }}>
+        {/* ▌ FIXED LEFT PANEL ▌ */}
+        <div className="shrink-0 flex flex-col wrt-card" style={{ width: 220, borderRight: '2px solid hsl(var(--border) / 0.25)' }}>
+
+          {/* Left Header */}
+          <div
+            className="flex items-center wrt-hdr"
+            style={{ height: HEAD_H, borderBottom: '1px solid hsl(var(--border) / 0.25)' }}
+          >
             <div
-              className="w-[50px] shrink-0 flex items-center justify-center text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
+              className="w-[50px] shrink-0 text-center text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
               onClick={() => handleSort('year')}
             >
-              Год<SortIndicator colKey="year" />
+              Год<SortIcon colKey="year" />
             </div>
             <div
-              className="w-[38px] shrink-0 flex items-center justify-center text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
+              className="w-[38px] shrink-0 text-center text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
               onClick={() => handleSort('week')}
             >
-              №<SortIndicator colKey="week" />
+              №<SortIcon colKey="week" />
             </div>
             <div
-              className="flex-1 flex items-center pl-2 text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
+              className="flex-1 pl-2 text-[11px] font-semibold wrt-muted-soft cursor-pointer select-none"
               onClick={() => handleSort('_period')}
             >
-              Период<SortIndicator colKey="_period" />
+              Период<SortIcon colKey="_period" />
             </div>
           </div>
 
-          {/* Body */}
+          {/* Left Body (synced scroll — hidden scrollbar) */}
           <div
-            ref={fixedBodyRef}
-            className="overflow-hidden flex-1"
-            style={{ maxHeight: 'calc(65vh - 84px)' }}
+            ref={leftBodyRef}
+            className="flex-1 overflow-hidden"
+            style={{ maxHeight: 'calc(65vh - 80px)' }}
           >
             {sorted.map((row, ri) => (
               <div
                 key={row.week_start}
-                className={`flex items-center wrt-row wrt-border-light ${ri % 2 ? 'wrt-row-alt' : ''}`}
-                style={{ height: ROW_H, borderBottom: '1px solid hsl(var(--border) / 0.1)' }}
+                className={`flex items-center wrt-row ${ri % 2 ? 'wrt-row-alt' : ''}`}
+                style={{ height: ROW_H, borderBottom: '1px solid hsl(var(--border) / 0.08)' }}
               >
-                <div className="w-[50px] shrink-0 text-center text-[12px] wrt-muted-soft tabular-nums">
-                  {row.year}
-                </div>
-                <div className="w-[38px] shrink-0 text-center text-[13px] font-bold tabular-nums" style={{ color: 'hsl(var(--foreground))' }}>
-                  {row.week}
-                </div>
-                <div className="flex-1 pl-2 text-[12px] wrt-muted">
-                  {fmtPeriod(row.week_start, row.week_end)}
-                </div>
+                <div className="w-[50px] shrink-0 text-center text-[12px] wrt-muted-soft tabular-nums">{row.year}</div>
+                <div className="w-[38px] shrink-0 text-center text-[13px] font-bold tabular-nums" style={{ color: 'hsl(var(--foreground))' }}>{row.week}</div>
+                <div className="flex-1 pl-2 text-[12px] wrt-muted">{fmtPeriod(row.week_start, row.week_end)}</div>
               </div>
             ))}
           </div>
 
-          {/* Footer */}
+          {/* Left Footer */}
           <div
-            className="flex items-center wrt-footer-bg"
-            style={{ height: 42, borderTop: '2px solid hsl(var(--border) / 0.4)' }}
+            className="flex items-center wrt-footer"
+            style={{ height: FOOT_H, borderTop: '2px solid hsl(var(--border) / 0.3)' }}
           >
             <div className="w-[50px] shrink-0" />
             <div className="w-[38px] shrink-0" />
-            <div className="flex-1 pl-2 text-[13px] font-bold" style={{ color: 'hsl(var(--foreground))' }}>
-              Итого
-            </div>
+            <div className="flex-1 pl-2 text-[13px] font-bold" style={{ color: 'hsl(var(--foreground))' }}>Итого</div>
           </div>
         </div>
 
-        {/* ▌ SCROLLABLE RIGHT ▌ */}
-        <div className="flex-1 overflow-hidden flex flex-col" style={{ background: 'hsl(var(--card))' }}>
-          {/* Header */}
-          <div className="overflow-x-auto wrt-scroll" style={{ height: 42 }}>
-            <div className="flex" style={{ minWidth: ALL_COLS.reduce((s, c) => s + c.width, 0) }}>
-              {ALL_COLS.map((col) => {
-                const isPct = col.section === 'pct'
-                const isPctFirst = col.key === 'commission_pct'
+        {/* ▌ SCROLLABLE RIGHT PANEL — single scroll container ▌ */}
+        <div
+          ref={rightScrollRef}
+          className="flex-1 overflow-x-auto overflow-y-auto wrt-scr"
+          style={{ maxHeight: `calc(65vh)` }}
+          onScroll={onRightScroll}
+        >
+          <table className="border-collapse" style={{ minWidth: TABLE_MIN_W }}>
 
-                return (
-                  <div
-                    key={col.key}
-                    onClick={() => handleSort(col.key)}
-                    className={`
-                      shrink-0 flex items-center justify-end px-3 text-[11px] font-semibold
-                      cursor-pointer select-none transition-colors
-                      ${isPct ? 'wrt-pct-header wrt-pct-text' : 'wrt-header-bg wrt-muted-soft'}
-                      ${col.accent ? 'wrt-cell-accent' : ''}
-                      ${isPctFirst ? 'wrt-pct-border' : ''}
-                    `}
-                    style={{
-                      width: col.width, minWidth: col.width,
-                      borderBottom: '1px solid hsl(var(--border) / 0.3)',
-                    }}
-                  >
-                    {col.label}
-                    <SortIndicator colKey={col.key} />
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+            {/* ── THEAD (sticky top) ── */}
+            <thead>
+              <tr
+                className="wrt-hdr"
+                style={{
+                  position: 'sticky', top: 0, zIndex: 10,
+                  height: HEAD_H,
+                  borderBottom: '1px solid hsl(var(--border) / 0.25)',
+                }}
+              >
+                {ALL_COLS.map((col) => {
+                  const isPct = col.section === 'pct'
+                  const isPctFirst = col.key === 'commission_pct'
+                  return (
+                    <th
+                      key={col.key}
+                      onClick={() => handleSort(col.key)}
+                      className={`
+                        text-right px-3 text-[11px] font-semibold whitespace-nowrap
+                        cursor-pointer select-none
+                        ${isPct ? 'wrt-pct-hdr wrt-pct-text' : 'wrt-hdr wrt-muted-soft'}
+                        ${col.accent ? 'wrt-cell-accent' : ''}
+                        ${isPctFirst ? 'wrt-pct-sep' : ''}
+                      `}
+                      style={{ width: col.width, minWidth: col.width }}
+                    >
+                      {col.label}
+                      <SortIcon colKey={col.key} />
+                    </th>
+                  )
+                })}
+              </tr>
+            </thead>
 
-          {/* Body */}
-          <div
-            ref={scrollRef}
-            className="overflow-x-auto overflow-y-auto flex-1 wrt-scroll"
-            style={{ maxHeight: 'calc(65vh - 84px)' }}
-            onScroll={onScroll}
-          >
-            <div style={{ minWidth: ALL_COLS.reduce((s, c) => s + c.width, 0) }}>
+            {/* ── TBODY ── */}
+            <tbody>
               {sorted.map((row, ri) => (
-                <div
+                <tr
                   key={row.week_start}
-                  className={`flex wrt-row ${ri % 2 ? 'wrt-row-alt' : ''}`}
-                  style={{ height: ROW_H, borderBottom: '1px solid hsl(var(--border) / 0.1)' }}
+                  className={`wrt-row ${ri % 2 ? 'wrt-row-alt' : ''}`}
+                  style={{ height: ROW_H, borderBottom: '1px solid hsl(var(--border) / 0.08)' }}
                 >
                   {ALL_COLS.map((col) => {
                     const isPct = col.section === 'pct'
                     const isPctFirst = col.key === 'commission_pct'
                     const isProfit = col.key === 'gross_profit' || col.key === 'gross_profit_pct'
-                    const profitCls = isProfit ? profitColor(row) : ''
+                    const profitCls = isProfit ? profitColorCls(row.gross_profit) : ''
 
                     return (
-                      <div
+                      <td
                         key={col.key}
                         className={`
-                          shrink-0 flex items-center justify-end px-3 text-[12.5px] tabular-nums
+                          text-right px-3 whitespace-nowrap text-[12.5px] tabular-nums
                           ${isPct ? 'wrt-pct-bg wrt-pct-text' : col.accent ? 'wrt-cell-accent' : 'wrt-cell'}
-                          ${isPctFirst ? 'wrt-pct-border' : ''}
+                          ${isPctFirst ? 'wrt-pct-sep' : ''}
                           ${profitCls}
                         `}
                         style={{ width: col.width, minWidth: col.width }}
                         title={col.type === 'money' ? fmtMoneyFull((row as any)[col.key] ?? 0) : undefined}
                       >
                         {getCellVal(row, col)}
-                      </div>
+                      </td>
                     )
                   })}
-                </div>
+                </tr>
               ))}
-            </div>
-          </div>
+            </tbody>
 
-          {/* Footer */}
-          <div className="overflow-x-auto wrt-scroll" style={{ height: 42, borderTop: '2px solid hsl(var(--border) / 0.4)' }}>
-            <div className="flex wrt-footer-bg" style={{ minWidth: ALL_COLS.reduce((s, c) => s + c.width, 0) }}>
-              {ALL_COLS.map((col) => {
-                const isPct = col.section === 'pct'
-                const isPctFirst = col.key === 'commission_pct'
-                const val = totals[col.key] ?? 0
-                const isProfit = col.key === 'gross_profit' || col.key === 'gross_profit_pct'
-                const profitCls = isProfit
-                  ? (totals.gross_profit ?? 0) > 0 ? 'profit-positive' : 'profit-negative'
-                  : ''
+            {/* ── TFOOT (sticky bottom) ── */}
+            <tfoot>
+              <tr
+                className="wrt-footer"
+                style={{
+                  position: 'sticky', bottom: 0, zIndex: 10,
+                  height: FOOT_H,
+                  borderTop: '2px solid hsl(var(--border) / 0.3)',
+                }}
+              >
+                {ALL_COLS.map((col) => {
+                  const isPct = col.section === 'pct'
+                  const isPctFirst = col.key === 'commission_pct'
+                  const val = totals[col.key] ?? 0
+                  const isProfit = col.key === 'gross_profit' || col.key === 'gross_profit_pct'
+                  const profitCls = isProfit ? profitColorCls(totals.gross_profit ?? 0) : ''
 
-                return (
-                  <div
-                    key={col.key}
-                    className={`
-                      shrink-0 flex items-center justify-end px-3 text-[13px] tabular-nums
-                      ${isPct ? 'wrt-pct-header wrt-pct-total' : 'wrt-footer-text'}
-                      ${isPctFirst ? 'wrt-pct-border' : ''}
-                      ${profitCls}
-                    `}
-                    style={{ width: col.width, minWidth: col.width }}
-                  >
-                    {col.type === 'money' ? fmtMoneyFull(val) :
-                     col.type === 'pct' ? fmtPct(val) :
-                     col.type === 'count' ? fmtMoneyFull(val) : ''}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+                  return (
+                    <td
+                      key={col.key}
+                      className={`
+                        text-right px-3 whitespace-nowrap text-[13px] font-bold tabular-nums
+                        ${isPct ? 'wrt-pct-hdr wrt-pct-foot' : ''}
+                        ${isPctFirst ? 'wrt-pct-sep' : ''}
+                        ${profitCls}
+                      `}
+                      style={{ width: col.width, minWidth: col.width, color: !isPct && !profitCls ? 'hsl(var(--foreground))' : undefined }}
+                    >
+                      {col.type === 'money' ? fmtMoneyFull(val) :
+                       col.type === 'pct' ? fmtPct(val) :
+                       col.type === 'count' ? fmtMoneyFull(val) : ''}
+                    </td>
+                  )
+                })}
+              </tr>
+            </tfoot>
+          </table>
         </div>
       </div>
     </motion.div>
