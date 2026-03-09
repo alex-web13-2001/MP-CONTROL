@@ -84,20 +84,18 @@ const OZON_PCT_COLS: Col[] = [
 
 const WB_VALUE_COLS: Col[] = [
   { key: 'qty',               label: 'Кол-во',         width: 72,  type: 'count',  section: 'values' },
-  { key: 'retail_amount',     label: 'Цена розн.',     width: 110, type: 'money',  section: 'values', accent: true },
-  { key: 'ppvz_for_pay',      label: 'Реализовано',   width: 115, type: 'money',  section: 'values', accent: true },
-  { key: 'commission',        label: 'Комиссия WB',   width: 110, type: 'money',  section: 'values' },
-  { key: 'returns_qty',       label: 'Возвр. шт.',     width: 80,  type: 'count',  section: 'values' },
-  { key: 'returns_amount',    label: 'Возвр. сум.',    width: 100, type: 'money',  section: 'values' },
+  { key: 'revenue',           label: 'Выручка',        width: 110, type: 'money',  section: 'values', accent: true },
+  { key: 'commission',        label: 'Комиссия+СПП',   width: 115, type: 'money',  section: 'values' },
+  { key: 'acquiring',         label: 'Эквайринг',      width: 95,  type: 'money',  section: 'values' },
+  { key: 'payout',            label: 'К перечисл.',    width: 120, type: 'money',  section: 'values', accent: true },
   { key: 'logistics',         label: 'Логистика',      width: 100, type: 'money',  section: 'values' },
   { key: 'storage',           label: 'Хранение',       width: 95,  type: 'money',  section: 'values' },
-  { key: 'acceptance',        label: 'Приёмка',        width: 90,  type: 'money',  section: 'values' },
+  { key: 'wb_promo',          label: 'ВБ Продвиж.',    width: 110, type: 'money',  section: 'values' },
   { key: 'deductions',        label: 'Удержания',     width: 100, type: 'money',  section: 'values' },
-  { key: 'compensations',     label: 'Компенс.',       width: 95,  type: 'money',  section: 'values' },
+  { key: 'acceptance',        label: 'Приёмка',        width: 90,  type: 'money',  section: 'values' },
   { key: 'marketing',         label: 'Реклама',        width: 100, type: 'money',  section: 'values' },
-  { key: 'payout',            label: 'К перечисл.',    width: 120, type: 'money',  section: 'values', accent: true },
   { key: 'cogs',              label: 'Себестоим.',     width: 110, type: 'money',  section: 'values' },
-  { key: 'gross_profit',      label: 'ВАЛ',            width: 110, type: 'money',  section: 'values', accent: true },
+  { key: 'gross_profit',      label: 'Прибыль',        width: 110, type: 'money',  section: 'values', accent: true },
 ]
 
 const WB_PCT_COLS: Col[] = [

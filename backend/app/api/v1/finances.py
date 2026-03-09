@@ -2374,6 +2374,7 @@ async def get_wb_weekly_report(
 
     # ══════════════════════════════════════════════════════
     # 1. Main weekly aggregation from fact_finances (WB)
+    #    SAME FIELDS as P&L waterfall (get_wb_finances)
     # ══════════════════════════════════════════════════════
     weeks = {}
 
@@ -2382,68 +2383,72 @@ async def get_wb_weekly_report(
             SELECT
                 toMonday(event_date) AS week_start,
 
-                -- Quantity: count Продажа rows
-                countIf(operation_type = 'Продажа') AS qty,
+                -- Orders qty
+                sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS qty,
 
-                -- Retail price (Цена розничная)
-                sumIf(retail_amount, operation_type = 'Продажа') AS total_retail,
+                -- Revenue = retail_price_withdisc_rub (Продажа - Возврат)
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Продажа')
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS revenue,
 
-                -- WB ppvz_for_pay (Реализовано / к перечислению за товар)
-                sumIf(wb_ppvz_for_pay, operation_type = 'Продажа') AS total_ppvz,
+                -- Payout = payout_amount (Продажа - Возврат) = К перечислению
+                sumIf(payout_amount, operation_type = 'Продажа')
+                 - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
 
-                -- Commission
-                sumIf(commission_amount, operation_type = 'Продажа') AS total_commission,
-
-                -- Returns (qty and amount) — Возврат
+                -- Returns amount
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type = 'Возврат') AS returns_amount,
                 countIf(operation_type = 'Возврат') AS returns_qty,
-                sumIf(abs(retail_amount), operation_type = 'Возврат') AS total_returns,
 
-                -- Logistics (Логистика + Коррекция логистики)
-                sumIf(abs(logistics_total), operation_type IN ('Логистика', 'Коррекция логистики')) AS total_logistics,
+                -- Logistics (wb_delivery_rub, same as P&L)
+                sum(wb_delivery_rub) AS logistics,
 
-                -- Storage (Хранение)
-                sumIf(abs(storage_fee), operation_type = 'Хранение') AS total_storage,
+                -- Storage
+                sum(storage_fee) AS storage,
 
-                -- Penalties / Deductions (Удержания = штрафы + прочие)
-                sumIf(abs(penalty_total), operation_type = 'Удержание') AS total_deductions,
+                -- Acquiring
+                sum(wb_acquiring) AS acquiring,
 
-                -- Acceptance (Приёмка + Обработка)
-                sumIf(abs(acceptance_fee), operation_type IN ('Платная приемка', 'Обработка товара')) AS total_acceptance,
+                -- Acceptance
+                sum(acceptance_fee) AS acceptance,
 
-                -- Compensations (positive = WB pays seller)
-                sumIf(abs(logistics_total), operation_type = 'Возмещение издержек по перевозке/по складским операциям с товаром') AS total_compensations,
+                -- Deductions (from raw_payload, EXCLUDING 'продвижение' to avoid double-counting)
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
+                ) AS deductions,
 
-                -- Compensation for returns
-                sumIf(abs(payout_amount), operation_type = 'Возмещение за выдачу и возврат товаров на ПВЗ') AS total_returns_comp,
+                -- WB Promotion (deductions where bonus_type_name contains 'продвижение')
+                sumIf(JSONExtractFloat(raw_payload, 'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') > 0
+                ) AS wb_promo,
 
-                -- Net payout — sum of all payout_amount
-                sum(payout_amount) AS total_payout
+                -- Total deductions (all)
+                sum(JSONExtractFloat(raw_payload, 'deduction')) AS total_deductions
 
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND marketplace = 'wb'
+              AND marketplace = 1
             GROUP BY week_start
             ORDER BY week_start
         """, parameters={"shop_id": shop_id})
 
         for r in txn_weekly.result_rows:
             ws = str(r[0])
+            revenue = float(r[2] or 0)
+            payout = float(r[3] or 0)
             weeks[ws] = {
                 "week_start": ws,
                 "qty": int(r[1] or 0),
-                "retail_amount": float(r[2] or 0),
-                "ppvz_for_pay": float(r[3] or 0),
-                "commission": float(r[4] or 0),
+                "revenue": revenue,
+                "payout": payout,
+                "commission": max(revenue - payout, 0),  # Commission = Revenue - Payout
+                "returns_amount": abs(float(r[4] or 0)),
                 "returns_qty": int(r[5] or 0),
-                "returns_amount": float(r[6] or 0),
-                "logistics": float(r[7] or 0),
-                "storage": float(r[8] or 0),
-                "deductions": float(r[9] or 0),
-                "acceptance": float(r[10] or 0),
-                "compensations": float(r[11] or 0),
-                "returns_compensation": float(r[12] or 0),
-                "payout": float(r[13] or 0),
-                "marketing": 0,
+                "logistics": abs(float(r[6] or 0)),
+                "storage": abs(float(r[7] or 0)),
+                "acquiring": abs(float(r[8] or 0)),
+                "acceptance": abs(float(r[9] or 0)),
+                "deductions": abs(float(r[10] or 0)),
+                "wb_promo": abs(float(r[11] or 0)),
+                "marketing": 0,  # external ads from fact_advert_stats
                 "cogs": 0,
             }
     except Exception as e:
@@ -2531,14 +2536,15 @@ async def get_wb_weekly_report(
 
     # ══════════════════════════════════════════════════════
     # 4. Build response rows
+    #    Profit = Payout - Logistics - Storage - Acceptance - Deductions - WBPromo - AdsExternal - COGS
     # ══════════════════════════════════════════════════════
     result_weeks = []
     totals = {
-        "qty": 0, "retail_amount": 0, "ppvz_for_pay": 0, "commission": 0,
+        "qty": 0, "revenue": 0, "payout": 0, "commission": 0,
         "returns_qty": 0, "returns_amount": 0,
-        "logistics": 0, "storage": 0, "deductions": 0, "acceptance": 0,
-        "compensations": 0, "returns_compensation": 0,
-        "payout": 0, "marketing": 0, "cogs": 0, "gross_profit": 0,
+        "logistics": 0, "storage": 0, "acquiring": 0,
+        "acceptance": 0, "deductions": 0, "wb_promo": 0,
+        "marketing": 0, "cogs": 0, "gross_profit": 0,
     }
 
     for ws in sorted(weeks.keys()):
@@ -2547,36 +2553,44 @@ async def get_wb_weekly_report(
         we_date = ws_date + timedelta(days=6)
 
         cogs = w.get("cogs", 0)
-        # ВАЛ = К перечислению − Логистика − Хранение − Приёмка − Удержания − Реклама − Себестоимость
-        gross_profit = w["payout"] - w["logistics"] - w["storage"] - w["acceptance"] - w["deductions"] - w["marketing"] - cogs
+        # Profit = К перечислению − Логистика − Хранение − Приёмка − Удержания − WB Промо − Реклама − Себестоимость
+        gross_profit = (
+            w["payout"]
+            - w["logistics"]
+            - w["storage"]
+            - w["acceptance"]
+            - w["deductions"]
+            - w["wb_promo"]
+            - w["marketing"]
+            - cogs
+        )
 
-        retail = w["retail_amount"]
+        revenue = w["revenue"]
         row = {
             "year": ws_date.year,
             "week": ws_date.isocalendar()[1],
             "week_start": ws,
             "week_end": str(we_date),
             "qty": w["qty"],
-            "retail_amount": round(retail, 2),
-            "ppvz_for_pay": round(w["ppvz_for_pay"], 2),
+            "revenue": round(revenue, 2),
+            "payout": round(w["payout"], 2),
             "commission": round(w["commission"], 2),
             "returns_qty": w["returns_qty"],
             "returns_amount": round(w["returns_amount"], 2),
             "logistics": round(w["logistics"], 2),
             "storage": round(w["storage"], 2),
-            "deductions": round(w["deductions"], 2),
+            "acquiring": round(w["acquiring"], 2),
             "acceptance": round(w["acceptance"], 2),
-            "compensations": round(w["compensations"], 2),
-            "returns_compensation": round(w["returns_compensation"], 2),
-            "payout": round(w["payout"], 2),
+            "deductions": round(w["deductions"], 2),
+            "wb_promo": round(w["wb_promo"], 2),
             "marketing": round(w["marketing"], 2),
             "cogs": round(cogs, 2),
             "gross_profit": round(gross_profit, 2),
-            # Percentage columns (% of retail)
-            "commission_pct": round(w["commission"] / retail * 100, 1) if retail > 0 else 0,
-            "logistics_pct": round(w["logistics"] / retail * 100, 1) if retail > 0 else 0,
-            "cogs_pct": round(cogs / retail * 100, 1) if retail > 0 else 0,
-            "gross_profit_pct": round(gross_profit / retail * 100, 1) if retail > 0 else 0,
+            # Percentage columns (% of revenue)
+            "commission_pct": round(w["commission"] / revenue * 100, 1) if revenue > 0 else 0,
+            "logistics_pct": round(w["logistics"] / revenue * 100, 1) if revenue > 0 else 0,
+            "cogs_pct": round(cogs / revenue * 100, 1) if revenue > 0 else 0,
+            "gross_profit_pct": round(gross_profit / revenue * 100, 1) if revenue > 0 else 0,
         }
         result_weeks.append(row)
 
@@ -2594,11 +2608,11 @@ async def get_wb_weekly_report(
         totals[key] = round(totals[key], 2)
 
     # Total percentages
-    total_retail = totals["retail_amount"]
-    totals["commission_pct"] = round(totals["commission"] / total_retail * 100, 1) if total_retail > 0 else 0
-    totals["logistics_pct"] = round(totals["logistics"] / total_retail * 100, 1) if total_retail > 0 else 0
-    totals["cogs_pct"] = round(totals["cogs"] / total_retail * 100, 1) if total_retail > 0 else 0
-    totals["gross_profit_pct"] = round(totals["gross_profit"] / total_retail * 100, 1) if total_retail > 0 else 0
+    total_revenue = totals["revenue"]
+    totals["commission_pct"] = round(totals["commission"] / total_revenue * 100, 1) if total_revenue > 0 else 0
+    totals["logistics_pct"] = round(totals["logistics"] / total_revenue * 100, 1) if total_revenue > 0 else 0
+    totals["cogs_pct"] = round(totals["cogs"] / total_revenue * 100, 1) if total_revenue > 0 else 0
+    totals["gross_profit_pct"] = round(totals["gross_profit"] / total_revenue * 100, 1) if total_revenue > 0 else 0
 
     return {
         "shop_id": shop_id,

@@ -175,18 +175,17 @@ export interface WBWeeklyReportRow {
   week_start: string
   week_end: string
   qty: number
-  retail_amount: number
-  ppvz_for_pay: number
+  revenue: number
+  payout: number
   commission: number
   returns_qty: number
   returns_amount: number
   logistics: number
   storage: number
-  deductions: number
+  acquiring: number
   acceptance: number
-  compensations: number
-  returns_compensation: number
-  payout: number
+  deductions: number
+  wb_promo: number
   marketing: number
   cogs: number
   gross_profit: number
