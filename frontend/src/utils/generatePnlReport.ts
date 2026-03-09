@@ -1,24 +1,27 @@
 /**
- * P&L PDF Report Generator — Light Theme + Cyrillic (Roboto)
+ * P&L PDF Report Generator — v3
  *
- * Generates a professional PDF report with:
- * 1. Cover page with shop name and period
- * 2. KPI summary cards
- * 3. Waterfall (breakdown) chart screenshot
- * 4. Dynamics chart screenshot
- * 5. Period comparison table
- * 6. Weekly report table (last 12 weeks)
+ * Light theme, Roboto Cyrillic, native charts (no html2canvas).
+ *
+ * Pages:
+ * 1. Cover
+ * 2. KPI cards + Waterfall chart (native)
+ * 3. Dynamics chart (native line/bar)
+ * 4. Comparison table
+ * 5. Product SKU table
+ * 6. Weekly report (detailed)
  */
 
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
-import html2canvas from 'html2canvas'
 import type {
   FinancesResponse,
   WeeklyReportResponse,
   WBWeeklyReportRow,
   OzonWeeklyReportRow,
+  ProductFinanceResponse,
 } from '@/api/finances'
+import { ROBOTO_REGULAR, ROBOTO_BOLD } from './robotoFont'
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -46,29 +49,35 @@ function fmtShortDate(dateStr: string): string {
 
 // ── Light theme colors ────────────────────────────────────────
 
+type RGB = [number, number, number]
+
 const C = {
-  primary: [59, 130, 246] as [number, number, number],
-  green: [22, 163, 74] as [number, number, number],
-  red: [220, 38, 38] as [number, number, number],
-  orange: [234, 88, 12] as [number, number, number],
-  purple: [124, 58, 237] as [number, number, number],
-  // Light theme backgrounds
-  white: [255, 255, 255] as [number, number, number],
-  pageBg: [249, 250, 251] as [number, number, number],       // gray-50
-  cardBg: [255, 255, 255] as [number, number, number],
-  cardBorder: [229, 231, 235] as [number, number, number],   // gray-200
-  headerBg: [243, 244, 246] as [number, number, number],     // gray-100
-  altRow: [249, 250, 251] as [number, number, number],       // gray-50
-  // Light theme text
-  textDark: [17, 24, 39] as [number, number, number],        // gray-900
-  textBody: [55, 65, 81] as [number, number, number],        // gray-700
-  textMuted: [107, 114, 128] as [number, number, number],    // gray-500
-  textLight: [156, 163, 175] as [number, number, number],    // gray-400
+  primary: [59, 130, 246] as RGB,
+  green: [22, 163, 74] as RGB,
+  red: [220, 38, 38] as RGB,
+  orange: [234, 88, 12] as RGB,
+  purple: [124, 58, 237] as RGB,
+  teal: [20, 184, 166] as RGB,
+  pink: [219, 39, 119] as RGB,
+  amber: [217, 119, 6] as RGB,
+  indigo: [79, 70, 229] as RGB,
+  sky: [14, 165, 233] as RGB,
+  // Backgrounds
+  white: [255, 255, 255] as RGB,
+  pageBg: [249, 250, 251] as RGB,
+  cardBg: [255, 255, 255] as RGB,
+  cardBorder: [229, 231, 235] as RGB,
+  headerBg: [243, 244, 246] as RGB,
+  altRow: [249, 250, 251] as RGB,
+  chartGrid: [229, 231, 235] as RGB,
+  // Text
+  textDark: [17, 24, 39] as RGB,
+  textBody: [55, 65, 81] as RGB,
+  textMuted: [107, 114, 128] as RGB,
+  textLight: [156, 163, 175] as RGB,
 }
 
-// ── Font loader ────────────────────────────────────────────────
-
-import { ROBOTO_REGULAR, ROBOTO_BOLD } from './robotoFont'
+// ── Font setup ────────────────────────────────────────────────
 
 function setupFonts(doc: jsPDF): void {
   doc.addFileToVFS('Roboto-normal.ttf', ROBOTO_REGULAR)
@@ -76,81 +85,6 @@ function setupFonts(doc: jsPDF): void {
   doc.addFileToVFS('Roboto-bold.ttf', ROBOTO_BOLD)
   doc.addFont('Roboto-bold.ttf', 'Roboto', 'bold')
   doc.setFont('Roboto', 'normal')
-}
-
-// ── Capture chart as image ────────────────────────────────────
-
-async function captureElement(selector: string): Promise<string | null> {
-  const el = document.querySelector(selector) as HTMLElement | null
-  if (!el) return null
-
-  const originals: Array<{ node: HTMLElement | SVGElement; styles: Record<string, string>; attrs: Record<string, string | null> }> = []
-  const COLOR_PROPS = ['color', 'backgroundColor', 'borderColor', 'borderTopColor', 'borderBottomColor', 'borderLeftColor', 'borderRightColor']
-
-  function inlineResolvedColors(node: Element) {
-    if (node instanceof HTMLElement) {
-      const computed = getComputedStyle(node)
-      const saved: Record<string, string> = {}
-      for (const prop of COLOR_PROPS) {
-        const cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase()
-        saved[prop] = node.style.getPropertyValue(cssProp)
-        const resolved = computed.getPropertyValue(cssProp)
-        if (resolved && resolved !== 'rgba(0, 0, 0, 0)' && resolved !== 'transparent') {
-          ;(node.style as any)[prop] = resolved
-        }
-      }
-      originals.push({ node, styles: saved, attrs: {} })
-    }
-    if (node instanceof SVGElement) {
-      const computed = getComputedStyle(node)
-      const savedAttrs: Record<string, string | null> = {
-        fill: node.getAttribute('fill'),
-        stroke: node.getAttribute('stroke'),
-      }
-      const fill = computed.fill
-      const stroke = computed.stroke
-      if (fill && fill !== 'none' && !fill.startsWith('url(')) node.setAttribute('fill', fill)
-      if (stroke && stroke !== 'none' && !stroke.startsWith('url(')) node.setAttribute('stroke', stroke)
-      originals.push({ node: node as any, styles: {}, attrs: savedAttrs })
-    }
-    for (const child of Array.from(node.children)) {
-      inlineResolvedColors(child)
-    }
-  }
-
-  try {
-    inlineResolvedColors(el)
-    const canvas = await html2canvas(el, {
-      backgroundColor: '#ffffff',
-      scale: 2,
-      useCORS: true,
-      logging: false,
-    })
-    return canvas.toDataURL('image/png')
-  } catch (e) {
-    console.warn('Failed to capture element:', selector, e)
-    return null
-  } finally {
-    for (const { node, styles, attrs } of originals) {
-      if (node instanceof HTMLElement) {
-        for (const [prop, val] of Object.entries(styles)) {
-          const cssProp = prop.replace(/([A-Z])/g, '-$1').toLowerCase()
-          if (val) {
-            node.style.setProperty(cssProp, val)
-          } else {
-            node.style.removeProperty(cssProp)
-          }
-        }
-      }
-      for (const [attr, val] of Object.entries(attrs)) {
-        if (val === null) {
-          ;(node as SVGElement).removeAttribute(attr)
-        } else {
-          ;(node as SVGElement).setAttribute(attr, val)
-        }
-      }
-    }
-  }
 }
 
 // ── Page helpers ──────────────────────────────────────────────
@@ -165,22 +99,33 @@ function drawPageBg(doc: jsPDF) {
 function drawFooter(doc: jsPDF, pageNum: number, totalPages: number) {
   const w = doc.internal.pageSize.getWidth()
   const h = doc.internal.pageSize.getHeight()
+  // Thin line
+  doc.setDrawColor(...C.cardBorder)
+  doc.setLineWidth(0.3)
+  doc.line(20, h - 15, w - 20, h - 15)
   doc.setFont('Roboto', 'normal')
-  doc.setFontSize(8)
+  doc.setFontSize(7)
   doc.setTextColor(...C.textLight)
-  doc.text('MP-Control \u2022 \u0424\u0438\u043d\u0430\u043d\u0441\u043e\u0432\u044b\u0439 \u043e\u0442\u0447\u0451\u0442', 20, h - 10)
-  doc.text(`${pageNum} / ${totalPages}`, w - 20, h - 10, { align: 'right' })
+  doc.text('MP-Control \u00B7 Финансовый отчёт', 20, h - 9)
+  doc.text(`Стр. ${pageNum} из ${totalPages}`, w - 20, h - 9, { align: 'right' })
 }
 
-function drawSectionHeader(doc: jsPDF, title: string, y: number): number {
+function drawSectionHeader(doc: jsPDF, title: string, y: number, subtitle?: string): number {
   doc.setFont('Roboto', 'bold')
-  doc.setFontSize(16)
+  doc.setFontSize(15)
   doc.setTextColor(...C.textDark)
   doc.text(title, 20, y)
   doc.setDrawColor(...C.primary)
-  doc.setLineWidth(0.7)
-  doc.line(20, y + 2, 80, y + 2)
-  return y + 12
+  doc.setLineWidth(0.8)
+  doc.line(20, y + 2, 72, y + 2)
+  if (subtitle) {
+    doc.setFont('Roboto', 'normal')
+    doc.setFontSize(8)
+    doc.setTextColor(...C.textMuted)
+    doc.text(subtitle, 20, y + 9)
+    return y + 16
+  }
+  return y + 10
 }
 
 // ── Cover Page ────────────────────────────────────────────────
@@ -190,11 +135,11 @@ function drawCover(doc: jsPDF, shopName: string, dateFrom: string, dateTo: strin
   const h = doc.internal.pageSize.getHeight()
   const cx = w / 2
 
-  // White background
+  // White bg
   doc.setFillColor(...C.white)
   doc.rect(0, 0, w, h, 'F')
 
-  // Top accent bar
+  // Top accent bar + gradient effect
   doc.setFillColor(...C.primary)
   doc.rect(0, 0, w, 8, 'F')
 
@@ -207,77 +152,81 @@ function drawCover(doc: jsPDF, shopName: string, dateFrom: string, dateTo: strin
   doc.setFont('Roboto', 'normal')
   doc.setFontSize(11)
   doc.setTextColor(...C.textMuted)
-  doc.text('\u0410\u041d\u0410\u041b\u0418\u0422\u0418\u041a\u0410', cx, 64, { align: 'center' })
+  doc.text('АНАЛИТИКА', cx, 64, { align: 'center' })
 
-  // Main title
+  // Decorative line
+  doc.setDrawColor(...C.cardBorder)
+  doc.setLineWidth(0.4)
+  doc.line(cx - 60, 75, cx + 60, 75)
+
+  // Title
   doc.setFont('Roboto', 'bold')
-  doc.setFontSize(36)
+  doc.setFontSize(34)
   doc.setTextColor(...C.textDark)
-  doc.text('\u0424\u0438\u043d\u0430\u043d\u0441\u043e\u0432\u044b\u0439 \u043e\u0442\u0447\u0451\u0442', cx, 105, { align: 'center' })
+  doc.text('Финансовый отчёт', cx, 100, { align: 'center' })
 
   doc.setFont('Roboto', 'normal')
   doc.setFontSize(14)
   doc.setTextColor(...C.textMuted)
-  doc.text('Profit & Loss', cx, 116, { align: 'center' })
+  doc.text('Profit & Loss', cx, 112, { align: 'center' })
 
   // Divider
   doc.setDrawColor(...C.primary)
   doc.setLineWidth(1)
-  doc.line(cx - 35, 126, cx + 35, 126)
+  doc.line(cx - 30, 122, cx + 30, 122)
 
   // Shop name
   doc.setFont('Roboto', 'bold')
   doc.setFontSize(22)
   doc.setTextColor(...C.textDark)
-  doc.text(shopName, cx, 150, { align: 'center' })
+  doc.text(shopName, cx, 145, { align: 'center' })
 
   // Marketplace badge
   const mpLabel = marketplace === 'wildberries' ? 'Wildberries' : 'Ozon'
-  const mpColor: [number, number, number] = marketplace === 'wildberries' ? [150, 50, 200] : [0, 91, 227]
+  const mpColor: RGB = marketplace === 'wildberries' ? [150, 50, 200] : [0, 91, 227]
   doc.setFont('Roboto', 'bold')
   doc.setFontSize(12)
   doc.setTextColor(...mpColor)
-  doc.text(mpLabel, cx, 163, { align: 'center' })
+  doc.text(mpLabel, cx, 158, { align: 'center' })
 
-  // Period
+  // Period box
+  doc.setFillColor(243, 244, 246)
+  doc.roundedRect(cx - 55, 170, 110, 20, 4, 4, 'F')
   doc.setFont('Roboto', 'normal')
-  doc.setFontSize(16)
+  doc.setFontSize(13)
   doc.setTextColor(...C.textBody)
-  doc.text(`${fmtDate(dateFrom)} \u2014 ${fmtDate(dateTo)}`, cx, 190, { align: 'center' })
+  doc.text(`${fmtDate(dateFrom)} — ${fmtDate(dateTo)}`, cx, 183, { align: 'center' })
 
   // Generation date
   const now = new Date()
-  doc.setFontSize(10)
+  doc.setFontSize(9)
   doc.setTextColor(...C.textLight)
-  doc.text(`\u0421\u0444\u043e\u0440\u043c\u0438\u0440\u043e\u0432\u0430\u043d: ${now.toLocaleDateString('ru-RU')} ${now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`, cx, 205, { align: 'center' })
+  doc.text(`Сформирован: ${now.toLocaleDateString('ru-RU')} в ${now.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`, cx, 200, { align: 'center' })
 
-  // Bottom accent bar
+  // Bottom bar
   doc.setFillColor(...C.primary)
   doc.rect(0, h - 8, w, 8, 'F')
 }
 
-// ── KPI Page ──────────────────────────────────────────────────
+// ── KPI Cards ─────────────────────────────────────────────────
 
-function drawKpiPage(doc: jsPDF, data: FinancesResponse): number {
-  drawPageBg(doc)
+function drawKpiCards(doc: jsPDF, data: FinancesResponse, startY: number): number {
   const kpi = data.kpi
-
-  let y = drawSectionHeader(doc, '\u041a\u043b\u044e\u0447\u0435\u0432\u044b\u0435 \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0438', 30)
 
   const cards: Array<{
     title: string; value: string; subtitle: string
-    delta: number; color: [number, number, number]
+    delta: number; color: RGB
   }> = [
-    { title: '\u0412\u044b\u0440\u0443\u0447\u043a\u0430', value: fmtMoney(kpi.revenue), subtitle: `${fmtNum(kpi.orders)} \u0437\u0430\u043a\u0430\u0437\u043e\u0432`, delta: kpi.revenue_delta, color: C.green },
-    { title: '\u041a \u043f\u0435\u0440\u0435\u0447\u0438\u0441\u043b\u0435\u043d\u0438\u044e', value: fmtMoney(kpi.payout), subtitle: '', delta: kpi.payout_delta, color: C.primary },
-    { title: '\u0420\u0430\u0441\u0445\u043e\u0434\u044b \u041c\u041f', value: fmtMoney(kpi.operating), subtitle: kpi.payout > 0 ? `${(kpi.operating / kpi.payout * 100).toFixed(1)}% \u043e\u0442 \u043f\u0435\u0440\u0435\u0447\u0438\u0441\u043b.` : '', delta: kpi.operating_delta ?? kpi.mp_fees_delta, color: C.orange },
-    { title: '\u0420\u0435\u043a\u043b\u0430\u043c\u0430', value: fmtMoney(kpi.ad_spend), subtitle: kpi.revenue > 0 ? `\u0414\u0420\u0420 ${(kpi.ad_spend / kpi.revenue * 100).toFixed(1)}%` : '', delta: kpi.ad_spend_delta, color: C.red },
-    { title: '\u0421\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c', value: fmtMoney(kpi.cogs), subtitle: kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% \u043e\u0442 \u0432\u044b\u0440\u0443\u0447\u043a\u0438` : '', delta: kpi.cogs_delta, color: C.purple },
-    { title: '\u0427\u0438\u0441\u0442\u0430\u044f \u043f\u0440\u0438\u0431\u044b\u043b\u044c', value: fmtMoney(kpi.profit), subtitle: `${kpi.profit_pct.toFixed(1)}% \u043e\u0442 \u0432\u044b\u0440\u0443\u0447\u043a\u0438`, delta: kpi.profit_delta, color: kpi.profit >= 0 ? C.green : C.red },
+    { title: 'Выручка', value: fmtMoney(kpi.revenue), subtitle: `${fmtNum(kpi.orders)} заказов`, delta: kpi.revenue_delta, color: C.green },
+    { title: 'К перечислению', value: fmtMoney(kpi.payout), subtitle: '', delta: kpi.payout_delta, color: C.primary },
+    { title: 'Расходы МП', value: fmtMoney(kpi.operating), subtitle: kpi.payout > 0 ? `${(kpi.operating / kpi.payout * 100).toFixed(1)}% от перечисл.` : '', delta: kpi.operating_delta ?? kpi.mp_fees_delta, color: C.orange },
+    { title: 'Реклама', value: fmtMoney(kpi.ad_spend), subtitle: kpi.revenue > 0 ? `ДРР ${(kpi.ad_spend / kpi.revenue * 100).toFixed(1)}%` : '', delta: kpi.ad_spend_delta, color: C.red },
+    { title: 'Себестоимость', value: fmtMoney(kpi.cogs), subtitle: kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% от выручки` : '', delta: kpi.cogs_delta, color: C.purple },
+    { title: 'Чистая прибыль', value: fmtMoney(kpi.profit), subtitle: `${kpi.profit_pct.toFixed(1)}% от выручки`, delta: kpi.profit_delta, color: kpi.profit >= 0 ? C.green : C.red },
   ]
 
   const cardW = 82
-  const cardH = 44
+  const cardH = 42
   const gap = 8
   const startX = 20
 
@@ -285,7 +234,7 @@ function drawKpiPage(doc: jsPDF, data: FinancesResponse): number {
     const col = i % 2
     const row = Math.floor(i / 2)
     const x = startX + col * (cardW + gap)
-    const cy = y + row * (cardH + gap)
+    const cy = startY + row * (cardH + gap)
 
     // Card bg + border
     doc.setFillColor(...C.cardBg)
@@ -295,63 +244,263 @@ function drawKpiPage(doc: jsPDF, data: FinancesResponse): number {
 
     // Color accent left bar
     doc.setFillColor(...card.color)
-    doc.rect(x, cy + 1, 3, cardH - 2, 'F')
+    doc.rect(x, cy + 1, 2.5, cardH - 2, 'F')
 
     // Title
     doc.setFont('Roboto', 'normal')
-    doc.setFontSize(9)
+    doc.setFontSize(8)
     doc.setTextColor(...C.textMuted)
-    doc.text(card.title, x + 8, cy + 11)
+    doc.text(card.title, x + 7, cy + 10)
 
     // Value
     doc.setFont('Roboto', 'bold')
-    doc.setFontSize(18)
+    doc.setFontSize(16)
     doc.setTextColor(...C.textDark)
-    doc.text(card.value, x + 8, cy + 26)
+    doc.text(card.value, x + 7, cy + 24)
 
     // Subtitle
     if (card.subtitle) {
       doc.setFont('Roboto', 'normal')
-      doc.setFontSize(8)
+      doc.setFontSize(7)
       doc.setTextColor(...C.textMuted)
-      doc.text(card.subtitle, x + 8, cy + 36)
+      doc.text(card.subtitle, x + 7, cy + 34)
     }
 
     // Delta badge
     if (Math.abs(card.delta) > 0.1) {
       const isUp = card.delta > 0
-      const arrow = isUp ? '\u25B2' : '\u25BC'
-      const deltaText = `${arrow} ${Math.abs(card.delta).toFixed(1)}%`
+      const deltaText = `${isUp ? '+' : ''}${card.delta.toFixed(1)}%`
       doc.setFont('Roboto', 'bold')
       doc.setFontSize(8)
       doc.setTextColor(...(isUp ? C.green : C.red))
-      doc.text(deltaText, x + cardW - 6, cy + 11, { align: 'right' })
+      doc.text(deltaText, x + cardW - 5, cy + 10, { align: 'right' })
     }
   })
 
-  return y + 3 * (cardH + gap) + 8
+  return startY + 3 * (cardH + gap) + 4
+}
+
+// ── Native Waterfall Chart ────────────────────────────────────
+
+function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number): number {
+  const bd = data.breakdown
+  if (!bd) return startY
+
+  const revenue = bd.revenue || 1
+  const commissionNet = (bd.commission || 0) - (bd.acquiring || 0)
+  const payoutVal = (bd.revenue || 0) - (bd.commission || 0)
+  const bdAny = bd as any
+
+  // Build waterfall bars from breakdown object
+  type WBar = { label: string; value: number; pct: number; color: RGB; isBold: boolean }
+  const allBars: WBar[] = [
+    { label: 'Выручка', value: bd.revenue, pct: 100, color: C.green, isBold: true },
+    { label: 'Комиссия + скидки', value: commissionNet, pct: Math.abs(commissionNet) / revenue * 100, color: C.orange, isBold: false },
+    { label: 'Эквайринг', value: bd.acquiring || 0, pct: Math.abs(bd.acquiring || 0) / revenue * 100, color: C.pink, isBold: false },
+    { label: 'К перечислению', value: payoutVal, pct: payoutVal / revenue * 100, color: C.primary, isBold: true },
+    { label: 'Логистика', value: bd.logistics || 0, pct: (bd.logistics || 0) / revenue * 100, color: C.red, isBold: false },
+    { label: 'Хранение', value: bd.storage || 0, pct: (bd.storage || 0) / revenue * 100, color: C.amber, isBold: false },
+    { label: 'ВБ Продвижение', value: bdAny.deductions_ads || 0, pct: (bdAny.deductions_ads || 0) / revenue * 100, color: C.purple, isBold: false },
+    { label: 'Пр. удержания', value: bdAny.deductions_other || 0, pct: (bdAny.deductions_other || 0) / revenue * 100, color: C.teal, isBold: false },
+    { label: 'Плат. приёмка', value: bd.compensation || 0, pct: (bd.compensation || 0) / revenue * 100, color: C.sky, isBold: false },
+    { label: 'Себестоимость', value: bd.cogs || 0, pct: (bd.cogs || 0) / revenue * 100, color: C.textMuted, isBold: false },
+    { label: 'Реклама', value: bd.advertising || 0, pct: (bd.advertising || 0) / revenue * 100, color: C.red, isBold: false },
+    { label: 'Прибыль', value: bd.profit || 0, pct: Math.abs(bd.profit || 0) / revenue * 100, color: (bd.profit || 0) >= 0 ? C.green : C.red, isBold: true },
+  ]
+
+  // Filter out zero expense bars (keep bold rows always)
+  const bars = allBars.filter(b => b.isBold || Math.abs(b.value) > 0)
+
+  const chartX = 62
+  const chartW = doc.internal.pageSize.getWidth() - chartX - 18
+  const barH = 8
+  const barGap = 3
+  const maxVal = Math.max(...bars.map(b => Math.abs(b.value)), 1)
+
+  let y = startY
+
+  // Section title
+  doc.setFont('Roboto', 'bold')
+  doc.setFontSize(11)
+  doc.setTextColor(...C.textDark)
+  doc.text('Структура расходов', 20, y)
+  y += 8
+
+  bars.forEach((item) => {
+    const barW = Math.max((Math.abs(item.value) / maxVal) * chartW, 2)
+    const color = item.color
+
+    // Label
+    doc.setFont('Roboto', item.isBold ? 'bold' : 'normal')
+    doc.setFontSize(7)
+    doc.setTextColor(...C.textBody)
+    doc.text(item.label, chartX - 3, y + barH - 2, { align: 'right' })
+
+    // Bar
+    doc.setFillColor(...color)
+    doc.roundedRect(chartX, y, barW, barH, 1, 1, 'F')
+
+    // Value inside bar or next to it
+    const valueText = fmtMoney(Math.abs(item.value))
+    doc.setFont('Roboto', 'bold')
+    doc.setFontSize(6.5)
+    if (barW > 30) {
+      doc.setTextColor(255, 255, 255)
+      doc.text(valueText, chartX + 3, y + barH - 2)
+    } else {
+      doc.setTextColor(...C.textBody)
+      doc.text(valueText, chartX + barW + 2, y + barH - 2)
+    }
+
+    // Percentage on right
+    if (item.pct > 0.05) {
+      doc.setFont('Roboto', 'normal')
+      doc.setFontSize(7)
+      const isGreen = item.label === 'Выручка' || item.label === 'К перечислению' || item.label === 'Прибыль'
+      doc.setTextColor(...(isGreen ? C.green : C.red))
+      doc.text(`${item.pct.toFixed(1)}%`, doc.internal.pageSize.getWidth() - 18, y + barH - 2, { align: 'right' })
+    }
+
+    y += barH + barGap
+  })
+
+  return y + 4
+}
+
+// ── Native Dynamics Chart ─────────────────────────────────────
+
+function drawDynamicsChart(doc: jsPDF, data: FinancesResponse, startY: number): number {
+  const daily = data.daily
+  if (!daily || daily.length === 0) return startY
+
+  const chartX = 30
+  const chartY = startY
+  const chartW = doc.internal.pageSize.getWidth() - chartX - 20
+  const chartH = 75
+  const n = daily.length
+
+  // Find ranges
+  const revValues = daily.map(d => d.revenue || 0)
+  const profitValues = daily.map(d => d.profit || 0)
+  const allValues = [...revValues, ...profitValues]
+  const maxVal = Math.max(...allValues, 1)
+  const minVal = Math.min(...allValues, 0)
+  const range = maxVal - minVal || 1
+
+  // Background
+  doc.setFillColor(...C.white)
+  doc.setDrawColor(...C.cardBorder)
+  doc.setLineWidth(0.3)
+  doc.roundedRect(chartX - 8, chartY - 5, chartW + 16, chartH + 28, 3, 3, 'FD')
+
+  // Grid lines
+  doc.setDrawColor(...C.chartGrid)
+  doc.setLineWidth(0.15)
+  for (let i = 0; i <= 4; i++) {
+    const gy = chartY + (i / 4) * chartH
+    doc.line(chartX, gy, chartX + chartW, gy)
+    // Grid label
+    const gVal = maxVal - (i / 4) * range
+    doc.setFont('Roboto', 'normal')
+    doc.setFontSize(6)
+    doc.setTextColor(...C.textLight)
+    doc.text(fmtNum(Math.round(gVal)), chartX - 2, gy + 1.5, { align: 'right' })
+  }
+
+  // Zero line
+  if (minVal < 0) {
+    const zeroY = chartY + ((maxVal - 0) / range) * chartH
+    doc.setDrawColor(...C.textLight)
+    doc.setLineWidth(0.3)
+    doc.line(chartX, zeroY, chartX + chartW, zeroY)
+  }
+
+  // Bar chart for profit
+  const barW = Math.max((chartW / n) * 0.6, 2)
+  daily.forEach((d, i) => {
+    const x = chartX + (i / n) * chartW + (chartW / n) * 0.2
+    const val = d.profit || 0
+    const zeroY = chartY + ((maxVal - 0) / range) * chartH
+    const valY = chartY + ((maxVal - val) / range) * chartH
+    const h = Math.abs(valY - zeroY)
+
+    doc.setFillColor(...(val >= 0 ? [200, 230, 201] as RGB : [255, 205, 210] as RGB))
+    if (val >= 0) {
+      doc.rect(x, valY, barW, h, 'F')
+    } else {
+      doc.rect(x, zeroY, barW, h, 'F')
+    }
+  })
+
+  // Line chart for revenue
+  doc.setDrawColor(...C.green)
+  doc.setLineWidth(0.6)
+  for (let i = 1; i < n; i++) {
+    const x1 = chartX + ((i - 1) / n) * chartW + (chartW / n) * 0.5
+    const x2 = chartX + (i / n) * chartW + (chartW / n) * 0.5
+    const y1 = chartY + ((maxVal - (daily[i - 1].revenue || 0)) / range) * chartH
+    const y2 = chartY + ((maxVal - (daily[i].revenue || 0)) / range) * chartH
+    doc.line(x1, y1, x2, y2)
+  }
+  // Dots
+  daily.forEach((d, i) => {
+    const x = chartX + (i / n) * chartW + (chartW / n) * 0.5
+    const y = chartY + ((maxVal - (d.revenue || 0)) / range) * chartH
+    doc.setFillColor(...C.green)
+    doc.circle(x, y, 0.8, 'F')
+  })
+
+  // X-axis labels
+  const step = Math.max(1, Math.floor(n / 12))
+  daily.forEach((d, i) => {
+    if (i % step === 0 || i === n - 1) {
+      const x = chartX + (i / n) * chartW + (chartW / n) * 0.5
+      doc.setFont('Roboto', 'normal')
+      doc.setFontSize(5.5)
+      doc.setTextColor(...C.textLight)
+      doc.text(fmtShortDate(d.date), x, chartY + chartH + 6, { align: 'center' })
+    }
+  })
+
+  // Legend
+  const legendY = chartY + chartH + 14
+  doc.setFillColor(...C.green)
+  doc.circle(chartX + 5, legendY - 1, 1.5, 'F')
+  doc.setFont('Roboto', 'normal')
+  doc.setFontSize(7)
+  doc.setTextColor(...C.textBody)
+  doc.text('Выручка', chartX + 9, legendY)
+
+  doc.setFillColor(200, 230, 201)
+  doc.rect(chartX + 35, legendY - 3, 6, 4, 'F')
+  doc.text('Прибыль (>0)', chartX + 43, legendY)
+
+  doc.setFillColor(255, 205, 210)
+  doc.rect(chartX + 73, legendY - 3, 6, 4, 'F')
+  doc.text('Убыток (<0)', chartX + 81, legendY)
+
+  return legendY + 8
 }
 
 // ── Comparison Table ──────────────────────────────────────────
 
 function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number): number {
   const comparison = data.comparison
-
   const rows = [
-    { key: 'revenue', label: '\u0412\u044b\u0440\u0443\u0447\u043a\u0430', bold: true },
-    { key: 'orders', label: '\u0417\u0430\u043a\u0430\u0437\u044b', isMoney: false },
-    { key: 'payout', label: '\u041a \u043f\u0435\u0440\u0435\u0447\u0438\u0441\u043b\u0435\u043d\u0438\u044e' },
-    { key: 'mp_fees', label: '\u0423\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u044f \u041c\u041f', bold: true },
-    { key: 'commission', label: '  \u2514 \u041a\u043e\u043c\u0438\u0441\u0441\u0438\u044f + \u0441\u043a\u0438\u0434\u043a\u0438' },
-    { key: 'logistics', label: '     \u2022 \u041b\u043e\u0433\u0438\u0441\u0442\u0438\u043a\u0430' },
-    { key: 'storage', label: '     \u2022 \u0425\u0440\u0430\u043d\u0435\u043d\u0438\u0435' },
-    { key: 'acquiring', label: '     \u2022 \u042d\u043a\u0432\u0430\u0439\u0440\u0438\u043d\u0433' },
-    { key: 'deductions_ads', label: '     \u2022 \u0412\u0411 \u041f\u0440\u043e\u0434\u0432\u0438\u0436\u0435\u043d\u0438\u0435' },
-    { key: 'deductions_other', label: '     \u2022 \u041f\u0440. \u0443\u0434\u0435\u0440\u0436\u0430\u043d\u0438\u044f' },
-    { key: 'acceptance', label: '     \u2022 \u041f\u043b\u0430\u0442. \u043f\u0440\u0438\u0451\u043c\u043a\u0430' },
-    { key: 'advertising', label: '\u0420\u0435\u043a\u043b\u0430\u043c\u0430' },
-    { key: 'cogs', label: '\u0421\u0435\u0431\u0435\u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c' },
-    { key: 'profit', label: '\u0427\u0438\u0441\u0442\u0430\u044f \u043f\u0440\u0438\u0431\u044b\u043b\u044c', bold: true },
+    { key: 'revenue', label: 'Выручка', bold: true },
+    { key: 'orders', label: 'Заказы', isMoney: false },
+    { key: 'payout', label: 'К перечислению' },
+    { key: 'mp_fees', label: 'Удержания МП', bold: true },
+    { key: 'commission', label: '  └ Комиссия + скидки' },
+    { key: 'logistics', label: '     • Логистика' },
+    { key: 'storage', label: '     • Хранение' },
+    { key: 'acquiring', label: '     • Эквайринг' },
+    { key: 'deductions_ads', label: '     • ВБ Продвижение' },
+    { key: 'deductions_other', label: '     • Пр. удержания' },
+    { key: 'acceptance', label: '     • Плат. приёмка' },
+    { key: 'advertising', label: 'Реклама' },
+    { key: 'cogs', label: 'Себестоимость' },
+    { key: 'profit', label: 'Чистая прибыль', bold: true },
   ]
 
   const tableBody = rows.map(r => {
@@ -363,27 +512,28 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number)
       r.label,
       isMoney ? fmtMoney(cur) : fmtNum(cur),
       isMoney ? fmtMoney(prev) : fmtNum(prev),
-      Math.abs(delta) > 0.1 ? `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%` : '\u2014',
+      Math.abs(delta) > 0.1 ? `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%` : '—',
     ]
   })
 
   autoTable(doc, {
     startY,
-    head: [['\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u044c', '\u0422\u0435\u043a\u0443\u0449\u0438\u0439', '\u041f\u0440\u0435\u0434\u044b\u0434\u0443\u0449\u0438\u0439', '\u0394']],
+    head: [['Показатель', 'Текущий период', 'Предыдущий период', 'Изменение']],
     body: tableBody,
-    theme: 'plain',
+    theme: 'grid',
     styles: {
       font: 'Roboto',
-      fontSize: 9,
+      fontSize: 8.5,
       textColor: C.textBody,
       cellPadding: { top: 3.5, bottom: 3.5, left: 5, right: 5 },
-      lineWidth: 0,
+      lineColor: C.cardBorder,
+      lineWidth: 0.2,
     },
     headStyles: {
-      fillColor: C.headerBg,
-      textColor: C.textMuted,
+      fillColor: C.primary,
+      textColor: C.white,
       fontStyle: 'bold',
-      fontSize: 9,
+      fontSize: 8.5,
     },
     alternateRowStyles: {
       fillColor: C.altRow,
@@ -392,7 +542,7 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number)
       fillColor: C.white,
     },
     columnStyles: {
-      0: { cellWidth: 60 },
+      0: { cellWidth: 55 },
       1: { halign: 'right', cellWidth: 38 },
       2: { halign: 'right', cellWidth: 38 },
       3: { halign: 'right', cellWidth: 28 },
@@ -401,15 +551,13 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number)
       const boldRows = [0, 3, 13]
       if (cellData.section === 'body' && boldRows.includes(cellData.row.index)) {
         cellData.cell.styles.fontStyle = 'bold'
-        cellData.cell.styles.fillColor = C.headerBg
+        cellData.cell.styles.fillColor = [237, 242, 252]
         cellData.cell.styles.textColor = C.textDark
       }
-      // Profit color
       if (cellData.section === 'body' && cellData.row.index === 13 && cellData.column.index === 1) {
         const val = comparison.current['profit'] ?? 0
         cellData.cell.styles.textColor = val >= 0 ? C.green : C.red
       }
-      // Delta color
       if (cellData.section === 'body' && cellData.column.index === 3) {
         const text = String(cellData.cell.raw)
         if (text.startsWith('+')) cellData.cell.styles.textColor = C.green
@@ -421,51 +569,54 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, startY: number)
   return (doc as any).lastAutoTable?.finalY ?? startY + 100
 }
 
-// ── Weekly Report Table ──────────────────────────────────────
+// ── Product SKU Table ─────────────────────────────────────────
 
-function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketplace: string, startY: number): number {
-  const weeks = weeklyData.weeks.slice(-12)
+function drawProductTable(doc: jsPDF, productData: ProductFinanceResponse, marketplace: string, startY: number): number {
+  const products = productData.products
+    .filter(p => !p.vendor_code.startsWith('__'))
+    .sort((a, b) => (b.current.revenue || 0) - (a.current.revenue || 0))
+    .slice(0, 30) // Top 30
+
   const isWb = marketplace === 'wildberries' || marketplace === 'wb'
 
   let head: string[]
-  let body: string[][]
+  let colKeys: string[]
 
   if (isWb) {
-    head = ['\u041d\u0435\u0434', '\u041f\u0435\u0440\u0438\u043e\u0434', '\u041a\u043e\u043b', '\u0412\u044b\u0440\u0443\u0447\u043a\u0430', '\u041a \u043f\u0435\u0440\u0435\u0447.', '\u041b\u043e\u0433\u0438\u0441\u0442.', '\u0425\u0440\u0430\u043d.', '\u0423\u0434\u0435\u0440\u0436.', '\u0420\u0435\u043a\u043b.', '\u0421/\u0421', '\u041f\u0440\u0438\u0431\u044b\u043b\u044c']
-    body = weeks.map(w => {
-      const wk = w as WBWeeklyReportRow
-      return [
-        `${wk.week}`,
-        fmtShortDate(wk.week_start),
-        `${wk.qty}`,
-        fmtNum(wk.revenue),
-        fmtNum(wk.payout),
-        fmtNum(wk.logistics),
-        fmtNum(wk.storage),
-        fmtNum(wk.deductions + wk.wb_promo),
-        fmtNum(wk.marketing),
-        fmtNum(wk.cogs),
-        fmtNum(wk.gross_profit),
-      ]
-    })
+    head = ['Товар', 'Прод.', 'Выручка', 'Логист.', 'Хран.', 'Удерж.', 'Рекл.', 'С/С', 'Прибыль', 'Маржа']
+    colKeys = ['sales', 'revenue', 'logistics', 'storage', 'deductions', 'ad_spend', 'cogs', 'profit']
   } else {
-    head = ['\u041d\u0435\u0434', '\u041f\u0435\u0440\u0438\u043e\u0434', '\u041a\u043e\u043b', '\u041f\u0440\u043e\u0434\u0430\u0436\u0438', '\u041a\u043e\u043c\u0438\u0441.', '\u041b\u043e\u0433\u0438\u0441\u0442.', '\u0425\u0440\u0430\u043d.', '\u0420\u0435\u043a\u043b.', '\u0421/\u0421', '\u041f\u0440\u0438\u0431\u044b\u043b\u044c']
-    body = weeks.map(w => {
-      const wk = w as OzonWeeklyReportRow
-      return [
-        `${wk.week}`,
-        fmtShortDate(wk.week_start),
-        `${wk.qty}`,
-        fmtNum(wk.sales),
-        fmtNum(wk.commission),
-        fmtNum(wk.delivery_services),
-        fmtNum(wk.storage),
-        fmtNum(wk.marketing),
-        fmtNum(wk.cogs),
-        fmtNum(wk.gross_profit),
-      ]
-    })
+    head = ['Товар', 'Прод.', 'Выручка', 'Комис.', 'Логист.', 'Рекл.', 'С/С', 'Прибыль', 'Маржа']
+    colKeys = ['sales', 'revenue', 'commission', 'logistics', 'ad_spend', 'cogs', 'profit']
   }
+
+  const body = products.map(p => {
+    const name = (p.name || p.vendor_code).substring(0, 28)
+    const rev = p.current.revenue || 0
+    const profit = p.current.profit || 0
+    const margin = rev > 0 ? `${(profit / rev * 100).toFixed(1)}%` : '—'
+
+    const row = [name]
+    colKeys.forEach(k => {
+      const val = p.current[k] ?? 0
+      row.push(k === 'sales' ? `${val}` : fmtNum(val))
+    })
+    row.push(margin)
+    return row
+  })
+
+  // Totals row
+  const totals = productData.totals
+  const totRev = totals.current.revenue || 1
+  const totProfit = totals.current.profit || 0
+  const totMargin = `${(totProfit / totRev * 100).toFixed(1)}%`
+  const totRow = ['ИТОГО']
+  colKeys.forEach(k => {
+    const val = totals.current[k] ?? 0
+    totRow.push(k === 'sales' ? `${val}` : fmtNum(val))
+  })
+  totRow.push(totMargin)
+  body.push(totRow)
 
   autoTable(doc, {
     startY,
@@ -474,18 +625,18 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
     theme: 'grid',
     styles: {
       font: 'Roboto',
-      fontSize: 8,
+      fontSize: 7,
       textColor: C.textBody,
-      cellPadding: { top: 3, bottom: 3, left: 3, right: 3 },
+      cellPadding: { top: 2.5, bottom: 2.5, left: 2.5, right: 2.5 },
       lineColor: C.cardBorder,
-      lineWidth: 0.2,
+      lineWidth: 0.15,
       halign: 'right',
     },
     headStyles: {
       fillColor: C.primary,
       textColor: C.white,
       fontStyle: 'bold',
-      fontSize: 8,
+      fontSize: 7,
       halign: 'center',
     },
     alternateRowStyles: {
@@ -495,16 +646,185 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
       fillColor: C.white,
     },
     columnStyles: {
-      0: { halign: 'center', cellWidth: 10 },
-      1: { halign: 'left', cellWidth: 22 },
-      2: { cellWidth: 10 },
+      0: { halign: 'left', cellWidth: 40 },
+      1: { cellWidth: 10 },
     },
     didParseCell: (cellData) => {
-      const lastCol = isWb ? 10 : 9
-      if (cellData.section === 'body' && cellData.column.index === lastCol) {
+      // Last row = ИТОГО
+      if (cellData.section === 'body' && cellData.row.index === body.length - 1) {
+        cellData.cell.styles.fontStyle = 'bold'
+        cellData.cell.styles.fillColor = [237, 242, 252]
+        cellData.cell.styles.textColor = C.textDark
+      }
+      // Profit column color
+      const profitCol = isWb ? 8 : 7
+      if (cellData.section === 'body' && cellData.column.index === profitCol) {
         const numVal = parseFloat(String(cellData.cell.raw).replace(/\s/g, '').replace(',', '.'))
         if (!isNaN(numVal)) {
           cellData.cell.styles.textColor = numVal >= 0 ? C.green : C.red
+          cellData.cell.styles.fontStyle = 'bold'
+        }
+      }
+      // Margin column color
+      const marginCol = isWb ? 9 : 8
+      if (cellData.section === 'body' && cellData.column.index === marginCol) {
+        const text = String(cellData.cell.raw)
+        const pct = parseFloat(text)
+        if (!isNaN(pct)) {
+          if (pct >= 20) cellData.cell.styles.textColor = C.green
+          else if (pct >= 5) cellData.cell.styles.textColor = C.amber
+          else cellData.cell.styles.textColor = C.red
+          cellData.cell.styles.fontStyle = 'bold'
+        }
+      }
+    },
+  })
+
+  return (doc as any).lastAutoTable?.finalY ?? startY + 100
+}
+
+// ── Weekly Report Table (Detailed) ────────────────────────────
+
+function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketplace: string, startY: number): number {
+  const weeks = weeklyData.weeks.slice(-12)
+  const isWb = marketplace === 'wildberries' || marketplace === 'wb'
+
+  let head: string[]
+  let body: string[][]
+
+  if (isWb) {
+    head = ['Нед', 'Период', 'Кол-во', 'Выручка', 'К перечисл.', 'Комиссия', 'Логистика', 'Хранение', 'Удержания', 'ВБ Продв.', 'Приёмка', 'Реклама', 'С/С', 'Прибыль', 'Маржа']
+    body = weeks.map(w => {
+      const wk = w as WBWeeklyReportRow
+      const rev = wk.revenue || 1
+      const margin = `${(wk.gross_profit / rev * 100).toFixed(1)}%`
+      return [
+        `${wk.week}`,
+        `${fmtShortDate(wk.week_start)} – ${fmtShortDate(wk.week_end)}`,
+        `${wk.qty}`,
+        fmtNum(wk.revenue),
+        fmtNum(wk.payout),
+        fmtNum(wk.commission),
+        fmtNum(wk.logistics),
+        fmtNum(wk.storage),
+        fmtNum(wk.deductions),
+        fmtNum(wk.wb_promo),
+        fmtNum(wk.acceptance),
+        fmtNum(wk.marketing),
+        fmtNum(wk.cogs),
+        fmtNum(wk.gross_profit),
+        margin,
+      ]
+    })
+  } else {
+    head = ['Нед', 'Период', 'Кол-во', 'Продажи', 'К перечисл.', 'Комиссия', 'Логистика', 'Хранение', 'Доставка', 'FBO', 'Реклама', 'С/С', 'Прибыль', 'Маржа']
+    body = weeks.map(w => {
+      const wk = w as OzonWeeklyReportRow
+      const rev = wk.sales || 1
+      const margin = `${(wk.gross_profit / rev * 100).toFixed(1)}%`
+      return [
+        `${wk.week}`,
+        `${fmtShortDate(wk.week_start)} – ${fmtShortDate(wk.week_end)}`,
+        `${wk.qty}`,
+        fmtNum(wk.sales),
+        fmtNum(wk.payout),
+        fmtNum(wk.commission),
+        fmtNum(wk.delivery_services),
+        fmtNum(wk.storage),
+        fmtNum(wk.delivery_services),
+        fmtNum(wk.fbo_services),
+        fmtNum(wk.marketing),
+        fmtNum(wk.cogs),
+        fmtNum(wk.gross_profit),
+        margin,
+      ]
+    })
+  }
+
+  // Totals row
+  if (weeklyData.totals) {
+    const t = weeklyData.totals
+    if (isWb) {
+      const rev = t.revenue || 1
+      body.push([
+        '', 'ИТОГО', `${t.qty || 0}`,
+        fmtNum(t.revenue || 0), fmtNum(t.payout || 0), fmtNum(t.commission || 0),
+        fmtNum(t.logistics || 0), fmtNum(t.storage || 0), fmtNum(t.deductions || 0),
+        fmtNum(t.wb_promo || 0), fmtNum(t.acceptance || 0), fmtNum(t.marketing || 0),
+        fmtNum(t.cogs || 0), fmtNum(t.gross_profit || 0),
+        `${((t.gross_profit || 0) / rev * 100).toFixed(1)}%`,
+      ])
+    } else {
+      const rev = t.sales || 1
+      body.push([
+        '', 'ИТОГО', `${t.qty || 0}`,
+        fmtNum(t.sales || 0), fmtNum(t.payout || 0), fmtNum(t.commission || 0),
+        fmtNum(t.delivery_services || 0), fmtNum(t.storage || 0), fmtNum(t.delivery_services || 0),
+        fmtNum(t.fbo_services || 0), fmtNum(t.marketing || 0),
+        fmtNum(t.cogs || 0), fmtNum(t.gross_profit || 0),
+        `${((t.gross_profit || 0) / rev * 100).toFixed(1)}%`,
+      ])
+    }
+  }
+
+  autoTable(doc, {
+    startY,
+    head: [head],
+    body,
+    theme: 'grid',
+    styles: {
+      font: 'Roboto',
+      fontSize: 6.5,
+      textColor: C.textBody,
+      cellPadding: { top: 2, bottom: 2, left: 1.5, right: 1.5 },
+      lineColor: C.cardBorder,
+      lineWidth: 0.15,
+      halign: 'right',
+      overflow: 'ellipsize',
+    },
+    headStyles: {
+      fillColor: C.primary,
+      textColor: C.white,
+      fontStyle: 'bold',
+      fontSize: 6,
+      halign: 'center',
+    },
+    alternateRowStyles: {
+      fillColor: C.altRow,
+    },
+    bodyStyles: {
+      fillColor: C.white,
+    },
+    columnStyles: {
+      0: { halign: 'center', cellWidth: 8 },
+      1: { halign: 'left', cellWidth: 24 },
+      2: { cellWidth: 9 },
+    },
+    tableWidth: 'auto',
+    didParseCell: (cellData) => {
+      // ИТОГО row
+      if (cellData.section === 'body' && cellData.row.index === body.length - 1) {
+        cellData.cell.styles.fontStyle = 'bold'
+        cellData.cell.styles.fillColor = [237, 242, 252]
+        cellData.cell.styles.textColor = C.textDark
+      }
+      // Profit column color
+      const profitCol = isWb ? 13 : 12
+      if (cellData.section === 'body' && cellData.column.index === profitCol) {
+        const numVal = parseFloat(String(cellData.cell.raw).replace(/\s/g, '').replace(',', '.'))
+        if (!isNaN(numVal)) {
+          cellData.cell.styles.textColor = numVal >= 0 ? C.green : C.red
+          cellData.cell.styles.fontStyle = 'bold'
+        }
+      }
+      // Margin column
+      const marginCol = isWb ? 14 : 13
+      if (cellData.section === 'body' && cellData.column.index === marginCol) {
+        const pct = parseFloat(String(cellData.cell.raw))
+        if (!isNaN(pct)) {
+          if (pct >= 15) cellData.cell.styles.textColor = C.green
+          else if (pct >= 5) cellData.cell.styles.textColor = C.amber
+          else cellData.cell.styles.textColor = C.red
           cellData.cell.styles.fontStyle = 'bold'
         }
       }
@@ -519,80 +839,52 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
 export interface PnlReportOptions {
   data: FinancesResponse
   weeklyData: WeeklyReportResponse | null
+  productData: ProductFinanceResponse | null
   shopName: string
   marketplace: string
-  breakdownChartSelector?: string
-  dynamicsChartSelector?: string
 }
 
 export async function generatePnlReport(opts: PnlReportOptions): Promise<void> {
-  const { data, weeklyData, shopName, marketplace } = opts
-  const breakdownSelector = opts.breakdownChartSelector || '[data-pdf="breakdown-chart"]'
-  const dynamicsSelector = opts.dynamicsChartSelector || '[data-pdf="dynamics-chart"]'
+  const { data, weeklyData, productData, shopName, marketplace } = opts
 
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-
-  // Load Cyrillic fonts
   setupFonts(doc)
-
-  const pageW = doc.internal.pageSize.getWidth()
 
   // ── Page 1: Cover ──
   drawCover(doc, shopName, data.date_from, data.date_to, marketplace)
 
-  // ── Page 2: KPI ──
-  doc.addPage()
-  const kpiEndY = drawKpiPage(doc, data)
-
-  // ── Try to capture charts ──
-  const breakdownImg = await captureElement(breakdownSelector)
-  const dynamicsImg = await captureElement(dynamicsSelector)
-
-  // ── Breakdown chart on same page or next ──
-  if (breakdownImg) {
-    const availH = 297 - kpiEndY - 20 // A4 height minus margins
-    const imgW = pageW - 40
-    const imgH = Math.min(availH, 95)
-    
-    if (availH > 50) {
-      doc.setFont('Roboto', 'bold')
-      doc.setFontSize(12)
-      doc.setTextColor(...C.textDark)
-      doc.text('\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430 \u0440\u0430\u0441\u0445\u043e\u0434\u043e\u0432', 20, kpiEndY + 2)
-      doc.addImage(breakdownImg, 'PNG', 20, kpiEndY + 6, imgW, imgH)
-    } else {
-      doc.addPage()
-      drawPageBg(doc)
-      let y = drawSectionHeader(doc, '\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430 \u0440\u0430\u0441\u0445\u043e\u0434\u043e\u0432', 30)
-      doc.addImage(breakdownImg, 'PNG', 20, y, imgW, 95)
-    }
-  }
-
-  // ── Dynamics Chart ──
-  if (dynamicsImg) {
-    doc.addPage()
-    drawPageBg(doc)
-    const y = drawSectionHeader(doc, '\u0414\u0438\u043d\u0430\u043c\u0438\u043a\u0430 \u043f\u043e\u043a\u0430\u0437\u0430\u0442\u0435\u043b\u0435\u0439', 30)
-    const imgW = pageW - 40
-    doc.addImage(dynamicsImg, 'PNG', 20, y, imgW, 100)
-  }
-
-  // ── Comparison Table ──
+  // ── Page 2: KPI + Waterfall ──
   doc.addPage()
   drawPageBg(doc)
-  let y = drawSectionHeader(doc, '\u0421\u0440\u0430\u0432\u043d\u0435\u043d\u0438\u0435 \u043f\u0435\u0440\u0438\u043e\u0434\u043e\u0432', 30)
-  y = drawComparisonTable(doc, data, y)
+  let y = drawSectionHeader(doc, 'Ключевые показатели', 25, `${fmtDate(data.date_from)} — ${fmtDate(data.date_to)}`)
+  y = drawKpiCards(doc, data, y)
+  drawWaterfallChart(doc, data, y)
 
-  // ── Weekly Report ──
+  // ── Page 3: Dynamics ──
+  doc.addPage()
+  drawPageBg(doc)
+  y = drawSectionHeader(doc, 'Динамика показателей', 25, 'Выручка (линия) и прибыль (столбцы) по дням')
+  drawDynamicsChart(doc, data, y)
+
+  // ── Page 4: Comparison Table ──
+  doc.addPage()
+  drawPageBg(doc)
+  y = drawSectionHeader(doc, 'Сравнение периодов', 25, 'Текущий vs предыдущий период')
+  drawComparisonTable(doc, data, y)
+
+  // ── Page 5: Product SKU ──
+  if (productData && productData.products.length > 0) {
+    doc.addPage()
+    drawPageBg(doc)
+    y = drawSectionHeader(doc, 'Детализация по товарам', 25, `Топ-30 товаров по выручке`)
+    drawProductTable(doc, productData, marketplace, y)
+  }
+
+  // ── Page 6: Weekly Report ──
   if (weeklyData && weeklyData.weeks.length > 0) {
-    if (y > 180) {
-      doc.addPage()
-      drawPageBg(doc)
-      y = 30
-    } else {
-      y += 12
-    }
-    y = drawSectionHeader(doc, '\u041f\u043e\u043d\u0435\u0434\u0435\u043b\u044c\u043d\u044b\u0439 \u043e\u0442\u0447\u0451\u0442', y)
+    doc.addPage()
+    drawPageBg(doc)
+    y = drawSectionHeader(doc, 'Понедельный отчёт', 25, 'Последние 12 недель — детализация по всем показателям')
     drawWeeklyTable(doc, weeklyData, marketplace, y)
   }
 

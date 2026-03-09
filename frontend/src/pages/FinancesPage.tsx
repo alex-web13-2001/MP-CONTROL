@@ -979,6 +979,7 @@ export default function FinancesPage() {
                     await generatePnlReport({
                       data,
                       weeklyData: wData,
+                      productData,
                       shopName: currentShop?.name || 'Магазин',
                       marketplace: currentShop?.marketplace || 'wildberries',
                     })
