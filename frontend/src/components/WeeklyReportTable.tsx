@@ -54,7 +54,7 @@ interface Col {
   accent?: boolean
 }
 
-const VALUE_COLS: Col[] = [
+const OZON_VALUE_COLS: Col[] = [
   { key: 'qty',              label: 'Кол-во',        width: 72,  type: 'count',  section: 'values' },
   { key: 'sales',            label: 'Σ Продажи',     width: 110, type: 'money',  section: 'values', accent: true },
   { key: 'returns',          label: 'Возврат',        width: 90,  type: 'money',  section: 'values' },
@@ -72,7 +72,7 @@ const VALUE_COLS: Col[] = [
   { key: 'gross_profit',     label: 'ВАЛ',            width: 110, type: 'money',  section: 'values', accent: true },
 ]
 
-const PCT_COLS: Col[] = [
+const OZON_PCT_COLS: Col[] = [
   { key: 'commission_pct',    label: 'Комиссия %',  width: 95, type: 'pct', section: 'pct' },
   { key: 'marketing_pct',     label: 'Промо %',     width: 85, type: 'pct', section: 'pct' },
   { key: 'fbo_pct',           label: 'ФБО %',       width: 75, type: 'pct', section: 'pct' },
@@ -80,8 +80,32 @@ const PCT_COLS: Col[] = [
   { key: 'gross_profit_pct',  label: 'ВАЛ %',       width: 78, type: 'pct', section: 'pct' },
 ]
 
-const ALL_COLS = [...VALUE_COLS, ...PCT_COLS]
-const TABLE_MIN_W = ALL_COLS.reduce((s, c) => s + c.width, 0)
+// ── WB columns ──
+
+const WB_VALUE_COLS: Col[] = [
+  { key: 'qty',               label: 'Кол-во',         width: 72,  type: 'count',  section: 'values' },
+  { key: 'retail_amount',     label: 'Цена розн.',     width: 110, type: 'money',  section: 'values', accent: true },
+  { key: 'ppvz_for_pay',      label: 'Реализовано',   width: 115, type: 'money',  section: 'values', accent: true },
+  { key: 'commission',        label: 'Комиссия WB',   width: 110, type: 'money',  section: 'values' },
+  { key: 'returns_qty',       label: 'Возвр. шт.',     width: 80,  type: 'count',  section: 'values' },
+  { key: 'returns_amount',    label: 'Возвр. сум.',    width: 100, type: 'money',  section: 'values' },
+  { key: 'logistics',         label: 'Логистика',      width: 100, type: 'money',  section: 'values' },
+  { key: 'storage',           label: 'Хранение',       width: 95,  type: 'money',  section: 'values' },
+  { key: 'acceptance',        label: 'Приёмка',        width: 90,  type: 'money',  section: 'values' },
+  { key: 'deductions',        label: 'Удержания',     width: 100, type: 'money',  section: 'values' },
+  { key: 'compensations',     label: 'Компенс.',       width: 95,  type: 'money',  section: 'values' },
+  { key: 'marketing',         label: 'Реклама',        width: 100, type: 'money',  section: 'values' },
+  { key: 'payout',            label: 'К перечисл.',    width: 120, type: 'money',  section: 'values', accent: true },
+  { key: 'cogs',              label: 'Себестоим.',     width: 110, type: 'money',  section: 'values' },
+  { key: 'gross_profit',      label: 'ВАЛ',            width: 110, type: 'money',  section: 'values', accent: true },
+]
+
+const WB_PCT_COLS: Col[] = [
+  { key: 'commission_pct',    label: 'Комиссия %',  width: 95, type: 'pct', section: 'pct' },
+  { key: 'logistics_pct',     label: 'Логист. %',   width: 90, type: 'pct', section: 'pct' },
+  { key: 'cogs_pct',          label: 'Себест. %',   width: 90, type: 'pct', section: 'pct' },
+  { key: 'gross_profit_pct',  label: 'ВАЛ %',       width: 78, type: 'pct', section: 'pct' },
+]
 
 type SortDir = 'asc' | 'desc' | null
 
@@ -90,9 +114,15 @@ type SortDir = 'asc' | 'desc' | null
 interface Props {
   weeks: WeeklyReportRow[]
   totals: Record<string, number>
+  marketplace?: 'ozon' | 'wb'
 }
 
-export default function WeeklyReportTable({ weeks, totals }: Props) {
+export default function WeeklyReportTable({ weeks, totals, marketplace = 'ozon' }: Props) {
+  const VALUE_COLS = marketplace === 'wb' ? WB_VALUE_COLS : OZON_VALUE_COLS
+  const PCT_COLS = marketplace === 'wb' ? WB_PCT_COLS : OZON_PCT_COLS
+  const ALL_COLS = [...VALUE_COLS, ...PCT_COLS]
+  const TABLE_MIN_W = ALL_COLS.reduce((s, c) => s + c.width, 0)
+
   const [sortKey, setSortKey] = useState<string>('week_start')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
 

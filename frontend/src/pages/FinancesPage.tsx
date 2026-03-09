@@ -35,6 +35,7 @@ import {
   getWbProductsFinanceApi,
   getOzonProductsFinanceApi,
   getOzonWeeklyReportApi,
+  getWbWeeklyReportApi,
   type FinancesResponse,
   type FinancesDailyPoint,
   type ProductFinanceResponse,
@@ -802,6 +803,8 @@ export default function FinancesPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const shopId = currentShop?.id
   const isOzon = currentShop?.marketplace === 'ozon'
+  const isWb = currentShop?.marketplace === 'wildberries'
+  const showWeeklyTab = isOzon || isWb
 
   const [activeTab, setActiveTab] = useState<FinancesTab>('pnl')
   const [data, setData] = useState<FinancesResponse | null>(null)
@@ -819,17 +822,18 @@ export default function FinancesPage() {
 
   // Fetch weekly report when tab is switched to 'weekly'
   const fetchWeeklyData = useCallback(async () => {
-    if (!shopId || !isOzon) return
+    if (!shopId || !showWeeklyTab) return
     setWeeklyLoading(true)
     try {
-      const result = await getOzonWeeklyReportApi({ shop_id: shopId })
+      const apiFn = isOzon ? getOzonWeeklyReportApi : getWbWeeklyReportApi
+      const result = await apiFn({ shop_id: shopId })
       setWeeklyData(result)
     } catch (e: any) {
       console.error('Weekly report fetch error:', e)
     } finally {
       setWeeklyLoading(false)
     }
-  }, [shopId, isOzon])
+  }, [shopId, showWeeklyTab, isOzon])
 
   useEffect(() => {
     if (activeTab === 'weekly' && !weeklyData && !weeklyLoading) {
@@ -923,7 +927,7 @@ export default function FinancesPage() {
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           {/* ── Tabs ── */}
-          {isOzon && (
+          {showWeeklyTab && (
             <div className="flex rounded-lg border border-[hsl(var(--border))] overflow-hidden">
               <button
                 onClick={() => setActiveTab('pnl')}
@@ -958,14 +962,14 @@ export default function FinancesPage() {
       </div>
 
       {/* ── Weekly Report Tab ── */}
-      {activeTab === 'weekly' && isOzon && (
+      {activeTab === 'weekly' && showWeeklyTab && (
         weeklyLoading ? (
           <div className="space-y-4">
             <Skeleton className="h-8 w-48" />
             <Skeleton className="h-[500px] rounded-xl" />
           </div>
         ) : weeklyData && weeklyData.weeks.length > 0 ? (
-          <WeeklyReportTable weeks={weeklyData.weeks} totals={weeklyData.totals} />
+          <WeeklyReportTable weeks={weeklyData.weeks} totals={weeklyData.totals} marketplace={isOzon ? 'ozon' : 'wb'} />
         ) : (
           <div className="flex h-[40vh] flex-col items-center justify-center gap-4">
             <CalendarRange className="h-12 w-12 text-[hsl(var(--muted-foreground)/0.3)]" />

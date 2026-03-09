@@ -2335,3 +2335,273 @@ async def get_ozon_weekly_report(
         "weeks": result_weeks,
         "totals": totals,
     }
+
+
+# ══════════════════════════════════════════════════════════════
+# WB WEEKLY P&L REPORT
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/wb/weekly-report")
+async def get_wb_weekly_report(
+    shop_id: int = Query(..., description="Shop ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    WB Weekly P&L Report — all weeks (Mon–Sun) from the earliest data.
+
+    Sources:
+      - fact_finances FINAL: all WB financial metrics
+      - fact_advert_stats FINAL: ad spend per week
+      - product_costs (PG): COGS
+    """
+
+    # ── Verify shop ──
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
+
+    # ══════════════════════════════════════════════════════
+    # 1. Main weekly aggregation from fact_finances (WB)
+    # ══════════════════════════════════════════════════════
+    weeks = {}
+
+    try:
+        txn_weekly = ch.query("""
+            SELECT
+                toMonday(event_date) AS week_start,
+
+                -- Quantity: count Продажа rows
+                countIf(operation_type = 'Продажа') AS qty,
+
+                -- Retail price (Цена розничная)
+                sumIf(retail_amount, operation_type = 'Продажа') AS retail_amount,
+
+                -- WB ppvz_for_pay (Реализовано / к перечислению за товар)
+                sumIf(wb_ppvz_for_pay, operation_type = 'Продажа') AS ppvz_for_pay,
+
+                -- Commission
+                sumIf(commission_amount, operation_type = 'Продажа') AS commission,
+
+                -- Returns (qty and amount) — Возврат
+                countIf(operation_type = 'Возврат') AS returns_qty,
+                sumIf(abs(retail_amount), operation_type = 'Возврат') AS returns_amount,
+
+                -- Logistics (Логистика + Коррекция логистики)
+                sumIf(abs(logistics_total), operation_type IN ('Логистика', 'Коррекция логистики')) AS logistics,
+
+                -- Storage (Хранение)
+                sumIf(abs(storage_fee), operation_type = 'Хранение') AS storage,
+
+                -- Penalties / Deductions (Удержания = штрафы + прочие)
+                sumIf(abs(penalty_total), operation_type = 'Удержание') AS deductions,
+
+                -- Acceptance (Приёмка + Обработка)
+                sumIf(abs(acceptance_fee), operation_type IN ('Платная приемка', 'Обработка товара')) AS acceptance,
+
+                -- Compensations (positive = WB pays seller)
+                sumIf(abs(logistics_total), operation_type = 'Возмещение издержек по перевозке/по складским операциям с товаром') AS compensations,
+
+                -- Compensation for returns
+                sumIf(abs(payout_amount), operation_type = 'Возмещение за выдачу и возврат товаров на ПВЗ') AS returns_compensation,
+
+                -- Net payout — sum of all payout_amount
+                sum(payout_amount) AS payout
+
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 'wb'
+            GROUP BY week_start
+            ORDER BY week_start
+        """, parameters={"shop_id": shop_id})
+
+        for r in txn_weekly.result_rows:
+            ws = str(r[0])
+            weeks[ws] = {
+                "week_start": ws,
+                "qty": int(r[1] or 0),
+                "retail_amount": float(r[2] or 0),
+                "ppvz_for_pay": float(r[3] or 0),
+                "commission": float(r[4] or 0),
+                "returns_qty": int(r[5] or 0),
+                "returns_amount": float(r[6] or 0),
+                "logistics": float(r[7] or 0),
+                "storage": float(r[8] or 0),
+                "deductions": float(r[9] or 0),
+                "acceptance": float(r[10] or 0),
+                "compensations": float(r[11] or 0),
+                "returns_compensation": float(r[12] or 0),
+                "payout": float(r[13] or 0),
+                "marketing": 0,  # filled from ad stats
+                "cogs": 0,
+            }
+    except Exception as e:
+        logger.warning("CH WB weekly transactions query failed: %s", e)
+
+    if not weeks:
+        return {"shop_id": shop_id, "weeks": [], "totals": {}}
+
+    # ══════════════════════════════════════════════════════
+    # 2. Ad spend from fact_advert_stats
+    # ══════════════════════════════════════════════════════
+    try:
+        ad_weekly = ch.query("""
+            SELECT
+                toMonday(date) AS week_start,
+                sum(spend) AS total_spend
+            FROM mms_analytics.fact_advert_stats FINAL
+            WHERE shop_id = {shop_id:UInt32}
+            GROUP BY week_start
+        """, parameters={"shop_id": shop_id})
+
+        for r in ad_weekly.result_rows:
+            ws = str(r[0])
+            ad_val = float(r[1] or 0)
+            if ws in weeks:
+                weeks[ws]["marketing"] = ad_val
+            else:
+                weeks[ws] = {
+                    "week_start": ws,
+                    "qty": 0, "retail_amount": 0, "ppvz_for_pay": 0,
+                    "commission": 0, "returns_qty": 0, "returns_amount": 0,
+                    "logistics": 0, "storage": 0, "deductions": 0,
+                    "acceptance": 0, "compensations": 0, "returns_compensation": 0,
+                    "payout": 0, "marketing": ad_val, "cogs": 0,
+                }
+    except Exception as e:
+        logger.warning("CH WB weekly ads query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 3. COGS from product_costs (PG) via vendor_code
+    # ══════════════════════════════════════════════════════
+    cost_map = {}
+    try:
+        cost_result = await db.execute(
+            text("""
+                SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                FROM product_costs
+                WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+            """),
+            {"shop_id": shop_id},
+        )
+        cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+    except Exception:
+        pass
+
+    if cost_map:
+        try:
+            cogs_weekly = ch.query("""
+                SELECT
+                    toMonday(event_date) AS week_start,
+                    vendor_code,
+                    countIf(operation_type = 'Продажа') AS qty
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND marketplace = 'wb'
+                  AND operation_type = 'Продажа'
+                  AND vendor_code != ''
+                GROUP BY week_start, vendor_code
+            """, parameters={"shop_id": shop_id})
+
+            cogs_by_week = {}
+            for r in cogs_weekly.result_rows:
+                ws = str(r[0])
+                vc = str(r[1] or "").lower()
+                qty = int(r[2] or 0)
+                unit_cost = cost_map.get(vc, 0)
+                if unit_cost > 0 and qty > 0:
+                    cogs_by_week[ws] = cogs_by_week.get(ws, 0) + unit_cost * qty
+
+            for ws, cogs_val in cogs_by_week.items():
+                if ws in weeks:
+                    weeks[ws]["cogs"] = round(cogs_val, 2)
+        except Exception as e:
+            logger.warning("CH WB weekly COGS query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 4. Build response rows
+    # ══════════════════════════════════════════════════════
+    result_weeks = []
+    totals = {
+        "qty": 0, "retail_amount": 0, "ppvz_for_pay": 0, "commission": 0,
+        "returns_qty": 0, "returns_amount": 0,
+        "logistics": 0, "storage": 0, "deductions": 0, "acceptance": 0,
+        "compensations": 0, "returns_compensation": 0,
+        "payout": 0, "marketing": 0, "cogs": 0, "gross_profit": 0,
+    }
+
+    for ws in sorted(weeks.keys()):
+        w = weeks[ws]
+        ws_date = date.fromisoformat(ws)
+        we_date = ws_date + timedelta(days=6)
+
+        cogs = w.get("cogs", 0)
+        # ВАЛ = К перечислению − Логистика − Хранение − Приёмка − Удержания − Реклама − Себестоимость
+        gross_profit = w["payout"] - w["logistics"] - w["storage"] - w["acceptance"] - w["deductions"] - w["marketing"] - cogs
+
+        retail = w["retail_amount"]
+        row = {
+            "year": ws_date.year,
+            "week": ws_date.isocalendar()[1],
+            "week_start": ws,
+            "week_end": str(we_date),
+            "qty": w["qty"],
+            "retail_amount": round(retail, 2),
+            "ppvz_for_pay": round(w["ppvz_for_pay"], 2),
+            "commission": round(w["commission"], 2),
+            "returns_qty": w["returns_qty"],
+            "returns_amount": round(w["returns_amount"], 2),
+            "logistics": round(w["logistics"], 2),
+            "storage": round(w["storage"], 2),
+            "deductions": round(w["deductions"], 2),
+            "acceptance": round(w["acceptance"], 2),
+            "compensations": round(w["compensations"], 2),
+            "returns_compensation": round(w["returns_compensation"], 2),
+            "payout": round(w["payout"], 2),
+            "marketing": round(w["marketing"], 2),
+            "cogs": round(cogs, 2),
+            "gross_profit": round(gross_profit, 2),
+            # Percentage columns (% of retail)
+            "commission_pct": round(w["commission"] / retail * 100, 1) if retail > 0 else 0,
+            "logistics_pct": round(w["logistics"] / retail * 100, 1) if retail > 0 else 0,
+            "cogs_pct": round(cogs / retail * 100, 1) if retail > 0 else 0,
+            "gross_profit_pct": round(gross_profit / retail * 100, 1) if retail > 0 else 0,
+        }
+        result_weeks.append(row)
+
+        # Accumulate totals
+        for key in totals:
+            if key == "gross_profit":
+                totals[key] += gross_profit
+            elif key in w:
+                totals[key] += w[key]
+            elif key == "cogs":
+                totals[key] += cogs
+
+    # Round totals
+    for key in totals:
+        totals[key] = round(totals[key], 2)
+
+    # Total percentages
+    total_retail = totals["retail_amount"]
+    totals["commission_pct"] = round(totals["commission"] / total_retail * 100, 1) if total_retail > 0 else 0
+    totals["logistics_pct"] = round(totals["logistics"] / total_retail * 100, 1) if total_retail > 0 else 0
+    totals["cogs_pct"] = round(totals["cogs"] / total_retail * 100, 1) if total_retail > 0 else 0
+    totals["gross_profit_pct"] = round(totals["gross_profit"] / total_retail * 100, 1) if total_retail > 0 else 0
+
+    return {
+        "shop_id": shop_id,
+        "weeks": result_weeks,
+        "totals": totals,
+    }
