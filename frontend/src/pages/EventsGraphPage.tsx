@@ -271,6 +271,13 @@ export default function EventsGraphPage() {
     if (!shop) return
     let cancelled = false
 
+    // Reset AI analysis when shop/period/groupBy changes
+    abortRef.current?.abort()
+    setAnalysisText('')
+    setAnalysisError(null)
+    setAnalysisLoading(false)
+    setAnalysisDone(false)
+
     ;(async () => {
       setLoading(true)
       setError(null)
