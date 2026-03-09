@@ -2115,12 +2115,13 @@ async def get_ozon_weekly_report(
                 -- Acquiring (Услуги агентов)
                 sumIf(abs(amount), category = 'Acquiring') AS acquiring,
 
-                -- Delivery logistics (last-mile delivery, dropoff, returns)
-                sumIf(abs(amount), category = 'Logistics' AND operation_type IN (
-                    'MarketplaceServiceItemDelivToCustomer',
-                    'MarketplaceServiceItemDirectFlowLogistic',
-                    'MarketplaceServiceItemDropoff',
-                    'SellerReturnsDeliveryToPickupPoint'
+                -- Delivery logistics = ALL Logistics EXCEPT FBO types
+                sumIf(abs(amount), category = 'Logistics' AND operation_type NOT IN (
+                    'MarketplaceServiceItemCrossdocking',
+                    'OperationMarketplaceSupplyAdditional',
+                    'OperationMarketplaceSupplyExpirationDateProcessing',
+                    'OperationMarketplaceServiceSupplyInboundCargoShortage',
+                    'OperationMarketplaceServiceSupplyInboundSupplyShortage'
                 )) AS delivery_services,
 
                 -- Storage (Хранение)
