@@ -2023,3 +2023,296 @@ async def get_ozon_products_finance(
             "delta_pct": total_delta,
         },
     }
+
+
+# ══════════════════════════════════════════════════════════
+# Weekly P&L Report (Понедельный отчёт) — Ozon
+# ══════════════════════════════════════════════════════════
+
+
+@router.get("/ozon/weekly-report")
+async def get_ozon_weekly_report(
+    shop_id: int = Query(..., description="Shop ID"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Ozon Weekly P&L Report — all weeks (Mon–Sun) from the earliest data.
+
+    Columns match the user's Excel-style report:
+      - Year, Week#, Period (date range)
+      - Quantity, Sales, Returns, Commission
+      - Compensations, Other services, Marketing, Other charges
+      - FBO services, Agent services (Acquiring), Delivery services
+      - Payout, COGS, Gross profit (VAL)
+      - Percentage columns (% of Sales)
+
+    Sources:
+      - fact_ozon_transactions FINAL: all financial metrics
+      - fact_ozon_ad_daily FINAL: ad spend per week
+      - product_costs (PG): cost_price + packaging_cost for COGS
+    """
+
+    # ── Verify shop ──
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
+
+    # ══════════════════════════════════════════════════════
+    # 1. Main weekly aggregation from fact_ozon_transactions
+    # ══════════════════════════════════════════════════════
+    weeks = {}  # week_start (str) -> {...}
+
+    try:
+        txn_weekly = ch.query("""
+            SELECT
+                toMonday(toDate(operation_date)) AS week_start,
+
+                -- Quantity: count Revenue transactions
+                countIf(category = 'Revenue') AS qty,
+
+                -- Sales (Σ Продажи)
+                sumIf(accruals_for_sale, category = 'Revenue') AS sales,
+
+                -- Returns (Возврат)
+                sumIf(abs(amount), category = 'Refund') AS returns,
+
+                -- Commission (Σ Комиссия)
+                sumIf(abs(sale_commission), category = 'Revenue') AS commission,
+
+                -- Compensations (Компенсации Ozon)
+                sumIf(amount, category = 'Compensation') AS compensations,
+
+                -- Other services (Σ Другие услуги) — per-item services from Revenue txns
+                sumIf(abs(services_total), category = 'Revenue') AS other_services,
+
+                -- Marketing (Σ Продвижение) — from transactions only
+                sumIf(abs(amount), category = 'Marketing') AS marketing_txn,
+
+                -- Other charges (Σ Прочие начисления)
+                sumIf(abs(amount), category IN ('Penalty', 'Other')) AS other_charges,
+
+                -- FBO logistics
+                sumIf(abs(amount), category = 'Logistics' AND delivery_schema = 'fbo') AS fbo_services,
+
+                -- Acquiring (Услуги агентов)
+                sumIf(abs(amount), category = 'Acquiring') AS acquiring,
+
+                -- Delivery (non-FBO logistics)
+                sumIf(abs(amount), category = 'Logistics' AND delivery_schema != 'fbo') AS delivery_services,
+
+                -- Payout (К перечислению) — net sum of ALL transactions
+                sum(amount) AS payout
+
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+            GROUP BY week_start
+            ORDER BY week_start
+        """, parameters={"shop_id": shop_id})
+
+        for r in txn_weekly.result_rows:
+            ws = str(r[0])
+            weeks[ws] = {
+                "week_start": ws,
+                "qty": int(r[1] or 0),
+                "sales": float(r[2] or 0),
+                "returns": float(r[3] or 0),
+                "commission": float(r[4] or 0),
+                "compensations": float(r[5] or 0),
+                "other_services": float(r[6] or 0),
+                "marketing": float(r[7] or 0),
+                "other_charges": float(r[8] or 0),
+                "fbo_services": float(r[9] or 0),
+                "acquiring": float(r[10] or 0),
+                "delivery_services": float(r[11] or 0),
+                "payout": float(r[12] or 0),
+            }
+    except Exception as e:
+        logger.warning("CH Ozon weekly transactions query failed: %s", e)
+
+    if not weeks:
+        return {"shop_id": shop_id, "weeks": [], "totals": {}}
+
+    # ══════════════════════════════════════════════════════
+    # 2. Ad spend from fact_ozon_ad_daily (weekly)
+    # ══════════════════════════════════════════════════════
+    try:
+        ads_weekly = ch.query("""
+            SELECT
+                toMonday(dt) AS week_start,
+                sum(money_spent) AS ad_spend
+            FROM mms_analytics.fact_ozon_ad_daily FINAL
+            WHERE shop_id = {shop_id:UInt32}
+            GROUP BY week_start
+            ORDER BY week_start
+        """, parameters={"shop_id": shop_id})
+
+        for r in ads_weekly.result_rows:
+            ws = str(r[0])
+            ad_val = float(r[1] or 0)
+            if ws in weeks:
+                weeks[ws]["marketing"] += ad_val
+            else:
+                # Week with only ad spend (rare but possible)
+                weeks[ws] = {
+                    "week_start": ws,
+                    "qty": 0, "sales": 0, "returns": 0,
+                    "commission": 0, "compensations": 0,
+                    "other_services": 0, "marketing": ad_val,
+                    "other_charges": 0, "fbo_services": 0,
+                    "acquiring": 0, "delivery_services": 0, "payout": 0,
+                }
+    except Exception as e:
+        logger.warning("CH Ozon weekly ads query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 3. COGS from product_costs (PG) + weekly qty per SKU
+    # ══════════════════════════════════════════════════════
+    # Build sku → offer_id map
+    sku_to_offer = {}
+    try:
+        sku_map_result = await db.execute(
+            text("""
+                SELECT sku, offer_id
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND sku > 0
+            """),
+            {"shop_id": shop_id},
+        )
+        for r in sku_map_result.fetchall():
+            sku_to_offer[int(r[0])] = r[1]
+    except Exception:
+        pass
+
+    cost_map = {}
+    try:
+        cost_result = await db.execute(
+            text("""
+                SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                FROM product_costs
+                WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
+            """),
+            {"shop_id": shop_id},
+        )
+        cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+    except Exception:
+        pass
+
+    if cost_map and sku_to_offer:
+        try:
+            cogs_weekly = ch.query("""
+                SELECT
+                    toMonday(toDate(operation_date)) AS week_start,
+                    sku,
+                    countIf(category = 'Revenue') AS qty
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND category = 'Revenue'
+                  AND sku > 0
+                GROUP BY week_start, sku
+            """, parameters={"shop_id": shop_id})
+
+            # Accumulate COGS per week
+            cogs_by_week = {}
+            for r in cogs_weekly.result_rows:
+                ws = str(r[0])
+                sku = int(r[1] or 0)
+                qty = int(r[2] or 0)
+                offer_id = sku_to_offer.get(sku, "")
+                unit_cost = cost_map.get(offer_id.lower(), 0)
+                if unit_cost > 0 and qty > 0:
+                    cogs_by_week[ws] = cogs_by_week.get(ws, 0) + unit_cost * qty
+
+            for ws, cogs_val in cogs_by_week.items():
+                if ws in weeks:
+                    weeks[ws]["cogs"] = round(cogs_val, 2)
+        except Exception as e:
+            logger.warning("CH Ozon weekly COGS query failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 4. Build response rows
+    # ══════════════════════════════════════════════════════
+    result_weeks = []
+    totals = {
+        "qty": 0, "sales": 0, "returns": 0, "commission": 0,
+        "compensations": 0, "other_services": 0, "marketing": 0,
+        "other_charges": 0, "fbo_services": 0, "acquiring": 0,
+        "delivery_services": 0, "payout": 0, "cogs": 0, "gross_profit": 0,
+    }
+
+    for ws in sorted(weeks.keys()):
+        w = weeks[ws]
+        ws_date = date.fromisoformat(ws)
+        we_date = ws_date + timedelta(days=6)  # Sunday
+
+        cogs = w.get("cogs", 0)
+        gross_profit = w["payout"] - cogs
+
+        sales = w["sales"]
+        row = {
+            "year": ws_date.year,
+            "week": ws_date.isocalendar()[1],
+            "week_start": ws,
+            "week_end": str(we_date),
+            "qty": w["qty"],
+            "sales": round(sales, 2),
+            "returns": round(w["returns"], 2),
+            "commission": round(w["commission"], 2),
+            "compensations": round(w["compensations"], 2),
+            "other_services": round(w["other_services"], 2),
+            "marketing": round(w["marketing"], 2),
+            "other_charges": round(w["other_charges"], 2),
+            "fbo_services": round(w["fbo_services"], 2),
+            "acquiring": round(w["acquiring"], 2),
+            "delivery_services": round(w["delivery_services"], 2),
+            "payout": round(w["payout"], 2),
+            "cogs": round(cogs, 2),
+            "gross_profit": round(gross_profit, 2),
+            # Percentage columns (% of sales)
+            "commission_pct": round(w["commission"] / sales * 100, 1) if sales > 0 else 0,
+            "marketing_pct": round(w["marketing"] / sales * 100, 1) if sales > 0 else 0,
+            "fbo_pct": round(w["fbo_services"] / sales * 100, 1) if sales > 0 else 0,
+            "delivery_pct": round(w["delivery_services"] / sales * 100, 1) if sales > 0 else 0,
+            "cogs_pct": round(cogs / sales * 100, 1) if sales > 0 else 0,
+            "gross_profit_pct": round(gross_profit / sales * 100, 1) if sales > 0 else 0,
+        }
+        result_weeks.append(row)
+
+        # Accumulate totals
+        for key in totals:
+            if key == "gross_profit":
+                totals[key] += gross_profit
+            elif key in w:
+                totals[key] += w[key]
+            elif key == "cogs":
+                totals[key] += cogs
+
+    # Round totals
+    for key in totals:
+        totals[key] = round(totals[key], 2)
+
+    # Total percentages
+    total_sales = totals["sales"]
+    totals["commission_pct"] = round(totals["commission"] / total_sales * 100, 1) if total_sales > 0 else 0
+    totals["marketing_pct"] = round(totals["marketing"] / total_sales * 100, 1) if total_sales > 0 else 0
+    totals["fbo_pct"] = round(totals["fbo_services"] / total_sales * 100, 1) if total_sales > 0 else 0
+    totals["delivery_pct"] = round(totals["delivery_services"] / total_sales * 100, 1) if total_sales > 0 else 0
+    totals["cogs_pct"] = round(totals["cogs"] / total_sales * 100, 1) if total_sales > 0 else 0
+    totals["gross_profit_pct"] = round(totals["gross_profit"] / total_sales * 100, 1) if total_sales > 0 else 0
+
+    return {
+        "shop_id": shop_id,
+        "weeks": result_weeks,
+        "totals": totals,
+    }

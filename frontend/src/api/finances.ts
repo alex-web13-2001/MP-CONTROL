@@ -138,3 +138,46 @@ export async function getOzonProductsFinanceApi(params: {
   const { data } = await apiClient.get<ProductFinanceResponse>('/finances/ozon/products', { params })
   return data
 }
+
+// ── Weekly Report (Понедельный отчёт) ────────────────────────
+
+export interface WeeklyReportRow {
+  year: number
+  week: number
+  week_start: string
+  week_end: string
+  qty: number
+  sales: number
+  returns: number
+  commission: number
+  compensations: number
+  other_services: number
+  marketing: number
+  other_charges: number
+  fbo_services: number
+  acquiring: number
+  delivery_services: number
+  payout: number
+  cogs: number
+  gross_profit: number
+  commission_pct: number
+  marketing_pct: number
+  fbo_pct: number
+  delivery_pct: number
+  cogs_pct: number
+  gross_profit_pct: number
+}
+
+export interface WeeklyReportResponse {
+  shop_id: number
+  weeks: WeeklyReportRow[]
+  totals: Record<string, number>
+}
+
+export async function getOzonWeeklyReportApi(params: {
+  shop_id: number
+}): Promise<WeeklyReportResponse> {
+  const { data } = await apiClient.get<WeeklyReportResponse>('/finances/ozon/weekly-report', { params })
+  return data
+}
+

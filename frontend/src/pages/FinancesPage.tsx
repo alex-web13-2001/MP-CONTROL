@@ -11,6 +11,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   RefreshCw,
+  CalendarRange,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -33,11 +34,14 @@ import {
   getWbFinancesApi,
   getWbProductsFinanceApi,
   getOzonProductsFinanceApi,
+  getOzonWeeklyReportApi,
   type FinancesResponse,
   type FinancesDailyPoint,
   type ProductFinanceResponse,
+  type WeeklyReportResponse,
 } from '@/api/finances'
 import ProductFinanceTable from '@/components/ProductFinanceTable'
+import WeeklyReportTable from '@/components/WeeklyReportTable'
 
 /* ═══════════════════════════════════════════════════════════
    Constants & Helpers
@@ -792,12 +796,18 @@ function FinancesSkeleton() {
    Main Finances Page
    ═══════════════════════════════════════════════════════════ */
 
+type FinancesTab = 'pnl' | 'weekly'
+
 export default function FinancesPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const shopId = currentShop?.id
+  const isOzon = currentShop?.marketplace === 'ozon'
 
+  const [activeTab, setActiveTab] = useState<FinancesTab>('pnl')
   const [data, setData] = useState<FinancesResponse | null>(null)
   const [productData, setProductData] = useState<ProductFinanceResponse | null>(null)
+  const [weeklyData, setWeeklyData] = useState<WeeklyReportResponse | null>(null)
+  const [weeklyLoading, setWeeklyLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [groupBy, setGroupBy] = useState('day')
@@ -806,6 +816,26 @@ export default function FinancesPage() {
     period: 7,
     dateRange: null,
   })
+
+  // Fetch weekly report when tab is switched to 'weekly'
+  const fetchWeeklyData = useCallback(async () => {
+    if (!shopId || !isOzon) return
+    setWeeklyLoading(true)
+    try {
+      const result = await getOzonWeeklyReportApi({ shop_id: shopId })
+      setWeeklyData(result)
+    } catch (e: any) {
+      console.error('Weekly report fetch error:', e)
+    } finally {
+      setWeeklyLoading(false)
+    }
+  }, [shopId, isOzon])
+
+  useEffect(() => {
+    if (activeTab === 'weekly' && !weeklyData && !weeklyLoading) {
+      fetchWeeklyData()
+    }
+  }, [activeTab, weeklyData, weeklyLoading, fetchWeeklyData])
 
   const fetchData = useCallback(async () => {
     if (!shopId) return
@@ -885,149 +915,203 @@ export default function FinancesPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[hsl(var(--foreground))]">Финансы</h1>
-          <p className="mt-1 text-base font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap">
-            {formatDateRange(data.date_from, data.date_to)}
-          </p>
+          {activeTab === 'pnl' && (
+            <p className="mt-1 text-base font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+              {formatDateRange(data.date_from, data.date_to)}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <GroupBySelector current={groupBy} onChange={setGroupBy} />
-          <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+          {/* ── Tabs ── */}
+          {isOzon && (
+            <div className="flex rounded-lg border border-[hsl(var(--border))] overflow-hidden">
+              <button
+                onClick={() => setActiveTab('pnl')}
+                className={`px-4 py-2 text-sm font-medium transition-colors ${
+                  activeTab === 'pnl'
+                    ? 'bg-[hsl(var(--primary))] text-white'
+                    : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.15)]'
+                }`}
+              >
+                P&L
+              </button>
+              <button
+                onClick={() => setActiveTab('weekly')}
+                className={`px-4 py-2 text-sm font-medium transition-colors flex items-center gap-1.5 ${
+                  activeTab === 'weekly'
+                    ? 'bg-[hsl(var(--primary))] text-white'
+                    : 'text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.15)]'
+                }`}
+              >
+                <CalendarRange className="h-3.5 w-3.5" />
+                Пон. отчёт
+              </button>
+            </div>
+          )}
+          {activeTab === 'pnl' && (
+            <>
+              <GroupBySelector current={groupBy} onChange={setGroupBy} />
+              <PeriodSelector value={periodValue} onChange={setPeriodValue} />
+            </>
+          )}
         </div>
       </div>
 
-      {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <KpiCard
-          title="Выручка"
-          value={formatMoney(kpi.revenue)}
-          subtitle={`${formatNumber(kpi.orders)} заказов`}
-          delta={kpi.revenue_delta}
-          icon={ShoppingCart}
-          accent="#10b981"
-          delay={0}
-        />
-        <KpiCard
-          title="К перечислению"
-          value={formatMoney(kpi.payout)}
-          delta={kpi.payout_delta}
-          icon={Wallet}
-          accent="#3b82f6"
-          delay={0.05}
-        />
-        {(() => {
-          const operating = kpi.operating
-          const operatingPct = kpi.payout > 0 ? (operating / kpi.payout * 100).toFixed(1) : '0'
-          return (
-            <KpiCard
-              title="Расходы МП"
-              value={formatMoney(operating)}
-              subtitle={`${operatingPct}% от перечисления`}
-              delta={kpi.operating_delta ?? kpi.mp_fees_delta}
-              invertDelta
-              icon={Building2}
-              accent="#f97316"
-              delay={0.1}
-            />
-          )
-        })()}
-        <KpiCard
-          title="Реклама"
-          value={formatMoney(kpi.ad_spend)}
-          subtitle={kpi.revenue > 0 ? `ДРР ${(kpi.ad_spend / kpi.revenue * 100).toFixed(1)}%` : undefined}
-          delta={kpi.ad_spend_delta}
-          invertDelta
-          icon={Megaphone}
-          accent="#ef4444"
-          delay={0.15}
-        />
-        <KpiCard
-          title="Себестоимость"
-          value={formatMoney(kpi.cogs)}
-          subtitle={kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% от выручки` : undefined}
-          delta={kpi.cogs_delta}
-          invertDelta
-          icon={Package}
-          accent="#8b5cf6"
-          delay={0.2}
-        />
-        <KpiCard
-          title="Чистая прибыль"
-          value={formatMoney(kpi.profit)}
-          subtitle={`${kpi.profit_pct.toFixed(1)}% от выручки`}
-          delta={kpi.profit_delta}
-          icon={ProfitIcon}
-          accent={profitAccent}
-          delay={0.25}
-        />
-      </div>
-
-      {/* ── Expense Breakdown ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.3, ease: 'easeOut' }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Структура расходов</CardTitle>
-            <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Куда уходит каждый рубль выручки
-            </p>
-          </CardHeader>
-          <CardContent>
-            <BreakdownChart data={data.breakdown} />
-          </CardContent>
-        </Card>
-      </motion.div>
-
-      {/* ── Product P&L Table ── */}
-      {productData && productData.products.length > 0 && (
-        <ProductFinanceTable
-          products={productData.products}
-          totals={productData.totals}
-          marketplace={currentShop?.marketplace as 'wildberries' | 'ozon'}
-        />
+      {/* ── Weekly Report Tab ── */}
+      {activeTab === 'weekly' && isOzon && (
+        weeklyLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-8 w-48" />
+            <Skeleton className="h-[500px] rounded-xl" />
+          </div>
+        ) : weeklyData && weeklyData.weeks.length > 0 ? (
+          <WeeklyReportTable weeks={weeklyData.weeks} totals={weeklyData.totals} />
+        ) : (
+          <div className="flex h-[40vh] flex-col items-center justify-center gap-4">
+            <CalendarRange className="h-12 w-12 text-[hsl(var(--muted-foreground)/0.3)]" />
+            <p className="text-[hsl(var(--muted-foreground))]">Нет данных для понедельного отчёта</p>
+          </div>
+        )
       )}
 
-      {/* ── Dynamics Chart ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.35, ease: 'easeOut' }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">
-              Динамика{' '}
-              <span className="text-[hsl(var(--muted-foreground))] font-normal text-sm">
-                по {groupBy === 'day' ? 'дням' : groupBy === 'week' ? 'неделям' : 'месяцам'}
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <DynamicsChart data={data.daily} />
-          </CardContent>
-        </Card>
-      </motion.div>
+      {/* ── P&L Tab Content ── */}
+      {activeTab === 'pnl' && (
+        <>
+          {/* ── KPI Cards ── */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <KpiCard
+              title="Выручка"
+              value={formatMoney(kpi.revenue)}
+              subtitle={`${formatNumber(kpi.orders)} заказов`}
+              delta={kpi.revenue_delta}
+              icon={ShoppingCart}
+              accent="#10b981"
+              delay={0}
+            />
+            <KpiCard
+              title="К перечислению"
+              value={formatMoney(kpi.payout)}
+              delta={kpi.payout_delta}
+              icon={Wallet}
+              accent="#3b82f6"
+              delay={0.05}
+            />
+            {(() => {
+              const operating = kpi.operating
+              const operatingPct = kpi.payout > 0 ? (operating / kpi.payout * 100).toFixed(1) : '0'
+              return (
+                <KpiCard
+                  title="Расходы МП"
+                  value={formatMoney(operating)}
+                  subtitle={`${operatingPct}% от перечисления`}
+                  delta={kpi.operating_delta ?? kpi.mp_fees_delta}
+                  invertDelta
+                  icon={Building2}
+                  accent="#f97316"
+                  delay={0.1}
+                />
+              )
+            })()}
+            <KpiCard
+              title="Реклама"
+              value={formatMoney(kpi.ad_spend)}
+              subtitle={kpi.revenue > 0 ? `ДРР ${(kpi.ad_spend / kpi.revenue * 100).toFixed(1)}%` : undefined}
+              delta={kpi.ad_spend_delta}
+              invertDelta
+              icon={Megaphone}
+              accent="#ef4444"
+              delay={0.15}
+            />
+            <KpiCard
+              title="Себестоимость"
+              value={formatMoney(kpi.cogs)}
+              subtitle={kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% от выручки` : undefined}
+              delta={kpi.cogs_delta}
+              invertDelta
+              icon={Package}
+              accent="#8b5cf6"
+              delay={0.2}
+            />
+            <KpiCard
+              title="Чистая прибыль"
+              value={formatMoney(kpi.profit)}
+              subtitle={`${kpi.profit_pct.toFixed(1)}% от выручки`}
+              delta={kpi.profit_delta}
+              icon={ProfitIcon}
+              accent={profitAccent}
+              delay={0.25}
+            />
+          </div>
 
-      {/* ── Comparison Table ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.4, ease: 'easeOut' }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Сравнение периодов</CardTitle>
-            <p className="text-sm text-[hsl(var(--muted-foreground))]">
-              Текущий период vs предыдущий аналогичный период
-            </p>
-          </CardHeader>
-          <CardContent>
-            <ComparisonTable comparison={data.comparison} />
-          </CardContent>
-        </Card>
-      </motion.div>
+          {/* ── Expense Breakdown ── */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.3, ease: 'easeOut' }}
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Структура расходов</CardTitle>
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                  Куда уходит каждый рубль выручки
+                </p>
+              </CardHeader>
+              <CardContent>
+                <BreakdownChart data={data.breakdown} />
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          {/* ── Product P&L Table ── */}
+          {productData && productData.products.length > 0 && (
+            <ProductFinanceTable
+              products={productData.products}
+              totals={productData.totals}
+              marketplace={currentShop?.marketplace as 'wildberries' | 'ozon'}
+            />
+          )}
+
+          {/* ── Dynamics Chart ── */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.35, ease: 'easeOut' }}
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">
+                  Динамика{' '}
+                  <span className="text-[hsl(var(--muted-foreground))] font-normal text-sm">
+                    по {groupBy === 'day' ? 'дням' : groupBy === 'week' ? 'неделям' : 'месяцам'}
+                  </span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <DynamicsChart data={data.daily} />
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          {/* ── Comparison Table ── */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.4, ease: 'easeOut' }}
+          >
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Сравнение периодов</CardTitle>
+                <p className="text-sm text-[hsl(var(--muted-foreground))]">
+                  Текущий период vs предыдущий аналогичный период
+                </p>
+              </CardHeader>
+              <CardContent>
+                <ComparisonTable comparison={data.comparison} />
+              </CardContent>
+            </Card>
+          </motion.div>
+        </>
+      )}
 
       {/* Loading overlay for re-fetch */}
       {loading && data && (
