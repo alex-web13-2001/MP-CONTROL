@@ -2510,10 +2510,10 @@ async def get_wb_weekly_report(
                 SELECT
                     toMonday(event_date) AS week_start,
                     vendor_code,
-                    countIf(operation_type = 'Продажа') AS qty
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS qty
                 FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND marketplace = 'wb'
+                  AND marketplace = 1
                   AND operation_type = 'Продажа'
                   AND vendor_code != ''
                 GROUP BY week_start, vendor_code
@@ -2553,7 +2553,8 @@ async def get_wb_weekly_report(
         we_date = ws_date + timedelta(days=6)
 
         cogs = w.get("cogs", 0)
-        # Profit = К перечислению − Логистика − Хранение − Приёмка − Удержания − WB Промо − Реклама − Себестоимость
+        # Profit = К перечислению − Логистика − Хранение − Приёмка − Удержания − WB Промо − Себестоимость
+        # NOTE: marketing (external ads from fact_advert_stats_v3) is NOT subtracted — shown separately
         gross_profit = (
             w["payout"]
             - w["logistics"]
@@ -2561,7 +2562,6 @@ async def get_wb_weekly_report(
             - w["acceptance"]
             - w["deductions"]
             - w["wb_promo"]
-            - w["marketing"]
             - cogs
         )
 
