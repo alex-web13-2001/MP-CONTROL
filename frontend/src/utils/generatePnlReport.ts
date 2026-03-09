@@ -291,7 +291,14 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
   const payoutVal = (bd.revenue || 0) - (bd.commission || 0)
   const bdAny = bd as any
 
-  // Build waterfall bars from breakdown object
+  const bankTransfer = payoutVal
+    - (bd.logistics || 0)
+    - (bd.storage || 0)
+    - (bdAny.deductions_ads || 0)
+    - (bdAny.deductions_other || 0)
+    - (bd.compensation || 0)
+
+  // Build waterfall bars from breakdown object (matches BreakdownChart on UI)
   type WBar = { label: string; value: number; pct: number; color: RGB; isBold: boolean }
   const allBars: WBar[] = [
     { label: 'Выручка', value: bd.revenue, pct: 100, color: C.green, isBold: true },
@@ -303,8 +310,8 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
     { label: 'ВБ Продвижение', value: bdAny.deductions_ads || 0, pct: (bdAny.deductions_ads || 0) / revenue * 100, color: C.purple, isBold: false },
     { label: 'Пр. удержания', value: bdAny.deductions_other || 0, pct: (bdAny.deductions_other || 0) / revenue * 100, color: C.teal, isBold: false },
     { label: 'Плат. приёмка', value: bd.compensation || 0, pct: (bd.compensation || 0) / revenue * 100, color: C.sky, isBold: false },
+    { label: 'Итого к выплате', value: bankTransfer, pct: Math.abs(bankTransfer) / revenue * 100, color: C.indigo, isBold: true },
     { label: 'Себестоимость', value: bd.cogs || 0, pct: (bd.cogs || 0) / revenue * 100, color: C.textMuted, isBold: false },
-    { label: 'Реклама', value: bd.advertising || 0, pct: (bd.advertising || 0) / revenue * 100, color: C.red, isBold: false },
     { label: 'Прибыль', value: bd.profit || 0, pct: Math.abs(bd.profit || 0) / revenue * 100, color: (bd.profit || 0) >= 0 ? C.green : C.red, isBold: true },
   ]
 
