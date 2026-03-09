@@ -102,7 +102,7 @@ function formatTooltipDate(dateStr: string): string {
    Custom Tooltip
    ═══════════════════════════════════════════════════════════ */
 
-function GraphTooltip({ active, payload, label, enabledMetrics }: any) {
+function GraphTooltip({ active, payload, enabledMetrics }: any) {
   if (!active || !payload?.length) return null
 
   const point = payload[0]?.payload as EventsGraphPoint | undefined
