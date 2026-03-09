@@ -2103,14 +2103,28 @@ async def get_ozon_weekly_report(
                 -- Other charges (Σ Прочие начисления)
                 sumIf(abs(amount), category IN ('Penalty', 'Other')) AS other_charges,
 
-                -- FBO logistics
-                sumIf(abs(amount), category = 'Logistics' AND delivery_schema = 'fbo') AS fbo_services,
+                -- FBO logistics (crossdocking, supply-related operations)
+                sumIf(abs(amount), category = 'Logistics' AND operation_type IN (
+                    'MarketplaceServiceItemCrossdocking',
+                    'OperationMarketplaceSupplyAdditional',
+                    'OperationMarketplaceSupplyExpirationDateProcessing',
+                    'OperationMarketplaceServiceSupplyInboundCargoShortage',
+                    'OperationMarketplaceServiceSupplyInboundSupplyShortage'
+                )) AS fbo_services,
 
                 -- Acquiring (Услуги агентов)
                 sumIf(abs(amount), category = 'Acquiring') AS acquiring,
 
-                -- Delivery (non-FBO logistics)
-                sumIf(abs(amount), category = 'Logistics' AND delivery_schema != 'fbo') AS delivery_services,
+                -- Delivery logistics (last-mile delivery, dropoff, returns)
+                sumIf(abs(amount), category = 'Logistics' AND operation_type IN (
+                    'MarketplaceServiceItemDelivToCustomer',
+                    'MarketplaceServiceItemDirectFlowLogistic',
+                    'MarketplaceServiceItemDropoff',
+                    'SellerReturnsDeliveryToPickupPoint'
+                )) AS delivery_services,
+
+                -- Storage (Хранение)
+                sumIf(abs(amount), category = 'Storage') AS storage,
 
                 -- Payout (К перечислению) — net sum of ALL transactions
                 sum(amount) AS payout
@@ -2136,7 +2150,8 @@ async def get_ozon_weekly_report(
                 "fbo_services": float(r[9] or 0),
                 "acquiring": float(r[10] or 0),
                 "delivery_services": float(r[11] or 0),
-                "payout": float(r[12] or 0),
+                "storage": float(r[12] or 0),
+                "payout": float(r[13] or 0),
             }
     except Exception as e:
         logger.warning("CH Ozon weekly transactions query failed: %s", e)
@@ -2171,7 +2186,8 @@ async def get_ozon_weekly_report(
                     "commission": 0, "compensations": 0,
                     "other_services": 0, "marketing": ad_val,
                     "other_charges": 0, "fbo_services": 0,
-                    "acquiring": 0, "delivery_services": 0, "payout": 0,
+                    "acquiring": 0, "delivery_services": 0,
+                    "storage": 0, "payout": 0,
                 }
     except Exception as e:
         logger.warning("CH Ozon weekly ads query failed: %s", e)
@@ -2248,7 +2264,8 @@ async def get_ozon_weekly_report(
         "qty": 0, "sales": 0, "returns": 0, "commission": 0,
         "compensations": 0, "other_services": 0, "marketing": 0,
         "other_charges": 0, "fbo_services": 0, "acquiring": 0,
-        "delivery_services": 0, "payout": 0, "cogs": 0, "gross_profit": 0,
+        "delivery_services": 0, "storage": 0, "payout": 0,
+        "cogs": 0, "gross_profit": 0,
     }
 
     for ws in sorted(weeks.keys()):
@@ -2276,6 +2293,7 @@ async def get_ozon_weekly_report(
             "fbo_services": round(w["fbo_services"], 2),
             "acquiring": round(w["acquiring"], 2),
             "delivery_services": round(w["delivery_services"], 2),
+            "storage": round(w.get("storage", 0), 2),
             "payout": round(w["payout"], 2),
             "cogs": round(cogs, 2),
             "gross_profit": round(gross_profit, 2),

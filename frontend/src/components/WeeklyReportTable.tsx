@@ -66,6 +66,7 @@ const VALUE_COLS: Col[] = [
   { key: 'fbo_services',     label: 'Усл. ФБО',       width: 95,  type: 'money',  section: 'values' },
   { key: 'acquiring',        label: 'Эквайринг',      width: 95,  type: 'money',  section: 'values' },
   { key: 'delivery_services',label: 'Доставка',       width: 95,  type: 'money',  section: 'values' },
+  { key: 'storage',           label: 'Хранение',       width: 95,  type: 'money',  section: 'values' },
   { key: 'payout',           label: 'К перечисл.',    width: 120, type: 'money',  section: 'values', accent: true },
   { key: 'cogs',             label: 'Себестоим.',      width: 110, type: 'money',  section: 'values' },
   { key: 'gross_profit',     label: 'ВАЛ',            width: 110, type: 'money',  section: 'values', accent: true },

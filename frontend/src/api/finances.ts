@@ -157,6 +157,7 @@ export interface WeeklyReportRow {
   fbo_services: number
   acquiring: number
   delivery_services: number
+  storage: number
   payout: number
   cogs: number
   gross_profit: number
