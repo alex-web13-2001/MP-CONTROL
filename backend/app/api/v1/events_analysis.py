@@ -67,32 +67,43 @@ EVENT_LABELS = {
 
 
 SYSTEM_PROMPT = """Ты — эксперт-аналитик маркетплейсов (Ozon, Wildberries). 
-Тебе придут данные о событиях и KPI-метриках магазина за определённый период.
+Тебе придут данные о событиях, KPI-метриках, каталоге товаров и рекламной воронке магазина.
 
-СОБЫТИЯ — это действия над товарами и рекламными кампаниями (смена ставок, цен, фото, остатки и т.д.).
-KPI — это заказы, выручка, показы, клики, корзины, рекламный расход, DRR, CPO.
+ДАННЫЕ:
+- КАТАЛОГ ТОВАРОВ — список товаров с артикулами продавца и текущими ценами
+- СОБЫТИЯ — действия над товарами (смена ставок, цен, фото, остатки), привязанные к конкретным товарам
+- KPI — заказы, выручка, показы, клики, корзины, рекламный расход, DRR
+- ВОРОНКА ПО ТОВАРАМ — рекламные показы, клики, корзины, заказы, расход, CTR, CR для каждого товара
 
 Твоя задача:
-1. Проанализировать ВСЕ данные
+1. Проанализировать ВСЕ данные включая воронку по каждому товару
 2. Найти причинно-следственные связи между событиями и изменениями KPI
-3. Выделить ключевые инсайты
-4. Дать конкретные рекомендации
+3. Оценить эффективность рекламы по каждому товару (CTR, CR, DRR)
+4. Выделить ключевые инсайты
+5. Дать конкретные рекомендации по каждому проблемному товару
 
 ФОРМАТ ОТВЕТА (используй именно такой формат с emoji):
 
 ## 🔍 Ключевые находки
-(Что произошло, какие корреляции ты видишь)
+(Что произошло, какие корреляции ты видишь. Называй товары по именам!)
+
+## 📦 Анализ по товарам
+(Для ключевых товаров — как изменились CTR, конверсия, заказы после событий)
 
 ## ⚠️ Предупреждения  
-(На что обратить внимание, что может навредить)
+(На что обратить внимание: высокий DRR, низкая конверсия, отсутствие остатков при работающей рекламе)
 
 ## 💡 Рекомендации
-(Конкретные действия: увеличить/уменьшить ставки, изменить цену, пополнить склад и т.д.)
+(Конкретные действия ПО КАЖДОМУ проблемному товару: увеличить/уменьшить ставки, изменить цену, пополнить склад)
 
 ## 📊 Общая оценка периода
 (Краткое резюме: как дела у магазина за этот период)
 
 ПРАВИЛА:
+- НАЗЫВАЙ ТОВАРЫ ПО ИМЕНАМ/АРТИКУЛАМ, а не по ID
+- Анализируй воронку: если CTR < 1% — проблема с контентом/ключевыми словами
+- Если CR в корзину < 5% — проблема с ценой или карточкой
+- Если CR в заказ < 10% — проблема с ценой/конкурентами
 - Анализируй КОРРЕЛЯЦИИ: если после события X через 1-3 дня метрика Y изменилась — укажи это
 - Будь конкретен: называй даты, числа, процент изменений
 - Если после смены фото/заголовка выросли просмотры — это инсайт
@@ -105,11 +116,14 @@ KPI — это заказы, выручка, показы, клики, корз�
 
 
 def _format_event_for_prompt(event_type: str, old_val: str | None,
-                              new_val: str | None, event_date: str) -> str:
+                              new_val: str | None, event_date: str,
+                              product_name: str | None = None) -> str:
     """Format single event for LLM prompt."""
     label = EVENT_LABELS.get(event_type, event_type)
     cat = EVENT_CATEGORIES.get(event_type, "Другое")
     parts = [f"[{event_date}] [{cat}] {label}"]
+    if product_name:
+        parts.append(f"товар: {product_name}")
     if old_val and new_val:
         parts.append(f"{old_val} → {new_val}")
     elif new_val:
@@ -171,14 +185,58 @@ async def analyze_events(
     if group_by not in ("day", "week", "month"):
         group_by = "day"
 
-    # ── 1. Fetch events ──
+    # ── 1. Fetch product catalog ──
+    product_names: dict[int, str] = {}  # nm_id/product_id → "name (vendor_code)"
+    if marketplace == "ozon":
+        prods_raw = await db.execute(
+            text("SELECT product_id, name, offer_id FROM dim_ozon_products WHERE shop_id = :sid"),
+            {"sid": shop_id},
+        )
+        for row in prods_raw.fetchall():
+            pid, name, offer = row[0], row[1] or "", row[2] or ""
+            label = name[:60] if name else offer
+            if offer and name:
+                label = f"{name[:50]} ({offer})"
+            product_names[pid] = label
+    else:
+        prods_raw = await db.execute(
+            text("SELECT nm_id, name, vendor_code FROM dim_products WHERE shop_id = :sid"),
+            {"sid": shop_id},
+        )
+        for row in prods_raw.fetchall():
+            nmid, name, vc = row[0], row[1] or "", row[2] or ""
+            label = name[:60] if name else str(nmid)
+            if vc and name:
+                label = f"{name[:50]} ({vc})"
+            product_names[nmid] = label
+
+    # Build product catalog text
+    catalog_lines = ["Артикул | Название | ID"]
+    catalog_lines.append("---|---|---")
+    for pid, label in sorted(product_names.items(), key=lambda x: x[1]):
+        if marketplace == "ozon":
+            # Find offer_id
+            parts = label.rsplit(" (", 1)
+            art = parts[1].rstrip(")") if len(parts) > 1 else ""
+            name = parts[0]
+        else:
+            parts = label.rsplit(" (", 1)
+            art = parts[1].rstrip(")") if len(parts) > 1 else ""
+            name = parts[0]
+        catalog_lines.append(f"{art} | {name} | {pid}")
+    # Limit catalog to 100 products
+    if len(catalog_lines) > 102:
+        catalog_lines = catalog_lines[:52] + ["..."] + catalog_lines[-50:]
+
+    # ── 2. Fetch events (with product names) ──
     events_raw = await db.execute(
         text("""
             SELECT
                 created_at::date AS event_date,
                 event_type,
                 old_value,
-                new_value
+                new_value,
+                nm_id
             FROM event_log
             WHERE shop_id = :shop_id
               AND created_at::date >= :start_date
@@ -189,14 +247,16 @@ async def analyze_events(
     )
     events_rows = events_raw.fetchall()
 
-    # Format events for prompt
+    # Format events for prompt — with product names
     events_text_lines = []
     for row in events_rows:
         ev_date = row[0]
         if isinstance(ev_date, datetime):
             ev_date = ev_date.date()
+        nm_id = row[4]
+        pname = product_names.get(nm_id) if nm_id else None
         events_text_lines.append(
-            _format_event_for_prompt(row[1], row[2], row[3], str(ev_date))
+            _format_event_for_prompt(row[1], row[2], row[3], str(ev_date), pname)
         )
 
     events_summary = f"Всего событий: {len(events_text_lines)}"
@@ -204,7 +264,8 @@ async def analyze_events(
     if len(events_text_lines) > 300:
         events_text_lines = events_text_lines[:150] + ["... (пропущено) ..."] + events_text_lines[-150:]
 
-    # ── 2. Fetch KPI ──
+    # ── 3. Fetch KPI + per-product funnel ──
+    funnel_rows: list = []
     try:
         ch = get_clickhouse_client()
 
@@ -264,11 +325,49 @@ async def analyze_events(
                 GROUP BY bucket ORDER BY bucket
             """, parameters={"shop_id": shop_id, "start": start_date, "end": end_date}).result_rows
 
+            # Per-product funnel (WB: nm_id)
+            funnel_rows = ch.query("""
+                SELECT
+                    nm_id AS sku_id,
+                    sum(views) AS views,
+                    sum(clicks) AS clicks,
+                    sum(atbs) AS carts,
+                    sum(orders) AS orders,
+                    sum(spend) AS spend
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND date >= {start:Date} AND date <= {end:Date}
+                GROUP BY sku_id
+                HAVING views > 0
+                ORDER BY spend DESC
+                LIMIT 50
+            """, parameters={"shop_id": shop_id, "start": start_date, "end": end_date}).result_rows
+
+        # Per-product funnel for Ozon (add after ozon ads_rows)
+        if marketplace == "ozon" and not funnel_rows:
+            funnel_rows = ch.query("""
+                SELECT
+                    sku AS sku_id,
+                    sum(views) AS views,
+                    sum(clicks) AS clicks,
+                    sum(add_to_cart) AS carts,
+                    sum(orders) AS orders,
+                    sum(money_spent) AS spend
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= {start:Date} AND dt <= {end:Date}
+                GROUP BY sku_id
+                HAVING views > 0
+                ORDER BY spend DESC
+                LIMIT 50
+            """, parameters={"shop_id": shop_id, "start": start_date, "end": end_date}).result_rows
+
         ch.close()
     except Exception as e:
         logger.warning("CH query failed for analysis: %s", e)
         orders_rows = []
         ads_rows = []
+        funnel_rows = []
 
     # Format KPI table
     kpi_lines = ["Дата | Заказы | Выручка | Показы | Клики | Корзины | Расход рекл. | DRR%"]
@@ -297,20 +396,64 @@ async def analyze_events(
             f"{m['clicks']} | {m['carts']} | {m['ad_spend']:.0f}₽ | {drr}%"
         )
 
-    # ── 3. Build prompt ──
+    # Format per-product funnel table
+    funnel_lines = ["Товар | Показы | Клики | CTR% | Корзины | CR→корз% | Заказы | CR→заказ% | Расход"]
+    funnel_lines.append("---|---|---|---|---|---|---|---|---")
+
+    # For Ozon, resolve sku → product_id
+    sku_to_product: dict[int, int] = {}
+    if marketplace == "ozon" and funnel_rows:
+        try:
+            sku_ids = [int(r[0]) for r in funnel_rows]
+            sku_map_raw = await db.execute(
+                text("SELECT sku, product_id FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
+                {"sid": shop_id, "skus": sku_ids},
+            )
+            for r in sku_map_raw.fetchall():
+                sku_to_product[r[0]] = r[1]
+        except Exception:
+            pass
+
+    for row in funnel_rows:
+        sku_id = int(row[0])
+        views, clicks, carts, orders_cnt, spend = int(row[1]), int(row[2]), int(row[3]), int(row[4]), float(row[5])
+        ctr = round(clicks / views * 100, 2) if views > 0 else 0
+        cr_cart = round(carts / clicks * 100, 1) if clicks > 0 else 0
+        cr_order = round(orders_cnt / carts * 100, 1) if carts > 0 else 0
+
+        # Resolve product name
+        if marketplace == "ozon":
+            pid = sku_to_product.get(sku_id, sku_id)
+            pname = product_names.get(pid, f"SKU {sku_id}")
+        else:
+            pname = product_names.get(sku_id, f"nm_id {sku_id}")
+
+        funnel_lines.append(
+            f"{pname[:45]} | {views} | {clicks} | {ctr}% | {carts} | {cr_cart}% | "
+            f"{orders_cnt} | {cr_order}% | {spend:.0f}₽"
+        )
+
+    # ── 4. Build prompt ──
     user_message = f"""Магазин: {shop.name} ({mp_label})
 Период: {start_date} — {end_date}
 {events_summary}
+Товаров в каталоге: {len(product_names)}
 
-### СОБЫТИЯ:
+### КАТАЛОГ ТОВАРОВ:
+{chr(10).join(catalog_lines)}
+
+### СОБЫТИЯ (привязаны к товарам):
 {chr(10).join(events_text_lines)}
 
-### KPI МЕТРИКИ (по дням/неделям/месяцам):
+### KPI МЕТРИКИ МАГАЗИНА (по дням/неделям/месяцам):
 {chr(10).join(kpi_lines)}
 
-Проанализируй данные и дай развернутый анализ."""
+### РЕКЛАМНАЯ ВОРОНКА ПО ТОВАРАМ (за весь период):
+{chr(10).join(funnel_lines)}
 
-    # ── 4. Stream from Gemini ──
+Проанализируй ВСЕ данные, включая воронку по каждому товару. Называй товары по именам!"""
+
+    # ── 5. Stream from Gemini ──
     async def generate():
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
