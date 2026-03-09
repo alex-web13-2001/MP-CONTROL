@@ -5,18 +5,18 @@
  * Toggle chips для включения/отключения метрик.
  * PeriodSelector + GroupBy selector.
  */
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
 } from 'recharts'
 import {
   Activity, TrendingUp, Eye, MousePointer, ShoppingCart, DollarSign,
-  BarChart3, Target, Loader2,
+  BarChart3, Target, Loader2, Sparkles, StopCircle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore } from '@/stores/appStore'
-import { getEventsGraphApi, type EventsGraphPoint } from '@/api/events_graph'
+import { getEventsGraphApi, streamEventsAnalysis, type EventsGraphPoint } from '@/api/events_graph'
 
 /* ═══════════════════════════════════════════════════════════
    Constants
@@ -188,6 +188,29 @@ function GraphTooltip({ active, payload, label, enabledMetrics }: any) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Simple Markdown → HTML renderer (for AI analysis)
+   ═══════════════════════════════════════════════════════════ */
+
+function renderMarkdown(md: string): string {
+  return md
+    // Headers
+    .replace(/^### (.+)$/gm, '<h4 style="margin:16px 0 8px;font-size:14px;font-weight:700;color:hsl(var(--foreground))">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 style="margin:20px 0 8px;font-size:16px;font-weight:700;color:hsl(var(--foreground))">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 style="margin:24px 0 10px;font-size:18px;font-weight:700;color:hsl(var(--foreground))">$1</h2>')
+    // Bold
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    // Italic
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    // Bullet points
+    .replace(/^- (.+)$/gm, '<div style="padding-left:16px;margin:3px 0">• $1</div>')
+    // Numbered list
+    .replace(/^(\d+)\. (.+)$/gm, '<div style="padding-left:16px;margin:3px 0">$1. $2</div>')
+    // Line breaks
+    .replace(/\n\n/g, '<br/>')
+    .replace(/\n/g, '<br/>')
+}
+
+/* ═══════════════════════════════════════════════════════════
    Main Page
    ═══════════════════════════════════════════════════════════ */
 
@@ -198,6 +221,34 @@ export default function EventsGraphPage() {
   const [data, setData] = useState<EventsGraphPoint[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // AI Analysis state
+  const [analysisText, setAnalysisText] = useState('')
+  const [analysisLoading, setAnalysisLoading] = useState(false)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [analysisDone, setAnalysisDone] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const startAnalysis = useCallback(async () => {
+    if (!shop) return
+    setAnalysisText('')
+    setAnalysisError(null)
+    setAnalysisLoading(true)
+    setAnalysisDone(false)
+
+    const ctrl = await streamEventsAnalysis(
+      { shop_id: shop.id, period, group_by: groupBy },
+      (chunk) => setAnalysisText(prev => prev + chunk),
+      () => { setAnalysisLoading(false); setAnalysisDone(true) },
+      (err) => { setAnalysisError(err); setAnalysisLoading(false) },
+    )
+    abortRef.current = ctrl
+  }, [shop, period, groupBy])
+
+  const stopAnalysis = useCallback(() => {
+    abortRef.current?.abort()
+    setAnalysisLoading(false)
+  }, [])
 
   // Toggle chips state
   const [enabledMetrics, setEnabledMetrics] = useState<Set<string>>(() => {
@@ -552,6 +603,111 @@ export default function EventsGraphPage() {
               />
             )
           })()}
+        </div>
+      )}
+
+      {/* ═══ AI Analysis Block ═══ */}
+      {data.length > 0 && (
+        <div style={{
+          marginTop: 24,
+          background: 'hsl(var(--card))',
+          border: '1px solid hsl(var(--border))',
+          borderRadius: 16,
+          overflow: 'hidden',
+        }}>
+          {/* Header */}
+          <div style={{
+            padding: '16px 20px',
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            borderBottom: (analysisText || analysisLoading) ? '1px solid hsl(var(--border))' : 'none',
+            background: 'linear-gradient(135deg, hsl(var(--primary)/0.05), hsl(var(--primary)/0.02))',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Sparkles size={20} style={{ color: 'hsl(var(--primary))' }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: 'hsl(var(--foreground))' }}>
+                ИИ-анализ событий
+              </span>
+              <span style={{ fontSize: 12, color: 'hsl(var(--muted-foreground))' }}>
+                Gemini 2.5 Flash
+              </span>
+            </div>
+            {analysisLoading ? (
+              <button
+                onClick={stopAnalysis}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '7px 16px', borderRadius: 8,
+                  background: '#ef4444', color: 'white',
+                  border: 'none', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                }}
+              >
+                <StopCircle size={14} />
+                Остановить
+              </button>
+            ) : (
+              <button
+                onClick={startAnalysis}
+                disabled={loading}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '7px 16px', borderRadius: 8,
+                  background: 'hsl(var(--primary))', color: 'hsl(var(--primary-foreground))',
+                  border: 'none', fontSize: 13, fontWeight: 500, cursor: 'pointer',
+                  opacity: loading ? 0.5 : 1,
+                }}
+              >
+                <Sparkles size={14} />
+                {analysisDone ? 'Перезапустить анализ' : 'Запустить анализ'}
+              </button>
+            )}
+          </div>
+
+          {/* Content */}
+          {analysisLoading && !analysisText && (
+            <div style={{
+              padding: '40px 20px', textAlign: 'center',
+              color: 'hsl(var(--muted-foreground))',
+            }}>
+              <Loader2 size={28} style={{ animation: 'spin 1s linear infinite', marginBottom: 12 }} />
+              <div style={{ fontSize: 14 }}>Анализирую события и метрики...</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>Gemini изучает {data.reduce((s, d) => s + d.events_total, 0)} событий</div>
+            </div>
+          )}
+
+          {analysisError && (
+            <div style={{
+              padding: '16px 20px', color: '#ef4444', fontSize: 13,
+              background: '#ef444410',
+            }}>
+              ⚠️ Ошибка: {analysisError}
+            </div>
+          )}
+
+          {analysisText && (
+            <div
+              style={{
+                padding: '20px 24px',
+                fontSize: 14,
+                lineHeight: 1.7,
+                color: 'hsl(var(--foreground))',
+                whiteSpace: 'pre-wrap',
+                maxHeight: 600,
+                overflowY: 'auto',
+              }}
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(analysisText) }}
+            />
+          )}
+
+          {analysisLoading && analysisText && (
+            <div style={{
+              padding: '8px 20px 16px',
+              display: 'flex', alignItems: 'center', gap: 6,
+              color: 'hsl(var(--muted-foreground))', fontSize: 12,
+            }}>
+              <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+              Генерация...
+            </div>
+          )}
         </div>
       )}
 
