@@ -319,13 +319,6 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
 
   let y = startY
 
-  // Section title
-  doc.setFont('Roboto', 'bold')
-  doc.setFontSize(11)
-  doc.setTextColor(...C.textDark)
-  doc.text('Структура расходов', 20, y)
-  y += 8
-
   bars.forEach((item) => {
     const barW = Math.max((Math.abs(item.value) / maxVal) * chartW, 2)
     const color = item.color
@@ -853,11 +846,16 @@ export async function generatePnlReport(opts: PnlReportOptions): Promise<void> {
   // ── Page 1: Cover ──
   drawCover(doc, shopName, data.date_from, data.date_to, marketplace)
 
-  // ── Page 2: KPI + Waterfall ──
+  // ── Page 2: KPI ──
   doc.addPage()
   drawPageBg(doc)
   let y = drawSectionHeader(doc, 'Ключевые показатели', 25, `${fmtDate(data.date_from)} — ${fmtDate(data.date_to)}`)
-  y = drawKpiCards(doc, data, y)
+  drawKpiCards(doc, data, y)
+
+  // ── Page 3: Waterfall ──
+  doc.addPage()
+  drawPageBg(doc)
+  y = drawSectionHeader(doc, 'Структура расходов', 25, 'Куда уходит каждый рубль выручки')
   drawWaterfallChart(doc, data, y)
 
   // ── Page 3: Dynamics ──
