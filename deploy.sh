@@ -39,6 +39,7 @@ else
     
     # Copy updated backend Python files
     $SSH "docker cp $REMOTE_DIR/backend/app mms-backend:/app/ 2>&1"
+    $SSH "docker cp $REMOTE_DIR/backend/app mms-celery-worker:/app/ 2>&1"
     $SSH "docker cp $REMOTE_DIR/backend/celery_app mms-celery-worker:/app/ 2>&1"
     $SSH "docker cp $REMOTE_DIR/backend/celery_app mms-celery-beat:/app/ 2>&1"
     $SSH "docker cp $REMOTE_DIR/backend/scripts mms-backend:/app/ 2>&1"
