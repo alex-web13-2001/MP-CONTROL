@@ -1080,36 +1080,22 @@ async def export_ozon_ltv_xlsx(
                         max(order_date) OVER (PARTITION BY sku, client_id) AS last_date,
                         count() OVER (PARTITION BY sku, client_id) AS total_purchases
                     FROM sku_orders
-                ),
-                sku_client_agg AS (
-                    SELECT
-                        sku,
-                        client_id,
-                        max(purchase_num) AS max_pn,
-                        any(first_date) AS fd,
-                        any(last_date) AS ld,
-                        any(total_purchases) AS tp
-                    FROM sku_client_numbered
-                    GROUP BY sku, client_id
                 )
             SELECT
-                s.sku,
-                any(s.offer_id) AS offer_id,
-                any(s.product_name) AS name,
-                countDistinctIf(s.client_id, s.purchase_num >= 1) AS b1,
-                countDistinctIf(s.client_id, s.purchase_num >= 2) AS b2,
-                countDistinctIf(s.client_id, s.purchase_num >= 3) AS b3,
-                countDistinctIf(s.client_id, s.purchase_num >= 4) AS b4,
-                countDistinctIf(s.client_id, s.purchase_num >= 5) AS b5,
-                round(avg(a.avg_d), 0) AS avg_days
-            FROM sku_client_numbered s
-            INNER JOIN (
-                SELECT sku, client_id,
-                    if(tp >= 2, dateDiff('day', fd, ld) / (tp - 1), 0) AS avg_d
-                FROM sku_client_agg
-                WHERE tp >= 2
-            ) a ON s.sku = a.sku AND s.client_id = a.client_id
-            GROUP BY s.sku
+                sku,
+                any(offer_id) AS offer_id,
+                any(product_name) AS name,
+                countDistinct(client_id) AS b1,
+                countDistinctIf(client_id, purchase_num >= 2) AS b2,
+                countDistinctIf(client_id, purchase_num >= 3) AS b3,
+                countDistinctIf(client_id, purchase_num >= 4) AS b4,
+                countDistinctIf(client_id, purchase_num >= 5) AS b5,
+                round(avgIf(
+                    dateDiff('day', first_date, last_date) / greatest(total_purchases - 1, 1),
+                    total_purchases >= 2 AND purchase_num = 1
+                ), 0) AS avg_days
+            FROM sku_client_numbered
+            GROUP BY sku
             HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
