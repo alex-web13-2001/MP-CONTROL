@@ -1003,7 +1003,7 @@ async def _build_wb_supply_data(
             warehouse_name,
             count()          AS orders_count,
             sum(price_with_disc) AS revenue
-        FROM mms_analytics.fact_orders_raw_latest
+        FROM mms_analytics.fact_orders_raw
         WHERE shop_id = {shop_id}
           AND date >= '{d_sales_start}'
           AND date <= '{today}'
@@ -1061,35 +1061,39 @@ async def _build_wb_supply_data(
             product_info[nm_id]["image_url"] = ""
 
     # ── 4. WB Tariffs ────────────────────────────────────────
-    tariff_rows = ch.query("""
-        SELECT
-            warehouse_name,
-            argMax(storage_coef, updated_at) AS storage_coef,
-            argMax(storage_base_liter, updated_at) AS storage_base_liter,
-            argMax(storage_additional_liter, updated_at) AS storage_add_liter,
-            argMax(delivery_coef, updated_at) AS delivery_coef,
-            argMax(delivery_base_liter, updated_at) AS delivery_base_liter,
-            argMax(delivery_additional_liter, updated_at) AS delivery_add_liter,
-            argMax(coefficient, updated_at) AS acceptance_coef,
-            argMax(allow_unload, updated_at) AS allow_unload
-        FROM mms_analytics.fact_wb_acceptance_tariffs
-        WHERE box_type_id = 2
-          AND dt >= today()
-        GROUP BY warehouse_name
-    """).result_rows
-
     tariffs: dict[str, dict] = {}
-    for r_t in tariff_rows:
-        tariffs[r_t[0]] = {
-            "storage_coef": _parse_ru_float(r_t[1]),
-            "storage_base_liter": _parse_ru_float(r_t[2]),
-            "storage_add_liter": _parse_ru_float(r_t[3]),
-            "delivery_coef": _parse_ru_float(r_t[4]),
-            "delivery_base_liter": _parse_ru_float(r_t[5]),
-            "delivery_add_liter": _parse_ru_float(r_t[6]),
-            "acceptance_coef": float(r_t[7]),
-            "allow_unload": r_t[8],
-        }
+    try:
+        tariff_rows = ch.query(f"""
+            SELECT
+                warehouse_name,
+                argMax(storage_coef, updated_at) AS storage_coef,
+                argMax(storage_base_liter, updated_at) AS storage_base_liter,
+                argMax(storage_additional_liter, updated_at) AS storage_add_liter,
+                argMax(delivery_coef, updated_at) AS delivery_coef,
+                argMax(delivery_base_liter, updated_at) AS delivery_base_liter,
+                argMax(delivery_additional_liter, updated_at) AS delivery_add_liter,
+                argMax(coefficient, updated_at) AS acceptance_coef,
+                argMax(allow_unload, updated_at) AS allow_unload
+            FROM mms_analytics.fact_wb_acceptance_tariffs
+            WHERE box_type_id = 2
+              AND dt >= today()
+            GROUP BY warehouse_name
+        """).result_rows
+
+        for r_t in tariff_rows:
+            tariffs[r_t[0]] = {
+                "storage_coef": _parse_ru_float(r_t[1]),
+                "storage_base_liter": _parse_ru_float(r_t[2]),
+                "storage_add_liter": _parse_ru_float(r_t[3]),
+                "delivery_coef": _parse_ru_float(r_t[4]),
+                "delivery_base_liter": _parse_ru_float(r_t[5]),
+                "delivery_add_liter": _parse_ru_float(r_t[6]),
+                "acceptance_coef": float(r_t[7]),
+                "allow_unload": r_t[8],
+            }
+    except Exception:
+        # Таблица wb_acceptance_tariffs может отсутствовать — работаем с дефолтами
+        tariffs = {}
 
     # ── 5. Build recommendations per SKU × warehouse ─────────
     all_nm_ids = set(list(stocks_by_nm.keys()) + list(sales_by_nm.keys()))
