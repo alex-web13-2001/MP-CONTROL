@@ -4,6 +4,16 @@
 
 ## [Unreleased] - 2026-03-10
 
+### Added — График новых / повторных покупателей (LTV)
+
+- **Backend / `ltv.py` + `wb_ltv.py`:** Новый блок `monthly_buyers` в ответе LTV endpoint
+  - Помесячная разбивка: `new_buyers`, `repeat_buyers`, `new_revenue`, `repeat_revenue`
+  - Определяет первый месяц покупки каждого клиента, делит на «новых» и «повторных»
+- **Frontend / `LtvPage.tsx`:** Компонент `MonthlyBuyersChart` — stacked bar chart (recharts)
+  - Зелёный = новые, фиолетовый = повторные
+  - Кастомный тултип с выручкой в ₽ для каждой группы + итого
+  - Проценты и количество под каждым столбцом (шрифт 14px)
+
 ### Added — Excel экспорт ABC/XYZ анализа
 
 - **Backend / `sales.py`:** Два новых endpoint `GET /sales/ozon/abc-xyz/xlsx` и `GET /sales/wb/abc-xyz/xlsx`
