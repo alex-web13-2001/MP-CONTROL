@@ -1730,7 +1730,8 @@ async def get_wb_supply_xlsx(
     ws_wh = wb_xlsx.create_sheet("Поставка по складам")
     h_wh = [
         ("Склад WB", 32), ("Артикул", 18), ("Название товара", 35),
-        ("Продаж в день", 10), ("Остаток", 10), ("ПОСТАВИТЬ", 14),
+        ("Заказы прямые", 12), ("Заказы региональные", 14),
+        ("Ежедн. эфф.", 10), ("Остаток", 10), ("ПОСТАВИТЬ", 14),
         ("Выручка, руб", 14), ("Тип товара", 14),
     ]
     for ci, (n, w) in enumerate(h_wh, 1):
@@ -1753,7 +1754,9 @@ async def get_wb_supply_xlsx(
             wh_groups[wh_name].append({
                 "vendor_code": item["vendor_code"],
                 "name": item["name"],
-                "daily": wh["daily"],
+                "orders": wh.get("orders", 0),
+                "regional_orders": wh.get("regional_orders", 0),
+                "daily_boosted": wh.get("daily_boosted", 0),
                 "stock": wh["stock"],
                 "need": wh["need"],
                 "revenue": wh["revenue"],
@@ -1763,12 +1766,15 @@ async def get_wb_supply_xlsx(
     wh_hdr_fill = PatternFill("solid", fgColor="BDD7EE")
     wh_hdr_font = Font(bold=True, size=11, color="1F4E79")
     need_fill = PatternFill("solid", fgColor="FFF2CC")
+    regional_font = Font(bold=True, color="8B5CF6")
     row_wh = 2
 
     for wh_name in sorted(wh_groups.keys(), key=lambda w: sum(i["need"] for i in wh_groups[w]), reverse=True):
         sku_list = wh_groups[wh_name]
         total_need = sum(i["need"] for i in sku_list)
         total_revenue = sum(i["revenue"] for i in sku_list)
+        total_regional = sum(i["regional_orders"] for i in sku_list)
+        total_direct = sum(i["orders"] for i in sku_list)
         sku_count = len(sku_list)
 
         # Заголовок склада
@@ -1776,9 +1782,13 @@ async def get_wb_supply_xlsx(
         c = ws_wh.cell(row_wh, 1, wh_label)
         c.font = wh_hdr_font
         c.fill = wh_hdr_fill
-        ws_wh.cell(row_wh, 6, total_need).font = Font(bold=True, size=12, color="CC0000")
-        ws_wh.cell(row_wh, 6).number_format = num_fmt
-        ws_wh.cell(row_wh, 7, round(total_revenue)).number_format = num_fmt
+        ws_wh.cell(row_wh, 4, total_direct).number_format = num_fmt
+        ws_wh.cell(row_wh, 5, total_regional).number_format = num_fmt
+        if total_regional > 0:
+            ws_wh.cell(row_wh, 5).font = regional_font
+        ws_wh.cell(row_wh, 8, total_need).font = Font(bold=True, size=12, color="CC0000")
+        ws_wh.cell(row_wh, 8).number_format = num_fmt
+        ws_wh.cell(row_wh, 9, round(total_revenue)).number_format = num_fmt
         for ci2 in range(1, len(h_wh) + 1):
             ws_wh.cell(row_wh, ci2).fill = wh_hdr_fill
         row_wh += 1
@@ -1788,16 +1798,21 @@ async def get_wb_supply_xlsx(
             ws_wh.cell(row_wh, 1, "")
             ws_wh.cell(row_wh, 2, si["vendor_code"])
             ws_wh.cell(row_wh, 3, si["name"])
-            ws_wh.cell(row_wh, 4, si["daily"]).number_format = "0.00"
-            ws_wh.cell(row_wh, 5, si["stock"]).number_format = num_fmt
-            c = ws_wh.cell(row_wh, 6, si["need"])
+            ws_wh.cell(row_wh, 4, si["orders"]).number_format = num_fmt
+            c5 = ws_wh.cell(row_wh, 5, si["regional_orders"])
+            c5.number_format = num_fmt
+            if si["regional_orders"] > 0:
+                c5.font = regional_font
+            ws_wh.cell(row_wh, 6, si["daily_boosted"]).number_format = "0.00"
+            ws_wh.cell(row_wh, 7, si["stock"]).number_format = num_fmt
+            c = ws_wh.cell(row_wh, 8, si["need"])
             c.number_format = num_fmt
             c.font = Font(bold=True, color="CC0000")
             c.fill = need_fill
-            ws_wh.cell(row_wh, 7, round(si["revenue"])).number_format = num_fmt
+            ws_wh.cell(row_wh, 9, round(si["revenue"])).number_format = num_fmt
             pt = si.get("product_type", "")
             pt_label = {"food": "🍖 Питание", "sgt": "📦 СГТ"}.get(pt, "Обычный")
-            ws_wh.cell(row_wh, 8, pt_label)
+            ws_wh.cell(row_wh, 10, pt_label)
             row_wh += 1
 
         row_wh += 1  # пустая строка между складами
