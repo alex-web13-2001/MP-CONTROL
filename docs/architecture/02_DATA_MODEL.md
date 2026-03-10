@@ -429,6 +429,36 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 
 ---
 
+#### `fact_wb_acceptance_tariffs` — тарифы приёмки и хранения WB
+
+| Engine    | ReplacingMergeTree(updated_at)  |
+| --------- | ------------------------------- |
+| ORDER BY  | (warehouse_id, box_type_id, dt) |
+| TTL       | 1 год                           |
+| Partition | toYYYYMM(dt)                    |
+
+Источник: WB API `GET /api/tariffs/v1/acceptance/coefficients`.  
+Синхронизация: ежедневно через Celery task `sync_wb_tariffs`.
+
+| Поле                        | Тип      | Описание                                              |
+| --------------------------- | -------- | ----------------------------------------------------- |
+| `dt`                        | Date     | Дата действия тарифа                                  |
+| `warehouse_id`              | UInt32   | ID склада WB                                          |
+| `warehouse_name`            | String   | Название склада                                       |
+| `box_type_id`               | UInt8    | Тип короба (1=монопаллет, 2=короб, 5=суперсейф, 6=QR) |
+| `box_type_name`             | String   | Название типа короба                                  |
+| `coefficient`               | Float64  | Коэффициент приёмки (-1=бесплатно, 0+=платно)         |
+| `storage_coef`              | String   | Коэффициент хранения (%)                              |
+| `storage_base_liter`        | String   | Базовая стоимость хранения, руб/литр                  |
+| `storage_additional_liter`  | String   | Доп стоимость хранения за литр сверх 1                |
+| `delivery_coef`             | String   | Коэффициент логистики (%)                             |
+| `delivery_base_liter`       | String   | Базовая стоимость логистики, руб/литр                 |
+| `delivery_additional_liter` | String   | Доп стоимость логистики за литр сверх 1               |
+| `allow_unload`              | UInt8    | Разрешена ли отгрузка (1/0)                           |
+| `updated_at`                | DateTime | Время записи                                          |
+
+---
+
 ### Materialized Views
 
 | MV                | Источник        | Движок             | Агрегация                                |
@@ -504,3 +534,10 @@ alembic revision --autogenerate -m "описание"
 - `event_log.advert_id` стал **NULLABLE** — контентные (OZON_PHOTO_CHANGE) и коммерческие события не привязаны к рекламной кампании
 - `dim_ozon_product_content.images_hash` теперь учитывает порядок фото (убран `sorted()`) — позволяет детектить перестановку галереи
 - Обновлено описание `event_log`: 20+ типов событий, JSONB metadata расширен полями `field`, `campaign_title`
+
+### 2026-03-10
+
+- **Новая таблица ClickHouse:** `fact_wb_acceptance_tariffs` — тарифы приёмки, хранения и логистики 144 складов WB
+- Миграция: `docker/clickhouse/migrations/002_add_wb_acceptance_tariffs.sql`
+- Источник: WB API `GET /api/tariffs/v1/acceptance/coefficients`
+- ReplacingMergeTree(updated_at), ORDER BY (warehouse_id, box_type_id, dt), TTL 1 год

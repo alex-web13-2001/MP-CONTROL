@@ -1,6 +1,6 @@
 # MP-CONTROL — Services Layer
 
-> Полное описание всех 21 сервисов: API endpoints, трансформация данных, целевые таблицы.  
+> Полное описание всех 22 сервисов: API endpoints, трансформация данных, целевые таблицы.  
 > Директория: `backend/app/services/`
 
 ---
@@ -158,6 +158,28 @@ Service (async, MarketplaceClient)    →    Loader (sync, ClickHouse/PostgreSQL
 ### `wb_finance_report_service.py` (4.2 КБ)
 
 API для фронтенда — запрос финансовых данных из ClickHouse `fact_finances`.
+
+---
+
+### `wb_tariffs_service.py` (3.2 КБ)
+
+Синхронизация тарифов приёмки и хранения со всех складов WB.
+
+| Компонент            | Описание                                                               |
+| -------------------- | ---------------------------------------------------------------------- |
+| **WBTariffsService** | Fetch коэффициентов приёмки, хранения и логистики через WB Tariffs API |
+
+**API endpoint:** `GET /api/tariffs/v1/acceptance/coefficients` (Tariffs API)
+
+**Ключевые методы:**
+
+| Метод                             | Описание                                                       |
+| --------------------------------- | -------------------------------------------------------------- |
+| `fetch_acceptance_coefficients()` | Загружает тарифы всех складов (144 склада × box types × 14 дн) |
+| `prepare_ch_rows()`               | Нормализация API данных → строки для ClickHouse INSERT         |
+
+**Выход:** ClickHouse `fact_wb_acceptance_tariffs` (ReplacingMergeTree)  
+**Поля:** warehouse_id, warehouse_name, box_type_id, coefficient, storage/delivery тарифы, allow_unload
 
 ---
 
@@ -362,6 +384,7 @@ FBO + FBS возвраты Ozon.
 | `wb_stocks_service`             | WB          | Marketplace API | CH: `fact_inventory_snapshot`, Redis               |
 | `wb_warehouses_service`         | WB          | Marketplace API | PG: `dim_warehouses`                               |
 | `wb_finance_report_service`     | WB          | — (internal)    | ClickHouse queries                                 |
+| `wb_tariffs_service`            | WB          | Tariffs API     | CH: `fact_wb_acceptance_tariffs`                   |
 | `event_detector`                | WB          | — (stateful)    | PG: `event_log`, Redis                             |
 | `ozon_products_service`         | Ozon        | Seller API      | PG: `dim_ozon_products`, CH: `fact_ozon_inventory` |
 | `ozon_orders_service`           | Ozon        | Seller API      | CH: `fact_ozon_orders`                             |
@@ -406,3 +429,9 @@ FBO + FBS возвраты Ozon.
 - **`event_detector.py`**: V2 теперь передаёт `campaign_name` в `set_state()` для хранения названий WB кампаний в Redis
 - **`ozon_ads_event_detector.py`**: новые кампании добавляются в `just_started` set → предотвращение дублирующих `ITEM_ADD` событий при `OZON_CAMPAIGN_CREATED`
 - **`redis_state.py`**: `get_state`/`set_state` расширены полем `campaign_name` — кеширование названий WB кампаний для Events API fallback
+
+### 2026-03-10
+
+- **Новый сервис:** `wb_tariffs_service.py` — `WBTariffsService` для загрузки тарифов приёмки/хранения/логистики WB
+- API endpoint: `GET /api/tariffs/v1/acceptance/coefficients` → 144 склада, коэффициенты на 14 дней вперёд
+- Обновлена сводная таблица Service → API → Storage (22 сервиса)

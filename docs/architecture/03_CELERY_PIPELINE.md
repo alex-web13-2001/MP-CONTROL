@@ -74,7 +74,7 @@ DEL key
 | Marketplace | Dispatch задачи                                                                                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Ozon**    | sync_ozon_products, sync_ozon_product_snapshots, sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns, sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content, sync_ozon_commissions |
-| **WB**      | sync_warehouses, sync_product_content, **sync_wb_finance_history(days_back=30)**                                                                                                                     |
+| **WB**      | sync_warehouses, sync_product_content, **sync_wb_finance_history(days_back=30)**, **sync_wb_tariffs**                                                                                                |
 
 ### `sync_all_frequent` — каждые 30 мин
 
@@ -93,6 +93,20 @@ DEL key
 ### `sync_all_campaign_snapshots` — каждые 30 мин
 
 Только WB: `sync_wb_campaign_snapshot` (dim_advert_campaigns + log_wb_bids).
+
+---
+
+### `sync_wb_tariffs` (ежедневно)
+
+```
+1. GET /api/tariffs/v1/acceptance/coefficients (WB Tariffs API)
+   → 6480+ строк: 144 склада × 45 box_type × 14 дней вперёд
+2. WBTariffsService.prepare_ch_rows() → нормализация
+3. INSERT → fact_wb_acceptance_tariffs (ClickHouse, ReplacingMergeTree)
+```
+
+**Сервис:** `WBTariffsService` (`backend/app/services/wb_tariffs_service.py`)  
+**Retry:** 3 попытки, 60 сек пауза.
 
 ---
 
@@ -445,3 +459,10 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 - `sync_ozon_products`: шаг 3 расширен — детекция OZON_PHOTO_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE + сохранение событий в event_log
 - `sync_ozon_prices`: добавлена детекция OZON_PRICE_CHANGE через сравнение marketing_price с Redis-состоянием
 - `monitor_ozon_bids`: 3-уровневая защита от ложных ITEM_ADD/REMOVE
+
+### 2026-03-10
+
+- **Новая задача:** `sync_wb_tariffs` — ежедневная синхронизация тарифов WB (приёмка, хранение, логистика по 144 складам)
+- Интеграция в `sync_all_daily` для WB магазинов
+- Сервис: `WBTariffsService` → `fact_wb_acceptance_tariffs` (ClickHouse)
+- Retry: 3 попытки, 60 сек

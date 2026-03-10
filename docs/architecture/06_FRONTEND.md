@@ -466,9 +466,14 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Marketplace badge (WB/Ozon с разными цветами)
 - Status badge: active (зелёный), syncing (синий), auth_error (красный), paused (жёлтый)
 
-### `WarehouseSupplyPage` (~830 строк)
+### `WarehouseSupplyPage` (~1250 строк)
 
-Страница «Поставки FBO». Рекомендации по поставке товаров на склады Ozon.
+Страница «Поставки». **Единый интерфейс** — автоматически переключается по `currentShop.marketplace`:
+
+- **Ozon**: `SupplyTable` + `HubTable` (поставки FBO по кластерам)
+- **WB**: `WBSupplyTable` + `WBWarehouseSummaryTable` (поставки по складам с учётом хранения)
+
+#### Ozon-ветка
 
 - API: `GET /api/v1/warehouses/ozon/supply`
 - Export: `GET /api/v1/warehouses/ozon/supply/xlsx`
@@ -486,24 +491,54 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | Коэф. безопасности | Ползунок 1.0-2.0    | 1.15    |
 | Учитывать рекламу  | Чекбокс             | ✅      |
 
-**Табы:**
+**Табы (Ozon):**
 
 | Таб          | Компонент     | Описание                                   |
 | ------------ | ------------- | ------------------------------------------ |
 | По SKU       | `SupplyTable` | Группировка по SKU → кластеры (expandable) |
 | По кластерам | `HubTable`    | Группировка по складу отгрузки → SKU       |
 
-**SupplyTable** — expandable rows:
+#### WB-ветка
 
-- Статус (🔴/🟡/🟢), артикул, FBO stock, дн.запаса, ∑need, boost
-- Раскрытие: кластеры с sold, share, daily, need, revenue
+- API: `GET /api/v1/warehouses/wb/supply`
+- Export: `GET /api/v1/warehouses/wb/supply/xlsx`
 
-**HubTable** — expandable список складов отгрузки:
+**4 KPI-карточки:**
 
-- Склад, кол-во позиций, выручка, total_need
-- Раскрытие: товары с cluster спроса, delivery hours (цвет: 28ч зелёный, 45ч жёлтый), need
+- Итого поставить, Критические SKU (<14 дн), Перезатарка (>target_days), Хранение/мес (₽)
 
-**API модуль:** `src/api/warehouses.ts` — типы `SupplyItem`, `SupplyCluster`, `HubSummary`, `HubItem`, `SupplyResponse`
+**Настройки (`WBSettingsPanel`):**
+
+| Параметр          | UI                     | Default |
+| ----------------- | ---------------------- | ------- |
+| Горизонт поставки | 14 / 30 / 45 / 60 дней | 45      |
+| Период продаж     | 14 / 30 / 60 / 90 дней | 30      |
+| Страховой буфер   | 0-30%                  | 15%     |
+
+> ⚠ «WB: хранение платное с 1-го дня, коэфф. фиксируется на 60 дн»
+
+**Табы (WB):**
+
+| Таб        | Компонент                 | Описание                                          |
+| ---------- | ------------------------- | ------------------------------------------------- |
+| По товарам | `WBSupplyTable`           | SKU → expand → детализация по складам             |
+| По складам | `WBWarehouseSummaryTable` | Сводка: товаров, остатки, заказы, коэфф., приёмка |
+
+**WB-компоненты (inline):**
+
+| Компонент                 | Описание                                           |
+| ------------------------- | -------------------------------------------------- |
+| `WBContent`               | Автономный: state, fetch, KPIs, tabs, settings     |
+| `WBSupplyTable`           | Expandable таблица SKU с сортировкой по 5 ключам   |
+| `WBWarehouseDetailTable`  | Expand-row: склад, остаток, заказы, оборач., хран. |
+| `WBWarehouseSummaryTable` | Сводка по складам WB с коэфф. хранения и приёмки   |
+| `WBSettingsPanel`         | Горизонт, период, буфер (без Ad Boost)             |
+| `WBStatusBadge`           | 4 статуса: критично/внимание/норма/перезатарка     |
+
+**API модуль:** `src/api/warehouses.ts`:
+
+- Ozon: `SupplyItem`, `SupplyCluster`, `HubSummary`, `HubItem`, `SupplyResponse`
+- WB: `WBSupplyItem`, `WBWarehouseDetail`, `WBWarehouseSummary`, `WBSupplyResponse`
 
 ---
 
@@ -747,3 +782,12 @@ Bоковая панель с вложенной навигацией (collapse 
   - `COMPARISON_ROWS` получили поле `mp?: 'wb' | 'ozon'` — WB-специфичные строки скрыты для Ozon
   - Компонент принимает `marketplace` проп и фильтрует строки
 - **Зависимости:** `jspdf`, `jspdf-autotable` (pdf), `robotoFont.ts` (base64 шрифт)
+
+### 2026-03-10 (v2)
+
+- **WarehouseSupplyPage** (~830 → ~1250 строк): единый интерфейс Ozon + WB
+- Авто-переключение по `currentShop.marketplace` (не отдельная страница)
+- WB-компоненты: `WBContent`, `WBSupplyTable`, `WBWarehouseSummaryTable`, `WBSettingsPanel`, `WBStatusBadge`
+- 4 WB KPI: поставить, критические, перезатарка (>target_days), хранение/мес (₽)
+- WB API types: `WBSupplyItem`, `WBWarehouseDetail`, `WBWarehouseSummary`, `WBSupplyResponse`
+- Fix: хранение платное с 1-го дня, 60 дн — фиксация коэфф., не бесплатный период

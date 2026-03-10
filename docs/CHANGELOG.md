@@ -1,3 +1,72 @@
+## 2026-03-10 (v2)
+
+### feat(warehouses): WB Supply Frontend — единый интерфейс поставок
+
+**Frontend** (`WarehouseSupplyPage.tsx`):
+
+- Единый `WarehouseSupplyPage` — авто-переключение Ozon/WB по `currentShop.marketplace`
+- WB-компоненты: `WBContent`, `WBSupplyTable`, `WBWarehouseSummaryTable`, `WBSettingsPanel`, `WBStatusBadge`
+- 4 KPI: Итого поставить, Критические SKU, Перезатарка, Хранение/мес (₽)
+- Табы: «По товарам» (expandable → склады) / «По складам» (сводка)
+
+**Backend** (`warehouses.py`):
+
+- `GET /warehouses/wb/supply` — JSON endpoint (рекомендации по поставке WB)
+- `_build_wb_supply_data()` — общий helper для JSON и Excel endpoints
+- Fix: `decimal.Decimal / float` TypeError, `ModuleNotFoundError` для Redis
+
+### fix(warehouses): исправлена логика хранения WB
+
+- Хранение WB **платное с 1-го дня** (не «60 дней бесплатно»)
+- 60/90 дней — срок фиксации коэффициентов поставки (60 — большинство, 90 — одежда/обувь)
+- Overstock = `turnover_days > target_days` (настраиваемый), не `> 60`
+- Acceptance: «Без коэфф.» вместо «Бесплатно»
+
+### docs: обновление архитектурной документации
+
+- `04_BACKEND_API.md`: секция WB Supply (endpoints, response schema, WB-специфика, источники данных)
+- `06_FRONTEND.md`: единый `WarehouseSupplyPage` (Ozon + WB ветки, WB-компоненты)
+
+## 2026-03-10
+
+### feat(warehouses): WB Supply — поставки с учётом платного хранения
+
+**Новый endpoint** `GET /api/v1/warehouses/wb/supply/xlsx`:
+
+- 4 листа Excel: Рекомендации, Сводка, Тарифы складов, Риск хранения
+- Данные из: `fact_inventory_snapshot`, `fact_orders_raw`, `dim_products`, `fact_wb_acceptance_tariffs`
+- Оборачиваемость по складам, расчёт стоимости хранения (объём × тариф × коэффициент)
+- Рекомендации: `need = max(0, ceil(daily × target_days × safety − stock))`
+
+**Новая инфраструктура:**
+
+- Таблица CH `fact_wb_acceptance_tariffs` — тарифы хранения/логистики по складам
+- WB API `/api/tariffs/v1/acceptance/coefficients` — 144 склада, 14 дней
+- `WBTariffsService` + Celery task `sync_wb_tariffs` (ежедневно)
+
+### docs: обновление архитектурной документации
+
+- `02_DATA_MODEL.md`: добавлена таблица `fact_wb_acceptance_tariffs` (14 колонок, ReplacingMergeTree)
+- `03_CELERY_PIPELINE.md`: добавлена задача `sync_wb_tariffs`, обновлён `sync_all_daily` dispatch
+- `04_BACKEND_API.md`: добавлен endpoint `GET /warehouses/wb/supply/xlsx` (4 листа Excel)
+- `05_SERVICES.md`: добавлен `WBTariffsService` (22 сервиса), обновлена сводная таблица
+
+### fix(warehouses): исправлены подписи Excel на русский язык
+
+- Все заголовки столбцов переведены на русский (полные названия с единицами измерения)
+- Приёмка: «Бесплатно» / «Платно x20» вместо «Free» / «0.0»
+- Рекомендации: развёрнутые русскоязычные тексты вместо «CRIT», «OK»
+- Отгрузка: «Да» / «Нет» вместо «OK» / «X»
+- Оборачиваемость: «Нет продаж» вместо числа 999
+- Исправлено: `product_name` → `name` в запросе к `dim_products`
+
+### feat(warehouses): Excel лист «Анализ логистики» (Ozon) — доля влияния маршрутов
+
+- 6-й лист в Excel-экспорте Ozon: «Анализ логистики» по объединённым группам
+- Формула: `объём × часы` для маршрутов >29ч (методика Ozon)
+- Автогенерация рекомендаций по сплиту поставки
+- Цветовая индикация: красный ≥40% влияния, оранжевый ≥20%
+
 ## 2026-03-09 (v2)
 
 ### feat(finances): Понедельный финансовый отчёт (Ozon)

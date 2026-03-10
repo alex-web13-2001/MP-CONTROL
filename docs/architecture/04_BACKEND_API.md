@@ -600,6 +600,69 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
 
 ---
 
+### WB Supply — `/api/v1/warehouses/wb/supply`
+
+| Метод | Path                         | Описание                        | Auth   |
+| ----- | ---------------------------- | ------------------------------- | ------ |
+| `GET` | `/warehouses/wb/supply`      | Рекомендации по поставке (JSON) | Bearer |
+| `GET` | `/warehouses/wb/supply/xlsx` | Excel-экспорт (4 листа)         | Bearer |
+
+### Query Parameters
+
+```
+shop_id: int (required)
+sales_period: int (default: 30)      — период анализа продаж (дни)
+target_days: int (default: 45)       — на сколько дней формировать запас
+safety: float (default: 1.15)        — коэффициент безопасности
+```
+
+> **Важно**: WB не поддерживает Ad Boost (в отличие от Ozon).
+
+### Response Schema (GET /wb/supply)
+
+```
+{
+  kpi: {
+    total_need, critical_count, attention_count, overstock_count,
+    avg_days_supply, total_stock, total_sku, total_storage_month
+  },
+  items: [{
+    nm_id, vendor_code, name, image_url, vol_liters,
+    total_sold, total_stock, daily_avg, turnover_days, total_need,
+    status: "critical" | "attention" | "ok" | "overstock",
+    storage_cost_month,
+    warehouses: [{
+      warehouse, stock, orders, daily, turnover_days,
+      need, storage_per_day, storage_per_month,
+      storage_coef, acceptance_coef, acceptance, revenue
+    }]
+  }],
+  warehouse_summary: [{
+    warehouse, items_count, total_stock, total_orders,
+    total_need, total_revenue, storage_coef, acceptance
+  }]
+}
+```
+
+### WB-специфика
+
+- **Хранение платное с 1-го дня** — нет бесплатного периода
+- **Фиксация коэффициентов**: 60 дней (большинство категорий), 90 дней (одежда/обувь)
+- **Overstock**: `turnover_days > target_days` (настраиваемый порог)
+- **Acceptance**: коэффициент приёмки склада (`"Без коэфф."` или `"x{N}"`)
+- **storage_cost_month**: `vol_liters × tariff_per_liter × storage_coef × stock × 30`
+- **helper**: `_build_wb_supply_data()` — общая логика для JSON и Excel endpoints
+
+### Источники данных
+
+1. `fact_wb_stocks` (ClickHouse) → остатки по складам
+2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period`
+3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
+4. `wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
+5. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
+
+---
+
 ### 2026-02-19
 
 - Добавлена секция `Дашборд Ozon — /api/v1/dashboard` с endpoint, response schema и логикой
@@ -900,3 +963,25 @@ data: [DONE]
 - **Ozon comparison:** Добавлен ключ `operating` в `comparison.current` / `comparison.previous` — строка «Расходы МП (ОПЕКС)» ранее показывала 0₽
 - **Ozon comparison:** Добавлены ключи `penalties`, `refunds` (ранее отсутствовали)
 - **Формула:** `operating = services + bulk_charges (excl. marketing)`
+
+### 2026-03-10 (WB Supply)
+
+- **Новый endpoint:** `GET /warehouses/wb/supply/xlsx` — рекомендации поставок WB с учётом платного хранения
+- **Параметры:** `shop_id`, `sales_period` (7-90, def 30), `target_days` (14-60, def 45), `safety` (1.0-2.0, def 1.15)
+- **4 листа Excel:**
+  1. **Рекомендации по складам** — SKU × склад: продажи, остатки, потребность, хранение руб/день и руб/мес, коэфф. приёмки
+  2. **Сводка по товарам** — 1 строка на SKU: оборачиваемость, прогноз расходов хранения, текстовая рекомендация
+  3. **Тарифы складов WB** — все 144 склада: коэффициенты хранения/логистики/приёмки, базовые и доп тарифы
+  4. **Риск перезатаривания** — SKU с оборачиваемостью > 45 дней, оценка доп расходов на хранение
+- **Источники данных:** `fact_inventory_snapshot`, `fact_orders_raw_latest`, `dim_products`, `fact_wb_acceptance_tariffs`
+- **Ключевая логика:** хранение платное с 1-го дня, формула: `base_tariff × vol + add_tariff × (vol - 1)`
+- **Исправление:** `product_name` → `name` в запросе к `dim_products`
+
+### 2026-03-10 (v2)
+
+- Добавлена секция «WB Supply» с JSON endpoint `GET /warehouses/wb/supply`
+- Response schema: `kpi` + `items[]` (с `warehouses[]`) + `warehouse_summary[]`
+- WB-специфика: хранение платное с 1-го дня, фиксация коэффициентов 60/90 дней
+- Overstock = `turnover_days > target_days` (не > 60)
+- Acceptance: «Без коэфф.» вместо «Бесплатно»
+- 5 источников данных: CH (stocks, orders, tariffs), PG (products), Redis (images)
