@@ -580,9 +580,10 @@ def sync_all_daily(self):
                 sync_warehouses,
                 sync_product_content,
                 sync_wb_finance_history,
+                sync_wb_tariffs,
             )
 
-            for task_ref in [sync_warehouses, sync_product_content]:
+            for task_ref in [sync_warehouses, sync_product_content, sync_wb_tariffs]:
                 if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, api_key=api_key):
                     dispatched += 1
                 else:
@@ -1932,6 +1933,73 @@ def sync_product_content(
         return asyncio.run(run_sync())
     except Exception as exc:
         self.retry(exc=exc, countdown=300, max_retries=2)
+
+
+# ====================
+# WB TARIFFS TASKS
+# Fetch acceptance coefficients & storage/delivery tariffs
+# ====================
+
+@celery_app.task(bind=True, queue="sync", time_limit=120, soft_time_limit=110,
+                 autoretry_for=(Exception,), retry_kwargs={"max_retries": 2, "countdown": 60})
+def sync_wb_tariffs(
+    self,
+    shop_id: int,
+    api_key: str,
+):
+    """
+    Sync WB warehouse tariffs: acceptance coefficients + storage/delivery tariffs.
+
+    Source: GET /api/tariffs/v1/acceptance/coefficients
+    Target: ClickHouse fact_wb_acceptance_tariffs
+
+    Runs daily via sync_all_daily coordinator.
+    Queue: SYNC.
+    """
+    import asyncio
+    import logging
+    from datetime import datetime
+    from app.core.clickhouse import get_clickhouse_client
+    from app.services.wb_tariffs_service import WBTariffsService
+
+    logger = logging.getLogger(__name__)
+    logger.info("sync_wb_tariffs: shop=%s starting", shop_id)
+
+    async def run_sync():
+        service = WBTariffsService(api_key=api_key)
+
+        # 1. Fetch from WB API
+        items = await service.fetch_acceptance_coefficients()
+        if not items:
+            logger.warning("sync_wb_tariffs: shop=%s no data from API", shop_id)
+            return {"rows_inserted": 0}
+
+        # 2. Prepare rows for ClickHouse
+        now = datetime.utcnow()
+        rows = service.prepare_ch_rows(items, fetched_at=now)
+
+        if not rows:
+            logger.warning("sync_wb_tariffs: shop=%s no valid rows", shop_id)
+            return {"rows_inserted": 0}
+
+        # 3. Insert into ClickHouse
+        ch = get_clickhouse_client()
+        ch.insert(
+            "mms_analytics.fact_wb_acceptance_tariffs",
+            rows,
+            column_names=[
+                "dt", "warehouse_id", "warehouse_name", "box_type_id",
+                "coefficient", "allow_unload", "is_sorting_center",
+                "storage_coef", "storage_base_liter", "storage_additional_liter",
+                "delivery_coef", "delivery_base_liter", "delivery_additional_liter",
+                "updated_at",
+            ],
+        )
+
+        logger.info("sync_wb_tariffs: shop=%s inserted %d rows", shop_id, len(rows))
+        return {"rows_inserted": len(rows)}
+
+    return asyncio.run(run_sync())
 
 
 # ====================
