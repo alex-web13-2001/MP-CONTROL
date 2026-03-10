@@ -512,14 +512,39 @@ sku: int (required для /chain) — offer_id (Ozon) или nm_id (WB)
 
 ### Endpoints
 
-| Метод | Path                      | Описание              | Auth   |
-| ----- | ------------------------- | --------------------- | ------ |
-| `GET` | `/finances/ozon`          | P&L Ozon (waterfall)  | Bearer |
-| `GET` | `/finances/wb`            | P&L WB (waterfall)    | Bearer |
-| `GET` | `/finances/ozon/products` | Товарная прибыль Ozon | Bearer |
-| `GET` | `/finances/wb/products`   | Товарная прибыль WB   | Bearer |
+| Метод | Path                         | Описание                           | Auth   |
+| ----- | ---------------------------- | ---------------------------------- | ------ |
+| `GET` | `/finances/ozon`             | P&L Ozon (waterfall)               | Bearer |
+| `GET` | `/finances/wb`               | P&L WB (waterfall)                 | Bearer |
+| `GET` | `/finances/ozon/products`    | Товарная прибыль Ozon              | Bearer |
+| `GET` | `/finances/wb/products`      | Товарная прибыль WB                | Bearer |
+| `GET` | `/finances/ozon/excel`       | Excel отчёт Ozon (6 листов)       | Bearer |
+| `GET` | `/finances/wb/excel`         | Excel отчёт WB (6 листов)         | Bearer |
+| `GET` | `/finances/ozon/weekly-report` | Понедельный отчёт Ozon           | Bearer |
+| `GET` | `/finances/wb/weekly-report`   | Понедельный отчёт WB             | Bearer |
 
----
+### Excel экспорт (GET /finances/{mp}/excel)
+
+Параметры: `shop_id`, `date_from`, `date_to`
+
+**6 листов в .xlsx файле:**
+
+| Лист | Название         | Содержимое                                                     |
+| ---- | ---------------- | -------------------------------------------------------------- |
+| 1    | Сводка           | KPI текущий/предыдущий период, waterfall + изменение %         |
+| 2    | По дням          | Дневная динамика: заказы, выручка, пр. расходов                |
+| 3    | По неделям       | Полная ретроспектива с момента создания магазина                |
+| 4    | По месяцам       | Полная ретроспектива помесячно                                 |
+| 5    | По товарам       | SKU P&L: выручка, логистика, реклама, COGS, прибыль, маржа%   |
+| 6    | Расходы детально | Разбивка по типу операции и бонуса (без Продажа/Возврат)       |
+
+**WB-специфика Excel:**
+
+- **Реклама = ВБ Промо** (из deductions): `fact_advert_stats_v3` и `deduction` с продвижением — один источник. НЕ дублируется.
+- **SKU ad spend:** маппинг `nm_id → vendor_code` через `fact_finances` → join `fact_advert_stats_v3` по `nm_id`
+- **Хранение/удержания по SKU = 0:** WB не привязывает записи хранения/удержания к vendor_code
+- **penalty_total:** фильтруется `operation_type != 'Удержание'` (дублирует deduction для Удержание-операций)
+- **Прибыль:** `Payout − Логистика − Хранение − Приёмка − Удержания − ВБ Промо − Штрафы − COGS`
 
 ## Общий паттерн async task endpoints
 
