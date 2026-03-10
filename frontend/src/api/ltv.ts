@@ -48,6 +48,13 @@ export interface TimeBucket {
   avg_days: number
 }
 
+export interface MonthlyBuyers {
+  month: string
+  total: number
+  new_buyers: number
+  repeat_buyers: number
+}
+
 export interface LtvResponse {
   shop_id: number
   period: string
@@ -56,6 +63,7 @@ export interface LtvResponse {
   cohort_matrix: CohortRow[]
   sku_table: SkuRepeatRow[]
   time_distribution: TimeBucket[]
+  monthly_buyers: MonthlyBuyers[]
 }
 
 // ── Chain Types ──────────────────────────────────────────

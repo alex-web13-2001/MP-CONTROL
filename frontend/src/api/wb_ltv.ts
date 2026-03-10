@@ -48,6 +48,13 @@ export interface TimeBucket {
   avg_days: number
 }
 
+export interface WbMonthlyBuyers {
+  month: string
+  total: number
+  new_buyers: number
+  repeat_buyers: number
+}
+
 export interface WbLtvResponse {
   shop_id: number
   period: string
@@ -56,6 +63,7 @@ export interface WbLtvResponse {
   cohort_matrix: CohortRow[]
   sku_table: WbSkuRepeatRow[]
   time_distribution: TimeBucket[]
+  monthly_buyers: WbMonthlyBuyers[]
 }
 
 // ── Chain Types ──────────────────────────────────────────

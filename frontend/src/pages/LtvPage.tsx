@@ -315,6 +315,95 @@ function PurchaseChain({ chain, loading }: {
 }
 
 /* ══════════════════════════════════════════════════════
+   Monthly New vs Repeat Buyers Chart
+   ══════════════════════════════════════════════════════ */
+function MonthlyBuyersChart({ data }: { data: { month: string; total: number; new_buyers: number; repeat_buyers: number }[] }) {
+  if (!data || data.length === 0) return null
+
+  const monthNames: Record<string, string> = {
+    '01': 'Янв', '02': 'Фев', '03': 'Мар', '04': 'Апр',
+    '05': 'Май', '06': 'Июн', '07': 'Июл', '08': 'Авг',
+    '09': 'Сен', '10': 'Окт', '11': 'Ноя', '12': 'Дек',
+  }
+
+  const chartData = data.map(d => {
+    const [y, m] = d.month.split('-')
+    const newPct = d.total > 0 ? Math.round(d.new_buyers / d.total * 100) : 0
+    const repeatPct = d.total > 0 ? Math.round(d.repeat_buyers / d.total * 100) : 0
+    return {
+      ...d,
+      label: `${monthNames[m] || m} ${y.slice(2)}`,
+      new_pct: newPct,
+      repeat_pct: repeatPct,
+    }
+  })
+
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] overflow-hidden">
+      <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)] flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-[hsl(var(--foreground))]">📊 Новые и повторные покупатели</h3>
+          <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Доля новых и возвращающихся клиентов по месяцам</p>
+        </div>
+        <div className="flex items-center gap-4 text-[11px]">
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-sm" style={{ background: '#10b981' }} />
+            <span className="text-[hsl(var(--muted-foreground))]">Новые</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-3 rounded-sm" style={{ background: '#8b5cf6' }} />
+            <span className="text-[hsl(var(--muted-foreground))]">Повторные</span>
+          </div>
+        </div>
+      </div>
+      <div className="p-5">
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={chartData} barCategoryGap="15%">
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.15} />
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+            />
+            <YAxis
+              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              width={45}
+            />
+            <Tooltip
+              contentStyle={{
+                background: 'hsl(var(--card))',
+                border: '1px solid hsl(var(--border))',
+                borderRadius: 10,
+                fontSize: 12,
+                padding: '10px 14px',
+              }}
+              formatter={(value: number, name: string) => {
+                const label = name === 'new_buyers' ? '🟢 Новые' : '🟣 Повторные'
+                return [fmtNum(value), label]
+              }}
+              labelFormatter={(label: string) => `📅 ${label}`}
+            />
+            <Bar dataKey="new_buyers" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} name="new_buyers" />
+            <Bar dataKey="repeat_buyers" stackId="a" fill="#8b5cf6" radius={[4, 4, 0, 0]} name="repeat_buyers" />
+          </BarChart>
+        </ResponsiveContainer>
+
+        {/* Percentage row */}
+        <div className="flex gap-0 mt-3 overflow-x-auto">
+          {chartData.map(d => (
+            <div key={d.month} className="flex-1 text-center min-w-[60px]">
+              <div className="text-[11px] font-bold text-emerald-400">{d.new_pct}%</div>
+              <div className="text-[11px] font-bold text-violet-400">{d.repeat_pct}%</div>
+              <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">{fmtNum(d.total)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
+/* ══════════════════════════════════════════════════════
    Time Distribution Histogram
    ══════════════════════════════════════════════════════ */
 function TimeDistribution({ data }: { data: { bucket: string; count: number; avg_days: number }[] }) {
@@ -692,6 +781,9 @@ export default function LtvPage() {
           color="#ec4899"
         />
       </div>
+
+      {/* Monthly New vs Repeat */}
+      <MonthlyBuyersChart data={data.monthly_buyers || []} />
 
       {/* Cohort Matrix */}
       <CohortMatrix cohorts={data.cohort_matrix} />

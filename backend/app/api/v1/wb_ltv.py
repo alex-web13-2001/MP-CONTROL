@@ -390,6 +390,59 @@ async def get_wb_ltv(
             for r in dist_rows
         ]
 
+        # ══════════════════════════════════════════════
+        # 5. Monthly new vs repeat buyers
+        # ══════════════════════════════════════════════
+        monthly_rows = ch.query(f"""
+            WITH
+                buyer_orders AS (
+                    SELECT
+                        {BUYER_ID_EXPR} AS buyer_id,
+                        toDate(date) AS order_date
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {{shop_id:UInt32}}
+                      AND date >= {{start_date:Date}}
+                      AND date <= {{end_date:Date}}
+                      AND is_cancel = 0
+                      AND {BUYER_FILTER}
+                ),
+                first_purchase AS (
+                    SELECT buyer_id, min(order_date) AS first_date
+                    FROM buyer_orders
+                    GROUP BY buyer_id
+                ),
+                monthly AS (
+                    SELECT
+                        toStartOfMonth(bo.order_date) AS month,
+                        bo.buyer_id,
+                        fp.first_date
+                    FROM buyer_orders bo
+                    JOIN first_purchase fp ON bo.buyer_id = fp.buyer_id
+                ),
+                monthly_unique AS (
+                    SELECT DISTINCT month, buyer_id, first_date
+                    FROM monthly
+                )
+            SELECT
+                toString(month) AS m,
+                count() AS total,
+                countIf(toStartOfMonth(first_date) = month) AS new_buyers,
+                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers
+            FROM monthly_unique
+            GROUP BY month
+            ORDER BY month
+        """, parameters=params).result_rows
+
+        monthly_buyers = [
+            {
+                "month": str(r[0])[:7],
+                "total": int(r[1] or 0),
+                "new_buyers": int(r[2] or 0),
+                "repeat_buyers": int(r[3] or 0),
+            }
+            for r in monthly_rows
+        ]
+
         ch.close()
 
         return {
@@ -400,6 +453,7 @@ async def get_wb_ltv(
             "cohort_matrix": cohort_matrix,
             "sku_table": sku_table,
             "time_distribution": distribution,
+            "monthly_buyers": monthly_buyers,
         }
 
     except HTTPException:

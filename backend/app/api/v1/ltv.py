@@ -358,6 +358,59 @@ async def get_ozon_ltv(
             for r in dist_rows
         ]
 
+        # ══════════════════════════════════════════════
+        # 5. Monthly new vs repeat buyers
+        # ══════════════════════════════════════════════
+        monthly_rows = ch.query("""
+            WITH
+                client_orders AS (
+                    SELECT
+                        splitByChar('-', posting_number)[1] AS client_id,
+                        order_number,
+                        min(toDate(addHours(in_process_at, 3))) AS order_date
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
+                      AND toDate(addHours(in_process_at, 3)) <= {end_date:Date}
+                    GROUP BY client_id, order_number
+                ),
+                first_purchase AS (
+                    SELECT client_id, min(order_date) AS first_date
+                    FROM client_orders
+                    GROUP BY client_id
+                ),
+                monthly AS (
+                    SELECT
+                        toStartOfMonth(co.order_date) AS month,
+                        co.client_id,
+                        fp.first_date
+                    FROM client_orders co
+                    JOIN first_purchase fp ON co.client_id = fp.client_id
+                ),
+                monthly_unique AS (
+                    SELECT DISTINCT month, client_id, first_date
+                    FROM monthly
+                )
+            SELECT
+                toString(month) AS m,
+                count() AS total,
+                countIf(toStartOfMonth(first_date) = month) AS new_buyers,
+                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers
+            FROM monthly_unique
+            GROUP BY month
+            ORDER BY month
+        """, parameters=params).result_rows
+
+        monthly_buyers = [
+            {
+                "month": str(r[0])[:7],
+                "total": int(r[1] or 0),
+                "new_buyers": int(r[2] or 0),
+                "repeat_buyers": int(r[3] or 0),
+            }
+            for r in monthly_rows
+        ]
+
         ch.close()
 
         return {
@@ -368,6 +421,7 @@ async def get_ozon_ltv(
             "cohort_matrix": cohort_matrix,
             "sku_table": sku_table,
             "time_distribution": distribution,
+            "monthly_buyers": monthly_buyers,
         }
 
     except Exception as e:
