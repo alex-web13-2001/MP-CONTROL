@@ -15,6 +15,9 @@ import {
   CalendarRange,
   Download,
   Loader2,
+  ChevronDown,
+  FileSpreadsheet,
+  FileText,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -39,6 +42,7 @@ import {
   getOzonProductsFinanceApi,
   getOzonWeeklyReportApi,
   getWbWeeklyReportApi,
+  downloadOzonExcelReport,
   type FinancesResponse,
   type FinancesDailyPoint,
   type ProductFinanceResponse,
@@ -256,7 +260,7 @@ function GroupBySelector({
    Waterfall Chart — Expense Breakdown
    ═══════════════════════════════════════════════════════════ */
 
-const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
+const WB_BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
   { key: 'revenue', label: 'Выручка', color: '#10b981', type: 'revenue' },
   // Items ABOVE payout — already inside ppvz_for_pay
   { key: '_commission_net', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
@@ -273,7 +277,22 @@ const BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?:
   { key: 'profit', label: 'Прибыль', color: '#10b981', type: 'result' },
 ]
 
-function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
+const OZON_BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
+  { key: 'revenue', label: 'Выручка', color: '#10b981', type: 'revenue' },
+  { key: '_commission_net', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
+  { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
+  { key: '_payout', label: 'К перечислению', color: '#3b82f6', type: 'subtotal' },
+  { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
+  { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
+  { key: 'other_services', label: 'Прочие услуги', color: '#b91c1c', type: 'expense' },
+  { key: 'advertising', label: 'Реклама', color: '#8b5cf6', type: 'expense' },
+  { key: '_bank_transfer', label: 'Итого к оплате', color: '#22d3ee', type: 'subtotal' },
+  { key: 'cogs', label: 'Себестоимость', color: '#64748b', type: 'expense' },
+  { key: 'profit', label: 'Прибыль', color: '#10b981', type: 'result' },
+]
+
+function BreakdownChart({ data, marketplace = 'wildberries' }: { data: FinancesResponse['breakdown']; marketplace?: string }) {
+  const BREAKDOWN_ITEMS = marketplace === 'ozon' ? OZON_BREAKDOWN_ITEMS : WB_BREAKDOWN_ITEMS
   const revenue = data.revenue || 1
   // Compute payout = revenue - commission for subtotal row
   const payoutVal = (data.revenue || 0) - (data.commission || 0)
@@ -306,15 +325,25 @@ function BreakdownChart({ data }: { data: FinancesResponse['breakdown'] }) {
           type: item.type || 'expense' as const,
         }
       }
-      // Virtual subtotal: Итого к оплате — WB universal formula:
-      // ppvz_for_pay - логистика - хранение - приёмка - удержания
+      // Virtual subtotal: Итого к оплате
+      // WB: ppvz_for_pay - логистика - хранение - приёмка - удержания
+      // Ozon: payout - логистика - хранение - прочие услуги - реклама
       if (item.key === '_bank_transfer') {
-        const bankVal = payoutVal
-          - (data.logistics || 0)
-          - (data.storage || 0)
-          - ((data as any).deductions_ads || 0)
-          - ((data as any).deductions_other || 0)
-          - (data.compensation || 0)
+        let bankVal: number
+        if (marketplace === 'ozon') {
+          bankVal = payoutVal
+            - (data.logistics || 0)
+            - (data.storage || 0)
+            - ((data as any).other_services || 0)
+            - ((data as any).advertising || 0)
+        } else {
+          bankVal = payoutVal
+            - (data.logistics || 0)
+            - (data.storage || 0)
+            - ((data as any).deductions_ads || 0)
+            - ((data as any).deductions_other || 0)
+            - (data.compensation || 0)
+        }
         const pct = revenue > 0 ? bankVal / revenue * 100 : 0
         return {
           name: item.label,
@@ -817,6 +846,8 @@ export default function FinancesPage() {
   const [weeklyData, setWeeklyData] = useState<WeeklyReportResponse | null>(null)
   const [weeklyLoading, setWeeklyLoading] = useState(false)
   const [pdfGenerating, setPdfGenerating] = useState(false)
+  const [excelGenerating, setExcelGenerating] = useState(false)
+  const [exportMenuOpen, setExportMenuOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [groupBy, setGroupBy] = useState('day')
@@ -962,43 +993,85 @@ export default function FinancesPage() {
             <>
               <GroupBySelector current={groupBy} onChange={setGroupBy} />
               <PeriodSelector value={periodValue} onChange={setPeriodValue} />
-              <button
-                onClick={async () => {
-                  if (!data || pdfGenerating) return
-                  setPdfGenerating(true)
-                  try {
-                    // Load weekly data if not loaded yet
-                    let wData = weeklyData
-                    if (!wData && showWeeklyTab) {
-                      try {
-                        const apiFn = isOzon ? getOzonWeeklyReportApi : getWbWeeklyReportApi
-                        wData = await apiFn({ shop_id: shopId! })
-                        setWeeklyData(wData)
-                      } catch (e) {
-                        console.warn('Weekly data fetch for PDF failed:', e)
-                      }
-                    }
-                    await generatePnlReport({
-                      data,
-                      weeklyData: wData,
-                      productData,
-                      shopName: currentShop?.name || 'Магазин',
-                      marketplace: currentShop?.marketplace || 'wildberries',
-                    })
-                  } finally {
-                    setPdfGenerating(false)
-                  }
-                }}
-                disabled={pdfGenerating || !data}
-                className="inline-flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--muted)/0.15)] disabled:opacity-50"
-              >
-                {pdfGenerating ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Download className="h-4 w-4" />
+              {/* ── Export Dropdown ── */}
+              <div className="relative">
+                <button
+                  onClick={() => setExportMenuOpen(!exportMenuOpen)}
+                  disabled={(pdfGenerating || excelGenerating) || !data}
+                  className="inline-flex items-center gap-2 rounded-lg border border-[hsl(var(--border))] px-3 py-2 text-sm font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--muted)/0.15)] disabled:opacity-50"
+                >
+                  {(pdfGenerating || excelGenerating) ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Download className="h-4 w-4" />
+                  )}
+                  Скачать
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </button>
+                {exportMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setExportMenuOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-50 w-48 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-lg overflow-hidden">
+                      <button
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.15)] transition-colors"
+                        onClick={async () => {
+                          setExportMenuOpen(false)
+                          if (!data || pdfGenerating) return
+                          setPdfGenerating(true)
+                          try {
+                            let wData = weeklyData
+                            if (!wData && showWeeklyTab) {
+                              try {
+                                const apiFn = isOzon ? getOzonWeeklyReportApi : getWbWeeklyReportApi
+                                wData = await apiFn({ shop_id: shopId! })
+                                setWeeklyData(wData)
+                              } catch (e) {
+                                console.warn('Weekly data fetch for PDF failed:', e)
+                              }
+                            }
+                            await generatePnlReport({
+                              data,
+                              weeklyData: wData,
+                              productData,
+                              shopName: currentShop?.name || 'Магазин',
+                              marketplace: currentShop?.marketplace || 'wildberries',
+                            })
+                          } finally {
+                            setPdfGenerating(false)
+                          }
+                        }}
+                      >
+                        <FileText className="h-4 w-4 text-red-500" />
+                        PDF отчёт
+                      </button>
+                      {isOzon && (
+                        <button
+                          className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.15)] transition-colors border-t border-[hsl(var(--border)/0.5)]"
+                          onClick={async () => {
+                            setExportMenuOpen(false)
+                            if (!data || excelGenerating) return
+                            setExcelGenerating(true)
+                            try {
+                              await downloadOzonExcelReport({
+                                shop_id: shopId!,
+                                date_from: data.date_from,
+                                date_to: data.date_to,
+                              })
+                            } catch (e) {
+                              console.error('Excel export failed:', e)
+                            } finally {
+                              setExcelGenerating(false)
+                            }
+                          }}
+                        >
+                          <FileSpreadsheet className="h-4 w-4 text-green-500" />
+                          Excel отчёт
+                        </button>
+                      )}
+                    </div>
+                  </>
                 )}
-                PDF
-              </button>
+              </div>
             </>
           )}
         </div>
@@ -1105,7 +1178,7 @@ export default function FinancesPage() {
               </CardHeader>
               <CardContent>
                 <div data-pdf="breakdown-chart">
-                  <BreakdownChart data={data.breakdown} />
+                  <BreakdownChart data={data.breakdown} marketplace={currentShop?.marketplace} />
                 </div>
               </CardContent>
             </Card>

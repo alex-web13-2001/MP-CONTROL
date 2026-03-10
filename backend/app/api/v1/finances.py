@@ -436,10 +436,16 @@ async def get_ozon_finances(
         "logistics": round(services_cur + abs(bulk_cur.get("logistics", 0)), 2),
         "storage": round(abs(bulk_cur.get("storage", 0)), 2),
         "acquiring": round(abs(bulk_cur.get("acquiring", 0)), 2),
+        "other_services": round(
+            abs(bulk_cur.get("penalties", 0))
+            + abs(bulk_cur.get("compensation", 0))
+            + abs(bulk_cur.get("other", 0))
+        , 2),
         "advertising": round(ad_spend_cur, 2),
         "refunds": round(abs(bulk_cur.get("refunds", 0)), 2),
         "penalties": round(abs(bulk_cur.get("penalties", 0)), 2),
         "compensation": round(abs(bulk_cur.get("compensation", 0)), 2),
+        "marketing": round(abs(bulk_cur.get("marketing", 0)), 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
     }
