@@ -133,7 +133,8 @@ async def get_wb_ltv(
                 round(avg(client_rev), 0) AS avg_ltv,
                 round(sum(client_rev) / nullIf(sum(orders), 0), 0) AS avg_check,
                 round(avg(orders), 2) AS avg_orders_per_client,
-                sum(client_rev) AS total_revenue
+                sum(client_rev) AS total_revenue,
+                round(avgIf(client_rev / nullIf(orders, 0), orders >= 2), 0) AS avg_check_repeat
             FROM clients
         """, parameters=params).first_row
 
@@ -145,6 +146,7 @@ async def get_wb_ltv(
             "avg_check": _sf(kpi_result[3]),
             "avg_orders_per_client": _sf(kpi_result[4]),
             "total_revenue": _sf(kpi_result[5]),
+            "avg_check_repeat": _sf(kpi_result[6]),
         }
 
         # ══════════════════════════════════════════════

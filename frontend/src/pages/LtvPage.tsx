@@ -801,7 +801,7 @@ export default function LtvPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
         <KpiCard
           label="Уникальные клиенты"
           value={fmtNum(kpi.total_clients)}
@@ -829,11 +829,18 @@ export default function LtvPage() {
           color="#6366f1"
         />
         <KpiCard
+          label="Чек повторных"
+          value={fmtMoney(kpi.avg_check_repeat || 0)}
+          sub="клиенты с 2+ покупками"
+          icon={ShoppingCart}
+          color="#ec4899"
+        />
+        <KpiCard
           label="Заказов / клиент"
           value={kpi.avg_orders_per_client.toFixed(2)}
           sub={`Выручка: ${fmtMoney(kpi.total_revenue)}`}
           icon={DollarSign}
-          color="#ec4899"
+          color="#0ea5e9"
         />
       </div>
 

@@ -11,6 +11,7 @@ export interface LtvKpi {
   repeat_rate: number
   avg_ltv: number
   avg_check: number
+  avg_check_repeat: number
   avg_orders_per_client: number
   total_revenue: number
 }
