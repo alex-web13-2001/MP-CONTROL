@@ -807,14 +807,13 @@ async def export_wb_ltv_xlsx(
 
         retention_rows = ch.query(f"""
             WITH
-                sku_orders AS (
+                /* All orders */
+                all_orders AS (
                     SELECT
                         nm_id,
-                        supplier_article,
-                        subject,
-                        brand,
                         {BUYER_ID_EXPR} AS buyer_id,
-                        toDate(date) AS order_date
+                        toDate(date) AS order_date,
+                        srid
                     FROM mms_analytics.fact_orders_raw FINAL
                     WHERE shop_id = {{shop_id:UInt32}}
                       AND date >= {{start_date:Date}}
@@ -822,38 +821,82 @@ async def export_wb_ltv_xlsx(
                       AND is_cancel = 0
                       AND {BUYER_FILTER}
                 ),
-                sku_buyer_numbered AS (
+                /* Unique buyer orders (deduplicate by srid) */
+                buyer_orders AS (
+                    SELECT
+                        buyer_id,
+                        min(order_date) AS order_date
+                    FROM all_orders
+                    GROUP BY buyer_id, srid
+                ),
+                /* For each nm_id: buyers who bought it */
+                sku_buyers AS (
+                    SELECT
+                        nm_id AS target_nm,
+                        buyer_id,
+                        min(order_date) AS first_target_date
+                    FROM all_orders
+                    GROUP BY nm_id, buyer_id
+                ),
+                /* All buyer's orders from first target purchase, numbered */
+                buyer_chain AS (
+                    SELECT
+                        sb.target_nm,
+                        sb.buyer_id,
+                        bo.order_date,
+                        sb.first_target_date,
+                        dense_rank() OVER (
+                            PARTITION BY sb.target_nm, sb.buyer_id
+                            ORDER BY bo.order_date
+                        ) AS purchase_num
+                    FROM sku_buyers sb
+                    INNER JOIN buyer_orders bo
+                        ON bo.buyer_id = sb.buyer_id
+                       AND bo.order_date >= sb.first_target_date
+                ),
+                /* Per target_nm + buyer: summary */
+                buyer_summary AS (
+                    SELECT
+                        target_nm,
+                        buyer_id,
+                        max(purchase_num) AS total_purchases,
+                        first_target_date,
+                        max(order_date) AS last_order_date
+                    FROM buyer_chain
+                    GROUP BY target_nm, buyer_id, first_target_date
+                ),
+                /* SKU metadata */
+                sku_meta AS (
                     SELECT
                         nm_id,
-                        supplier_article,
-                        subject,
-                        brand,
-                        buyer_id,
-                        order_date,
-                        row_number() OVER (
-                            PARTITION BY nm_id, buyer_id ORDER BY order_date
-                        ) AS purchase_num,
-                        min(order_date) OVER (PARTITION BY nm_id, buyer_id) AS first_date,
-                        max(order_date) OVER (PARTITION BY nm_id, buyer_id) AS last_date,
-                        count() OVER (PARTITION BY nm_id, buyer_id) AS total_purchases
-                    FROM sku_orders
+                        any(supplier_article) AS supplier_article,
+                        any(subject) AS subject,
+                        any(brand) AS brand
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {{shop_id:UInt32}}
+                      AND date >= {{start_date:Date}}
+                      AND date <= {{end_date:Date}}
+                      AND is_cancel = 0
+                    GROUP BY nm_id
                 )
             SELECT
-                nm_id,
-                any(supplier_article) AS article,
-                any(subject) AS subject,
-                any(brand) AS brand,
-                countDistinct(buyer_id) AS b1,
-                countDistinctIf(buyer_id, purchase_num >= 2) AS b2,
-                countDistinctIf(buyer_id, purchase_num >= 3) AS b3,
-                countDistinctIf(buyer_id, purchase_num >= 4) AS b4,
-                countDistinctIf(buyer_id, purchase_num >= 5) AS b5,
+                bs.target_nm AS nm_id,
+                sm.supplier_article AS article,
+                sm.subject AS subject,
+                sm.brand AS brand,
+                count() AS b1,
+                countIf(total_purchases >= 2) AS b2,
+                countIf(total_purchases >= 3) AS b3,
+                countIf(total_purchases >= 4) AS b4,
+                countIf(total_purchases >= 5) AS b5,
                 round(avgIf(
-                    dateDiff('day', first_date, last_date) / greatest(total_purchases - 1, 1),
-                    total_purchases >= 2 AND purchase_num = 1
+                    dateDiff('day', first_target_date, last_order_date)
+                        / greatest(total_purchases - 1, 1),
+                    total_purchases >= 2
                 ), 0) AS avg_days
-            FROM sku_buyer_numbered
-            GROUP BY nm_id
+            FROM buyer_summary bs
+            LEFT JOIN sku_meta sm ON sm.nm_id = bs.target_nm
+            GROUP BY bs.target_nm, sm.supplier_article, sm.subject, sm.brand
             HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
@@ -862,7 +905,6 @@ async def export_wb_ltv_xlsx(
         ch.close()
 
         # Enrich with names from dim_products
-        import re as _re
         nm_ids = [int(r[0]) for r in retention_rows]
         pg_map_ret = {}
         if nm_ids:
@@ -885,7 +927,7 @@ async def export_wb_ltv_xlsx(
         sku_retention = []
         for r in retention_rows:
             nm_id = int(r[0])
-            article = str(r[1])
+            article = str(r[1] or "")
             info = pg_map_ret.get(nm_id, {})
             offer_id = info.get("vendor_code") or article
             name = info.get("name") or offer_id

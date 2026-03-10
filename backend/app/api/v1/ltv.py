@@ -1138,50 +1138,94 @@ async def export_ozon_ltv_xlsx(
 
         retention_rows = ch.query("""
             WITH
-                sku_orders AS (
+                /* All client-order-date combinations */
+                all_orders AS (
                     SELECT
-                        sku,
-                        offer_id,
-                        product_name,
+                        offer_id AS sku,
                         splitByChar('-', posting_number)[1] AS client_id,
-                        order_number,
-                        min(toDate(addHours(in_process_at, 3))) AS order_date
+                        toDate(addHours(in_process_at, 3)) AS order_date,
+                        order_number
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
                       AND toDate(addHours(in_process_at, 3)) <= {end_date:Date}
-                    GROUP BY sku, offer_id, product_name, client_id, order_number
                 ),
-                sku_client_numbered AS (
+                /* Unique client orders (deduplicate by order_number) */
+                client_orders AS (
+                    SELECT
+                        client_id,
+                        min(order_date) AS order_date
+                    FROM all_orders
+                    GROUP BY client_id, order_number
+                ),
+                /* For each SKU: which clients bought it and when first */
+                sku_clients AS (
+                    SELECT
+                        sku AS target_sku,
+                        client_id,
+                        min(order_date) AS first_target_date
+                    FROM all_orders
+                    GROUP BY sku, client_id
+                ),
+                /* All client's orders from first target purchase onwards, numbered */
+                client_chain AS (
+                    SELECT
+                        sc.target_sku,
+                        sc.client_id,
+                        co.order_date,
+                        sc.first_target_date,
+                        dense_rank() OVER (
+                            PARTITION BY sc.target_sku, sc.client_id
+                            ORDER BY co.order_date
+                        ) AS purchase_num
+                    FROM sku_clients sc
+                    INNER JOIN client_orders co
+                        ON co.client_id = sc.client_id
+                       AND co.order_date >= sc.first_target_date
+                ),
+                /* Per target_sku + client: summary stats */
+                client_summary AS (
+                    SELECT
+                        target_sku,
+                        client_id,
+                        max(purchase_num) AS total_purchases,
+                        first_target_date,
+                        max(order_date) AS last_order_date
+                    FROM client_chain
+                    GROUP BY target_sku, client_id, first_target_date
+                ),
+                /* SKU metadata */
+                sku_meta AS (
                     SELECT
                         sku,
-                        offer_id,
-                        product_name,
-                        client_id,
-                        order_date,
-                        row_number() OVER (
-                            PARTITION BY sku, client_id ORDER BY order_date
-                        ) AS purchase_num,
-                        min(order_date) OVER (PARTITION BY sku, client_id) AS first_date,
-                        max(order_date) OVER (PARTITION BY sku, client_id) AS last_date,
-                        count() OVER (PARTITION BY sku, client_id) AS total_purchases
-                    FROM sku_orders
+                        any(product_name) AS product_name,
+                        any(toString(offer_id)) AS offer_id_str
+                    FROM (
+                        SELECT offer_id AS sku, product_name, offer_id
+                        FROM mms_analytics.fact_ozon_orders FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
+                          AND toDate(addHours(in_process_at, 3)) <= {end_date:Date}
+                    )
+                    GROUP BY sku
                 )
             SELECT
-                sku,
-                any(offer_id) AS offer_id,
-                any(product_name) AS name,
-                countDistinct(client_id) AS b1,
-                countDistinctIf(client_id, purchase_num >= 2) AS b2,
-                countDistinctIf(client_id, purchase_num >= 3) AS b3,
-                countDistinctIf(client_id, purchase_num >= 4) AS b4,
-                countDistinctIf(client_id, purchase_num >= 5) AS b5,
+                cs.target_sku AS sku,
+                sm.offer_id_str AS offer_id,
+                sm.product_name AS name,
+                count() AS b1,
+                countIf(total_purchases >= 2) AS b2,
+                countIf(total_purchases >= 3) AS b3,
+                countIf(total_purchases >= 4) AS b4,
+                countIf(total_purchases >= 5) AS b5,
                 round(avgIf(
-                    dateDiff('day', first_date, last_date) / greatest(total_purchases - 1, 1),
-                    total_purchases >= 2 AND purchase_num = 1
+                    dateDiff('day', first_target_date, last_order_date)
+                        / greatest(total_purchases - 1, 1),
+                    total_purchases >= 2
                 ), 0) AS avg_days
-            FROM sku_client_numbered
-            GROUP BY sku
+            FROM client_summary cs
+            LEFT JOIN sku_meta sm ON sm.sku = cs.target_sku
+            GROUP BY cs.target_sku, sm.offer_id_str, sm.product_name
             HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
@@ -1190,26 +1234,11 @@ async def export_ozon_ltv_xlsx(
         ch.close()
 
         sku_retention = []
-        # Enrich with canonical offer_id from PostgreSQL
-        sku_ids_ret = [int(r[0]) for r in retention_rows]
-        pg_map_ret = {}
-        if sku_ids_ret:
-            from sqlalchemy import text as sa_text
-            img_result = await db.execute(
-                sa_text(
-                    "SELECT sku, offer_id FROM dim_ozon_products "
-                    "WHERE shop_id = :shop_id AND sku = ANY(:skus)"
-                ),
-                {"shop_id": shop_id, "skus": sku_ids_ret},
-            )
-            pg_map_ret = {int(row[0]): str(row[1]) for row in img_result.fetchall()}
-
         for r in retention_rows:
-            s = int(r[0])
             sku_retention.append({
-                "sku": s,
-                "offer_id": pg_map_ret.get(s, str(r[1])),
-                "name": str(r[2])[:60],
+                "sku": str(r[0]),
+                "offer_id": str(r[1] or r[0]),
+                "name": str(r[2] or "")[:60],
                 "buyers_1": int(r[3] or 0),
                 "buyers_2": int(r[4] or 0),
                 "buyers_3": int(r[5] or 0),
