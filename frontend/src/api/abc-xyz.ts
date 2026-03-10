@@ -86,10 +86,17 @@ export async function downloadAbcXyzXlsx(
   const url = window.URL.createObjectURL(new Blob([response.data]))
   const link = document.createElement('a')
   link.href = url
-  const disposition = response.headers['content-disposition']
-  const filename = disposition
-    ? disposition.split('filename=')[1]?.replace(/"/g, '')
-    : `ABC_XYZ_${mp}_${period}d.xlsx`
+  const disposition = response.headers['content-disposition'] || ''
+  let filename = `ABC_XYZ_${mp}_${period}d.xlsx`
+  // Try filename*=UTF-8''... (RFC 5987)
+  const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i)
+  if (utf8Match) {
+    filename = decodeURIComponent(utf8Match[1])
+  } else {
+    // Try filename="..."
+    const plainMatch = disposition.match(/filename="?([^";\n]+)"?/i)
+    if (plainMatch) filename = plainMatch[1]
+  }
   link.setAttribute('download', filename)
   document.body.appendChild(link)
   link.click()
