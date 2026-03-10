@@ -1553,7 +1553,7 @@ async def export_wb_excel(
     wk_headers = [
         "Год", "Нед.", "Период", "Заказов", "Выручка",
         "К перечисл.", "Возвраты", "Логистика", "Хранение",
-        "Приёмка", "Удержания", "ВБ Промо", "Реклама",
+        "Приёмка", "Удержания", "ВБ Промо",
         "С/С", "Прибыль",
         "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
     ]
@@ -1561,7 +1561,7 @@ async def export_wb_excel(
         ws3.cell(row=1, column=col, value=h)
     _style_wb_header_row(ws3, 1, len(wk_headers))
 
-    pct_cols_wk = [16, 17, 18, 19]
+    pct_cols_wk = [15, 16, 17, 18]
 
     for i, r in enumerate(weekly_data):
         rn = i + 2
@@ -1576,11 +1576,10 @@ async def export_wb_excel(
         acc = abs(float(r[9] or 0))
         ded = abs(float(r[10] or 0))
         ded_ads = abs(float(r[11] or 0))
-        ws_key = str(ws_d)
-        ads = ads_by_week.get(ws_key, 0)
-        cogs = cogs_by_week.get(ws_key, 0)
+        cogs = cogs_by_week.get(str(ws_d), 0)
         comm = max(rev - pay, 0)
-        profit_wk = pay - log - stor - acc - ded - ded_ads - ads - cogs
+        # NOTE: ded_ads (ВБ Промо) IS the advertising — no separate external ads
+        profit_wk = pay - log - stor - acc - ded - ded_ads - cogs
 
         ws3.cell(row=rn, column=1, value=ws_d.year if hasattr(ws_d, 'year') else int(str(ws_d)[:4]))
         ws3.cell(row=rn, column=2, value=ws_d.isocalendar()[1] if hasattr(ws_d, 'isocalendar') else 0)
@@ -1594,9 +1593,8 @@ async def export_wb_excel(
         ws3.cell(row=rn, column=10, value=acc).number_format = MONEY_FMT
         ws3.cell(row=rn, column=11, value=ded).number_format = MONEY_FMT
         ws3.cell(row=rn, column=12, value=ded_ads).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=13, value=ads).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=14, value=round(cogs, 2)).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=15, value=round(profit_wk, 2)).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=13, value=round(cogs, 2)).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=14, value=round(profit_wk, 2)).number_format = MONEY_FMT
 
         # Percentages
         comm_pct = comm / rev * 100 if rev > 0 else 0
@@ -1604,10 +1602,10 @@ async def export_wb_excel(
         cogs_pct = cogs / rev * 100 if rev > 0 else 0
         prof_pct = profit_wk / rev * 100 if rev > 0 else 0
 
-        ws3.cell(row=rn, column=16, value=round(comm_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=17, value=round(log_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=18, value=round(cogs_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=19, value=round(prof_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=15, value=round(comm_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=16, value=round(log_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=17, value=round(cogs_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=18, value=round(prof_pct, 1)).number_format = '0.0"%"'
 
         _style_data_row(ws3, rn, len(wk_headers), is_alt=(i % 2 == 1))
 
@@ -1615,7 +1613,7 @@ async def export_wb_excel(
         for pc in pct_cols_wk:
             cell = ws3.cell(row=rn, column=pc)
             val = cell.value or 0
-            if pc == 19:  # profit%
+            if pc == 18:  # profit%
                 cell.font = GREEN_FONT if val >= 0 else RED_FONT
             else:  # cost%
                 if val > 35:
@@ -1636,7 +1634,7 @@ async def export_wb_excel(
     m_headers = [
         "Год", "Месяц", "Заказов", "Выручка",
         "К перечисл.", "Возвраты", "Логистика", "Хранение",
-        "Приёмка", "Удержания", "ВБ Промо", "Реклама",
+        "Приёмка", "Удержания", "ВБ Промо",
         "С/С", "Прибыль",
         "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
     ]
@@ -1644,7 +1642,7 @@ async def export_wb_excel(
         ws4.cell(row=1, column=col, value=h)
     _style_wb_header_row(ws4, 1, len(m_headers))
 
-    pct_cols_m = [15, 16, 17, 18]
+    pct_cols_m = [14, 15, 16, 17]
 
     for i, r in enumerate(monthly_data):
         rn = i + 2
@@ -1660,10 +1658,10 @@ async def export_wb_excel(
         acc = abs(float(r[10] or 0))
         ded = abs(float(r[11] or 0))
         ded_ads = abs(float(r[12] or 0))
-        ads = ads_by_month.get(ym, 0)
         cogs = cogs_by_month.get(ym, 0)
         comm = max(rev - pay, 0)
-        profit_m = pay - log - stor - acc - ded - ded_ads - ads - cogs
+        # NOTE: ded_ads (ВБ Промо) IS the advertising — no separate external ads
+        profit_m = pay - log - stor - acc - ded - ded_ads - cogs
 
         ws4.cell(row=rn, column=1, value=year)
         ws4.cell(row=rn, column=2, value=MONTHS_RU.get(month, str(month)))
@@ -1676,26 +1674,25 @@ async def export_wb_excel(
         ws4.cell(row=rn, column=9, value=acc).number_format = MONEY_FMT
         ws4.cell(row=rn, column=10, value=ded).number_format = MONEY_FMT
         ws4.cell(row=rn, column=11, value=ded_ads).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=12, value=ads).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=13, value=round(cogs, 2)).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=14, value=round(profit_m, 2)).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=12, value=round(cogs, 2)).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=13, value=round(profit_m, 2)).number_format = MONEY_FMT
 
         comm_pct = comm / rev * 100 if rev > 0 else 0
         log_pct = log / rev * 100 if rev > 0 else 0
         cogs_pct = cogs / rev * 100 if rev > 0 else 0
         prof_pct = profit_m / rev * 100 if rev > 0 else 0
 
-        ws4.cell(row=rn, column=15, value=round(comm_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=16, value=round(log_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=17, value=round(cogs_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=18, value=round(prof_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=14, value=round(comm_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=15, value=round(log_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=16, value=round(cogs_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=17, value=round(prof_pct, 1)).number_format = '0.0"%"'
 
         _style_data_row(ws4, rn, len(m_headers), is_alt=(i % 2 == 1))
 
         for pc in pct_cols_m:
             cell = ws4.cell(row=rn, column=pc)
             val = cell.value or 0
-            if pc == 18:
+            if pc == 17:
                 cell.font = GREEN_FONT if val >= 0 else RED_FONT
             else:
                 if val > 35:
