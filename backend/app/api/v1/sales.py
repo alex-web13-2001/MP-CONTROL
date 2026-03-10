@@ -1085,7 +1085,7 @@ def _xyz_group(cv: float) -> str:
 @router.get("/ozon/abc-xyz")
 async def get_ozon_abc_xyz(
     shop_id: int = Query(...),
-    period: int = Query(90, ge=14, le=365),
+    period: int = Query(90, ge=7, le=365),
     use_profit: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1427,7 +1427,7 @@ async def get_ozon_abc_xyz(
 @router.get("/wb/abc-xyz")
 async def get_wb_abc_xyz(
     shop_id: int = Query(...),
-    period: int = Query(90, ge=14, le=365),
+    period: int = Query(90, ge=7, le=365),
     use_profit: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -2079,7 +2079,7 @@ def _build_abc_xyz_xlsx(data: dict, shop_name: str, marketplace: str) -> BytesIO
 @router.get("/ozon/abc-xyz/xlsx")
 async def export_ozon_abc_xyz_xlsx(
     shop_id: int = Query(...),
-    period: int = Query(90, ge=14, le=365),
+    period: int = Query(90, ge=7, le=365),
     use_profit: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -2106,7 +2106,7 @@ async def export_ozon_abc_xyz_xlsx(
 @router.get("/wb/abc-xyz/xlsx")
 async def export_wb_abc_xyz_xlsx(
     shop_id: int = Query(...),
-    period: int = Query(90, ge=14, le=365),
+    period: int = Query(90, ge=7, le=365),
     use_profit: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

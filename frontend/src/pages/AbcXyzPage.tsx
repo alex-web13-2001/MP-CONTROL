@@ -145,7 +145,7 @@ export default function AbcXyzPage() {
         <div className="flex items-center gap-3 shrink-0">
           {/* Period picker */}
           <div className="flex rounded-xl overflow-hidden border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-            {[30, 60, 90].map((p) => (
+            {[7, 30, 60, 90].map((p) => (
               <button
                 key={p}
                 onClick={() => { setPeriod(p); setSelectedCell(null) }}
