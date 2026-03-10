@@ -62,6 +62,7 @@ const OZON_COLUMNS: Column[] = [
   { key: 'revenue', label: 'Выручка' },
   { key: 'commission', label: 'Комиссия', invert: true },
   { key: 'logistics', label: 'Логистика', invert: true },
+  { key: 'payout', label: 'Нетто к.п.', shortLabel: 'Нетто' },
   { key: 'ad_spend', label: 'Реклама', invert: true },
   { key: 'cogs', label: 'Себестоимость', shortLabel: 'С/с', invert: true },
   { key: 'profit', label: 'Прибыль' },

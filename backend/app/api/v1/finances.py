@@ -1727,11 +1727,13 @@ async def get_ozon_products_finance(
                 countIf(toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS sales_cur,
                 sumIf(sale_commission, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS comm_cur,
                 sumIf(services_total, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS svc_cur,
+                sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS payout_cur,
                 
                 sumIf(accruals_for_sale, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS rev_prev,
                 countIf(toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS sales_prev,
                 sumIf(sale_commission, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS comm_prev,
-                sumIf(services_total, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS svc_prev
+                sumIf(services_total, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS svc_prev,
+                sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS payout_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND category = 'Revenue'
@@ -1754,11 +1756,13 @@ async def get_ozon_products_finance(
                     "offer_id": oid,
                     "cur": {
                         "revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0, 
-                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0,
+                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0,
+                        "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0,
                     },
                     "prev": {
                         "revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0, 
-                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0,
+                        "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0,
+                        "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0,
                     }
                 }
             
@@ -1767,11 +1771,13 @@ async def get_ozon_products_finance(
             products[oid]["cur"]["sales"] += int(r[2] or 0)
             products[oid]["cur"]["commission"] += abs(float(r[3] or 0))
             products[oid]["cur"]["logistics"] += abs(float(r[4] or 0))
+            products[oid]["cur"]["payout"] += float(r[5] or 0)
 
-            products[oid]["prev"]["revenue"] += float(r[5] or 0)
-            products[oid]["prev"]["sales"] += int(r[6] or 0)
-            products[oid]["prev"]["commission"] += abs(float(r[7] or 0))
-            products[oid]["prev"]["logistics"] += abs(float(r[8] or 0))
+            products[oid]["prev"]["revenue"] += float(r[6] or 0)
+            products[oid]["prev"]["sales"] += int(r[7] or 0)
+            products[oid]["prev"]["commission"] += abs(float(r[8] or 0))
+            products[oid]["prev"]["logistics"] += abs(float(r[9] or 0))
+            products[oid]["prev"]["payout"] += float(r[10] or 0)
 
     except Exception as e:
         logger.warning("CH Ozon txn per product query failed: %s", e)
@@ -1866,9 +1872,9 @@ async def get_ozon_products_finance(
                 products[no_prod_key] = {
                     "offer_id": no_prod_key,
                     "cur": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
-                            "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                            "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0},
                     "prev": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
-                             "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                             "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0},
                 }
             products[no_prod_key]["cur"]["ad_spend"] += unmatched_ads_cur
             products[no_prod_key]["prev"]["ad_spend"] += unmatched_ads_prev
@@ -1904,9 +1910,9 @@ async def get_ozon_products_finance(
                     products[no_prod_key] = {
                         "offer_id": no_prod_key,
                         "cur": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
-                                "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                                "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0},
                         "prev": {"revenue": 0.0, "sales": 0, "commission": 0.0, "logistics": 0.0,
-                                 "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0},
+                                 "storage": 0.0, "acquiring": 0.0, "penalties": 0.0, "returns": 0.0, "ad_spend": 0.0, "cogs": 0.0, "payout": 0.0},
                     }
                 # These reduce profit (unattributed expenses go into commission bucket)
                 products[no_prod_key]["cur"]["commission"] += ref_cur
@@ -1960,17 +1966,16 @@ async def get_ozon_products_finance(
         cur = p["cur"]
         prev = p["prev"]
 
-        # Ozon profit = revenue - commission - logistics - storage - acquiring - ad_spend - cogs
-        cur_profit = cur["revenue"] - cur["commission"] - cur["logistics"] - cur["storage"] - cur["acquiring"] - cur["ad_spend"] - cur["cogs"]
-        prev_profit = prev["revenue"] - prev["commission"] - prev["logistics"] - prev["storage"] - prev["acquiring"] - prev["ad_spend"] - prev["cogs"]
+        # Ozon profit = payout - cogs - ad_spend (same formula as Excel)
+        cur_profit = cur["payout"] - cur["cogs"] - cur["ad_spend"]
+        prev_profit = prev["payout"] - prev["cogs"] - prev["ad_spend"]
 
         current = {
             "sales": cur["sales"],
             "revenue": round(cur["revenue"], 2),
             "commission": round(cur["commission"], 2),
             "logistics": round(cur["logistics"], 2),
-            "storage": round(cur["storage"], 2),
-            "acquiring": round(cur["acquiring"], 2),
+            "payout": round(cur["payout"], 2),
             "ad_spend": round(cur["ad_spend"], 2),
             "cogs": round(cur["cogs"], 2),
             "profit": round(cur_profit, 2),
@@ -1980,8 +1985,7 @@ async def get_ozon_products_finance(
             "revenue": round(prev["revenue"], 2),
             "commission": round(prev["commission"], 2),
             "logistics": round(prev["logistics"], 2),
-            "storage": round(prev["storage"], 2),
-            "acquiring": round(prev["acquiring"], 2),
+            "payout": round(prev["payout"], 2),
             "ad_spend": round(prev["ad_spend"], 2),
             "cogs": round(prev["cogs"], 2),
             "profit": round(prev_profit, 2),
@@ -1994,7 +1998,7 @@ async def get_ozon_products_finance(
         pct_of_rev = {}
         rev = current["revenue"]
         if rev > 0:
-            for key in ("commission", "logistics", "storage", "acquiring", "ad_spend", "cogs", "profit"):
+            for key in ("commission", "logistics", "payout", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
         result_products.append({
@@ -2012,7 +2016,7 @@ async def get_ozon_products_finance(
     # Totals
     total_cur = {}
     total_prev = {}
-    for key in ("sales", "revenue", "commission", "logistics", "storage", "acquiring", "ad_spend", "cogs", "profit"):
+    for key in ("sales", "revenue", "commission", "logistics", "payout", "ad_spend", "cogs", "profit"):
         total_cur[key] = round(sum(p["current"][key] for p in result_products), 2)
         total_prev[key] = round(sum(p["previous"][key] for p in result_products), 2)
 
