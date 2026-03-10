@@ -1143,14 +1143,14 @@ async def _build_wb_supply_data(
                 "storage_per_month": round(storage_per_day * 30, 2),
                 "storage_coef": t.get("storage_coef", 0),
                 "acceptance_coef": ac,
-                "acceptance": "Бесплатно" if ac <= 0 or ac == -1 else f"Платно x{ac:.0f}",
+                "acceptance": "Без коэфф." if ac <= 0 or ac == -1 else f"x{ac:.0f}",
                 "turnover_days": round(wh_turnover, 1),
             })
 
-        # Status
+        # Status — хранение платное с 1-го дня, overstock = оборот > target_days
         if daily_avg == 0 and total_stock == 0:
             status = "ok"
-        elif turnover_days > 60:
+        elif turnover_days > target_days and total_stock > 0:
             status = "overstock"
         elif turnover_days < 14:
             status = "critical"

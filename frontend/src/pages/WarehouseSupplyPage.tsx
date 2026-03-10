@@ -732,7 +732,7 @@ function WBWarehouseDetailTable({ warehouses }: { warehouses: WBWarehouseDetail[
                   </td>
                   <td className={tdCls}>
                     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                      wh.acceptance === 'Бесплатно' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                      wh.acceptance === 'Без коэфф.' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
                     }`}>{wh.acceptance}</span>
                   </td>
                   <td className={`${tdCls} text-[hsl(var(--muted-foreground))]`}>{formatMoney(wh.revenue)}</td>
@@ -944,7 +944,7 @@ function WBWarehouseSummaryTable({ warehouses }: { warehouses: WBWarehouseSummar
 }
 
 /* ═══════════════════════════════════════════════════════════
-   WB — Settings Panel (no Ad Boost, max 60 days)
+   WB — Settings Panel (хранение платное с 1-го дня)
    ═══════════════════════════════════════════════════════════ */
 
 const WB_TARGET_OPTIONS = [
@@ -980,7 +980,7 @@ function WBSettingsPanel({
               <div className="flex gap-1">
                 {WB_TARGET_OPTIONS.map(o => <button key={o.value} className={selCls(targetDays === o.value)} onClick={() => setTargetDays(o.value)}>{o.label}</button>)}
               </div>
-              <p className="text-[11px] text-amber-400/80">⚠ WB: бесплатное хранение до 60 дней</p>
+              <p className="text-[11px] text-amber-400/80">⚠ WB: хранение платное с 1-го дня, коэфф. фиксируется на 60 дн</p>
             </div>
             <div className="space-y-1.5">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Период для анализа продаж</p>
@@ -1061,7 +1061,7 @@ function WBContent({ shopId }: { shopId: number }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard title="Итого поставить" value={`${formatNumber(data.kpi.total_need)} ед.`} subtitle={`Всего SKU: ${data.kpi.total_sku}`} icon={Package} accent="from-blue-600 to-blue-500" delay={0} />
         <KpiCard title="Критические SKU" value={String(data.kpi.critical_count)} subtitle="Запас < 14 дней" icon={AlertTriangle} accent="from-red-600 to-red-500" delay={0.05} />
-        <KpiCard title="Перезатарка" value={String(data.kpi.overstock_count)} subtitle="Оборот > 60 дн — платное хранение" icon={AlertCircle} accent="from-purple-600 to-purple-500" delay={0.1} />
+        <KpiCard title="Перезатарка" value={String(data.kpi.overstock_count)} subtitle="Оборот превышает горизонт поставки" icon={AlertCircle} accent="from-purple-600 to-purple-500" delay={0.1} />
         <KpiCard title="Хранение / мес" value={formatMoney(data.kpi.total_storage_month)} subtitle={`Средний запас: ${data.kpi.avg_days_supply} дн.`} icon={Wallet} accent="from-amber-600 to-amber-500" delay={0.15} />
       </div>
       <WBSettingsPanel targetDays={targetDays} setTargetDays={setTargetDays} salesPeriod={salesPeriod} setSalesPeriod={setSalesPeriod} safety={safety} setSafety={setSafety} loading={loading} onRefresh={fetchData} onExport={handleExport} exporting={exporting} />
