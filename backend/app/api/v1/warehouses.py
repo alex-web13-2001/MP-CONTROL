@@ -1307,10 +1307,10 @@ async def get_wb_supply_xlsx(
         return f"{td:.0f} дн" if td < 999 else "Нет продаж"
 
     def _fmt_acceptance(ac):
-        """Форматирование коэффициента приёмки: -1/0 → Бесплатно, >0 → Платно x5."""
+        """Форматирование коэффициента приёмки: -1/0 → Без коэфф., >0 → x5."""
         if ac == -1 or ac == 0:
-            return "Бесплатно"
-        return f"Платно x{ac:.0f}"
+            return "Без коэфф."
+        return f"x{ac:.0f}"
 
     def _acceptance_font(ac):
         if ac > 5:
@@ -1338,7 +1338,7 @@ async def get_wb_supply_xlsx(
     ws1.freeze_panes = "A2"
 
     ws1.cell(2, 1, f"Параметры расчёта: период продаж {sales_period} дн, горизонт {target_days} дн, запас прочности ×{safety}").font = Font(bold=True, size=10, color="1F4E79")
-    ws1.cell(2, 2, f"Бесплатное хранение WB: первые 60 дней").font = Font(italic=True, size=9, color="666666")
+    ws1.cell(2, 2, f"WB: хранение платное с 1-го дня, коэфф. фиксируется на 60 дн").font = Font(italic=True, size=9, color="666666")
     for ci2 in range(1, len(h1) + 1):
         ws1.cell(2, ci2).fill = PatternFill("solid", fgColor="DAEEF3")
     row1 = 4
@@ -1412,8 +1412,8 @@ async def get_wb_supply_xlsx(
         if td > 90:
             rec = f"Критично! Более 90 дней оборота. Нужна распродажа или вывоз товара."
             rec_font = critical_font
-        elif td > 60:
-            rec = f"Перезатарка: {td:.0f} дней оборота. Превышен бесплатный период (60 дн). Начисляется платное хранение!"
+        elif td > target_days:
+            rec = f"Перезатарка: {td:.0f} дней оборота. Превышает горизонт поставки ({target_days} дн). Хранение платное с 1-го дня!"
             rec_font = warn_font
         elif td < 14:
             rec = f"Мало товара! Всего {td:.0f} дней запаса. Срочно нужна поставка!"
@@ -1479,7 +1479,7 @@ async def get_wb_supply_xlsx(
     h4 = [
         ("Артикул", 18), ("Название товара", 35), ("Объём, литры", 10),
         ("Остаток, шт", 12), ("Продаж в день", 10), ("Оборачиваемость, дн", 14),
-        ("Превышение 60 дн", 12), ("Доп расходы хранение, руб/мес", 16),
+        ("Превышение горизонта, дн", 14), ("Доп расходы хранение, руб/мес", 16),
         ("Рекомендация", 55),
     ]
     for ci, (n, w) in enumerate(h4, 1):
@@ -1495,7 +1495,7 @@ async def get_wb_supply_xlsx(
     risk_items.sort(key=lambda x: x["turnover_days"], reverse=True)
 
     for item in risk_items:
-        excess_days = max(0, item["turnover_days"] - 60)
+        excess_days = max(0, item["turnover_days"] - target_days)
         avg_storage_per_day = sum(
             wh["storage_per_day"] * wh["stock"] for wh in item["warehouses"] if wh["stock"] > 0
         )
@@ -1503,10 +1503,10 @@ async def get_wb_supply_xlsx(
 
         if item["turnover_days"] > 90:
             rec = f"Критично! {item['total_stock']} шт лежат более 90 дней. Рекомендуем распродажу или возврат товара!"
-        elif item["turnover_days"] > 60:
-            rec = f"Перезатарка: {excess_days:.0f} дней сверх бесплатного лимита. Начисляется платное хранение. Ускорьте продажи или снизьте запас."
+        elif item["turnover_days"] > target_days:
+            rec = f"Перезатарка: {excess_days:.0f} дней сверх горизонта поставки ({target_days} дн). Хранение платное. Ускорьте продажи или снизьте запас."
         else:
-            rec = f"Внимание: приближается к 60 дням бесплатного хранения. Контролируйте оборачиваемость."
+            rec = f"Внимание: оборачиваемость {item['turnover_days']:.0f} дн. Контролируйте запасы."
 
         ws4.cell(row4, 1, item["vendor_code"])
         ws4.cell(row4, 2, item["name"])
