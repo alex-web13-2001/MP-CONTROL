@@ -4,6 +4,16 @@
 
 ## [Unreleased] - 2026-03-10
 
+### Added — Excel экспорт ABC/XYZ анализа
+
+- **Backend / `sales.py`:** Два новых endpoint `GET /sales/ozon/abc-xyz/xlsx` и `GET /sales/wb/abc-xyz/xlsx`
+  - Структурированный Excel: 3 листа (товары 19 колонок, матрица 3×3, сводка)
+  - Цветовое кодирование ABC (зелёный/жёлтый/красный) и XYZ (синий/жёлтый/оранжевый)
+  - Строка ИТОГО, условное форматирование маржи/прибыли, авто-ширина колонок
+  - Fix: URL-encode кириллицы в Content-Disposition (RFC 5987 `filename*=UTF-8''`)
+- **Frontend / `abc-xyz.ts`:** Функция `downloadAbcXyzXlsx()` для Ozon и WB
+- **Frontend / `AbcXyzPage.tsx`:** Кнопка «📥 Excel» в шапке страницы с индикатором загрузки
+
 ### Added — PDF отчёт P&L v3
 
 - **Frontend / `generatePnlReport.ts` [REWRITE]:** Полная переработка PDF генератора: нативные графики (jsPDF drawing, без html2canvas), 7 страниц, светлая тема, Roboto кириллица
