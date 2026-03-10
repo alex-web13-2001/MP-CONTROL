@@ -1462,6 +1462,7 @@ async def _build_wb_supply_data(
             "total_need": total_need,
             "status": status,
             "storage_cost_month": round(storage_cost_month, 2),
+            "product_type": product_type,
             "warehouses": warehouses,
         })
 
@@ -1724,7 +1725,88 @@ async def get_wb_supply_xlsx(
         ws2.cell(row2, 9, rec).font = rec_font
         row2 += 1
 
-    # ══ Лист 3: Тарифы складов WB ══
+    # ══ Лист 3: Поставка по складам ══
+    # Группировка: склад → список SKU с need > 0
+    ws_wh = wb_xlsx.create_sheet("Поставка по складам")
+    h_wh = [
+        ("Склад WB", 32), ("Артикул", 18), ("Название товара", 35),
+        ("Продаж в день", 10), ("Остаток", 10), ("ПОСТАВИТЬ", 14),
+        ("Выручка, руб", 14), ("Тип товара", 14),
+    ]
+    for ci, (n, w) in enumerate(h_wh, 1):
+        c = ws_wh.cell(1, ci, n)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws_wh.column_dimensions[get_column_letter(ci)].width = w
+    ws_wh.freeze_panes = "A2"
+
+    # Собираем данные: склад → [{sku info}]
+    wh_groups: dict[str, list[dict]] = {}
+    for item in items:
+        for wh in item.get("warehouses", []):
+            if wh["need"] <= 0:
+                continue
+            wh_name = wh["warehouse"]
+            if wh_name not in wh_groups:
+                wh_groups[wh_name] = []
+            wh_groups[wh_name].append({
+                "vendor_code": item["vendor_code"],
+                "name": item["name"],
+                "daily": wh["daily"],
+                "stock": wh["stock"],
+                "need": wh["need"],
+                "revenue": wh["revenue"],
+                "product_type": item.get("product_type", ""),
+            })
+
+    wh_hdr_fill = PatternFill("solid", fgColor="BDD7EE")
+    wh_hdr_font = Font(bold=True, size=11, color="1F4E79")
+    need_fill = PatternFill("solid", fgColor="FFF2CC")
+    row_wh = 2
+
+    for wh_name in sorted(wh_groups.keys(), key=lambda w: sum(i["need"] for i in wh_groups[w]), reverse=True):
+        sku_list = wh_groups[wh_name]
+        total_need = sum(i["need"] for i in sku_list)
+        total_revenue = sum(i["revenue"] for i in sku_list)
+        sku_count = len(sku_list)
+
+        # Заголовок склада
+        wh_label = f"📦 {wh_name}  —  {sku_count} SKU"
+        c = ws_wh.cell(row_wh, 1, wh_label)
+        c.font = wh_hdr_font
+        c.fill = wh_hdr_fill
+        ws_wh.cell(row_wh, 6, total_need).font = Font(bold=True, size=12, color="CC0000")
+        ws_wh.cell(row_wh, 6).number_format = num_fmt
+        ws_wh.cell(row_wh, 7, round(total_revenue)).number_format = num_fmt
+        for ci2 in range(1, len(h_wh) + 1):
+            ws_wh.cell(row_wh, ci2).fill = wh_hdr_fill
+        row_wh += 1
+
+        # SKU внутри склада
+        for si in sorted(sku_list, key=lambda x: x["need"], reverse=True):
+            ws_wh.cell(row_wh, 1, "")
+            ws_wh.cell(row_wh, 2, si["vendor_code"])
+            ws_wh.cell(row_wh, 3, si["name"])
+            ws_wh.cell(row_wh, 4, si["daily"]).number_format = "0.00"
+            ws_wh.cell(row_wh, 5, si["stock"]).number_format = num_fmt
+            c = ws_wh.cell(row_wh, 6, si["need"])
+            c.number_format = num_fmt
+            c.font = Font(bold=True, color="CC0000")
+            c.fill = need_fill
+            ws_wh.cell(row_wh, 7, round(si["revenue"])).number_format = num_fmt
+            pt = si.get("product_type", "")
+            pt_label = {"food": "🍖 Питание", "sgt": "📦 СГТ"}.get(pt, "Обычный")
+            ws_wh.cell(row_wh, 8, pt_label)
+            row_wh += 1
+
+        row_wh += 1  # пустая строка между складами
+
+    if not wh_groups:
+        ws_wh.cell(row_wh, 1, "Нет товаров к поставке")
+        ws_wh.cell(row_wh, 1).font = Font(bold=True, size=12, color="00AA00")
+
+    # ══ Лист 4: Тарифы складов WB ══
     ws3 = wb_xlsx.create_sheet("Тарифы складов WB")
     h3 = [
         ("Склад", 30), ("Коэфф. хранения", 14),
