@@ -317,7 +317,7 @@ function PurchaseChain({ chain, loading }: {
 /* ══════════════════════════════════════════════════════
    Monthly New vs Repeat Buyers Chart
    ══════════════════════════════════════════════════════ */
-function MonthlyBuyersChart({ data }: { data: { month: string; total: number; new_buyers: number; repeat_buyers: number }[] }) {
+function MonthlyBuyersChart({ data }: { data: { month: string; total: number; new_buyers: number; repeat_buyers: number; new_revenue?: number; repeat_revenue?: number }[] }) {
   if (!data || data.length === 0) return null
 
   const monthNames: Record<string, string> = {
@@ -338,6 +338,44 @@ function MonthlyBuyersChart({ data }: { data: { month: string; total: number; ne
     }
   })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const CustomTooltip = ({ active, payload, label }: any) => {
+    if (!active || !payload?.length) return null
+    const d = payload[0]?.payload
+    if (!d) return null
+    return (
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl p-4 min-w-[200px]">
+        <div className="text-[14px] font-bold text-[hsl(var(--foreground))] mb-3">📅 {label}</div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-sm" style={{ background: '#10b981' }} />
+              <span className="text-[13px] text-[hsl(var(--foreground))]">Новые</span>
+            </div>
+            <div className="text-right">
+              <div className="text-[13px] font-bold text-emerald-400">{fmtNum(d.new_buyers)} чел</div>
+              {d.new_revenue != null && <div className="text-[12px] text-emerald-400/70">{fmtMoney(d.new_revenue)}</div>}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-sm" style={{ background: '#8b5cf6' }} />
+              <span className="text-[13px] text-[hsl(var(--foreground))]">Повторные</span>
+            </div>
+            <div className="text-right">
+              <div className="text-[13px] font-bold text-violet-400">{fmtNum(d.repeat_buyers)} чел</div>
+              {d.repeat_revenue != null && <div className="text-[12px] text-violet-400/70">{fmtMoney(d.repeat_revenue)}</div>}
+            </div>
+          </div>
+          <div className="border-t border-[hsl(var(--border)/0.2)] pt-2 flex items-center justify-between">
+            <span className="text-[12px] text-[hsl(var(--muted-foreground))]">Всего</span>
+            <span className="text-[13px] font-bold text-[hsl(var(--foreground))]">{fmtNum(d.total)} чел · {fmtMoney((d.new_revenue || 0) + (d.repeat_revenue || 0))}</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="rounded-2xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] overflow-hidden">
       <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)] flex items-center justify-between">
@@ -345,55 +383,42 @@ function MonthlyBuyersChart({ data }: { data: { month: string; total: number; ne
           <h3 className="text-base font-semibold text-[hsl(var(--foreground))]">📊 Новые и повторные покупатели</h3>
           <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Доля новых и возвращающихся клиентов по месяцам</p>
         </div>
-        <div className="flex items-center gap-4 text-[11px]">
-          <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded-sm" style={{ background: '#10b981' }} />
-            <span className="text-[hsl(var(--muted-foreground))]">Новые</span>
+        <div className="flex items-center gap-5 text-[14px]">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded" style={{ background: '#10b981' }} />
+            <span className="font-medium text-[hsl(var(--foreground)/0.8)]">Новые</span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded-sm" style={{ background: '#8b5cf6' }} />
-            <span className="text-[hsl(var(--muted-foreground))]">Повторные</span>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded" style={{ background: '#8b5cf6' }} />
+            <span className="font-medium text-[hsl(var(--foreground)/0.8)]">Повторные</span>
           </div>
         </div>
       </div>
       <div className="p-5">
-        <ResponsiveContainer width="100%" height={280}>
+        <ResponsiveContainer width="100%" height={300}>
           <BarChart data={chartData} barCategoryGap="15%">
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.15} />
             <XAxis
               dataKey="label"
-              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              tick={{ fontSize: 13, fill: 'hsl(var(--muted-foreground))', fontWeight: 500 }}
             />
             <YAxis
-              tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
-              width={45}
+              tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
+              width={50}
             />
-            <Tooltip
-              contentStyle={{
-                background: 'hsl(var(--card))',
-                border: '1px solid hsl(var(--border))',
-                borderRadius: 10,
-                fontSize: 12,
-                padding: '10px 14px',
-              }}
-              formatter={(value: number, name: string) => {
-                const label = name === 'new_buyers' ? '🟢 Новые' : '🟣 Повторные'
-                return [fmtNum(value), label]
-              }}
-              labelFormatter={(label: string) => `📅 ${label}`}
-            />
+            <Tooltip content={<CustomTooltip />} />
             <Bar dataKey="new_buyers" stackId="a" fill="#10b981" radius={[0, 0, 0, 0]} name="new_buyers" />
             <Bar dataKey="repeat_buyers" stackId="a" fill="#8b5cf6" radius={[4, 4, 0, 0]} name="repeat_buyers" />
           </BarChart>
         </ResponsiveContainer>
 
-        {/* Percentage row */}
-        <div className="flex gap-0 mt-3 overflow-x-auto">
+        {/* Percentage + total row */}
+        <div className="flex gap-0 mt-4 overflow-x-auto">
           {chartData.map(d => (
-            <div key={d.month} className="flex-1 text-center min-w-[60px]">
-              <div className="text-[11px] font-bold text-emerald-400">{d.new_pct}%</div>
-              <div className="text-[11px] font-bold text-violet-400">{d.repeat_pct}%</div>
-              <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">{fmtNum(d.total)}</div>
+            <div key={d.month} className="flex-1 text-center min-w-[70px]">
+              <div className="text-[14px] font-bold text-emerald-400">{d.new_pct}%</div>
+              <div className="text-[14px] font-bold text-violet-400">{d.repeat_pct}%</div>
+              <div className="text-[13px] font-semibold text-[hsl(var(--muted-foreground)/0.7)] mt-0.5">{fmtNum(d.total)} чел</div>
             </div>
           ))}
         </div>

@@ -53,6 +53,8 @@ export interface MonthlyBuyers {
   total: number
   new_buyers: number
   repeat_buyers: number
+  new_revenue: number
+  repeat_revenue: number
 }
 
 export interface LtvResponse {

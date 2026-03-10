@@ -398,7 +398,8 @@ async def get_wb_ltv(
                 buyer_orders AS (
                     SELECT
                         {BUYER_ID_EXPR} AS buyer_id,
-                        toDate(date) AS order_date
+                        toDate(date) AS order_date,
+                        price_with_disc AS revenue
                     FROM mms_analytics.fact_orders_raw FINAL
                     WHERE shop_id = {{shop_id:UInt32}}
                       AND date >= {{start_date:Date}}
@@ -411,24 +412,24 @@ async def get_wb_ltv(
                     FROM buyer_orders
                     GROUP BY buyer_id
                 ),
-                monthly AS (
+                monthly_agg AS (
                     SELECT
                         toStartOfMonth(bo.order_date) AS month,
                         bo.buyer_id,
-                        fp.first_date
+                        fp.first_date,
+                        sum(bo.revenue) AS revenue
                     FROM buyer_orders bo
                     JOIN first_purchase fp ON bo.buyer_id = fp.buyer_id
-                ),
-                monthly_unique AS (
-                    SELECT DISTINCT month, buyer_id, first_date
-                    FROM monthly
+                    GROUP BY month, bo.buyer_id, fp.first_date
                 )
             SELECT
                 toString(month) AS m,
                 count() AS total,
                 countIf(toStartOfMonth(first_date) = month) AS new_buyers,
-                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers
-            FROM monthly_unique
+                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers,
+                round(sumIf(revenue, toStartOfMonth(first_date) = month), 0) AS new_revenue,
+                round(sumIf(revenue, toStartOfMonth(first_date) < month), 0) AS repeat_revenue
+            FROM monthly_agg
             GROUP BY month
             ORDER BY month
         """, parameters=params).result_rows
@@ -439,6 +440,8 @@ async def get_wb_ltv(
                 "total": int(r[1] or 0),
                 "new_buyers": int(r[2] or 0),
                 "repeat_buyers": int(r[3] or 0),
+                "new_revenue": _sf(r[4]),
+                "repeat_revenue": _sf(r[5]),
             }
             for r in monthly_rows
         ]

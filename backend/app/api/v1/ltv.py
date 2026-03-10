@@ -367,7 +367,8 @@ async def get_ozon_ltv(
                     SELECT
                         splitByChar('-', posting_number)[1] AS client_id,
                         order_number,
-                        min(toDate(addHours(in_process_at, 3))) AS order_date
+                        min(toDate(addHours(in_process_at, 3))) AS order_date,
+                        sum(price * quantity) AS order_revenue
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
@@ -379,24 +380,24 @@ async def get_ozon_ltv(
                     FROM client_orders
                     GROUP BY client_id
                 ),
-                monthly AS (
+                monthly_agg AS (
                     SELECT
                         toStartOfMonth(co.order_date) AS month,
                         co.client_id,
-                        fp.first_date
+                        fp.first_date,
+                        sum(co.order_revenue) AS revenue
                     FROM client_orders co
                     JOIN first_purchase fp ON co.client_id = fp.client_id
-                ),
-                monthly_unique AS (
-                    SELECT DISTINCT month, client_id, first_date
-                    FROM monthly
+                    GROUP BY month, co.client_id, fp.first_date
                 )
             SELECT
                 toString(month) AS m,
                 count() AS total,
                 countIf(toStartOfMonth(first_date) = month) AS new_buyers,
-                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers
-            FROM monthly_unique
+                countIf(toStartOfMonth(first_date) < month) AS repeat_buyers,
+                round(sumIf(revenue, toStartOfMonth(first_date) = month), 0) AS new_revenue,
+                round(sumIf(revenue, toStartOfMonth(first_date) < month), 0) AS repeat_revenue
+            FROM monthly_agg
             GROUP BY month
             ORDER BY month
         """, parameters=params).result_rows
@@ -407,6 +408,8 @@ async def get_ozon_ltv(
                 "total": int(r[1] or 0),
                 "new_buyers": int(r[2] or 0),
                 "repeat_buyers": int(r[3] or 0),
+                "new_revenue": _sf(r[4]),
+                "repeat_revenue": _sf(r[5]),
             }
             for r in monthly_rows
         ]
