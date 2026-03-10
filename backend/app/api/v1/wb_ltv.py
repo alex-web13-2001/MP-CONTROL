@@ -905,7 +905,119 @@ async def export_wb_ltv_xlsx(
         logger.error("WB LTV XLSX retention query error: %s", e, exc_info=True)
         sku_retention = []
 
-    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Wildberries")
+    # ── Cross-SKU transitions for top WB SKUs ──
+    sku_transitions = []
+    try:
+        top_skus = sorted(sku_retention, key=lambda x: x["buyers_2"], reverse=True)[:15]
+        top_sku_ids = [s["sku"] for s in top_skus if s["buyers_2"] > 0]
+
+        if top_sku_ids:
+            ch2 = get_clickhouse_client()
+            chain_rows = ch2.query(f"""
+                WITH
+                    all_orders AS (
+                        SELECT
+                            {BUYER_ID_EXPR} AS buyer_id,
+                            nm_id,
+                            supplier_article,
+                            any(subject) AS product_name,
+                            toDate(date) AS order_date
+                        FROM mms_analytics.fact_orders_raw FINAL
+                        WHERE shop_id = {{shop_id:UInt32}}
+                          AND date >= {{start_date:Date}}
+                          AND date <= {{end_date:Date}}
+                          AND is_cancel = 0
+                          AND {BUYER_FILTER}
+                        GROUP BY buyer_id, nm_id, supplier_article, order_date
+                    ),
+                    target_clients AS (
+                        SELECT nm_id AS target_sku, buyer_id
+                        FROM all_orders
+                        WHERE nm_id IN {{target_skus:Array(UInt64)}}
+                        GROUP BY nm_id, buyer_id
+                    ),
+                    client_numbered AS (
+                        SELECT
+                            tc.target_sku,
+                            ao.buyer_id,
+                            ao.nm_id,
+                            ao.supplier_article,
+                            ao.product_name,
+                            ao.order_date,
+                            dense_rank() OVER (
+                                PARTITION BY tc.target_sku, ao.buyer_id
+                                ORDER BY ao.order_date
+                            ) AS purchase_num
+                        FROM all_orders ao
+                        JOIN target_clients tc ON ao.buyer_id = tc.buyer_id
+                    ),
+                    first_target AS (
+                        SELECT target_sku, buyer_id, min(purchase_num) AS tpn
+                        FROM client_numbered
+                        WHERE nm_id = target_sku
+                        GROUP BY target_sku, buyer_id
+                    ),
+                    reindexed AS (
+                        SELECT
+                            cn.target_sku,
+                            cn.buyer_id,
+                            cn.nm_id,
+                            cn.supplier_article,
+                            cn.product_name,
+                            cn.purchase_num - ft.tpn + 1 AS level
+                        FROM client_numbered cn
+                        JOIN first_target ft
+                          ON cn.target_sku = ft.target_sku
+                         AND cn.buyer_id = ft.buyer_id
+                        WHERE cn.purchase_num >= ft.tpn
+                          AND cn.purchase_num < ft.tpn + 5
+                    )
+                SELECT
+                    target_sku,
+                    level,
+                    nm_id,
+                    any(supplier_article) AS article,
+                    any(product_name) AS name,
+                    count(DISTINCT buyer_id) AS buyers
+                FROM reindexed
+                WHERE level BETWEEN 2 AND 5
+                GROUP BY target_sku, level, nm_id
+                HAVING buyers >= 1
+                ORDER BY target_sku, level, buyers DESC
+            """, parameters={
+                **params,
+                "target_skus": top_sku_ids,
+            }).result_rows
+            ch2.close()
+
+            # Build sku_transitions list (top-3 per level per source)
+            sku_info = {s["sku"]: s for s in sku_retention}
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for r in chain_rows:
+                grouped[(int(r[0]), int(r[1]))].append(r)
+
+            for src in top_skus:
+                s_sku = src["sku"]
+                src_info = sku_info.get(s_sku, src)
+                for lvl in range(2, 6):
+                    rows = grouped.get((s_sku, lvl), [])
+                    for r in rows[:3]:
+                        sku_transitions.append({
+                            "source_sku": s_sku,
+                            "source_name": src_info.get("offer_id", str(s_sku)),
+                            "source_buyers": src_info.get("buyers_1", 0),
+                            "level": lvl,
+                            "target_sku": int(r[2]),
+                            "target_offer_id": str(r[3]),
+                            "target_name": str(r[4])[:50],
+                            "buyers": int(r[5]),
+                            "is_same_sku": int(r[2]) == s_sku,
+                        })
+    except Exception as e:
+        logger.error("WB LTV XLSX transitions query error: %s", e, exc_info=True)
+
+    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Wildberries", sku_transitions)
     filename = f"LTV_WB_{shop_name}_{period}.xlsx"
     from urllib.parse import quote
     encoded = quote(filename)

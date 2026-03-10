@@ -737,8 +737,9 @@ def _build_ltv_xlsx(
     sku_retention: list[dict],
     shop_name: str,
     marketplace: str,
+    sku_transitions: list[dict] | None = None,
 ) -> BytesIO:
-    """Build Excel workbook with full LTV report (6 sheets)."""
+    """Build Excel workbook with full LTV report (7 sheets)."""
     wb = Workbook()
 
     # ── Styles ──
@@ -1010,6 +1011,89 @@ def _build_ltv_xlsx(
         for col in range(1, 5):
             ws6.cell(row=i, column=col).border = THIN_BORDER
 
+    # ══════════════════════════════════════════════════════════
+    # Sheet 7: Cross-SKU Transitions
+    # ══════════════════════════════════════════════════════════
+    if sku_transitions:
+        ws7 = wb.create_sheet("🔀 Переходы")
+        ws7.sheet_properties.tabColor = "8B5CF6"
+
+        ws7.merge_cells("A1:G1")
+        ws7["A1"] = "Куда переходят покупатели (покупка 1 → 5)"
+        ws7["A1"].font = TITLE_FONT
+        ws7.row_dimensions[1].height = 28
+
+        ws7.merge_cells("A2:G2")
+        ws7["A2"] = "После покупки исходного товара, какие товары клиенты покупают дальше (топ-3 на каждом уровне)"
+        ws7["A2"].font = SUBTITLE_FONT
+
+        t_headers = [
+            "Исходный товар (1-я покупка)",
+            "Покупателей",
+            "Покупка №",
+            "Товар перехода",
+            "Артикул перехода",
+            "Покупателей",
+            "% от исходных",
+        ]
+        t_widths = [38, 14, 12, 38, 20, 14, 14]
+        _hdr_row(ws7, 4, t_headers, t_widths)
+
+        LEVEL_FILL = {
+            2: PatternFill("solid", fgColor="EDE9FE"),
+            3: PatternFill("solid", fgColor="DBEAFE"),
+            4: PatternFill("solid", fgColor="D1FAE5"),
+            5: PatternFill("solid", fgColor="FEF3C7"),
+        }
+        SAME_SKU_FONT = Font(name="Calibri", bold=True, color="7C3AED", size=10)
+        NORMAL_FONT = Font(name="Calibri", size=10)
+
+        row_idx = 5
+        current_source = None
+        for t in sku_transitions:
+            source = t["source_name"]
+            is_new_source = source != current_source
+            if is_new_source:
+                if current_source is not None:
+                    row_idx += 1  # blank separator
+                current_source = source
+
+            c1 = ws7.cell(row=row_idx, column=1)
+            if is_new_source:
+                c1.value = source
+                c1.font = Font(name="Calibri", bold=True, size=11)
+            c2 = ws7.cell(row=row_idx, column=2)
+            if is_new_source:
+                c2.value = t.get("source_buyers", 0)
+                c2.number_format = NUM_FMT
+
+            level = t.get("level", 2)
+            ws7.cell(row=row_idx, column=3, value=f"{level}-я").font = Font(name="Calibri", bold=True, size=10)
+            fill = LEVEL_FILL.get(level)
+            if fill:
+                ws7.cell(row=row_idx, column=3).fill = fill
+
+            is_same = t.get("is_same_sku", False)
+            name_font = SAME_SKU_FONT if is_same else NORMAL_FONT
+            name_val = t.get("target_name", "")
+            if is_same:
+                name_val = "⭐ " + name_val
+            ws7.cell(row=row_idx, column=4, value=name_val[:50]).font = name_font
+            ws7.cell(row=row_idx, column=5, value=t.get("target_offer_id", "")).font = NORMAL_FONT
+            ws7.cell(row=row_idx, column=6, value=t.get("buyers", 0)).number_format = NUM_FMT
+
+            source_b = t.get("source_buyers", 1) or 1
+            pct_val = t.get("buyers", 0) / source_b
+            c_pct = ws7.cell(row=row_idx, column=7, value=pct_val)
+            c_pct.number_format = PCT_FMT
+            if is_same:
+                c_pct.font = SAME_SKU_FONT
+
+            for col in range(1, 8):
+                ws7.cell(row=row_idx, column=col).border = THIN_BORDER
+
+            row_idx += 1
+
     buf = BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1138,7 +1222,118 @@ async def export_ozon_ltv_xlsx(
         logger.error("LTV XLSX retention query error: %s", e, exc_info=True)
         sku_retention = []
 
-    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Ozon")
+    # ── Cross-SKU transitions for top SKUs ──
+    sku_transitions = []
+    try:
+        top_skus = sorted(sku_retention, key=lambda x: x["buyers_2"], reverse=True)[:15]
+        top_sku_ids = [s["sku"] for s in top_skus if s["buyers_2"] > 0]
+
+        if top_sku_ids:
+            ch2 = get_clickhouse_client()
+            chain_rows = ch2.query("""
+                WITH
+                    all_orders AS (
+                        SELECT
+                            splitByChar('-', posting_number)[1] AS client_id,
+                            order_number,
+                            sku,
+                            argMax(offer_id, toDate(addHours(in_process_at, 3))) AS offer_id,
+                            argMax(product_name, toDate(addHours(in_process_at, 3))) AS product_name,
+                            min(toDate(addHours(in_process_at, 3))) AS order_date
+                        FROM mms_analytics.fact_ozon_orders FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
+                          AND toDate(addHours(in_process_at, 3)) <= {end_date:Date}
+                        GROUP BY client_id, order_number, sku
+                    ),
+                    target_clients AS (
+                        SELECT sku AS target_sku, client_id
+                        FROM all_orders
+                        WHERE sku IN {target_skus:Array(UInt64)}
+                        GROUP BY sku, client_id
+                    ),
+                    client_numbered AS (
+                        SELECT
+                            tc.target_sku,
+                            ao.client_id,
+                            ao.sku,
+                            ao.offer_id,
+                            ao.product_name,
+                            ao.order_date,
+                            dense_rank() OVER (
+                                PARTITION BY tc.target_sku, ao.client_id
+                                ORDER BY ao.order_date, ao.order_number
+                            ) AS purchase_num
+                        FROM all_orders ao
+                        JOIN target_clients tc ON ao.client_id = tc.client_id
+                    ),
+                    first_target AS (
+                        SELECT target_sku, client_id, min(purchase_num) AS tpn
+                        FROM client_numbered
+                        WHERE sku = target_sku
+                        GROUP BY target_sku, client_id
+                    ),
+                    reindexed AS (
+                        SELECT
+                            cn.target_sku,
+                            cn.client_id,
+                            cn.sku,
+                            cn.offer_id,
+                            cn.product_name,
+                            cn.purchase_num - ft.tpn + 1 AS level
+                        FROM client_numbered cn
+                        JOIN first_target ft
+                          ON cn.target_sku = ft.target_sku
+                         AND cn.client_id = ft.client_id
+                        WHERE cn.purchase_num >= ft.tpn
+                          AND cn.purchase_num < ft.tpn + 5
+                    )
+                SELECT
+                    target_sku,
+                    level,
+                    sku,
+                    any(offer_id) AS offer_id,
+                    any(product_name) AS name,
+                    count(DISTINCT client_id) AS buyers
+                FROM reindexed
+                WHERE level BETWEEN 2 AND 5
+                GROUP BY target_sku, level, sku
+                HAVING buyers >= 1
+                ORDER BY target_sku, level, buyers DESC
+            """, parameters={
+                **params,
+                "target_skus": top_sku_ids,
+            }).result_rows
+            ch2.close()
+
+            # Build sku_transitions list (top-3 per level per source)
+            sku_info = {s["sku"]: s for s in sku_retention}
+            from collections import defaultdict
+            grouped = defaultdict(list)
+            for r in chain_rows:
+                grouped[(int(r[0]), int(r[1]))].append(r)
+
+            for src in top_skus:
+                s_sku = src["sku"]
+                src_info = sku_info.get(s_sku, src)
+                for lvl in range(2, 6):
+                    rows = grouped.get((s_sku, lvl), [])
+                    for r in rows[:3]:  # top-3 per level
+                        sku_transitions.append({
+                            "source_sku": s_sku,
+                            "source_name": src_info.get("offer_id", str(s_sku)),
+                            "source_buyers": src_info.get("buyers_1", 0),
+                            "level": lvl,
+                            "target_sku": int(r[2]),
+                            "target_offer_id": str(r[3]),
+                            "target_name": str(r[4])[:50],
+                            "buyers": int(r[5]),
+                            "is_same_sku": int(r[2]) == s_sku,
+                        })
+    except Exception as e:
+        logger.error("LTV XLSX transitions query error: %s", e, exc_info=True)
+
+    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Ozon", sku_transitions)
     filename = f"LTV_Ozon_{shop_name}_{period}.xlsx"
     from urllib.parse import quote
     encoded = quote(filename)
