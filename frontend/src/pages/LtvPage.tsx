@@ -153,9 +153,9 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
   return (
     <div className="rounded-xl border border-violet-500/25 bg-[hsl(var(--card))] p-3.5 transition-all hover:border-violet-500/50">
       {/* Row 1: rank + offer_id + repeat badge */}
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <span className="text-[13px] font-extrabold text-violet-400">#{rank}</span>
-        <span className="text-[13px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/15 text-violet-300 truncate max-w-[160px]">
+      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+        <span className="text-[12px] font-extrabold text-violet-600 dark:text-violet-400">#{rank}</span>
+        <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/20 text-[hsl(var(--foreground))] whitespace-nowrap">
           {product.offer_id}
         </span>
         {isRepeat && (
@@ -173,7 +173,7 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
       {/* Row 3: buyers count + % */}
       <div className="flex items-center gap-2 mb-1.5">
         <span className="text-[17px] font-extrabold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
-        <span className="text-[14px] font-bold text-violet-300 bg-violet-500/15 px-2 py-0.5 rounded">{fmtPct(product.pct_of_l1)}</span>
+        <span className="text-[13px] font-bold text-violet-600 dark:text-violet-300 bg-violet-500/20 px-2 py-0.5 rounded">{fmtPct(product.pct_of_l1)}</span>
         <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.7)]">от L1</span>
       </div>
 
@@ -277,7 +277,7 @@ function PurchaseChain({ chain, loading }: {
                   {lvlNum === 1 ? (
                     /* L1 — target product card */
                     <div className="rounded-xl border-2 border-violet-500/40 bg-violet-500/5 p-4">
-                      <div className="text-[12px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/15 text-violet-400 w-fit mb-2">
+                      <div className="text-[12px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/20 text-[hsl(var(--foreground))] w-fit mb-2">
                         {l1.offer_id}
                       </div>
                       <p className="text-[14px] text-[hsl(var(--foreground))] leading-snug line-clamp-3 mb-3 font-bold">
