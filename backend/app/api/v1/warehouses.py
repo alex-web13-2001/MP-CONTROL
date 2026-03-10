@@ -960,6 +960,45 @@ def _parse_ru_float(s: str) -> float:
     return float(s.replace(",", "."))
 
 
+# ═══════════════════════════════════════════════════════════════
+# Маппинг: округ покупателя → ближайшие склады WB
+# Первый склад — приоритетный, остальные — fallback
+# ═══════════════════════════════════════════════════════════════
+REGION_TO_WAREHOUSES: dict[str, list[str]] = {
+    "Центральный федеральный округ": [
+        "Котовск", "Истра", "Электросталь", "Подольск 3", "Коледино",
+        "Белые Столбы", "Обухово", "Рязань (Тюшевское)",
+    ],
+    "Северо-Западный федеральный округ": [
+        "Санкт-Петербург Уткина Заводь", "Никольское",
+    ],
+    "Приволжский федеральный округ": [
+        "Новосемейкино", "Казань", "Пенза",
+    ],
+    "Южный федеральный округ": [
+        "Краснодар (Тихорецкая)", "Волгоград",
+    ],
+    "Северо-Кавказский федеральный округ": [
+        "Невинномысск", "Краснодар (Тихорецкая)",
+    ],
+    "Уральский федеральный округ": [
+        "Екатеринбург - Перспективная 14",
+    ],
+    "Сибирский федеральный округ": [
+        "Новосибирск",
+    ],
+    "Дальневосточный федеральный округ": [
+        "Владивосток СГТ",
+    ],
+}
+
+# Reverse: warehouse → list of regions it serves
+_WH_SERVES_REGIONS: dict[str, list[str]] = {}
+for _region, _whs in REGION_TO_WAREHOUSES.items():
+    for _wh in _whs:
+        _WH_SERVES_REGIONS.setdefault(_wh, []).append(_region)
+
+
 async def _build_wb_supply_data(
     shop_id: int, sales_period: int, target_days: int, safety: float,
     use_ad_boost: bool, db: AsyncSession,
@@ -1064,6 +1103,29 @@ async def _build_wb_supply_data(
             import logging
             logging.getLogger(__name__).warning("WB ad boost query failed: %s", e)
 
+    # ── 2c. Demand by buyer region ───────────────────────────
+    # Считаем заказы по nm_id × округ покупателя (а не склад отгрузки!)
+    regional_demand: dict[int, dict[str, int]] = {}  # nm_id → {округ → qty}
+    try:
+        rd_rows = ch.query(f"""
+            SELECT nm_id, oblast_okrug_name, count() AS cnt
+            FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {shop_id}
+              AND date >= '{d_sales_start}'
+              AND date <= '{today}'
+              AND is_cancel = 0
+              AND oblast_okrug_name != ''
+            GROUP BY nm_id, oblast_okrug_name
+        """).result_rows
+        for row in rd_rows:
+            nm = int(row[0])
+            if nm not in regional_demand:
+                regional_demand[nm] = {}
+            regional_demand[nm][row[1]] = row[2]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("WB regional demand query failed: %s", e)
+
     # ── 3. Product info from PostgreSQL ──────────────────────
     prod_result = await db.execute(text("""
         SELECT nm_id, vendor_code, name,
@@ -1140,7 +1202,15 @@ async def _build_wb_supply_data(
         tariffs = {}
 
     # ── 5. Build recommendations per SKU × warehouse ─────────
-    all_nm_ids = set(list(stocks_by_nm.keys()) + list(sales_by_nm.keys()))
+    # Используем РЕГИОНАЛЬНЫЙ спрос: округ покупателя → ближайший склад
+    all_nm_ids = set(
+        list(stocks_by_nm.keys()) +
+        list(sales_by_nm.keys()) +
+        list(regional_demand.keys())
+    )
+
+    # Собираем все доступные склады (из тарифов + маппинга)
+    available_warehouses = set(tariffs.keys())
 
     items = []
     for nm_id in sorted(all_nm_ids):
@@ -1152,7 +1222,43 @@ async def _build_wb_supply_data(
 
         wh_stocks = stocks_by_nm.get(nm_id, {})
         wh_sales = sales_by_nm.get(nm_id, {})
-        all_wh = set(list(wh_stocks.keys()) + list(wh_sales.keys()))
+        nm_regions = regional_demand.get(nm_id, {})
+
+        # Распределяем региональный спрос по складам
+        # demand_by_wh: склад → {"regional_orders": N, "regions": [...]}
+        demand_by_wh: dict[str, dict] = {}
+        for region, qty in nm_regions.items():
+            target_whs = REGION_TO_WAREHOUSES.get(region, [])
+            # Найти первый доступный склад для этого региона
+            placed = False
+            for twh in target_whs:
+                # Normalize: ищем склад из тарифов по начальной подстроке
+                matched_wh = None
+                for avail_wh in available_warehouses:
+                    if avail_wh == twh or avail_wh.startswith(twh):
+                        matched_wh = avail_wh
+                        break
+                if matched_wh:
+                    if matched_wh not in demand_by_wh:
+                        demand_by_wh[matched_wh] = {"regional_orders": 0, "regions": []}
+                    demand_by_wh[matched_wh]["regional_orders"] += qty
+                    demand_by_wh[matched_wh]["regions"].append(region)
+                    placed = True
+                    break
+            if not placed:
+                # Fallback — первый склад из маппинга (даже без тарифа)
+                fallback_wh = target_whs[0] if target_whs else "Котовск"
+                if fallback_wh not in demand_by_wh:
+                    demand_by_wh[fallback_wh] = {"regional_orders": 0, "regions": []}
+                demand_by_wh[fallback_wh]["regional_orders"] += qty
+                demand_by_wh[fallback_wh]["regions"].append(region)
+
+        # Объединяем: все склады где есть stock, sales ИЛИ regional demand
+        all_wh = set(
+            list(wh_stocks.keys()) +
+            list(wh_sales.keys()) +
+            list(demand_by_wh.keys())
+        )
 
         total_sold = sum(s.get("orders", 0) for s in wh_sales.values())
         total_stock = sum(s.get("qty", 0) for s in wh_stocks.values())
@@ -1168,9 +1274,19 @@ async def _build_wb_supply_data(
             orders = wh_sales.get(wh, {}).get("orders", 0)
             revenue = wh_sales.get(wh, {}).get("revenue", 0)
             wh_daily = orders / max(sales_period, 1)
-            wh_daily_boosted = wh_daily * boost
 
-            need = max(0, int(wh_daily_boosted * target_days * safety) - stock)
+            # Региональный спрос → daily для этого склада
+            rd = demand_by_wh.get(wh, {})
+            regional_orders = rd.get("regional_orders", 0)
+            regional_daily = regional_orders / max(sales_period, 1)
+            demand_regions = rd.get("regions", [])
+
+            # Используем МАКСИМУМ из (фактический daily, региональный daily)
+            # чтобы не занизить если склад уже отгружает больше
+            effective_daily = max(wh_daily, regional_daily)
+            effective_daily_boosted = effective_daily * boost
+
+            need = max(0, int(effective_daily_boosted * target_days * safety) - stock)
 
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
@@ -1180,16 +1296,19 @@ async def _build_wb_supply_data(
             else:
                 storage_per_day = stor_base + stor_add * (vol - 1)
 
-            wh_turnover = stock / wh_daily if wh_daily > 0 else 999
+            wh_turnover = stock / effective_daily if effective_daily > 0 else 999
             ac = t.get("acceptance_coef", 0)
 
             warehouses.append({
                 "warehouse": wh,
                 "stock": stock,
                 "orders": orders,
-                "daily_boosted": round(wh_daily_boosted, 2),
+                "regional_orders": regional_orders,
+                "demand_regions": list(set(demand_regions)),
+                "daily_boosted": round(effective_daily_boosted, 2),
                 "revenue": revenue,
                 "daily": round(wh_daily, 2),
+                "regional_daily": round(regional_daily, 2),
                 "need": need,
                 "storage_per_day": round(storage_per_day, 4),
                 "storage_per_month": round(storage_per_day * 30, 2),
