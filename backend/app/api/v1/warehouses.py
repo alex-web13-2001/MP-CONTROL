@@ -962,41 +962,103 @@ def _parse_ru_float(s: str) -> float:
 
 # ═══════════════════════════════════════════════════════════════
 # Маппинг: округ покупателя → ближайшие склады WB
-# Первый склад — приоритетный, остальные — fallback
+# Содержит ВСЕ варианты: обычные, : Питание, СГТ
+# Фильтрация по типу товара происходит в runtime
 # ═══════════════════════════════════════════════════════════════
 REGION_TO_WAREHOUSES: dict[str, list[str]] = {
     "Центральный федеральный округ": [
-        "Котовск", "Истра", "Электросталь", "Подольск 3", "Коледино",
-        "Белые Столбы", "Обухово", "Рязань (Тюшевское)",
+        "Котовск", "Котовск: Питание",
+        "Электросталь", "Электросталь: Питание",
+        "Рязань (Тюшевское)", "Рязань (Тюшевское): Питание",
+        "Истра", "Подольск 3", "Коледино",
+        "Белые Столбы", "Обухово",
+        "Домодедово-2", "Домодедово 2: Питание",
     ],
     "Северо-Западный федеральный округ": [
         "Санкт-Петербург Уткина Заводь", "Никольское",
+        "Шушары: Питание",
     ],
     "Приволжский федеральный округ": [
-        "Новосемейкино", "Казань", "Пенза",
+        "Новосемейкино", "Новосемейкино: Питание",
+        "Казань", "Казань: Питание",
+        "Пенза",
     ],
     "Южный федеральный округ": [
-        "Краснодар (Тихорецкая)", "Волгоград",
+        "Краснодар (Тихорецкая)", "Краснодар (Тихорецкая): Питание",
+        "Волгоград", "Волгоград: Питание",
     ],
     "Северо-Кавказский федеральный округ": [
-        "Невинномысск", "Краснодар (Тихорецкая)",
+        "Невинномысск",
+        "Краснодар (Тихорецкая)", "Краснодар (Тихорецкая): Питание",
     ],
     "Уральский федеральный округ": [
         "Екатеринбург - Перспективная 14",
+        "Екатеринбург (Перспективная): Питание",
+        "Екатеринбург - Испытателей 14г",
     ],
     "Сибирский федеральный округ": [
-        "Новосибирск",
+        "Новосибирск", "Новосибирск СГТ",
     ],
     "Дальневосточный федеральный округ": [
         "Владивосток СГТ",
     ],
 }
 
-# Reverse: warehouse → list of regions it serves
-_WH_SERVES_REGIONS: dict[str, list[str]] = {}
-for _region, _whs in REGION_TO_WAREHOUSES.items():
-    for _wh in _whs:
-        _WH_SERVES_REGIONS.setdefault(_wh, []).append(_region)
+# ── Warehouse type classification ──
+# WB кодирует тип склада прямо в названии
+_FOOD_SUFFIX = ": Питание"
+_SGT_SUFFIX = "СГТ"
+_MAX_BOX_WEIGHT_KG = 25  # Ограничение для коробов
+
+
+def _classify_product_wh_type(
+    wh_stocks: dict[str, dict],
+    wh_sales: dict[str, dict],
+) -> str:
+    """
+    Определяет тип товара по складам, на которых есть стоки/продажи:
+    - 'food' — если есть на складе с ': Питание'
+    - 'sgt'  — если есть на складе с 'СГТ'
+    - 'normal' — обычный товар
+    """
+    all_wh_names = set(list(wh_stocks.keys()) + list(wh_sales.keys()))
+    for wh in all_wh_names:
+        if _FOOD_SUFFIX in wh:
+            return "food"
+    for wh in all_wh_names:
+        if _SGT_SUFFIX in wh:
+            return "sgt"
+    return "normal"
+
+
+def _filter_wh_for_type(
+    warehouse_name: str,
+    product_type: str,
+) -> bool:
+    """
+    Проверяет, подходит ли склад для данного типа товара.
+    - food  → только склады с ': Питание' (или текущие с stock/sales)
+    - sgt   → только склады с 'СГТ'
+    - normal → склады БЕЗ ': Питание' и БЕЗ 'СГТ'
+    """
+    is_food_wh = _FOOD_SUFFIX in warehouse_name
+    is_sgt_wh = _SGT_SUFFIX in warehouse_name
+
+    if product_type == "food":
+        return is_food_wh
+    elif product_type == "sgt":
+        return is_sgt_wh
+    else:  # normal
+        return not is_food_wh and not is_sgt_wh
+
+
+def _estimate_weight_kg(vol_liters: float) -> float:
+    """
+    Грубая оценка веса из объёма.
+    Для кормов плотность ~0.5-0.7 кг/л, для обычных товаров ~0.3-0.5 кг/л.
+    Используем среднее 0.5 кг/л как консервативную оценку.
+    """
+    return vol_liters * 0.5
 
 
 async def _build_wb_supply_data(
@@ -1224,15 +1286,28 @@ async def _build_wb_supply_data(
         wh_sales = sales_by_nm.get(nm_id, {})
         nm_regions = regional_demand.get(nm_id, {})
 
-        # Распределяем региональный спрос по складам
-        # demand_by_wh: склад → {"regional_orders": N, "regions": [...]}
+        # ── 5a. Определяем тип товара по складам ──
+        product_type = _classify_product_wh_type(wh_stocks, wh_sales)
+        est_weight = _estimate_weight_kg(vol)
+
+        # Если вес > 25кг — это СГТ, даже если сейчас на обычном складе
+        if est_weight > _MAX_BOX_WEIGHT_KG and product_type == "normal":
+            product_type = "sgt"
+
+        # ── 5b. Распределяем региональный спрос по складам ──
+        # Фильтруем маппинг по типу товара
         demand_by_wh: dict[str, dict] = {}
         for region, qty in nm_regions.items():
             target_whs = REGION_TO_WAREHOUSES.get(region, [])
-            # Найти первый доступный склад для этого региона
+            # Фильтруем склады по типу товара
+            typed_whs = [w for w in target_whs if _filter_wh_for_type(w, product_type)]
+            if not typed_whs:
+                # Нет подходящих складов в этом округе — fallback на любой
+                typed_whs = target_whs
+
             placed = False
-            for twh in target_whs:
-                # Normalize: ищем склад из тарифов по начальной подстроке
+            for twh in typed_whs:
+                # Normalize: ищем склад из тарифов по точному совпадению или подстроке
                 matched_wh = None
                 for avail_wh in available_warehouses:
                     if avail_wh == twh or avail_wh.startswith(twh):
@@ -1246,8 +1321,7 @@ async def _build_wb_supply_data(
                     placed = True
                     break
             if not placed:
-                # Fallback — первый склад из маппинга (даже без тарифа)
-                fallback_wh = target_whs[0] if target_whs else "Котовск"
+                fallback_wh = typed_whs[0] if typed_whs else "Котовск"
                 if fallback_wh not in demand_by_wh:
                     demand_by_wh[fallback_wh] = {"regional_orders": 0, "regions": []}
                 demand_by_wh[fallback_wh]["regional_orders"] += qty
