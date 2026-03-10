@@ -217,4 +217,54 @@ export async function getWbWeeklyReportApi(params: {
   return data
 }
 
+// ── Excel Export ──────────────────────────────────────────────
+
+export async function downloadOzonExcelReport(params: {
+  shop_id: number
+  date_from: string
+  date_to: string
+}): Promise<void> {
+  const response = await apiClient.get('/finances/ozon/excel', {
+    params,
+    responseType: 'blob',
+  })
+  const blob = new Blob([response.data], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  // Extract filename from Content-Disposition header or use default
+  const cd = response.headers['content-disposition']
+  const match = cd?.match(/filename="?(.+?)"?$/)
+  link.download = match ? match[1] : `Ozon_Finance_${params.date_from}_${params.date_to}.xlsx`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
+export async function downloadWbExcelReport(params: {
+  shop_id: number
+  date_from: string
+  date_to: string
+}): Promise<void> {
+  const response = await apiClient.get('/finances/wb/excel', {
+    params,
+    responseType: 'blob',
+  })
+  const blob = new Blob([response.data], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  const cd = response.headers['content-disposition']
+  const match = cd?.match(/filename="?(.+?)"?$/)
+  link.download = match ? match[1] : `WB_Finance_${params.date_from}_${params.date_to}.xlsx`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
 

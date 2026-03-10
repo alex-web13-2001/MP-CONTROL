@@ -43,6 +43,7 @@ import {
   getOzonWeeklyReportApi,
   getWbWeeklyReportApi,
   downloadOzonExcelReport,
+  downloadWbExcelReport,
   type FinancesResponse,
   type FinancesDailyPoint,
   type ProductFinanceResponse,
@@ -1044,15 +1045,15 @@ export default function FinancesPage() {
                         <FileText className="h-4 w-4 text-red-500" />
                         PDF отчёт
                       </button>
-                      {isOzon && (
-                        <button
+                      <button
                           className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.15)] transition-colors border-t border-[hsl(var(--border)/0.5)]"
                           onClick={async () => {
                             setExportMenuOpen(false)
                             if (!data || excelGenerating) return
                             setExcelGenerating(true)
                             try {
-                              await downloadOzonExcelReport({
+                              const downloadFn = isOzon ? downloadOzonExcelReport : downloadWbExcelReport
+                              await downloadFn({
                                 shop_id: shopId!,
                                 date_from: data.date_from,
                                 date_to: data.date_to,
@@ -1067,7 +1068,6 @@ export default function FinancesPage() {
                           <FileSpreadsheet className="h-4 w-4 text-green-500" />
                           Excel отчёт
                         </button>
-                      )}
                     </div>
                   </>
                 )}

@@ -9,6 +9,7 @@ import io
 import logging
 from datetime import date, timedelta
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -990,9 +991,757 @@ async def export_ozon_excel(
     buf.seek(0)
 
     filename = f"Ozon_Finance_{shop.name}_{d_start}_{d_end}.xlsx"
+    encoded = quote(filename)
 
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
     )
+
+
+# ══════════════════════════════════════════════════════════════
+# WB Excel Export
+# ══════════════════════════════════════════════════════════════
+
+WB_HEADER_FILL = PatternFill(start_color="7C3AED", end_color="7C3AED", fill_type="solid")
+
+
+def _style_wb_header_row(ws, row_num: int, col_count: int):
+    """WB purple header styling."""
+    for col in range(1, col_count + 1):
+        cell = ws.cell(row=row_num, column=col)
+        cell.font = HEADER_FONT
+        cell.fill = WB_HEADER_FILL
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = THIN_BORDER
+
+
+@router.get("/wb/excel")
+async def export_wb_excel(
+    shop_id: int = Query(..., description="Shop ID"),
+    date_from: date = Query(..., description="Start date"),
+    date_to: date = Query(..., description="End date"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate and download comprehensive WB Excel financial report."""
+
+    # ── Verify shop ──
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
+
+    d_start = date_from
+    d_end = date_to
+    span = (d_end - d_start).days + 1
+    d_prev_start = d_start - timedelta(days=span)
+    d_prev_end = d_start - timedelta(days=1)
+
+    # ══════════════════════════════════════════════════════
+    # 1. Summary KPIs from fact_finances
+    # ══════════════════════════════════════════════════════
+    revenue_cur = revenue_prev = 0.0
+    payout_cur = payout_prev = 0.0
+    commission_cur = commission_prev = 0.0
+    logistics_cur = logistics_prev = 0.0
+    storage_cur = storage_prev = 0.0
+    acquiring_cur = acquiring_prev = 0.0
+    acceptance_cur = acceptance_prev = 0.0
+    deductions_cur = deductions_prev = 0.0
+    deductions_ads_cur = deductions_ads_prev = 0.0
+    penalties_cur = penalties_prev = 0.0
+    returns_cur = returns_prev = 0.0
+    orders_cur = orders_prev = 0
+
+    try:
+        fin = ch.query("""
+            SELECT
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type='Продажа' AND event_date>={d_start:Date} AND event_date<={d_end:Date})
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type='Возврат' AND event_date>={d_start:Date} AND event_date<={d_end:Date}) AS rev_cur,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type='Продажа' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date})
+                 - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type='Возврат' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS rev_prev,
+
+                sumIf(payout_amount, operation_type='Продажа' AND event_date>={d_start:Date} AND event_date<={d_end:Date})
+                 - sumIf(payout_amount, operation_type='Возврат' AND event_date>={d_start:Date} AND event_date<={d_end:Date}) AS pay_cur,
+                sumIf(payout_amount, operation_type='Продажа' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date})
+                 - sumIf(payout_amount, operation_type='Возврат' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS pay_prev,
+
+                sumIf(wb_delivery_rub, event_date>={d_start:Date} AND event_date<={d_end:Date}) AS log_cur,
+                sumIf(wb_delivery_rub, event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS log_prev,
+                sumIf(storage_fee, event_date>={d_start:Date} AND event_date<={d_end:Date}) AS stor_cur,
+                sumIf(storage_fee, event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS stor_prev,
+                sumIf(wb_acquiring, event_date>={d_start:Date} AND event_date<={d_end:Date}) AS acq_cur,
+                sumIf(wb_acquiring, event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS acq_prev,
+                sumIf(acceptance_fee, event_date>={d_start:Date} AND event_date<={d_end:Date}) AS acc_cur,
+                sumIf(acceptance_fee, event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS acc_prev,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'), event_date>={d_start:Date} AND event_date<={d_end:Date}
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded_cur,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'), event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded_prev,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'), event_date>={d_start:Date} AND event_date<={d_end:Date}
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads_cur,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'), event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}
+                    AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads_prev,
+                sumIf(penalty_total, event_date>={d_start:Date} AND event_date<={d_end:Date}) AS pen_cur,
+                sumIf(penalty_total, event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS pen_prev,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат' AND event_date>={d_start:Date} AND event_date<={d_end:Date}) AS ret_cur,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS ret_prev,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0 AND event_date>={d_start:Date} AND event_date<={d_end:Date}) AS ord_cur,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0 AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS ord_prev
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+              AND event_date>={d_prev_start:Date} AND event_date<={d_end:Date}
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if fin.result_rows:
+            r = fin.result_rows[0]
+            revenue_cur, revenue_prev = float(r[0] or 0), float(r[1] or 0)
+            payout_cur, payout_prev = float(r[2] or 0), float(r[3] or 0)
+            logistics_cur, logistics_prev = abs(float(r[4] or 0)), abs(float(r[5] or 0))
+            storage_cur, storage_prev = abs(float(r[6] or 0)), abs(float(r[7] or 0))
+            acquiring_cur, acquiring_prev = abs(float(r[8] or 0)), abs(float(r[9] or 0))
+            acceptance_cur, acceptance_prev = abs(float(r[10] or 0)), abs(float(r[11] or 0))
+            deductions_cur, deductions_prev = abs(float(r[12] or 0)), abs(float(r[13] or 0))
+            deductions_ads_cur, deductions_ads_prev = abs(float(r[14] or 0)), abs(float(r[15] or 0))
+            penalties_cur, penalties_prev = abs(float(r[16] or 0)), abs(float(r[17] or 0))
+            returns_cur, returns_prev = abs(float(r[18] or 0)), abs(float(r[19] or 0))
+            orders_cur, orders_prev = int(r[20] or 0), int(r[21] or 0)
+            commission_cur = max(revenue_cur - payout_cur, 0)
+            commission_prev = max(revenue_prev - payout_prev, 0)
+    except Exception as e:
+        logger.warning("WB Excel KPI query failed: %s", e)
+
+    # 2. Ad spend from fact_advert_stats_v3
+    ad_spend_cur = ad_spend_prev = 0.0
+    try:
+        ads = ch.query("""
+            SELECT
+                sumIf(spend, date>={d_start:Date} AND date<={d_end:Date}) AS cur,
+                sumIf(spend, date>={d_prev_start:Date} AND date<={d_prev_end:Date}) AS prev
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id={shop_id:UInt32}
+              AND date>={d_prev_start:Date} AND date<={d_end:Date}
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        if ads.result_rows:
+            ad_spend_cur = float(ads.result_rows[0][0] or 0)
+            ad_spend_prev = float(ads.result_rows[0][1] or 0)
+    except Exception:
+        pass
+
+    # 3. COGS
+    cogs_cur = cogs_prev = 0.0
+    cost_map = {}
+    try:
+        cost_result = await db.execute(
+            text("""
+                SELECT offer_id, COALESCE(cost_price,0)+COALESCE(packaging_cost,0) AS total_cost
+                FROM product_costs WHERE shop_id=:shop_id AND (cost_price>0 OR packaging_cost>0)
+            """), {"shop_id": shop_id},
+        )
+        cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+
+        if cost_map:
+            cogs_ch = ch.query("""
+                SELECT
+                    vendor_code,
+                    sumIf(quantity, operation_type='Продажа' AND event_date>={d_start:Date} AND event_date<={d_end:Date})
+                     - sumIf(quantity, operation_type='Возврат' AND event_date>={d_start:Date} AND event_date<={d_end:Date}) AS qty_cur,
+                    sumIf(quantity, operation_type='Продажа' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date})
+                     - sumIf(quantity, operation_type='Возврат' AND event_date>={d_prev_start:Date} AND event_date<={d_prev_end:Date}) AS qty_prev
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id={shop_id:UInt32} AND marketplace=1
+                  AND operation_type IN ('Продажа','Возврат') AND vendor_code!=''
+                  AND event_date>={d_prev_start:Date} AND event_date<={d_end:Date}
+                GROUP BY vendor_code
+            """, parameters={
+                "shop_id": shop_id,
+                "d_start": d_start, "d_end": d_end,
+                "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+            })
+            for r in cogs_ch.result_rows:
+                vc = str(r[0] or "").lower()
+                unit = cost_map.get(vc, 0)
+                if unit > 0:
+                    cogs_cur += unit * max(0, int(r[1] or 0))
+                    cogs_prev += unit * max(0, int(r[2] or 0))
+    except Exception:
+        pass
+
+    # Derived
+    bank_cur = payout_cur - logistics_cur - storage_cur - acceptance_cur - deductions_cur - deductions_ads_cur
+    bank_prev = payout_prev - logistics_prev - storage_prev - acceptance_prev - deductions_prev - deductions_ads_prev
+    profit_cur = bank_cur - ad_spend_cur - cogs_cur
+    profit_prev = bank_prev - ad_spend_prev - cogs_prev
+
+    # ══════════════════════════════════════════════════════
+    # 4. Daily dynamics
+    # ══════════════════════════════════════════════════════
+    daily_data = []
+    try:
+        dd = ch.query("""
+            SELECT
+                event_date AS dt,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Продажа')
+                 - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
+                sumIf(payout_amount, operation_type='Продажа') - sumIf(payout_amount, operation_type='Возврат') AS pay,
+                sum(wb_delivery_rub) AS log,
+                sum(storage_fee) AS stor,
+                sum(wb_acquiring) AS acq,
+                sum(acceptance_fee) AS acc,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0) AS orders
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+              AND event_date>={d_start:Date} AND event_date<={d_end:Date}
+            GROUP BY dt ORDER BY dt
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        daily_data = dd.result_rows
+    except Exception:
+        pass
+
+    # 5. Weekly FULL RETROSPECTIVE
+    weekly_data = []
+    try:
+        wd = ch.query("""
+            SELECT
+                toMonday(event_date) AS ws,
+                toMonday(event_date)+6 AS we,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0) AS qty,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Продажа')
+                 - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
+                sumIf(payout_amount, operation_type='Продажа') - sumIf(payout_amount, operation_type='Возврат') AS pay,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rets,
+                sum(wb_delivery_rub) AS log,
+                sum(storage_fee) AS stor,
+                sum(wb_acquiring) AS acq,
+                sum(acceptance_fee) AS acc,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+            GROUP BY ws ORDER BY ws
+        """, parameters={"shop_id": shop_id})
+        weekly_data = wd.result_rows
+    except Exception:
+        pass
+
+    # Weekly ads from fact_advert_stats_v3
+    ads_by_week = {}
+    try:
+        aw = ch.query("""
+            SELECT toMonday(date) AS ws, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id={shop_id:UInt32}
+            GROUP BY ws
+        """, parameters={"shop_id": shop_id})
+        for r in aw.result_rows:
+            ads_by_week[str(r[0])] = float(r[1] or 0)
+    except Exception:
+        pass
+
+    # Weekly COGS
+    cogs_by_week = {}
+    if cost_map:
+        try:
+            cw = ch.query("""
+                SELECT toMonday(event_date) AS ws, vendor_code,
+                    sumIf(quantity, operation_type='Продажа') - sumIf(quantity, operation_type='Возврат') AS qty
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id={shop_id:UInt32} AND marketplace=1
+                  AND operation_type IN ('Продажа','Возврат') AND vendor_code!=''
+                GROUP BY ws, vendor_code
+            """, parameters={"shop_id": shop_id})
+            for r in cw.result_rows:
+                ws_key = str(r[0])
+                vc = str(r[1] or "").lower()
+                qty = max(0, int(r[2] or 0))
+                unit = cost_map.get(vc, 0)
+                if unit > 0 and qty > 0:
+                    cogs_by_week[ws_key] = cogs_by_week.get(ws_key, 0) + unit * qty
+        except Exception:
+            pass
+
+    # 6. Monthly FULL RETROSPECTIVE
+    monthly_data = []
+    try:
+        md = ch.query("""
+            SELECT
+                toYYYYMM(event_date) AS ym,
+                min(event_date) AS m_start, max(event_date) AS m_end,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0) AS qty,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Продажа')
+                 - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
+                sumIf(payout_amount, operation_type='Продажа') - sumIf(payout_amount, operation_type='Возврат') AS pay,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rets,
+                sum(wb_delivery_rub) AS log,
+                sum(storage_fee) AS stor,
+                sum(wb_acquiring) AS acq,
+                sum(acceptance_fee) AS acc,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+            GROUP BY ym ORDER BY ym
+        """, parameters={"shop_id": shop_id})
+        monthly_data = md.result_rows
+    except Exception:
+        pass
+
+    # Monthly ads
+    ads_by_month = {}
+    try:
+        am = ch.query("""
+            SELECT toYYYYMM(date) AS ym, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id={shop_id:UInt32}
+            GROUP BY ym
+        """, parameters={"shop_id": shop_id})
+        for r in am.result_rows:
+            ads_by_month[int(r[0])] = float(r[1] or 0)
+    except Exception:
+        pass
+
+    # Monthly COGS
+    cogs_by_month = {}
+    if cost_map:
+        try:
+            cm = ch.query("""
+                SELECT toYYYYMM(event_date) AS ym, vendor_code,
+                    sumIf(quantity, operation_type='Продажа') - sumIf(quantity, operation_type='Возврат') AS qty
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id={shop_id:UInt32} AND marketplace=1
+                  AND operation_type IN ('Продажа','Возврат') AND vendor_code!=''
+                GROUP BY ym, vendor_code
+            """, parameters={"shop_id": shop_id})
+            for r in cm.result_rows:
+                ym_key = int(r[0])
+                vc = str(r[1] or "").lower()
+                qty = max(0, int(r[2] or 0))
+                unit = cost_map.get(vc, 0)
+                if unit > 0 and qty > 0:
+                    cogs_by_month[ym_key] = cogs_by_month.get(ym_key, 0) + unit * qty
+        except Exception:
+            pass
+
+    # 7. Per-SKU data
+    sku_data = {}
+    try:
+        sku_q = ch.query("""
+            SELECT
+                vendor_code,
+                sumIf(quantity, operation_type='Продажа' AND quantity>0) AS qty,
+                sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Продажа')
+                 - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
+                sumIf(payout_amount, operation_type='Продажа') - sumIf(payout_amount, operation_type='Возврат') AS pay,
+                sum(wb_delivery_rub) AS log,
+                sum(storage_fee) AS stor,
+                sum(wb_acquiring) AS acq,
+                sum(acceptance_fee) AS acc,
+                sumIf(JSONExtractFloat(raw_payload,'deduction'),
+                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+              AND event_date>={d_start:Date} AND event_date<={d_end:Date}
+              AND vendor_code!=''
+            GROUP BY vendor_code ORDER BY rev DESC
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        for r in sku_q.result_rows:
+            vc = str(r[0] or "")
+            sku_data[vc] = {
+                "qty": int(r[1] or 0),
+                "revenue": float(r[2] or 0),
+                "payout": float(r[3] or 0),
+                "logistics": abs(float(r[4] or 0)),
+                "storage": abs(float(r[5] or 0)),
+                "acquiring": abs(float(r[6] or 0)),
+                "acceptance": abs(float(r[7] or 0)),
+                "deductions": abs(float(r[8] or 0)),
+            }
+    except Exception:
+        pass
+
+    # SKU ad spend from fact_advert_stats_v3
+    try:
+        sku_ads = ch.query("""
+            SELECT vendor_code, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3
+            WHERE shop_id={shop_id:UInt32}
+              AND date>={d_start:Date} AND date<={d_end:Date}
+              AND vendor_code!=''
+            GROUP BY vendor_code
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        for r in sku_ads.result_rows:
+            vc = str(r[0] or "")
+            if vc in sku_data:
+                sku_data[vc]["ad_spend"] = float(r[1] or 0)
+    except Exception:
+        pass
+
+    # Product names from dim_products (PG)
+    names_map = {}
+    try:
+        nm = await db.execute(
+            text("SELECT vendor_code, name FROM dim_products WHERE shop_id=:shop_id"),
+            {"shop_id": shop_id},
+        )
+        for r in nm.fetchall():
+            if r[1]:
+                names_map[r[0]] = r[1]
+    except Exception:
+        pass
+
+    # ══════════════════════════════════════════════════════
+    # BUILD WORKBOOK
+    # ══════════════════════════════════════════════════════
+    wb = Workbook()
+
+    # ── Sheet 1: Сводка ──
+    ws1 = wb.active
+    ws1.title = "Сводка"
+    ws1.sheet_properties.tabColor = "7C3AED"
+
+    ws1.merge_cells("A1:D1")
+    ws1.cell(row=1, column=1, value=f"Финансовый отчёт WB — {shop.name}")
+    ws1.cell(row=1, column=1).font = Font(name="Calibri", bold=True, size=14, color="7C3AED")
+    ws1.cell(row=2, column=1, value=f"Период: {d_start} — {d_end} ({span} дн.)")
+    ws1.cell(row=2, column=1).font = Font(name="Calibri", size=11, italic=True, color="6B7280")
+
+    rows_data = [
+        ("Выручка (продажи-возвраты)", revenue_cur, revenue_prev),
+        ("Возвраты", returns_cur, returns_prev),
+        ("Комиссия + скидки", commission_cur, commission_prev),
+        ("Эквайринг", acquiring_cur, acquiring_prev),
+        ("К перечислению (payout)", payout_cur, payout_prev),
+        ("Логистика", logistics_cur, logistics_prev),
+        ("Хранение", storage_cur, storage_prev),
+        ("Платная приёмка", acceptance_cur, acceptance_prev),
+        ("Удержания (прочие)", deductions_cur, deductions_prev),
+        ("ВБ Продвижение", deductions_ads_cur, deductions_ads_prev),
+        ("Штрафы", penalties_cur, penalties_prev),
+        ("Итого к оплате", bank_cur, bank_prev),
+        ("Реклама (внешн.)", ad_spend_cur, ad_spend_prev),
+        ("Себестоимость", cogs_cur, cogs_prev),
+        ("Чистая прибыль", profit_cur, profit_prev),
+        ("Заказов (шт.)", orders_cur, orders_prev),
+    ]
+
+    headers = ["Показатель", "Текущий период", "Предыдущий период", "Изменение %"]
+    for col, h in enumerate(headers, 1):
+        ws1.cell(row=4, column=col, value=h)
+    _style_wb_header_row(ws1, 4, 4)
+
+    for i, (label, cur, prev) in enumerate(rows_data):
+        rn = i + 5
+        ws1.cell(row=rn, column=1, value=label).font = SECTION_FONT if label.startswith(("К перечислению", "Итого", "Чистая")) else NORMAL_FONT
+        ws1.cell(row=rn, column=2, value=round(cur, 2)).number_format = MONEY_FMT
+        ws1.cell(row=rn, column=3, value=round(prev, 2)).number_format = MONEY_FMT
+        delta = _safe_delta(cur, prev)
+        ws1.cell(row=rn, column=4, value=round(delta, 1)).number_format = '0.0"%"'
+        _style_data_row(ws1, rn, 4, is_alt=(i % 2 == 1))
+        if label.startswith(("К перечислению", "Итого", "Чистая")):
+            for c in range(1, 5):
+                ws1.cell(row=rn, column=c).fill = TOTAL_FILL
+                ws1.cell(row=rn, column=c).font = TOTAL_FONT
+
+    _auto_width(ws1)
+
+    # ── Sheet 2: Дни ──
+    ws2 = wb.create_sheet("По дням")
+    ws2.sheet_properties.tabColor = "3B82F6"
+
+    day_headers = ["Дата", "Заказов", "Выручка", "К перечисл.", "Логистика", "Хранение",
+                   "Приёмка", "Удержания", "ВБ Промо", "Эквайринг"]
+    for col, h in enumerate(day_headers, 1):
+        ws2.cell(row=1, column=col, value=h)
+    _style_wb_header_row(ws2, 1, len(day_headers))
+
+    for i, r in enumerate(daily_data):
+        rn = i + 2
+        ws2.cell(row=rn, column=1, value=str(r[0]))
+        ws2.cell(row=rn, column=2, value=int(r[9] or 0))
+        ws2.cell(row=rn, column=3, value=float(r[1] or 0)).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=4, value=float(r[2] or 0)).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=5, value=abs(float(r[3] or 0))).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=6, value=abs(float(r[4] or 0))).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=7, value=abs(float(r[6] or 0))).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=8, value=abs(float(r[7] or 0))).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=9, value=abs(float(r[8] or 0))).number_format = MONEY_FMT
+        ws2.cell(row=rn, column=10, value=abs(float(r[5] or 0))).number_format = MONEY_FMT
+        _style_data_row(ws2, rn, len(day_headers), is_alt=(i % 2 == 1))
+
+    _auto_width(ws2)
+    ws2.freeze_panes = 'A2'
+
+    # ── Sheet 3: По неделям (FULL RETROSPECTIVE) ──
+    ws3 = wb.create_sheet("По неделям")
+    ws3.sheet_properties.tabColor = "EA580C"
+
+    wk_headers = [
+        "Год", "Нед.", "Период", "Заказов", "Выручка",
+        "К перечисл.", "Возвраты", "Логистика", "Хранение",
+        "Приёмка", "Удержания", "ВБ Промо", "Реклама",
+        "С/С", "Прибыль",
+        "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
+    ]
+    for col, h in enumerate(wk_headers, 1):
+        ws3.cell(row=1, column=col, value=h)
+    _style_wb_header_row(ws3, 1, len(wk_headers))
+
+    pct_cols_wk = [16, 17, 18, 19]
+
+    for i, r in enumerate(weekly_data):
+        rn = i + 2
+        ws_d = r[0]
+        we_d = r[1]
+        rev = float(r[3] or 0)
+        pay = float(r[4] or 0)
+        rets = abs(float(r[5] or 0))
+        log = abs(float(r[6] or 0))
+        stor = abs(float(r[7] or 0))
+        acq = abs(float(r[8] or 0))
+        acc = abs(float(r[9] or 0))
+        ded = abs(float(r[10] or 0))
+        ded_ads = abs(float(r[11] or 0))
+        ws_key = str(ws_d)
+        ads = ads_by_week.get(ws_key, 0)
+        cogs = cogs_by_week.get(ws_key, 0)
+        comm = max(rev - pay, 0)
+        profit_wk = pay - log - stor - acc - ded - ded_ads - ads - cogs
+
+        ws3.cell(row=rn, column=1, value=ws_d.year if hasattr(ws_d, 'year') else int(str(ws_d)[:4]))
+        ws3.cell(row=rn, column=2, value=ws_d.isocalendar()[1] if hasattr(ws_d, 'isocalendar') else 0)
+        ws3.cell(row=rn, column=3, value=f"{_fmt_date_ru(ws_d)} — {_fmt_date_ru(we_d)}")
+        ws3.cell(row=rn, column=4, value=int(r[2] or 0))
+        ws3.cell(row=rn, column=5, value=rev).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=6, value=pay).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=7, value=rets).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=8, value=log).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=9, value=stor).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=10, value=acc).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=11, value=ded).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=12, value=ded_ads).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=13, value=ads).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=14, value=round(cogs, 2)).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=15, value=round(profit_wk, 2)).number_format = MONEY_FMT
+
+        # Percentages
+        comm_pct = comm / rev * 100 if rev > 0 else 0
+        log_pct = log / rev * 100 if rev > 0 else 0
+        cogs_pct = cogs / rev * 100 if rev > 0 else 0
+        prof_pct = profit_wk / rev * 100 if rev > 0 else 0
+
+        ws3.cell(row=rn, column=16, value=round(comm_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=17, value=round(log_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=18, value=round(cogs_pct, 1)).number_format = '0.0"%"'
+        ws3.cell(row=rn, column=19, value=round(prof_pct, 1)).number_format = '0.0"%"'
+
+        _style_data_row(ws3, rn, len(wk_headers), is_alt=(i % 2 == 1))
+
+        # Color % columns
+        for pc in pct_cols_wk:
+            cell = ws3.cell(row=rn, column=pc)
+            val = cell.value or 0
+            if pc == 19:  # profit%
+                cell.font = GREEN_FONT if val >= 0 else RED_FONT
+            else:  # cost%
+                if val > 35:
+                    cell.font = RED_FONT
+                elif val < 20:
+                    cell.font = GREEN_FONT
+
+    _auto_width(ws3)
+    ws3.freeze_panes = 'D2'
+
+    # ── Sheet 4: По месяцам (FULL RETROSPECTIVE) ──
+    ws4 = wb.create_sheet("По месяцам")
+    ws4.sheet_properties.tabColor = "7C3AED"
+
+    MONTHS_RU = {1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 5: "Май", 6: "Июнь",
+                 7: "Июль", 8: "Август", 9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"}
+
+    m_headers = [
+        "Год", "Месяц", "Заказов", "Выручка",
+        "К перечисл.", "Возвраты", "Логистика", "Хранение",
+        "Приёмка", "Удержания", "ВБ Промо", "Реклама",
+        "С/С", "Прибыль",
+        "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
+    ]
+    for col, h in enumerate(m_headers, 1):
+        ws4.cell(row=1, column=col, value=h)
+    _style_wb_header_row(ws4, 1, len(m_headers))
+
+    pct_cols_m = [15, 16, 17, 18]
+
+    for i, r in enumerate(monthly_data):
+        rn = i + 2
+        ym = int(r[0])
+        year = ym // 100
+        month = ym % 100
+        rev = float(r[4] or 0)
+        pay = float(r[5] or 0)
+        rets = abs(float(r[6] or 0))
+        log = abs(float(r[7] or 0))
+        stor = abs(float(r[8] or 0))
+        acq = abs(float(r[9] or 0))
+        acc = abs(float(r[10] or 0))
+        ded = abs(float(r[11] or 0))
+        ded_ads = abs(float(r[12] or 0))
+        ads = ads_by_month.get(ym, 0)
+        cogs = cogs_by_month.get(ym, 0)
+        comm = max(rev - pay, 0)
+        profit_m = pay - log - stor - acc - ded - ded_ads - ads - cogs
+
+        ws4.cell(row=rn, column=1, value=year)
+        ws4.cell(row=rn, column=2, value=MONTHS_RU.get(month, str(month)))
+        ws4.cell(row=rn, column=3, value=int(r[3] or 0))
+        ws4.cell(row=rn, column=4, value=rev).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=5, value=pay).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=6, value=rets).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=7, value=log).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=8, value=stor).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=9, value=acc).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=10, value=ded).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=11, value=ded_ads).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=12, value=ads).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=13, value=round(cogs, 2)).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=14, value=round(profit_m, 2)).number_format = MONEY_FMT
+
+        comm_pct = comm / rev * 100 if rev > 0 else 0
+        log_pct = log / rev * 100 if rev > 0 else 0
+        cogs_pct = cogs / rev * 100 if rev > 0 else 0
+        prof_pct = profit_m / rev * 100 if rev > 0 else 0
+
+        ws4.cell(row=rn, column=15, value=round(comm_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=16, value=round(log_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=17, value=round(cogs_pct, 1)).number_format = '0.0"%"'
+        ws4.cell(row=rn, column=18, value=round(prof_pct, 1)).number_format = '0.0"%"'
+
+        _style_data_row(ws4, rn, len(m_headers), is_alt=(i % 2 == 1))
+
+        for pc in pct_cols_m:
+            cell = ws4.cell(row=rn, column=pc)
+            val = cell.value or 0
+            if pc == 18:
+                cell.font = GREEN_FONT if val >= 0 else RED_FONT
+            else:
+                if val > 35:
+                    cell.font = RED_FONT
+                elif val < 20:
+                    cell.font = GREEN_FONT
+
+    _auto_width(ws4)
+    ws4.freeze_panes = 'C2'
+
+    # ── Sheet 5: По товарам (SKU) ──
+    ws5 = wb.create_sheet("По товарам")
+    ws5.sheet_properties.tabColor = "10B981"
+
+    sku_headers = [
+        "Артикул", "Название", "Кол-во", "Выручка",
+        "К перечисл.", "Логистика", "Хранение", "Приёмка",
+        "Удержания", "Реклама", "С/С", "Прибыль", "Маржа%",
+    ]
+    for col, h in enumerate(sku_headers, 1):
+        ws5.cell(row=1, column=col, value=h)
+    _style_wb_header_row(ws5, 1, len(sku_headers))
+
+    sorted_skus = sorted(sku_data.items(), key=lambda x: x[1]["revenue"], reverse=True)
+    for i, (vc, sd) in enumerate(sorted_skus):
+        rn = i + 2
+        unit_cost = cost_map.get(vc.lower(), 0)
+        cogs_sku = unit_cost * sd["qty"] if unit_cost > 0 else 0
+        ads_sku = sd.get("ad_spend", 0)
+        profit_sku = sd["payout"] - sd["logistics"] - sd["storage"] - sd["acceptance"] - sd["deductions"] - ads_sku - cogs_sku
+        margin = profit_sku / sd["revenue"] * 100 if sd["revenue"] > 0 else 0
+
+        ws5.cell(row=rn, column=1, value=vc)
+        ws5.cell(row=rn, column=2, value=names_map.get(vc, ""))
+        ws5.cell(row=rn, column=3, value=sd["qty"])
+        ws5.cell(row=rn, column=4, value=round(sd["revenue"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=5, value=round(sd["payout"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=6, value=round(sd["logistics"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=7, value=round(sd["storage"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=8, value=round(sd["acceptance"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=9, value=round(sd["deductions"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=10, value=round(ads_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=11, value=round(cogs_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=12, value=round(profit_sku, 2)).number_format = MONEY_FMT
+        cell_m = ws5.cell(row=rn, column=13, value=round(margin, 1))
+        cell_m.number_format = '0.0"%"'
+        cell_m.font = GREEN_FONT if margin >= 0 else RED_FONT
+
+        _style_data_row(ws5, rn, len(sku_headers), is_alt=(i % 2 == 1))
+
+    # Totals row
+    total_row = len(sorted_skus) + 2
+    ws5.cell(row=total_row, column=1, value="ИТОГО")
+    t_qty = sum(s["qty"] for s in sku_data.values())
+    t_rev = sum(s["revenue"] for s in sku_data.values())
+    t_pay = sum(s["payout"] for s in sku_data.values())
+    t_log = sum(s["logistics"] for s in sku_data.values())
+    t_stor = sum(s["storage"] for s in sku_data.values())
+    t_acc = sum(s["acceptance"] for s in sku_data.values())
+    t_ded = sum(s["deductions"] for s in sku_data.values())
+    t_ads_sku = sum(s.get("ad_spend", 0) for s in sku_data.values())
+    t_cogs_sku = sum(cost_map.get(vc.lower(), 0) * s["qty"] for vc, s in sku_data.items())
+    t_profit_sku = t_pay - t_log - t_stor - t_acc - t_ded - t_ads_sku - t_cogs_sku
+    t_margin = t_profit_sku / t_rev * 100 if t_rev > 0 else 0
+
+    ws5.cell(row=total_row, column=3, value=t_qty)
+    ws5.cell(row=total_row, column=4, value=round(t_rev, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=5, value=round(t_pay, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=6, value=round(t_log, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=7, value=round(t_stor, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=8, value=round(t_acc, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=9, value=round(t_ded, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=10, value=round(t_ads_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=11, value=round(t_cogs_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=12, value=round(t_profit_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=13, value=round(t_margin, 1)).number_format = '0.0"%"'
+    _style_total_row(ws5, total_row, len(sku_headers))
+
+    _auto_width(ws5)
+    ws5.freeze_panes = 'A2'
+
+    # ══════════════════════════════════════════════════════
+    # Save
+    # ══════════════════════════════════════════════════════
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"WB_Finance_{shop.name}_{d_start}_{d_end}.xlsx"
+    encoded = quote(filename)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
+
