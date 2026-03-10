@@ -14,6 +14,16 @@
   - Кастомный тултип с выручкой в ₽ для каждой группы + итого
   - Проценты и количество под каждым столбцом (шрифт 14px)
 
+### Added — Excel экспорт LTV отчёта
+
+- **Backend / `ltv.py` + `wb_ltv.py`:** Endpoints `GET /sales/ozon/ltv/xlsx` и `GET /sales/wb/ltv/xlsx`
+  - 6 листов: KPI, Помесячные данные, Retention по SKU (1→5 покупка), Таблица товаров, Когортная матрица, Время до повторной
+  - Heatmap цветовое кодирование retention % (фиолетовая градация)
+  - Отдельный ClickHouse запрос: retention funnel по каждому SKU (countDistinctIf purchase_num ≥ N)
+  - Обогащение данных из PostgreSQL (offer_id, product_name)
+- **Frontend / `ltv.ts` + `wb_ltv.ts`:** Функции `downloadLtvXlsx()` и `downloadWbLtvXlsx()`
+- **Frontend / `LtvPage.tsx`:** Зелёная кнопка «📥 Excel» в шапке страницы с анимацией загрузки
+
 ### Added — Excel экспорт ABC/XYZ анализа
 
 - **Backend / `sales.py`:** Два новых endpoint `GET /sales/ozon/abc-xyz/xlsx` и `GET /sales/wb/abc-xyz/xlsx`
