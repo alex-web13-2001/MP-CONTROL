@@ -831,28 +831,40 @@ async def export_wb_ltv_xlsx(
                         row_number() OVER (
                             PARTITION BY nm_id, buyer_id ORDER BY order_date
                         ) AS purchase_num,
+                        min(order_date) OVER (PARTITION BY nm_id, buyer_id) AS first_date,
+                        max(order_date) OVER (PARTITION BY nm_id, buyer_id) AS last_date,
                         count() OVER (PARTITION BY nm_id, buyer_id) AS total_purchases
                     FROM sku_orders
+                ),
+                sku_buyer_agg AS (
+                    SELECT
+                        nm_id,
+                        buyer_id,
+                        any(first_date) AS fd,
+                        any(last_date) AS ld,
+                        any(total_purchases) AS tp
+                    FROM sku_buyer_numbered
+                    GROUP BY nm_id, buyer_id
                 )
             SELECT
-                nm_id,
-                any(supplier_article) AS article,
-                any(subject) AS subject,
-                any(brand) AS brand,
-                countDistinctIf(buyer_id, purchase_num >= 1) AS b1,
-                countDistinctIf(buyer_id, purchase_num >= 2) AS b2,
-                countDistinctIf(buyer_id, purchase_num >= 3) AS b3,
-                countDistinctIf(buyer_id, purchase_num >= 4) AS b4,
-                countDistinctIf(buyer_id, purchase_num >= 5) AS b5,
-                round(avgIf(
-                    dateDiff('day',
-                        minIf(order_date, purchase_num = 1),
-                        maxIf(order_date, purchase_num = total_purchases)
-                    ) / greatest(total_purchases - 1, 1),
-                    total_purchases >= 2
-                ), 0) AS avg_days
-            FROM sku_buyer_numbered
-            GROUP BY nm_id
+                s.nm_id,
+                any(s.supplier_article) AS article,
+                any(s.subject) AS subject,
+                any(s.brand) AS brand,
+                countDistinctIf(s.buyer_id, s.purchase_num >= 1) AS b1,
+                countDistinctIf(s.buyer_id, s.purchase_num >= 2) AS b2,
+                countDistinctIf(s.buyer_id, s.purchase_num >= 3) AS b3,
+                countDistinctIf(s.buyer_id, s.purchase_num >= 4) AS b4,
+                countDistinctIf(s.buyer_id, s.purchase_num >= 5) AS b5,
+                round(avg(a.avg_d), 0) AS avg_days
+            FROM sku_buyer_numbered s
+            INNER JOIN (
+                SELECT nm_id, buyer_id,
+                    if(tp >= 2, dateDiff('day', fd, ld) / (tp - 1), 0) AS avg_d
+                FROM sku_buyer_agg
+                WHERE tp >= 2
+            ) a ON s.nm_id = a.nm_id AND s.buyer_id = a.buyer_id
+            GROUP BY s.nm_id
             HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
