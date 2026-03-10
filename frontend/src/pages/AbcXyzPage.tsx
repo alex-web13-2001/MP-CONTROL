@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { fetchAbcXyz, fetchWbAbcXyz, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-xyz'
+import { fetchAbcXyz, fetchWbAbcXyz, downloadAbcXyzXlsx, type AbcXyzProduct, type AbcXyzResponse } from '@/api/abc-xyz'
 import { useAppStore } from '@/stores/appStore'
 
 /* Sticky cell styles — must be opaque to hide content scrolling behind */
@@ -74,6 +74,24 @@ export default function AbcXyzPage() {
   const [period, setPeriod] = useState(90)
   const [useProfit, setUseProfit] = useState(false)
   const [selectedCell, setSelectedCell] = useState<string | null>(null)
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownloadXlsx = async () => {
+    if (!currentShop) return
+    setDownloading(true)
+    try {
+      await downloadAbcXyzXlsx(
+        currentShop.marketplace as 'ozon' | 'wildberries',
+        currentShop.id,
+        period,
+        useProfit,
+      )
+    } catch (e) {
+      console.error('XLSX download error', e)
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   const isWb = currentShop?.marketplace === 'wildberries'
   const isOzon = currentShop?.marketplace === 'ozon'
@@ -153,6 +171,17 @@ export default function AbcXyzPage() {
           >
             {useProfit ? '📊 По прибыли' : '💰 По выручке'}
           </button>
+
+          {/* Download Excel */}
+          {data && data.products.length > 0 && (
+            <button
+              onClick={handleDownloadXlsx}
+              disabled={downloading}
+              className="px-5 py-2.5 text-sm font-semibold rounded-xl border-2 border-[hsl(var(--border))] bg-[hsl(var(--card))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.5)] hover:border-[hsl(var(--primary)/0.5)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {downloading ? '⏳ Загрузка...' : '📥 Excel'}
+            </button>
+          )}
         </div>
       </div>
 

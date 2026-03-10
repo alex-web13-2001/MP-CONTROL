@@ -71,3 +71,29 @@ export async function fetchWbAbcXyz(
   })
   return data
 }
+
+export async function downloadAbcXyzXlsx(
+  marketplace: 'ozon' | 'wildberries',
+  shopId: number,
+  period: number = 90,
+  useProfit: boolean = false,
+) {
+  const mp = marketplace === 'wildberries' ? 'wb' : 'ozon'
+  const response = await apiClient.get(`/sales/${mp}/abc-xyz/xlsx`, {
+    params: { shop_id: shopId, period, use_profit: useProfit },
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  const disposition = response.headers['content-disposition']
+  const filename = disposition
+    ? disposition.split('filename=')[1]?.replace(/"/g, '')
+    : `ABC_XYZ_${mp}_${period}d.xlsx`
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+

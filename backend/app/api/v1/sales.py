@@ -1742,6 +1742,391 @@ async def get_wb_abc_xyz(
 
 
 # ═══════════════════════════════════════════════════════════════
+# ABC / XYZ → Excel Export
+# ═══════════════════════════════════════════════════════════════
+
+from io import BytesIO
+from starlette.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+
+def _build_abc_xyz_xlsx(data: dict, shop_name: str, marketplace: str) -> BytesIO:
+    """Build an Excel workbook from ABC/XYZ JSON response."""
+    wb = Workbook()
+
+    # ── Colors ──
+    HEADER_FILL = PatternFill("solid", fgColor="1F2937")
+    HEADER_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    TITLE_FONT = Font(name="Calibri", bold=True, size=14, color="1F2937")
+    SUBTITLE_FONT = Font(name="Calibri", size=11, color="6B7280")
+    MONEY_FMT = '#,##0'
+    THIN_BORDER = Border(
+        bottom=Side(style="thin", color="E5E7EB"),
+    )
+
+    ABC_FILLS = {
+        "A": PatternFill("solid", fgColor="D1FAE5"),
+        "B": PatternFill("solid", fgColor="FEF3C7"),
+        "C": PatternFill("solid", fgColor="FEE2E2"),
+    }
+    XYZ_FILLS = {
+        "X": PatternFill("solid", fgColor="DBEAFE"),
+        "Y": PatternFill("solid", fgColor="FEF3C7"),
+        "Z": PatternFill("solid", fgColor="FFEDD5"),
+    }
+    MATRIX_FILLS = {
+        "AX": PatternFill("solid", fgColor="BBF7D0"),
+        "AY": PatternFill("solid", fgColor="D9F99D"),
+        "AZ": PatternFill("solid", fgColor="FDE68A"),
+        "BX": PatternFill("solid", fgColor="A5F3FC"),
+        "BY": PatternFill("solid", fgColor="E0E7FF"),
+        "BZ": PatternFill("solid", fgColor="FECACA"),
+        "CX": PatternFill("solid", fgColor="BFDBFE"),
+        "CY": PatternFill("solid", fgColor="FED7AA"),
+        "CZ": PatternFill("solid", fgColor="FECACA"),
+    }
+
+    period = data.get("period", 90)
+    products = data.get("products", [])
+    summary = data.get("summary", {})
+    matrix = data.get("matrix", {})
+    use_profit = data.get("use_profit", False)
+    metric_label = "прибыли" if use_profit else "выручки"
+
+    # ══════════════════════════════════════════════
+    # Sheet 1: ABC-XYZ Products Table
+    # ══════════════════════════════════════════════
+    ws = wb.active
+    ws.title = "ABC-XYZ анализ"
+    ws.sheet_properties.tabColor = "10B981"
+
+    # Title
+    ws.merge_cells("A1:S1")
+    ws["A1"] = f"ABC/XYZ анализ — {shop_name} ({marketplace})"
+    ws["A1"].font = TITLE_FONT
+    ws["A1"].alignment = Alignment(vertical="center")
+    ws.row_dimensions[1].height = 30
+
+    ws.merge_cells("A2:S2")
+    ws["A2"] = f"Период: {period} дней | Классификация по {metric_label}"
+    ws["A2"].font = SUBTITLE_FONT
+    ws.row_dimensions[2].height = 20
+
+    # Headers
+    headers = [
+        ("№", 5), ("Артикул", 18), ("Название", 35),
+        ("ABC", 6), ("XYZ", 6), ("Класс", 7),
+        (f"{'Прибыль' if use_profit else 'Выручка'} ₽", 14),
+        ("Доля %", 8), ("Накопл. %", 10),
+        ("Заказы", 9), ("Ср. цена ₽", 12),
+        ("Прибыль ₽", 13), ("Маржа %", 9),
+        ("Комиссия ₽", 12), ("Логистика ₽", 12),
+        ("Хранение ₽", 12), ("Реклама ₽", 11),
+        ("С/С ₽", 10), ("CV %", 8),
+    ]
+
+    header_row = 4
+    for col_idx, (header, width) in enumerate(headers, 1):
+        cell = ws.cell(row=header_row, column=col_idx, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.row_dimensions[header_row].height = 28
+    ws.freeze_panes = f"A{header_row + 1}"
+
+    # Data rows
+    for i, p in enumerate(products):
+        row = header_row + 1 + i
+        abc = p.get("abc_group", "")
+        xyz = p.get("xyz_group", "")
+        cell_class = f"{abc}{xyz}"
+
+        values = [
+            i + 1, p.get("offer_id", ""), p.get("name", ""),
+            abc, xyz, cell_class,
+            p.get("profit" if use_profit else "revenue", 0),
+            p.get("abc_share", 0), p.get("abc_cumulative", 0),
+            p.get("orders", 0), p.get("avg_price", 0),
+            p.get("profit", 0), p.get("margin_pct", 0),
+            p.get("commission", 0), p.get("logistics", 0),
+            p.get("storage", 0), p.get("ad_spend", 0),
+            p.get("cogs", 0), p.get("xyz_cv", 0),
+        ]
+
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row, column=col_idx, value=val)
+            cell.border = THIN_BORDER
+            cell.alignment = Alignment(vertical="center")
+
+        for mc in [7, 11, 12, 14, 15, 16, 17, 18]:
+            ws.cell(row=row, column=mc).number_format = MONEY_FMT
+        for pc in [8, 9, 13, 19]:
+            ws.cell(row=row, column=pc).number_format = '0.0'
+
+        if abc in ABC_FILLS:
+            c = ws.cell(row=row, column=4)
+            c.fill = ABC_FILLS[abc]
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+        if xyz in XYZ_FILLS:
+            c = ws.cell(row=row, column=5)
+            c.fill = XYZ_FILLS[xyz]
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+        if cell_class in MATRIX_FILLS:
+            c = ws.cell(row=row, column=6)
+            c.fill = MATRIX_FILLS[cell_class]
+            c.font = Font(bold=True)
+            c.alignment = Alignment(horizontal="center")
+
+        margin = p.get("margin_pct", 0)
+        mc = ws.cell(row=row, column=13)
+        if margin > 20:
+            mc.font = Font(color="059669")
+        elif margin < 0:
+            mc.font = Font(color="DC2626")
+        elif margin < 10:
+            mc.font = Font(color="D97706")
+
+        profit_val = p.get("profit", 0)
+        pc = ws.cell(row=row, column=12)
+        if profit_val < 0:
+            pc.font = Font(color="DC2626", bold=True)
+        elif profit_val > 0:
+            pc.font = Font(color="059669")
+
+    # Totals row
+    if products:
+        total_row = header_row + 1 + len(products)
+        ws.cell(row=total_row, column=2, value="ИТОГО").font = Font(bold=True, size=11)
+        ws.cell(row=total_row, column=3, value=f"{len(products)} товаров").font = Font(bold=True)
+
+        total_cols = {
+            7: "profit" if use_profit else "revenue",
+            10: "orders", 12: "profit",
+            14: "commission", 15: "logistics",
+            16: "storage", 17: "ad_spend", 18: "cogs",
+        }
+        for col_idx, key in total_cols.items():
+            total_val = sum(p.get(key, 0) for p in products)
+            cell = ws.cell(row=total_row, column=col_idx, value=round(total_val))
+            cell.font = Font(bold=True, size=11)
+            cell.number_format = MONEY_FMT
+
+        total_fill = PatternFill("solid", fgColor="F3F4F6")
+        for col_idx in range(1, len(headers) + 1):
+            ws.cell(row=total_row, column=col_idx).fill = total_fill
+            ws.cell(row=total_row, column=col_idx).border = Border(
+                top=Side(style="medium", color="1F2937"),
+                bottom=Side(style="medium", color="1F2937"),
+            )
+
+    # ══════════════════════════════════════════════
+    # Sheet 2: Matrix 3x3
+    # ══════════════════════════════════════════════
+    ws2 = wb.create_sheet("Матрица ABC-XYZ")
+    ws2.sheet_properties.tabColor = "6366F1"
+
+    ws2.merge_cells("A1:E1")
+    ws2["A1"] = f"Матрица ABC/XYZ — {shop_name}"
+    ws2["A1"].font = TITLE_FONT
+    ws2.row_dimensions[1].height = 30
+
+    ws2.merge_cells("A2:E2")
+    ws2["A2"] = f"Период: {period} дней | Всего товаров: {len(products)}"
+    ws2["A2"].font = SUBTITLE_FONT
+
+    msr = 4  # matrix start row
+    msc = 2  # matrix start col
+
+    xyz_labels = {
+        "X": "X — стабильный\n(CV < 10%)",
+        "Y": "Y — умеренный\n(CV 10-25%)",
+        "Z": "Z — хаотичный\n(CV > 25%)",
+    }
+    for j, (_, label) in enumerate(xyz_labels.items()):
+        cell = ws2.cell(row=msr, column=msc + j, value=label)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws2.column_dimensions[get_column_letter(msc + j)].width = 22
+    ws2.row_dimensions[msr].height = 40
+
+    abc_labels = {
+        "A": "A — лидеры\n(80% дохода)",
+        "B": "B — средние\n(15% дохода)",
+        "C": "C — аутсайдеры\n(5% дохода)",
+    }
+    ws2.column_dimensions["A"].width = 20
+
+    for i, (abc_key, label) in enumerate(abc_labels.items()):
+        rn = msr + 1 + i
+        ws2.row_dimensions[rn].height = 50
+        cell = ws2.cell(row=rn, column=1, value=label)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        for j, xyz_key in enumerate(["X", "Y", "Z"]):
+            key = f"{abc_key}{xyz_key}"
+            count = matrix.get(key, 0)
+            cell = ws2.cell(row=rn, column=msc + j,
+                           value=f"{count} товар." if count else "—")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.font = Font(size=14, bold=True)
+            if key in MATRIX_FILLS:
+                cell.fill = MATRIX_FILLS[key]
+            cell.border = Border(
+                top=Side(style="thin", color="D1D5DB"),
+                bottom=Side(style="thin", color="D1D5DB"),
+                left=Side(style="thin", color="D1D5DB"),
+                right=Side(style="thin", color="D1D5DB"),
+            )
+
+    desc_row = msr + 5
+    descriptions = {
+        "AX": "🌟 Звёзды — высокий доход, стабильный спрос",
+        "AY": "Высокий доход, умеренные колебания",
+        "AZ": "Высокий доход, непредсказуемый спрос",
+        "BX": "Стабильные середнячки",
+        "BY": "Средний доход, сезонность",
+        "BZ": "Средний доход, хаотичный спрос",
+        "CX": "Низкий доход, но стабильный (нишевый)",
+        "CY": "📉 Низкий доход + сезонный спрос",
+        "CZ": "🚫 Кандидаты на вывод",
+    }
+    ws2.merge_cells(f"A{desc_row}:D{desc_row}")
+    ws2.cell(row=desc_row, column=1, value="Описание классов:").font = Font(bold=True, size=11)
+    for k, (key, desc) in enumerate(descriptions.items()):
+        r = desc_row + 1 + k
+        count = matrix.get(key, 0)
+        ws2.cell(row=r, column=1, value=key).font = Font(bold=True)
+        if key in MATRIX_FILLS:
+            ws2.cell(row=r, column=1).fill = MATRIX_FILLS[key]
+        ws2.cell(row=r, column=1).alignment = Alignment(horizontal="center")
+        ws2.merge_cells(f"B{r}:D{r}")
+        ws2.cell(row=r, column=2, value=desc)
+        ws2.cell(row=r, column=5, value=f"{count} шт." if count else "—")
+
+    # ══════════════════════════════════════════════
+    # Sheet 3: Summary
+    # ══════════════════════════════════════════════
+    ws3 = wb.create_sheet("Сводка")
+    ws3.sheet_properties.tabColor = "F59E0B"
+
+    ws3.merge_cells("A1:D1")
+    ws3["A1"] = f"Сводка ABC/XYZ — {shop_name}"
+    ws3["A1"].font = TITLE_FONT
+    ws3.row_dimensions[1].height = 30
+
+    ws3.merge_cells("A3:D3")
+    ws3["A3"] = "Группы ABC (по доле дохода)"
+    ws3["A3"].font = Font(bold=True, size=12)
+
+    ws3.column_dimensions["A"].width = 12
+    ws3.column_dimensions["B"].width = 25
+    ws3.column_dimensions["C"].width = 15
+    ws3.column_dimensions["D"].width = 15
+
+    for col_idx, h in enumerate(["Группа", "Описание", "Товаров", "Доля выручки %"], 1):
+        cell = ws3.cell(row=4, column=col_idx, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+
+    abc_desc = {"A": "Лидеры (80% дохода)", "B": "Средние (15% дохода)", "C": "Аутсайдеры (5% дохода)"}
+    for i, abc_key in enumerate(["A", "B", "C"]):
+        row = 5 + i
+        s = summary.get(abc_key, {})
+        c = ws3.cell(row=row, column=1, value=abc_key)
+        c.font = Font(bold=True, size=12)
+        if abc_key in ABC_FILLS:
+            c.fill = ABC_FILLS[abc_key]
+        c.alignment = Alignment(horizontal="center")
+        ws3.cell(row=row, column=2, value=abc_desc.get(abc_key, ""))
+        ws3.cell(row=row, column=3, value=s.get("count", 0)).alignment = Alignment(horizontal="center")
+        ws3.cell(row=row, column=4, value=s.get("revenue_share", 0)).number_format = '0.0'
+
+    ws3.merge_cells("A10:D10")
+    ws3["A10"] = "Группы XYZ (по стабильности спроса)"
+    ws3["A10"].font = Font(bold=True, size=12)
+
+    for col_idx, h in enumerate(["Группа", "Описание", "Товаров", "Коэфф. вариации"], 1):
+        cell = ws3.cell(row=11, column=col_idx, value=h)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL
+
+    xyz_desc = {"X": "Стабильные (CV < 10%)", "Y": "Умеренные (CV 10-25%)", "Z": "Хаотичные (CV > 25%)"}
+    for i, xyz_key in enumerate(["X", "Y", "Z"]):
+        row = 12 + i
+        s = summary.get(xyz_key, {})
+        c = ws3.cell(row=row, column=1, value=xyz_key)
+        c.font = Font(bold=True, size=12)
+        if xyz_key in XYZ_FILLS:
+            c.fill = XYZ_FILLS[xyz_key]
+        c.alignment = Alignment(horizontal="center")
+        ws3.cell(row=row, column=2, value=xyz_desc.get(xyz_key, ""))
+        ws3.cell(row=row, column=3, value=s.get("count", 0)).alignment = Alignment(horizontal="center")
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@router.get("/ozon/abc-xyz/xlsx")
+async def export_ozon_abc_xyz_xlsx(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=14, le=365),
+    use_profit: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export Ozon ABC/XYZ analysis as Excel file."""
+    data = await get_ozon_abc_xyz(shop_id=shop_id, period=period,
+                                  use_profit=use_profit, user=user, db=db)
+
+    result = await db.execute(select(Shop).where(Shop.id == shop_id))
+    shop = result.scalar_one_or_none()
+    shop_name = shop.name if shop else f"Shop #{shop_id}"
+
+    buf = _build_abc_xyz_xlsx(data, shop_name, "Ozon")
+    filename = f"ABC_XYZ_Ozon_{shop_name}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/wb/abc-xyz/xlsx")
+async def export_wb_abc_xyz_xlsx(
+    shop_id: int = Query(...),
+    period: int = Query(90, ge=14, le=365),
+    use_profit: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export WB ABC/XYZ analysis as Excel file."""
+    data = await get_wb_abc_xyz(shop_id=shop_id, period=period,
+                                use_profit=use_profit, user=user, db=db)
+
+    result = await db.execute(select(Shop).where(Shop.id == shop_id))
+    shop = result.scalar_one_or_none()
+    shop_name = shop.name if shop else f"Shop #{shop_id}"
+
+    buf = _build_abc_xyz_xlsx(data, shop_name, "Wildberries")
+    filename = f"ABC_XYZ_WB_{shop_name}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # Ozon Sales Forecast + Simulator  (LightGBM)
 # ═══════════════════════════════════════════════════════════════
 
