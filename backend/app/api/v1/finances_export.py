@@ -1349,12 +1349,14 @@ async def export_wb_excel(
         except Exception:
             pass
 
-    # 7. Per-SKU data
+    # 7. Per-SKU data (extract nm_id for ad spend mapping)
     sku_data = {}
+    nm_to_vc = {}  # nm_id → vendor_code mapping for ad spend
     try:
         sku_q = ch.query("""
             SELECT
                 vendor_code,
+                JSONExtractUInt(raw_payload, 'nm_id') AS nm_id,
                 sumIf(quantity, operation_type='Продажа' AND quantity>0) AS qty,
                 sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Продажа')
                  - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
@@ -1369,37 +1371,55 @@ async def export_wb_excel(
             WHERE shop_id={shop_id:UInt32} AND marketplace=1
               AND event_date>={d_start:Date} AND event_date<={d_end:Date}
               AND vendor_code!=''
-            GROUP BY vendor_code ORDER BY rev DESC
+            GROUP BY vendor_code, nm_id ORDER BY rev DESC
         """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
         for r in sku_q.result_rows:
             vc = str(r[0] or "")
-            sku_data[vc] = {
-                "qty": int(r[1] or 0),
-                "revenue": float(r[2] or 0),
-                "payout": float(r[3] or 0),
-                "logistics": abs(float(r[4] or 0)),
-                "storage": abs(float(r[5] or 0)),
-                "acquiring": abs(float(r[6] or 0)),
-                "acceptance": abs(float(r[7] or 0)),
-                "deductions": abs(float(r[8] or 0)),
-            }
+            nm = int(r[1] or 0)
+            if nm and vc:
+                nm_to_vc[nm] = vc
+            if vc not in sku_data:
+                sku_data[vc] = {
+                    "qty": 0, "revenue": 0, "payout": 0,
+                    "logistics": 0, "storage": 0, "acquiring": 0,
+                    "acceptance": 0, "deductions": 0, "ad_spend": 0,
+                }
+            sku_data[vc]["qty"] += int(r[2] or 0)
+            sku_data[vc]["revenue"] += float(r[3] or 0)
+            sku_data[vc]["payout"] += float(r[4] or 0)
+            sku_data[vc]["logistics"] += abs(float(r[5] or 0))
+            sku_data[vc]["storage"] += abs(float(r[6] or 0))
+            sku_data[vc]["acquiring"] += abs(float(r[7] or 0))
+            sku_data[vc]["acceptance"] += abs(float(r[8] or 0))
+            sku_data[vc]["deductions"] += abs(float(r[9] or 0))
     except Exception:
         pass
 
-    # SKU ad spend from fact_advert_stats_v3
+    # SKU ad spend from fact_advert_stats_v3 — by nm_id → vendor_code
     try:
         sku_ads = ch.query("""
-            SELECT vendor_code, sum(spend) AS s
+            SELECT nm_id, sum(spend) AS s
             FROM mms_analytics.fact_advert_stats_v3
             WHERE shop_id={shop_id:UInt32}
               AND date>={d_start:Date} AND date<={d_end:Date}
-              AND vendor_code!=''
-            GROUP BY vendor_code
+            GROUP BY nm_id
         """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        unmatched_ads = 0.0
         for r in sku_ads.result_rows:
-            vc = str(r[0] or "")
-            if vc in sku_data:
-                sku_data[vc]["ad_spend"] = float(r[1] or 0)
+            nm = int(r[0] or 0)
+            spend = float(r[1] or 0)
+            vc = nm_to_vc.get(nm)
+            if vc and vc in sku_data:
+                sku_data[vc]["ad_spend"] += spend
+            else:
+                unmatched_ads += spend
+        # Add unmatched ads as separate row
+        if unmatched_ads > 0:
+            sku_data["__реклама_без_привязки__"] = {
+                "qty": 0, "revenue": 0, "payout": 0,
+                "logistics": 0, "storage": 0, "acquiring": 0,
+                "acceptance": 0, "deductions": 0, "ad_spend": unmatched_ads,
+            }
     except Exception:
         pass
 
@@ -1413,6 +1433,30 @@ async def export_wb_excel(
         for r in nm.fetchall():
             if r[1]:
                 names_map[r[0]] = r[1]
+    except Exception:
+        pass
+
+    # 8. Expense detail (for "Расходы детально" sheet)
+    expense_detail_rows = []
+    try:
+        exp = ch.query("""
+            SELECT
+                operation_type,
+                JSONExtractString(raw_payload, 'bonus_type_name') AS bonus_type,
+                count() AS cnt,
+                sum(JSONExtractFloat(raw_payload, 'delivery_rub')) AS delivery_total,
+                sum(storage_fee) AS storage_total,
+                sum(acceptance_fee) AS acceptance_total,
+                sum(penalty_total) AS penalty_total,
+                sum(JSONExtractFloat(raw_payload, 'deduction')) AS deduction_total,
+                sum(wb_acquiring) AS acquiring_total
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+              AND event_date>={d_start:Date} AND event_date<={d_end:Date}
+            GROUP BY operation_type, bonus_type
+            ORDER BY operation_type, bonus_type
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        expense_detail_rows = exp.result_rows
     except Exception:
         pass
 
@@ -1728,6 +1772,35 @@ async def export_wb_excel(
 
     _auto_width(ws5)
     ws5.freeze_panes = 'A2'
+
+    # ── Sheet 6: Расходы детально ──
+    ws6 = wb.create_sheet("Расходы детально")
+    ws6.sheet_properties.tabColor = "D97706"
+
+    exp_headers = [
+        "Тип операции", "Тип бонуса/удержания", "Кол-во записей",
+        "Логистика", "Хранение", "Приёмка",
+        "Штрафы", "Удержания", "Эквайринг",
+    ]
+    for col, h in enumerate(exp_headers, 1):
+        ws6.cell(row=1, column=col, value=h)
+    _style_wb_header_row(ws6, 1, len(exp_headers))
+
+    for i, r in enumerate(expense_detail_rows):
+        rn = i + 2
+        ws6.cell(row=rn, column=1, value=str(r[0] or ""))
+        ws6.cell(row=rn, column=2, value=str(r[1] or "—"))
+        ws6.cell(row=rn, column=3, value=int(r[2] or 0))
+        ws6.cell(row=rn, column=4, value=abs(float(r[3] or 0))).number_format = MONEY_FMT_2
+        ws6.cell(row=rn, column=5, value=abs(float(r[4] or 0))).number_format = MONEY_FMT_2
+        ws6.cell(row=rn, column=6, value=abs(float(r[5] or 0))).number_format = MONEY_FMT_2
+        ws6.cell(row=rn, column=7, value=abs(float(r[6] or 0))).number_format = MONEY_FMT_2
+        ws6.cell(row=rn, column=8, value=abs(float(r[7] or 0))).number_format = MONEY_FMT_2
+        ws6.cell(row=rn, column=9, value=abs(float(r[8] or 0))).number_format = MONEY_FMT_2
+        _style_data_row(ws6, rn, len(exp_headers), is_alt=(i % 2 == 1))
+
+    _auto_width(ws6)
+    ws6.freeze_panes = 'A2'
 
     # ══════════════════════════════════════════════════════
     # Save
