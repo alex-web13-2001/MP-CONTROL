@@ -77,29 +77,33 @@ function CohortMatrix({ cohorts }: { cohorts: CohortRow[] }) {
   }
 
   const getColor = (rate: number) => {
-    if (rate >= 50) return 'rgba(139, 92, 246, 0.85)'
-    if (rate >= 30) return 'rgba(139, 92, 246, 0.65)'
-    if (rate >= 20) return 'rgba(139, 92, 246, 0.50)'
-    if (rate >= 10) return 'rgba(139, 92, 246, 0.35)'
-    if (rate >= 5)  return 'rgba(139, 92, 246, 0.22)'
-    if (rate > 0)   return 'rgba(139, 92, 246, 0.12)'
+    if (rate >= 50) return 'rgba(139, 92, 246, 0.90)'
+    if (rate >= 30) return 'rgba(139, 92, 246, 0.72)'
+    if (rate >= 20) return 'rgba(139, 92, 246, 0.55)'
+    if (rate >= 10) return 'rgba(139, 92, 246, 0.42)'
+    if (rate >= 5)  return 'rgba(139, 92, 246, 0.30)'
+    if (rate > 0)   return 'rgba(139, 92, 246, 0.18)'
     return 'transparent'
   }
+
+  // Dark text for light cells, white for saturated
+  const getTextColor = (rate: number) => rate >= 20 ? '#fff' : '#4c1d95'
+  const getSubTextColor = (rate: number) => rate >= 20 ? 'rgba(255,255,255,0.75)' : 'rgba(76,29,149,0.6)'
 
   return (
     <div className="rounded-2xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--card))] overflow-hidden">
       <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)]">
-        <h3 className="text-base font-semibold text-[hsl(var(--foreground))]">Когортная матрица (Retention)</h3>
-        <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1">Процент клиентов, вернувшихся через N месяцев</p>
+        <h3 className="text-[16px] font-bold text-[hsl(var(--foreground))]">Когортная матрица (Retention)</h3>
+        <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">Процент клиентов, вернувшихся через N месяцев</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-[13px]">
+        <table className="w-full text-[14px]">
           <thead>
             <tr className="border-b border-[hsl(var(--border)/0.15)]">
-              <th className="text-left px-4 py-3 font-semibold text-[hsl(var(--muted-foreground))] w-[120px] sticky left-0 bg-[hsl(var(--card))] z-10">Когорта</th>
-              <th className="text-center px-3 py-3 font-semibold text-[hsl(var(--muted-foreground))] w-[70px]">Размер</th>
+              <th className="text-left px-4 py-3 font-bold text-[14px] text-[hsl(var(--foreground)/0.7)] w-[120px] sticky left-0 bg-[hsl(var(--card))] z-10">Когорта</th>
+              <th className="text-center px-3 py-3 font-bold text-[14px] text-[hsl(var(--foreground)/0.7)] w-[80px]">Размер</th>
               {offsets.map(o => (
-                <th key={o} className="text-center px-3 py-3 font-semibold text-[hsl(var(--muted-foreground))] min-w-[80px]">
+                <th key={o} className="text-center px-3 py-3 font-bold text-[14px] text-[hsl(var(--foreground)/0.7)] min-w-[90px]">
                   {o === 0 ? 'Мес 0' : `+${o} мес`}
                 </th>
               ))}
@@ -108,21 +112,21 @@ function CohortMatrix({ cohorts }: { cohorts: CohortRow[] }) {
           <tbody>
             {cohorts.map((c, ri) => (
               <tr key={c.cohort} className={ri % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.06)]'}>
-                <td className="px-4 py-3 font-medium text-[hsl(var(--foreground))] sticky left-0 bg-[hsl(var(--card))] z-10 whitespace-nowrap">
+                <td className="px-4 py-3 font-semibold text-[14px] text-[hsl(var(--foreground))] sticky left-0 bg-[hsl(var(--card))] z-10 whitespace-nowrap">
                   {formatCohort(c.cohort)}
                 </td>
-                <td className="px-3 py-3 text-center font-semibold text-[hsl(var(--foreground))]">{fmtNum(c.size)}</td>
+                <td className="px-3 py-3 text-center font-bold text-[14px] text-[hsl(var(--foreground))]">{fmtNum(c.size)}</td>
                 {offsets.map(o => {
                   const m = c.months[String(o)]
                   if (!m) return <td key={o} className="px-3 py-3" />
                   return (
                     <td key={o} className="px-3 py-2 text-center" title={`${m.clients} клиентов`}>
                       <div
-                        className="rounded-lg px-2 py-2 mx-auto w-fit min-w-[56px] transition-all"
+                        className="rounded-lg px-2 py-2 mx-auto w-fit min-w-[70px] transition-all"
                         style={{ background: getColor(m.rate) }}
                       >
-                        <div className="text-[13px] font-bold text-white">{fmtPct(m.rate)}</div>
-                        <div className="text-[10px] text-white/60">{m.clients}</div>
+                        <div className="text-[14px] font-extrabold" style={{ color: getTextColor(m.rate) }}>{fmtPct(m.rate)}</div>
+                        <div className="text-[12px] font-medium" style={{ color: getSubTextColor(m.rate) }}>{m.clients}</div>
                       </div>
                     </td>
                   )
@@ -150,27 +154,27 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
     <div className="rounded-xl border border-violet-500/25 bg-[hsl(var(--card))] p-3.5 transition-all hover:border-violet-500/50">
       {/* Row 1: rank + offer_id + repeat badge */}
       <div className="flex items-center gap-1.5 mb-1.5">
-        <span className="text-[11px] font-bold text-violet-400">#{rank}</span>
-        <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded bg-violet-500/15 text-violet-300 truncate max-w-[160px]">
+        <span className="text-[13px] font-extrabold text-violet-400">#{rank}</span>
+        <span className="text-[13px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/15 text-violet-300 truncate max-w-[160px]">
           {product.offer_id}
         </span>
         {isRepeat && (
-          <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-semibold whitespace-nowrap">
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold whitespace-nowrap">
             🔁 Повтор
           </span>
         )}
       </div>
 
       {/* Row 2: name (2 lines max) */}
-      <p className="text-[12px] text-[hsl(var(--foreground)/0.9)] leading-snug line-clamp-2 mb-2 font-medium">
+      <p className="text-[13px] text-[hsl(var(--foreground)/0.9)] leading-snug line-clamp-2 mb-2 font-semibold">
         {product.name}
       </p>
 
       {/* Row 3: buyers count + % */}
       <div className="flex items-center gap-2 mb-1.5">
-        <span className="text-[15px] font-bold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
-        <span className="text-[13px] font-bold text-violet-300 bg-violet-500/15 px-1.5 py-0.5 rounded">{fmtPct(product.pct_of_l1)}</span>
-        <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">от L1</span>
+        <span className="text-[17px] font-extrabold text-[hsl(var(--foreground))]">{fmtNum(product.buyers)}</span>
+        <span className="text-[14px] font-bold text-violet-300 bg-violet-500/15 px-2 py-0.5 rounded">{fmtPct(product.pct_of_l1)}</span>
+        <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.7)]">от L1</span>
       </div>
 
       {/* Progress bar — always violet */}
@@ -185,7 +189,7 @@ function ChainCard({ product, rank, isRepeat, l1Buyers }: {
       </div>
 
       {/* Row 4: avg revenue */}
-      <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+      <div className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
         💰 {fmtMoney(product.avg_revenue)} / заказ
       </div>
     </div>
@@ -224,16 +228,16 @@ function PurchaseChain({ chain, loading }: {
       {/* Header */}
       <div className="px-6 py-4 border-b border-[hsl(var(--border)/0.15)] flex items-center justify-between">
         <div>
-          <h3 className="text-[15px] font-bold text-[hsl(var(--foreground))]">
+          <h3 className="text-[16px] font-bold text-[hsl(var(--foreground))]">
             🔗 Цепочка покупок (1 → 2 → 3 → 4 → 5)
           </h3>
-          <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.7)] mt-0.5">
+          <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.8)] mt-0.5">
             Что покупают клиенты после покупки выбранного товара
           </p>
         </div>
         <div className="text-right shrink-0">
-          <div className="text-[22px] font-extrabold text-violet-400 leading-none">{fmtNum(l1.total_buyers)}</div>
-          <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">покупателей L1</div>
+          <div className="text-[24px] font-extrabold text-violet-400 leading-none">{fmtNum(l1.total_buyers)}</div>
+          <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.6)] mt-0.5">покупателей L1</div>
         </div>
       </div>
 
@@ -251,13 +255,13 @@ function PurchaseChain({ chain, loading }: {
                 {/* Arrow with conversion + days */}
                 {lvlNum > 1 && (
                   <div className="flex flex-col items-center justify-start pt-[50px] w-[60px] shrink-0">
-                    <div className="text-[16px] font-extrabold text-violet-400 leading-none">
+                    <div className="text-[17px] font-extrabold text-violet-400 leading-none">
                       {fmtPct(lvl.conversion_from_prev)}
                     </div>
-                    <div className="text-[9px] text-[hsl(var(--muted-foreground)/0.5)] mb-1">конверсия</div>
-                    <ChevronRight size={18} className="text-violet-400/50" />
+                    <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.6)] mb-1">конверсия</div>
+                    <ChevronRight size={20} className="text-violet-400/60" />
                     {daysLabels[lvlNum] > 0 && (
-                      <div className="mt-1 text-[11px] font-bold text-amber-400 bg-amber-400/10 rounded-md px-2 py-0.5 whitespace-nowrap">
+                      <div className="mt-1 text-[12px] font-bold text-amber-400 bg-amber-400/12 rounded-md px-2 py-0.5 whitespace-nowrap">
                         ⏱ {daysLabels[lvlNum]} дн
                       </div>
                     )}
@@ -266,26 +270,26 @@ function PurchaseChain({ chain, loading }: {
 
                 {/* Products column */}
                 <div className="w-[230px] shrink-0">
-                  <div className="text-[11px] font-bold text-[hsl(var(--muted-foreground)/0.6)] uppercase tracking-wider mb-2.5 text-center">
+                  <div className="text-[13px] font-bold text-[hsl(var(--muted-foreground)/0.7)] uppercase tracking-wider mb-2.5 text-center">
                     {stepNames[lvlNum]} покупка
                   </div>
 
                   {lvlNum === 1 ? (
                     /* L1 — target product card */
                     <div className="rounded-xl border-2 border-violet-500/40 bg-violet-500/5 p-4">
-                      <div className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 w-fit mb-2">
+                      <div className="text-[12px] font-mono font-bold px-2 py-0.5 rounded bg-violet-500/15 text-violet-400 w-fit mb-2">
                         {l1.offer_id}
                       </div>
-                      <p className="text-[13px] text-[hsl(var(--foreground))] leading-snug line-clamp-3 mb-3 font-semibold">
+                      <p className="text-[14px] text-[hsl(var(--foreground))] leading-snug line-clamp-3 mb-3 font-bold">
                         {l1.name}
                       </p>
-                      <div className="text-[22px] font-extrabold text-violet-400 mb-1 leading-none">
-                        {fmtNum(l1.total_buyers)} <span className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">чел</span>
+                      <div className="text-[24px] font-extrabold text-violet-400 mb-1 leading-none">
+                        {fmtNum(l1.total_buyers)} <span className="text-[14px] font-medium text-[hsl(var(--muted-foreground))]">чел</span>
                       </div>
-                      <div className="text-[11px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+                      <div className="text-[13px] text-[hsl(var(--muted-foreground))] leading-relaxed">
                         {fmtNum(l1.total_qty)} шт · ~{fmtMoney(l1.avg_price)} / шт
                       </div>
-                      <div className="mt-2 pt-2 border-t border-violet-500/20 text-[11px] text-[hsl(var(--muted-foreground))]">
+                      <div className="mt-2 pt-2 border-t border-violet-500/20 text-[13px] text-[hsl(var(--muted-foreground))]">
                         Перешли ко 2-й: <b className="text-violet-400">
                           {levels[0] ? fmtNum(levels[0].total_buyers) : 0}
                         </b> ({levels[0] ? fmtPct(levels[0].conversion_from_l1) : '0%'})
