@@ -1004,6 +1004,11 @@ REGION_TO_WAREHOUSES: dict[str, list[str]] = {
     ],
 }
 
+# ── Warehouse type classification ──
+_FOOD_SUFFIX = ": Питание"
+_SGT_SUFFIX = "СГТ"
+_MAX_BOX_WEIGHT_KG = 25  # Ограничение коробов по весу
+
 # Список категорий WB, которые нуждаются в складах «Питание» (Меркурий / пищевая продукция)
 _FOOD_CATEGORIES = {
     "Товары для животных",
