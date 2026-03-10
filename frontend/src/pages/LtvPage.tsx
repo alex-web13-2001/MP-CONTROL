@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   fetchLtv,
   fetchPurchaseChain,
+  downloadLtvXlsx,
   type LtvResponse,
   type ChainResponse,
   type SkuRepeatRow,
   type CohortRow,
 } from '@/api/ltv'
-import { fetchWbLtv, fetchWbPurchaseChain } from '@/api/wb_ltv'
+import { fetchWbLtv, fetchWbPurchaseChain, downloadWbLtvXlsx } from '@/api/wb_ltv'
 import { useAppStore } from '@/stores/appStore'
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
@@ -15,7 +16,7 @@ import {
 } from 'recharts'
 import {
   Users, Repeat, TrendingUp, ShoppingCart, DollarSign,
-  ChevronRight, Search, ArrowUpDown, Package,
+  ChevronRight, Search, ArrowUpDown, Package, FileSpreadsheet,
 } from 'lucide-react'
 
 /* ── helpers ── */
@@ -753,7 +754,31 @@ export default function LtvPage() {
             Анализ повторных покупок и цепочек продаж · {data.date_range.start} — {data.date_range.end}
           </p>
         </div>
-        <div className="flex gap-1.5 bg-[hsl(var(--muted)/0.1)] rounded-lg p-1">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={async () => {
+              try {
+                const el = document.getElementById('ltv-xlsx-btn')
+                if (el) el.classList.add('animate-pulse')
+                if (isWb) {
+                  await downloadWbLtvXlsx(currentShop!.id, period)
+                } else {
+                  await downloadLtvXlsx(currentShop!.id, period)
+                }
+              } catch (e) {
+                console.error('Excel download error', e)
+              } finally {
+                const el = document.getElementById('ltv-xlsx-btn')
+                if (el) el.classList.remove('animate-pulse')
+              }
+            }}
+            id="ltv-xlsx-btn"
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600/90 hover:bg-emerald-600 text-white text-sm font-medium transition-all shadow-sm"
+          >
+            <FileSpreadsheet size={16} />
+            Excel
+          </button>
+          <div className="flex gap-1.5 bg-[hsl(var(--muted)/0.1)] rounded-lg p-1">
           {PERIODS.map(p => (
             <button
               key={p.value}
@@ -767,6 +792,7 @@ export default function LtvPage() {
               {p.label}
             </button>
           ))}
+        </div>
         </div>
       </div>
 

@@ -137,3 +137,30 @@ export async function fetchPurchaseChain(
   })
   return data
 }
+
+export async function downloadLtvXlsx(
+  shopId: number,
+  period = '6m',
+) {
+  const response = await apiClient.get('/sales/ozon/ltv/xlsx', {
+    params: { shop_id: shopId, period },
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  const disposition = response.headers['content-disposition'] || ''
+  let filename = `LTV_Ozon_${period}.xlsx`
+  const utf8Match = disposition.match(/filename\*=UTF-8''(.+)/i)
+  if (utf8Match) {
+    filename = decodeURIComponent(utf8Match[1])
+  } else {
+    const plainMatch = disposition.match(/filename="?([^";\n]+)"?/i)
+    if (plainMatch) filename = plainMatch[1]
+  }
+  link.setAttribute('download', filename)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}

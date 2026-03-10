@@ -721,3 +721,422 @@ async def get_ozon_purchase_chain(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка цепочки продаж: {str(e)}",
         )
+
+
+# ══════════════════════════════════════════════════════════════
+# Excel Export — LTV full report
+# ══════════════════════════════════════════════════════════════
+
+from io import BytesIO
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+
+def _build_ltv_xlsx(
+    ltv_data: dict,
+    sku_retention: list[dict],
+    shop_name: str,
+    marketplace: str,
+) -> BytesIO:
+    """Build Excel workbook with full LTV report (6 sheets)."""
+    wb = Workbook()
+
+    # ── Styles ──
+    HDR_FILL = PatternFill("solid", fgColor="1F2937")
+    HDR_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    TITLE_FONT = Font(name="Calibri", bold=True, size=14, color="1F2937")
+    SUBTITLE_FONT = Font(name="Calibri", size=11, color="6B7280")
+    MONEY_FMT = '#,##0'
+    PCT_FMT = '0.0%'
+    NUM_FMT = '#,##0'
+    THIN_BORDER = Border(bottom=Side(style="thin", color="E5E7EB"))
+    GREEN_FILL = PatternFill("solid", fgColor="D1FAE5")
+    VIOLET_FILL = PatternFill("solid", fgColor="EDE9FE")
+    AMBER_FILL = PatternFill("solid", fgColor="FEF3C7")
+
+    # Heatmap fills for retention %
+    def retention_fill(pct: float):
+        if pct >= 50: return PatternFill("solid", fgColor="7C3AED")
+        if pct >= 30: return PatternFill("solid", fgColor="8B5CF6")
+        if pct >= 20: return PatternFill("solid", fgColor="A78BFA")
+        if pct >= 10: return PatternFill("solid", fgColor="C4B5FD")
+        if pct >= 5:  return PatternFill("solid", fgColor="DDD6FE")
+        if pct > 0:   return PatternFill("solid", fgColor="EDE9FE")
+        return None
+
+    def retention_font(pct: float):
+        if pct >= 20:
+            return Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+        return Font(name="Calibri", bold=True, color="1F2937", size=11)
+
+    def _hdr_row(ws, row, headers, widths):
+        for i, (h, w) in enumerate(zip(headers, widths), 1):
+            c = ws.cell(row=row, column=i, value=h)
+            c.fill = HDR_FILL
+            c.font = HDR_FONT
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            ws.column_dimensions[c.column_letter].width = w
+
+    kpi = ltv_data.get("kpi", {})
+    dr = ltv_data.get("date_range", {})
+    period_str = f'{dr.get("start", "?")} — {dr.get("end", "?")}'
+
+    # ══════════════════════════════════════════════
+    # Sheet 1: KPI Summary
+    # ══════════════════════════════════════════════
+    ws1 = wb.active
+    ws1.title = "📊 KPI"
+    ws1.sheet_properties.tabColor = "8B5CF6"
+
+    ws1.merge_cells("A1:D1")
+    ws1["A1"] = f"LTV-анализ — {shop_name} ({marketplace})"
+    ws1["A1"].font = TITLE_FONT
+    ws1.row_dimensions[1].height = 30
+
+    ws1.merge_cells("A2:D2")
+    ws1["A2"] = f"Период: {period_str}"
+    ws1["A2"].font = SUBTITLE_FONT
+
+    kpi_items = [
+        ("Уникальные клиенты", kpi.get("total_clients", 0), NUM_FMT),
+        ("Повторные клиенты", kpi.get("repeat_clients", 0), NUM_FMT),
+        ("Доля повторных (%)", kpi.get("repeat_rate", 0) / 100, PCT_FMT),
+        ("Средний LTV", kpi.get("avg_ltv", 0), MONEY_FMT),
+        ("Средний чек", kpi.get("avg_check", 0), MONEY_FMT),
+        ("Заказов / клиент", kpi.get("avg_orders_per_client", 0), '0.00'),
+        ("Общая выручка", kpi.get("total_revenue", 0), MONEY_FMT),
+    ]
+    _hdr_row(ws1, 4, ["Метрика", "Значение"], [30, 22])
+    for i, (label, val, fmt) in enumerate(kpi_items, 5):
+        ws1.cell(row=i, column=1, value=label).font = Font(name="Calibri", size=11, bold=True)
+        c = ws1.cell(row=i, column=2, value=val)
+        c.number_format = fmt
+        c.font = Font(name="Calibri", size=12, bold=True, color="7C3AED")
+        c.alignment = Alignment(horizontal="right")
+        ws1.cell(row=i, column=1).border = THIN_BORDER
+        c.border = THIN_BORDER
+
+    # ══════════════════════════════════════════════
+    # Sheet 2: Monthly Buyers
+    # ══════════════════════════════════════════════
+    monthly = ltv_data.get("monthly_buyers", [])
+    ws2 = wb.create_sheet("📅 Месяцы")
+    ws2.sheet_properties.tabColor = "10B981"
+
+    ws2.merge_cells("A1:H1")
+    ws2["A1"] = "Новые и повторные покупатели по месяцам"
+    ws2["A1"].font = TITLE_FONT
+    ws2.row_dimensions[1].height = 28
+
+    _hdr_row(ws2, 3, [
+        "Месяц", "Всего", "Новые", "Повторные",
+        "% новых", "% повтор.", "Выручка новых", "Выручка повтор.",
+    ], [14, 12, 12, 12, 10, 10, 18, 18])
+
+    for i, m in enumerate(monthly, 4):
+        total = m.get("total", 0) or 1
+        new_b = m.get("new_buyers", 0)
+        rep_b = m.get("repeat_buyers", 0)
+        ws2.cell(row=i, column=1, value=m.get("month", "")).font = Font(name="Calibri", bold=True, size=11)
+        ws2.cell(row=i, column=2, value=total).number_format = NUM_FMT
+        c_new = ws2.cell(row=i, column=3, value=new_b)
+        c_new.number_format = NUM_FMT
+        c_new.fill = GREEN_FILL
+        c_rep = ws2.cell(row=i, column=4, value=rep_b)
+        c_rep.number_format = NUM_FMT
+        c_rep.fill = VIOLET_FILL
+        ws2.cell(row=i, column=5, value=new_b / total).number_format = PCT_FMT
+        ws2.cell(row=i, column=6, value=rep_b / total).number_format = PCT_FMT
+        ws2.cell(row=i, column=7, value=m.get("new_revenue", 0)).number_format = MONEY_FMT
+        ws2.cell(row=i, column=8, value=m.get("repeat_revenue", 0)).number_format = MONEY_FMT
+        for col in range(1, 9):
+            ws2.cell(row=i, column=col).border = THIN_BORDER
+
+    # ══════════════════════════════════════════════
+    # Sheet 3: SKU Retention Map (1→5 purchase)
+    # ══════════════════════════════════════════════
+    ws3 = wb.create_sheet("🗺️ Retention по SKU")
+    ws3.sheet_properties.tabColor = "F59E0B"
+
+    ws3.merge_cells("A1:L1")
+    ws3["A1"] = "Карта удержания по товарам (покупка 1 → 5)"
+    ws3["A1"].font = TITLE_FONT
+    ws3.row_dimensions[1].height = 28
+
+    ws3.merge_cells("A2:L2")
+    ws3["A2"] = "Сколько клиентов возвращаются за покупкой 2, 3, 4, 5 после первой"
+    ws3["A2"].font = SUBTITLE_FONT
+
+    ret_headers = [
+        "Артикул", "Название", "Покупателей (1)", "Покупка 2", "% → 2",
+        "Покупка 3", "% → 3", "Покупка 4", "% → 4",
+        "Покупка 5", "% → 5", "Ср. дней между",
+    ]
+    ret_widths = [18, 35, 14, 12, 10, 12, 10, 12, 10, 12, 10, 14]
+    _hdr_row(ws3, 4, ret_headers, ret_widths)
+
+    for i, sku in enumerate(sku_retention, 5):
+        ws3.cell(row=i, column=1, value=sku.get("offer_id", "")).font = Font(name="Calibri", size=10, bold=True)
+        ws3.cell(row=i, column=2, value=sku.get("name", "")[:60]).font = Font(name="Calibri", size=10)
+        b1 = sku.get("buyers_1", 0)
+        b2 = sku.get("buyers_2", 0)
+        b3 = sku.get("buyers_3", 0)
+        b4 = sku.get("buyers_4", 0)
+        b5 = sku.get("buyers_5", 0)
+        p2 = b2 / max(b1, 1) * 100
+        p3 = b3 / max(b2, 1) * 100
+        p4 = b4 / max(b3, 1) * 100
+        p5 = b5 / max(b4, 1) * 100
+
+        ws3.cell(row=i, column=3, value=b1).number_format = NUM_FMT
+        ws3.cell(row=i, column=3).font = Font(name="Calibri", bold=True, size=11)
+
+        for col, buyers, pct in [(4, b2, p2), (6, b3, p3), (8, b4, p4), (10, b5, p5)]:
+            c_b = ws3.cell(row=i, column=col, value=buyers)
+            c_b.number_format = NUM_FMT
+            c_p = ws3.cell(row=i, column=col + 1, value=pct / 100)
+            c_p.number_format = PCT_FMT
+            fill = retention_fill(pct)
+            if fill:
+                c_p.fill = fill
+                c_p.font = retention_font(pct)
+
+        avg_d = sku.get("avg_days", 0)
+        ws3.cell(row=i, column=12, value=f"{avg_d} дн" if avg_d > 0 else "—")
+        for col in range(1, 13):
+            ws3.cell(row=i, column=col).border = THIN_BORDER
+
+    # ══════════════════════════════════════════════
+    # Sheet 4: SKU Table (full)
+    # ══════════════════════════════════════════════
+    sku_table = ltv_data.get("sku_table", [])
+    ws4 = wb.create_sheet("📦 Товары")
+    ws4.sheet_properties.tabColor = "6366F1"
+
+    ws4.merge_cells("A1:H1")
+    ws4["A1"] = "Таблица повторных покупок по товарам"
+    ws4["A1"].font = TITLE_FONT
+    ws4.row_dimensions[1].height = 28
+
+    sku_headers = [
+        "Артикул", "Название", "Покупателей", "Повторных",
+        "Конв. → 2 (%)", "Конв. → 3 (%)", "Ср. дней", "LTV повт.", "Выручка",
+    ]
+    sku_widths = [18, 35, 13, 13, 13, 13, 12, 15, 15]
+    _hdr_row(ws4, 3, sku_headers, sku_widths)
+
+    for i, s in enumerate(sku_table, 4):
+        ws4.cell(row=i, column=1, value=s.get("offer_id", "")).font = Font(name="Calibri", size=10, bold=True)
+        ws4.cell(row=i, column=2, value=s.get("name", "")[:60]).font = Font(name="Calibri", size=10)
+        ws4.cell(row=i, column=3, value=s.get("total_buyers", 0)).number_format = NUM_FMT
+        c_rep = ws4.cell(row=i, column=4, value=s.get("repeat_buyers", 0))
+        c_rep.number_format = NUM_FMT
+        c_rep.font = Font(name="Calibri", bold=True, color="7C3AED", size=11)
+        ws4.cell(row=i, column=5, value=s.get("conv_to_2", 0) / 100).number_format = PCT_FMT
+        ws4.cell(row=i, column=6, value=s.get("conv_to_3", 0) / 100).number_format = PCT_FMT
+        avg_d = s.get("avg_days_between", 0)
+        ws4.cell(row=i, column=7, value=f"{avg_d} дн" if avg_d > 0 else "—")
+        ws4.cell(row=i, column=8, value=s.get("avg_ltv_repeat", 0)).number_format = MONEY_FMT
+        ws4.cell(row=i, column=9, value=s.get("total_revenue", 0)).number_format = MONEY_FMT
+        for col in range(1, 10):
+            ws4.cell(row=i, column=col).border = THIN_BORDER
+
+    # ══════════════════════════════════════════════
+    # Sheet 5: Cohort Matrix
+    # ══════════════════════════════════════════════
+    cohorts = ltv_data.get("cohort_matrix", [])
+    ws5 = wb.create_sheet("🔄 Когорты")
+    ws5.sheet_properties.tabColor = "EC4899"
+
+    ws5.merge_cells("A1:I1")
+    ws5["A1"] = "Когортная матрица Retention"
+    ws5["A1"].font = TITLE_FONT
+    ws5.row_dimensions[1].height = 28
+
+    if cohorts:
+        max_offset = max(
+            int(k) for c in cohorts for k in c.get("months", {}).keys()
+        )
+        n_months = min(max_offset + 1, 7)
+
+        headers_c = ["Когорта", "Размер"] + [f"+{m} мес" if m > 0 else "Мес 0" for m in range(n_months)]
+        widths_c = [14, 12] + [12] * n_months
+        _hdr_row(ws5, 3, headers_c, widths_c)
+
+        for i, c in enumerate(cohorts, 4):
+            ws5.cell(row=i, column=1, value=c.get("cohort", "")).font = Font(name="Calibri", bold=True, size=11)
+            ws5.cell(row=i, column=2, value=c.get("size", 0)).number_format = NUM_FMT
+            months = c.get("months", {})
+            for m_idx in range(n_months):
+                m_data = months.get(str(m_idx))
+                if m_data:
+                    rate = m_data.get("rate", 0)
+                    cell = ws5.cell(row=i, column=3 + m_idx, value=rate / 100)
+                    cell.number_format = PCT_FMT
+                    fill = retention_fill(rate)
+                    if fill:
+                        cell.fill = fill
+                        cell.font = retention_font(rate)
+            for col in range(1, 3 + n_months):
+                ws5.cell(row=i, column=col).border = THIN_BORDER
+
+    # ══════════════════════════════════════════════
+    # Sheet 6: Time Distribution
+    # ══════════════════════════════════════════════
+    time_dist = ltv_data.get("time_distribution", [])
+    ws6 = wb.create_sheet("⏱ Время")
+    ws6.sheet_properties.tabColor = "F97316"
+
+    ws6.merge_cells("A1:D1")
+    ws6["A1"] = "Время до повторной покупки"
+    ws6["A1"].font = TITLE_FONT
+    ws6.row_dimensions[1].height = 28
+
+    _hdr_row(ws6, 3, ["Период (дней)", "Кол-во", "Ср. дней", "Доля"], [16, 12, 12, 12])
+    total_dist = sum(d.get("count", 0) for d in time_dist) or 1
+    for i, d in enumerate(time_dist, 4):
+        ws6.cell(row=i, column=1, value=d.get("bucket", "")).font = Font(name="Calibri", bold=True, size=11)
+        ws6.cell(row=i, column=2, value=d.get("count", 0)).number_format = NUM_FMT
+        ws6.cell(row=i, column=3, value=d.get("avg_days", 0)).number_format = '0.0'
+        ws6.cell(row=i, column=4, value=d.get("count", 0) / total_dist).number_format = PCT_FMT
+        for col in range(1, 5):
+            ws6.cell(row=i, column=col).border = THIN_BORDER
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+# ══════════════════════════════════════════════════════════════
+# Ozon LTV Excel endpoint
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/ozon/ltv/xlsx")
+async def export_ozon_ltv_xlsx(
+    shop_id: int = Query(...),
+    period: str = Query("6m"),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export full Ozon LTV analysis as Excel file."""
+    # Get main LTV data
+    ltv_data = await get_ozon_ltv(
+        shop_id=shop_id, period=period,
+        date_from=date_from, date_to=date_to,
+        db=db, current_user=current_user,
+    )
+
+    # Get shop name
+    result = await db.execute(select(Shop).where(Shop.id == shop_id))
+    shop = result.scalar_one_or_none()
+    shop_name = shop.name if shop else f"Shop #{shop_id}"
+
+    # Get per-SKU retention funnel (1→5 purchases) from ClickHouse
+    start_date, end_date = _ltv_dates(period, date_from, date_to)
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+        params = {"shop_id": shop_id, "start_date": start_date, "end_date": end_date}
+
+        retention_rows = ch.query("""
+            WITH
+                sku_orders AS (
+                    SELECT
+                        sku,
+                        offer_id,
+                        product_name,
+                        splitByChar('-', posting_number)[1] AS client_id,
+                        order_number,
+                        min(toDate(addHours(in_process_at, 3))) AS order_date
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(in_process_at, 3)) >= {start_date:Date}
+                      AND toDate(addHours(in_process_at, 3)) <= {end_date:Date}
+                    GROUP BY sku, offer_id, product_name, client_id, order_number
+                ),
+                sku_client_numbered AS (
+                    SELECT
+                        sku,
+                        argMax(offer_id, order_date) AS offer_id,
+                        any(product_name) AS product_name,
+                        client_id,
+                        order_date,
+                        row_number() OVER (
+                            PARTITION BY sku, client_id ORDER BY order_date
+                        ) AS purchase_num,
+                        min(order_date) OVER (PARTITION BY sku, client_id) AS first_date,
+                        max(order_date) OVER (PARTITION BY sku, client_id) AS last_date,
+                        count() OVER (PARTITION BY sku, client_id) AS total_purchases
+                    FROM sku_orders
+                )
+            SELECT
+                sku,
+                argMax(offer_id, purchase_num) AS offer_id,
+                any(product_name) AS name,
+                countDistinctIf(client_id, purchase_num >= 1) AS b1,
+                countDistinctIf(client_id, purchase_num >= 2) AS b2,
+                countDistinctIf(client_id, purchase_num >= 3) AS b3,
+                countDistinctIf(client_id, purchase_num >= 4) AS b4,
+                countDistinctIf(client_id, purchase_num >= 5) AS b5,
+                round(avgIf(
+                    dateDiff('day', first_date, last_date) / (total_purchases - 1),
+                    total_purchases >= 2
+                ), 0) AS avg_days
+            FROM sku_client_numbered
+            GROUP BY sku
+            HAVING b1 >= 5
+            ORDER BY b2 DESC, b1 DESC
+            LIMIT 100
+        """, parameters=params).result_rows
+
+        ch.close()
+
+        sku_retention = []
+        # Enrich with canonical offer_id from PostgreSQL
+        sku_ids_ret = [int(r[0]) for r in retention_rows]
+        pg_map_ret = {}
+        if sku_ids_ret:
+            from sqlalchemy import text as sa_text
+            img_result = await db.execute(
+                sa_text(
+                    "SELECT sku, offer_id FROM dim_ozon_products "
+                    "WHERE shop_id = :shop_id AND sku = ANY(:skus)"
+                ),
+                {"shop_id": shop_id, "skus": sku_ids_ret},
+            )
+            pg_map_ret = {int(row[0]): str(row[1]) for row in img_result.fetchall()}
+
+        for r in retention_rows:
+            s = int(r[0])
+            sku_retention.append({
+                "sku": s,
+                "offer_id": pg_map_ret.get(s, str(r[1])),
+                "name": str(r[2])[:60],
+                "buyers_1": int(r[3] or 0),
+                "buyers_2": int(r[4] or 0),
+                "buyers_3": int(r[5] or 0),
+                "buyers_4": int(r[6] or 0),
+                "buyers_5": int(r[7] or 0),
+                "avg_days": int(_sf(r[8])),
+            })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("LTV XLSX retention query error: %s", e, exc_info=True)
+        sku_retention = []
+
+    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Ozon")
+    filename = f"LTV_Ozon_{shop_name}_{period}.xlsx"
+    from urllib.parse import quote
+    encoded = quote(filename)
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )

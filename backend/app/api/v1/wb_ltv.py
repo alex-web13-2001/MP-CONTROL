@@ -765,3 +765,153 @@ async def get_wb_purchase_chain(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка цепочки WB: {str(e)}",
         )
+
+
+# ══════════════════════════════════════════════════════════════
+# WB LTV Excel endpoint
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/wb/ltv/xlsx")
+async def export_wb_ltv_xlsx(
+    shop_id: int = Query(...),
+    period: str = Query("6m"),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Export full WB LTV analysis as Excel file."""
+    from app.api.v1.ltv import _build_ltv_xlsx, _sf as _sf_ozon
+
+    # Get main LTV data
+    ltv_data = await get_wb_ltv(
+        shop_id=shop_id, period=period,
+        date_from=date_from, date_to=date_to,
+        db=db, current_user=current_user,
+    )
+
+    # Get shop name
+    result = await db.execute(select(Shop).where(Shop.id == shop_id))
+    shop = result.scalar_one_or_none()
+    shop_name = shop.name if shop else f"Shop #{shop_id}"
+
+    # Get per-SKU retention funnel (1→5 purchases) from ClickHouse
+    start_date, end_date = _ltv_dates(period, date_from, date_to)
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+        params = {"shop_id": shop_id, "start_date": start_date, "end_date": end_date}
+
+        retention_rows = ch.query(f"""
+            WITH
+                sku_orders AS (
+                    SELECT
+                        nm_id,
+                        supplier_article,
+                        subject,
+                        brand,
+                        {BUYER_ID_EXPR} AS buyer_id,
+                        toDate(date) AS order_date
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {{shop_id:UInt32}}
+                      AND date >= {{start_date:Date}}
+                      AND date <= {{end_date:Date}}
+                      AND is_cancel = 0
+                      AND {BUYER_FILTER}
+                ),
+                sku_buyer_numbered AS (
+                    SELECT
+                        nm_id,
+                        any(supplier_article) AS supplier_article,
+                        any(subject) AS subject,
+                        any(brand) AS brand,
+                        buyer_id,
+                        order_date,
+                        row_number() OVER (
+                            PARTITION BY nm_id, buyer_id ORDER BY order_date
+                        ) AS purchase_num,
+                        min(order_date) OVER (PARTITION BY nm_id, buyer_id) AS first_date,
+                        max(order_date) OVER (PARTITION BY nm_id, buyer_id) AS last_date,
+                        count() OVER (PARTITION BY nm_id, buyer_id) AS total_purchases
+                    FROM sku_orders
+                )
+            SELECT
+                nm_id,
+                any(supplier_article) AS article,
+                any(subject) AS subject,
+                any(brand) AS brand,
+                countDistinctIf(buyer_id, purchase_num >= 1) AS b1,
+                countDistinctIf(buyer_id, purchase_num >= 2) AS b2,
+                countDistinctIf(buyer_id, purchase_num >= 3) AS b3,
+                countDistinctIf(buyer_id, purchase_num >= 4) AS b4,
+                countDistinctIf(buyer_id, purchase_num >= 5) AS b5,
+                round(avgIf(
+                    dateDiff('day', first_date, last_date) / (total_purchases - 1),
+                    total_purchases >= 2
+                ), 0) AS avg_days
+            FROM sku_buyer_numbered
+            GROUP BY nm_id
+            HAVING b1 >= 5
+            ORDER BY b2 DESC, b1 DESC
+            LIMIT 100
+        """, parameters=params).result_rows
+
+        ch.close()
+
+        # Enrich with names from dim_products
+        import re as _re
+        nm_ids = [int(r[0]) for r in retention_rows]
+        pg_map_ret = {}
+        if nm_ids:
+            try:
+                pg_result = await db.execute(
+                    sa_text(
+                        "SELECT nm_id, name, vendor_code FROM dim_products "
+                        "WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)"
+                    ),
+                    {"shop_id": shop_id, "nm_ids": nm_ids},
+                )
+                for row in pg_result.fetchall():
+                    pg_map_ret[int(row[0])] = {
+                        "name": row[1] or "",
+                        "vendor_code": row[2] or "",
+                    }
+            except Exception:
+                pass
+
+        sku_retention = []
+        for r in retention_rows:
+            nm_id = int(r[0])
+            article = str(r[1])
+            info = pg_map_ret.get(nm_id, {})
+            offer_id = info.get("vendor_code") or article
+            name = info.get("name") or offer_id
+            sku_retention.append({
+                "sku": nm_id,
+                "offer_id": offer_id,
+                "name": name[:60],
+                "buyers_1": int(r[4] or 0),
+                "buyers_2": int(r[5] or 0),
+                "buyers_3": int(r[6] or 0),
+                "buyers_4": int(r[7] or 0),
+                "buyers_5": int(r[8] or 0),
+                "avg_days": int(_sf(r[9])),
+            })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("WB LTV XLSX retention query error: %s", e, exc_info=True)
+        sku_retention = []
+
+    buf = _build_ltv_xlsx(ltv_data, sku_retention, shop_name, "Wildberries")
+    filename = f"LTV_WB_{shop_name}_{period}.xlsx"
+    from urllib.parse import quote
+    encoded = quote(filename)
+    from starlette.responses import StreamingResponse
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
+    )
