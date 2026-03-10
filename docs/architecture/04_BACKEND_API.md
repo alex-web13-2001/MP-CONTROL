@@ -401,12 +401,14 @@ use_profit: bool (default: false) — ABC по чистой прибыли вм�
 
 ### Endpoints
 
-| Метод | Path                    | Описание                               | Auth   |
-| ----- | ----------------------- | -------------------------------------- | ------ |
-| `GET` | `/sales/ozon/ltv`       | KPI + когорты + SKU повторы + distrib. | Bearer |
-| `GET` | `/sales/ozon/ltv/chain` | Цепочка покупок L1→L5 по SKU (Ozon)    | Bearer |
-| `GET` | `/sales/wb/ltv`         | KPI + когорты + SKU повторы + distrib. | Bearer |
-| `GET` | `/sales/wb/ltv/chain`   | Цепочка покупок L1→L5 по SKU (WB)      | Bearer |
+| Метод | Path                    | Описание                                                | Auth   |
+| ----- | ----------------------- | ------------------------------------------------------- | ------ |
+| `GET` | `/sales/ozon/ltv`       | KPI + когорты + SKU повторы + distrib. + monthly_buyers | Bearer |
+| `GET` | `/sales/ozon/ltv/chain` | Цепочка покупок L1→L5 по SKU (Ozon)                     | Bearer |
+| `GET` | `/sales/ozon/ltv/xlsx`  | Excel отчёт LTV (7 листов, .xlsx)                       | Bearer |
+| `GET` | `/sales/wb/ltv`         | KPI + когорты + SKU повторы + distrib. + monthly_buyers | Bearer |
+| `GET` | `/sales/wb/ltv/chain`   | Цепочка покупок L1→L5 по SKU (WB)                       | Bearer |
+| `GET` | `/sales/wb/ltv/xlsx`    | Excel отчёт LTV (7 листов, .xlsx)                       | Bearer |
 
 ### Query Parameters
 
@@ -426,6 +428,11 @@ sku: int (required для /chain) — offer_id (Ozon) или nm_id (WB)
     total_clients, repeat_clients, repeat_rate,
     avg_ltv, avg_check, avg_orders_per_client, total_revenue
   },
+  monthly_buyers: [{
+    month: "2025-09",
+    new_buyers: 150, repeat_buyers: 42,
+    new_revenue: 45000, repeat_revenue: 38000
+  }],
   cohort_matrix: [{
     cohort: "2025-09",
     size: 1234,
@@ -456,6 +463,26 @@ sku: int (required для /chain) — offer_id (Ozon) или nm_id (WB)
 }
 ```
 
+### Excel экспорт (GET /sales/{mp}/ltv/xlsx)
+
+7 листов в .xlsx файле:
+
+| Лист | Название            | Содержимое                                                             |
+| ---- | ------------------- | ---------------------------------------------------------------------- |
+| 1    | 📊 KPI              | Основные метрики (total/repeat clients, avg LTV/check, revenue)        |
+| 2    | 📅 Месяцы           | Новые/повторные покупатели + выручка по месяцам (% доли каждой группы) |
+| 3    | 🗺️ Retention по SKU | Карта удержания: покупка 1→5, % переходов, heatmap                     |
+| 4    | 📦 Товары           | Таблица повторных: покупатели, % повтора, ср. дней, ср. чек, выручка   |
+| 5    | 🔄 Когорты          | Когортная матрица с % удержания                                        |
+| 6    | ⏱ Время             | Дистрибуция дней между покупками                                       |
+| 7    | 🔀 Переходы         | Кросс-SKU цепочки: top-15 SKU → товары перехода на уровнях 2–5 (top-3) |
+
+**Лист «Переходы»** — дополнительный ClickHouse запрос:
+
+- Для топ-15 SKU по повторным: dense_rank по клиентам, reindex от target SKU, GROUP BY (target_sku, level, sku)
+- Столбцы: исходный товар, покупка №, товар перехода, покупателей, % от исходных
+- ⭐ маркировка повторной покупки того же товара
+
 ### Ключевая логика
 
 **Ozon** (`ltv.py`):
@@ -470,7 +497,14 @@ sku: int (required для /chain) — offer_id (Ozon) или nm_id (WB)
 - Фильтр: числовые srid длиной 16-19 символов (покрытие ~95%, точность 97%)
 - Источник: `fact_orders_raw FINAL`
 - Обогащение: `dim_products` (PostgreSQL) → name, vendor_code + CDN `wb_image_url(nm_id)`
-- Когортная матрица, SKU repeat table, time distribution, purchase chain — идентичная структура с Ozon
+
+**Retention по SKU** (ClickHouse запрос):
+
+- window функции: `row_number`, `min`, `max`, `count` по (sku, client_id)
+- `b1 = countDistinct(client_id)` — все покупатели
+- `b2..b5 = countDistinctIf(purchase_num >= N)` — повторные
+- `avg_days = avgIf(dateDiff / greatest(total-1, 1), total>=2 AND purchase_num=1)` — фильтр по purchase_num=1 избегает дублирования
+- Порог: `b1 >= 3` (минимум 3 покупателя), лимит 100 SKU
 
 ---
 
@@ -741,7 +775,15 @@ safety: float (default: 1.15)        — коэффициент безопасн
 - **Добавлена секция «Клиентская аналитика (LTV)»** — 4 endpoints: Ozon/WB LTV + Purchase Chain
 - **Роутинг обновлён:** 12 роутеров (добавлены `ltv_router`, `wb_ltv_router`)
 - **WB LTV** (`wb_ltv.py`): buyer_id из srid, когорты, SKU repeat, chain L1→L5
-- **WB LTV обогащение:** `dim_products` (name, vendor_code) + `wb_image_url(nm_id)` CDN (ранее: несуществующая `dim_wb_products`)
+- **WB LTV обогащение:** `dim_products` (name, vendor_code) + `wb_image_url(nm_id)` CDN
+
+### 2026-03-10
+
+- **LTV Excel экспорт:** 2 новых endpoint'a `/sales/ozon/ltv/xlsx` и `/sales/wb/ltv/xlsx` — 7-листовый Excel
+- **`monthly_buyers`:** новый блок в LTV response — помесячные новые/повторные покупатели + выручка
+- **Лист «Переходы»:** кросс-SKU цепочки (dense_rank, reindex, top-3 на уровнях 2–5)
+- **Retention фикс:** `countDistinct` для b1 (все покупатели), `avgIf(purchase_num=1)` для avg_days
+- **Лист «Товары»:** понятные заголовки («Ср. чек повторных ₽», «Повтор в 2-ю покупку»)
 
 ### 2026-03-06
 

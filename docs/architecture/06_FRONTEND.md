@@ -395,12 +395,12 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 **Тоггл ABC по:** Выручка / Чистая прибыль  
 **Excel экспорт:** Кнопка «📥 Excel» — скачивание .xlsx через `downloadAbcXyzXlsx()` (blob, RFC 5987 filename)
 
-### `LtvPage` (~710 строк)
+### `LtvPage` (~830 строк)
 
 Страница «Клиентская аналитика (LTV)». Универсальная для Ozon и WB.
 
-- Ozon → `GET /api/v1/sales/ozon/ltv` + `GET /api/v1/sales/ozon/ltv/chain`
-- WB → `GET /api/v1/sales/wb/ltv` + `GET /api/v1/sales/wb/ltv/chain`
+- Ozon → `GET /api/v1/sales/ozon/ltv` + `/chain` + `/xlsx`
+- WB → `GET /api/v1/sales/wb/ltv` + `/chain` + `/xlsx`
 
 **4 KPI-карточки:**
 
@@ -411,22 +411,25 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **Секции:**
 
-| Секция                     | Описание                                                          |
-| -------------------------- | ----------------------------------------------------------------- |
-| Когортная матрица          | Heatmap: % удержания клиентов по месяцам (зелёный/жёлтый/красный) |
-| Товары — повторные покупки | Таблица SKU: покупатели, повторы, conv_to_2/3, ср. дней, LTV      |
-| Дистрибуция времени        | Гистограмма: дни между покупками (0-7, 7-14, ... 90+)             |
-| Цепочка покупок L1→L5      | Sankey-карточки: что покупают после целевого товара, конверсии    |
+| Секция                       | Описание                                                          |
+| ---------------------------- | ----------------------------------------------------------------- |
+| Новые / повторные покупатели | Stacked bar chart по месяцам (recharts), тултип с выручкой        |
+| Когортная матрица            | Heatmap: % удержания клиентов по месяцам (зелёный/жёлтый/красный) |
+| Товары — повторные покупки   | Таблица SKU: покупатели, повторы, conv_to_2/3, ср. дней, LTV      |
+| Дистрибуция времени          | Гистограмма: дни между покупками (0-7, 7-14, ... 90+)             |
+| Цепочка покупок L1→L5        | Sankey-карточки: что покупают после целевого товара, конверсии    |
 
 **Фичи:**
 
+- Кнопка «📥 Excel» в шапке — скачивание .xlsx (7 листов) через `downloadLtvXlsx()` / `downloadWbLtvXlsx()`
+- Компонент `MonthlyBuyersChart` — stacked bar chart (зелёный = новые, фиолетовый = повторные) с тултипом выручки
 - Клик по SKU в таблице → запрос `/chain` и отображение цепочки покупок
 - Поиск по артикулу в SKU таблице
 - Период: 30д / 90д / 6м / 1г / Всё время
 - Фото товаров: CDN-миниатюры с hover-увеличением
 - Ozon/WB авто-определение по `currentShop.marketplace`
 
-**API модули:** `src/api/ltv.ts` (Ozon), `src/api/wb_ltv.ts` (WB)
+**API модули:** `src/api/ltv.ts` (Ozon: `fetchLtv`, `fetchPurchaseChain`, `downloadLtvXlsx`), `src/api/wb_ltv.ts` (WB: `fetchWbLtv`, `fetchWbPurchaseChain`, `downloadWbLtvXlsx`)
 
 ### `FinancesPage` (~1009 строк)
 
@@ -799,3 +802,12 @@ Bоковая панель с вложенной навигацией (collapse 
 - **AbcXyzPage** — кнопка «📥 Excel» с индикатором загрузки (`downloading` state)
 - **`abc-xyz.ts`** — `downloadAbcXyzXlsx()`: blob download, RFC 5987 filename parsing
 - Excel: 3 листа (товары, матрица, сводка), цветовое кодирование ABC/XYZ
+
+### 2026-03-10 (v4)
+
+- **LtvPage** (~710 → ~830 строк):
+  - **`MonthlyBuyersChart`** — stacked bar chart новых/повторных покупателей по месяцам (recharts)
+  - Тултип с выручкой в ₽ для каждой группы + итого, проценты+количество под каждым столбцом
+  - **Кнопка «📥 Excel»** в шапке с анимацией загрузки
+- **`ltv.ts`** — `downloadLtvXlsx()`, **`wb_ltv.ts`** — `downloadWbLtvXlsx()`: blob download xlsx
+- **Секция «Новые / повторные»** добавлена в таблицу секций LtvPage
