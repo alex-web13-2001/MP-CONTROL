@@ -374,12 +374,13 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | 🟢 opportunity | emerald   | Возможность |
 | ✅ ok          | border    | Ок          |
 
-### `AbcXyzPage` (~489 строк)
+### `AbcXyzPage` (~510 строк)
 
 Страница «ABC/XYZ Анализ». Классификация товаров по вкладу в выручку и стабильности спроса.
 
 - Ozon → `GET /api/v1/sales/ozon/abc-xyz?shop_id=X&period=90`
 - WB → `GET /api/v1/sales/wb/abc-xyz?shop_id=X&period=90`
+- Excel → `GET /api/v1/sales/{mp}/abc-xyz/xlsx` (blob download)
 
 **Компоненты:**
 
@@ -391,7 +392,8 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | `ProductsTable` | Таблица товаров с сортировкой, sticky-колонкой, фото товара      |
 
 **Тогглы периода:** 30 дн. / 60 дн. / 90 дн.  
-**Тоггл ABC по:** Выручка / Чистая прибыль
+**Тоггл ABC по:** Выручка / Чистая прибыль  
+**Excel экспорт:** Кнопка «📥 Excel» — скачивание .xlsx через `downloadAbcXyzXlsx()` (blob, RFC 5987 filename)
 
 ### `LtvPage` (~710 строк)
 
@@ -791,3 +793,9 @@ Bоковая панель с вложенной навигацией (collapse 
 - 4 WB KPI: поставить, критические, перезатарка (>target_days), хранение/мес (₽)
 - WB API types: `WBSupplyItem`, `WBWarehouseDetail`, `WBWarehouseSummary`, `WBSupplyResponse`
 - Fix: хранение платное с 1-го дня, 60 дн — фиксация коэфф., не бесплатный период
+
+### 2026-03-10 (v3)
+
+- **AbcXyzPage** — кнопка «📥 Excel» с индикатором загрузки (`downloading` state)
+- **`abc-xyz.ts`** — `downloadAbcXyzXlsx()`: blob download, RFC 5987 filename parsing
+- Excel: 3 листа (товары, матрица, сводка), цветовое кодирование ABC/XYZ

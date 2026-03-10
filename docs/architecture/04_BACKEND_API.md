@@ -335,10 +335,12 @@ date_from / date_to: date (optional) — кастомный диапазон
 | `GET` | `/sales/ozon`               | KPI + графики + ТОП товаров Ozon          | Bearer |
 | `GET` | `/sales/ozon/product-daily` | Дневная динамика по конкретным SKU (Ozon) | Bearer |
 | `GET` | `/sales/ozon/abc-xyz`       | ABC/XYZ анализ товаров Ozon               | Bearer |
+| `GET` | `/sales/ozon/abc-xyz/xlsx`  | Excel экспорт ABC/XYZ Ozon (3 листа)      | Bearer |
 | `GET` | `/sales/ozon/forecast`      | Прогноз продаж Ozon (LightGBM)            | Bearer |
 | `GET` | `/sales/wb`                 | KPI + графики + ТОП товаров WB            | Bearer |
 | `GET` | `/sales/wb/product-daily`   | Дневная динамика по конкретным SKU (WB)   | Bearer |
 | `GET` | `/sales/wb/abc-xyz`         | ABC/XYZ анализ товаров WB                 | Bearer |
+| `GET` | `/sales/wb/abc-xyz/xlsx`    | Excel экспорт ABC/XYZ WB (3 листа)        | Bearer |
 | `GET` | `/sales/wb/forecast`        | Прогноз продаж WB (LightGBM)              | Bearer |
 
 ### Query Parameters (общие для ozon/wb)
@@ -985,3 +987,11 @@ data: [DONE]
 - Overstock = `turnover_days > target_days` (не > 60)
 - Acceptance: «Без коэфф.» вместо «Бесплатно»
 - 5 источников данных: CH (stocks, orders, tariffs), PG (products), Redis (images)
+
+### 2026-03-10 (v3)
+
+- Добавлены endpoints `GET /sales/ozon/abc-xyz/xlsx` и `GET /sales/wb/abc-xyz/xlsx`
+- Excel: 3 листа (товары 19 колонок + матрица 3×3 + сводка), openpyxl
+- Цветовое кодирование ABC/XYZ групп, условное форматирование маржи/прибыли
+- RFC 5987 `filename*=UTF-8''` для кириллицы в Content-Disposition
+- Функция `_build_abc_xyz_xlsx()` — единая для Ozon и WB
