@@ -1004,23 +1004,33 @@ REGION_TO_WAREHOUSES: dict[str, list[str]] = {
     ],
 }
 
-# ── Warehouse type classification ──
-# WB кодирует тип склада прямо в названии
-_FOOD_SUFFIX = ": Питание"
-_SGT_SUFFIX = "СГТ"
-_MAX_BOX_WEIGHT_KG = 25  # Ограничение для коробов
+# Список категорий WB, которые нуждаются в складах «Питание» (Меркурий / пищевая продукция)
+_FOOD_CATEGORIES = {
+    "Товары для животных",
+    "Продукты питания",
+    "Здоровое питание",
+    "Детское питание",
+    "Корма",
+}
 
 
 def _classify_product_wh_type(
+    nm_id: int,
+    product_categories: dict[int, str],
     wh_stocks: dict[str, dict],
     wh_sales: dict[str, dict],
 ) -> str:
     """
-    Определяет тип товара по складам, на которых есть стоки/продажи:
-    - 'food' — если есть на складе с ': Питание'
-    - 'sgt'  — если есть на складе с 'СГТ'
-    - 'normal' — обычный товар
+    Определяет тип товара:
+    1) По категории из fact_orders_raw (приоритет)
+    2) По складам с стоками/продажами (fallback)
     """
+    # 1. По категории
+    cat = product_categories.get(nm_id, "")
+    if cat in _FOOD_CATEGORIES:
+        return "food"
+
+    # 2. По названию склада (если есть на складе с суффиксом)
     all_wh_names = set(list(wh_stocks.keys()) + list(wh_sales.keys()))
     for wh in all_wh_names:
         if _FOOD_SUFFIX in wh:
@@ -1036,10 +1046,10 @@ def _filter_wh_for_type(
     product_type: str,
 ) -> bool:
     """
-    Проверяет, подходит ли склад для данного типа товара.
-    - food  → только склады с ': Питание' (или текущие с stock/sales)
-    - sgt   → только склады с 'СГТ'
-    - normal → склады БЕЗ ': Питание' и БЕЗ 'СГТ'
+    Проверяет, подходит ли склад для типа товара.
+    - food  → только ': Питание'
+    - sgt   → только 'СГТ'
+    - normal → БЕЗ ': Питание' и БЕЗ 'СГТ'
     """
     is_food_wh = _FOOD_SUFFIX in warehouse_name
     is_sgt_wh = _SGT_SUFFIX in warehouse_name
@@ -1052,12 +1062,31 @@ def _filter_wh_for_type(
         return not is_food_wh and not is_sgt_wh
 
 
+def _match_warehouse(name: str, available: set[str]) -> str | None:
+    """
+    Точное сопоставление склада из маппинга с доступными складами в тарифах.
+    Не используем startswith чтобы 'Котовск' не матчил 'Котовск: Питание'.
+    """
+    # 1. Точное совпадение
+    if name in available:
+        return name
+    # 2. Расширенный поиск только для СГТ (отличаются названия)
+    for avail_wh in available:
+        # Матч только если оба одного типа
+        name_is_food = _FOOD_SUFFIX in name
+        avail_is_food = _FOOD_SUFFIX in avail_wh
+        name_is_sgt = _SGT_SUFFIX in name
+        avail_is_sgt = _SGT_SUFFIX in avail_wh
+        if name_is_food != avail_is_food or name_is_sgt != avail_is_sgt:
+            continue  # разные типы — не матчим
+        # Одинаковый тип — проверяем базовое название
+        if avail_wh.startswith(name) or name.startswith(avail_wh.split(":")[0].split(" СГТ")[0]):
+            return avail_wh
+    return None
+
+
 def _estimate_weight_kg(vol_liters: float) -> float:
-    """
-    Грубая оценка веса из объёма.
-    Для кормов плотность ~0.5-0.7 кг/л, для обычных товаров ~0.3-0.5 кг/л.
-    Используем среднее 0.5 кг/л как консервативную оценку.
-    """
+    """Оценка веса из объёма (~0.5 кг/л)."""
     return vol_liters * 0.5
 
 
@@ -1168,9 +1197,11 @@ async def _build_wb_supply_data(
     # ── 2c. Demand by buyer region ───────────────────────────
     # Считаем заказы по nm_id × округ покупателя (а не склад отгрузки!)
     regional_demand: dict[int, dict[str, int]] = {}  # nm_id → {округ → qty}
+    product_categories: dict[int, str] = {}  # nm_id → category
     try:
         rd_rows = ch.query(f"""
-            SELECT nm_id, oblast_okrug_name, count() AS cnt
+            SELECT nm_id, oblast_okrug_name, count() AS cnt,
+                   any(category) AS cat
             FROM mms_analytics.fact_orders_raw
             WHERE shop_id = {shop_id}
               AND date >= '{d_sales_start}'
@@ -1184,6 +1215,8 @@ async def _build_wb_supply_data(
             if nm not in regional_demand:
                 regional_demand[nm] = {}
             regional_demand[nm][row[1]] = row[2]
+            if row[3] and nm not in product_categories:
+                product_categories[nm] = row[3]
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("WB regional demand query failed: %s", e)
@@ -1286,33 +1319,24 @@ async def _build_wb_supply_data(
         wh_sales = sales_by_nm.get(nm_id, {})
         nm_regions = regional_demand.get(nm_id, {})
 
-        # ── 5a. Определяем тип товара по складам ──
-        product_type = _classify_product_wh_type(wh_stocks, wh_sales)
+        # ── 5a. Определяем тип товара (по категории + складам) ──
+        product_type = _classify_product_wh_type(nm_id, product_categories, wh_stocks, wh_sales)
         est_weight = _estimate_weight_kg(vol)
 
-        # Если вес > 25кг — это СГТ, даже если сейчас на обычном складе
         if est_weight > _MAX_BOX_WEIGHT_KG and product_type == "normal":
             product_type = "sgt"
 
         # ── 5b. Распределяем региональный спрос по складам ──
-        # Фильтруем маппинг по типу товара
         demand_by_wh: dict[str, dict] = {}
         for region, qty in nm_regions.items():
             target_whs = REGION_TO_WAREHOUSES.get(region, [])
-            # Фильтруем склады по типу товара
             typed_whs = [w for w in target_whs if _filter_wh_for_type(w, product_type)]
             if not typed_whs:
-                # Нет подходящих складов в этом округе — fallback на любой
                 typed_whs = target_whs
 
             placed = False
             for twh in typed_whs:
-                # Normalize: ищем склад из тарифов по точному совпадению или подстроке
-                matched_wh = None
-                for avail_wh in available_warehouses:
-                    if avail_wh == twh or avail_wh.startswith(twh):
-                        matched_wh = avail_wh
-                        break
+                matched_wh = _match_warehouse(twh, available_warehouses)
                 if matched_wh:
                     if matched_wh not in demand_by_wh:
                         demand_by_wh[matched_wh] = {"regional_orders": 0, "regions": []}
@@ -1327,12 +1351,23 @@ async def _build_wb_supply_data(
                 demand_by_wh[fallback_wh]["regional_orders"] += qty
                 demand_by_wh[fallback_wh]["regions"].append(region)
 
-        # Объединяем: все склады где есть stock, sales ИЛИ regional demand
-        all_wh = set(
+        # Объединяем склады и фильтруем по типу товара
+        raw_wh = set(
             list(wh_stocks.keys()) +
             list(wh_sales.keys()) +
             list(demand_by_wh.keys())
         )
+        # Для food — оставляем только ': Питание' + склады с текущим стоком (показываем но need=0)
+        # Для normal — исключаем ': Питание' и 'СГТ'
+        all_wh = set()
+        for wh in raw_wh:
+            is_stock_or_sales = wh in wh_stocks or wh in wh_sales
+            if is_stock_or_sales:
+                # Всегда показываем склады с текущими стоками/продажами
+                all_wh.add(wh)
+            elif _filter_wh_for_type(wh, product_type):
+                # Новые склады — только подходящего типа
+                all_wh.add(wh)
 
         total_sold = sum(s.get("orders", 0) for s in wh_sales.values())
         total_stock = sum(s.get("qty", 0) for s in wh_stocks.values())
