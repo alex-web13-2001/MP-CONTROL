@@ -2094,10 +2094,12 @@ async def export_ozon_abc_xyz_xlsx(
 
     buf = _build_abc_xyz_xlsx(data, shop_name, "Ozon")
     filename = f"ABC_XYZ_Ozon_{shop_name}_{period}d.xlsx"
+    from urllib.parse import quote
+    encoded = quote(filename)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
     )
 
 
@@ -2119,10 +2121,12 @@ async def export_wb_abc_xyz_xlsx(
 
     buf = _build_abc_xyz_xlsx(data, shop_name, "Wildberries")
     filename = f"ABC_XYZ_WB_{shop_name}_{period}d.xlsx"
+    from urllib.parse import quote
+    encoded = quote(filename)
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
     )
 
 
