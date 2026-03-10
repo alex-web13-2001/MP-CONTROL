@@ -782,6 +782,147 @@ async def export_ozon_supply(
 
         row5 += 1  # blank row
 
+    # === Sheet 6: Анализ логистики ===
+    THRESHOLD_HOURS = 29  # Ozon recommended avg delivery time
+
+    ws6 = wb.create_sheet("Анализ логистики")
+    h6_headers = [
+        ("Артикул", 24), ("Название", 40), ("Склад отгрузки", 28),
+        ("Кластер назначения", 28), ("Объём (шт)", 10), ("Время, ч", 10),
+        ("Превышает порог", 10), ("Влияние (шт×ч)", 14), ("Доля влияния %", 14),
+        ("Ср. время доставки", 14), ("Рекомендация", 50),
+    ]
+    for ci, (name, w) in enumerate(h6_headers, 1):
+        c = ws6.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws6.column_dimensions[get_column_letter(ci)].width = w
+    ws6.freeze_panes = "A2"
+
+    # Threshold info row
+    ws6.cell(2, 1, "⚙ Порог: 29 часов")
+    ws6.cell(2, 1).font = Font(bold=True, size=11, color="1F4E79")
+    ws6.cell(2, 2, "Маршруты ≤29ч не влияют на среднее время доставки (множитель 0)")
+    ws6.cell(2, 2).font = Font(italic=True, size=10, color="666666")
+    for ci2 in range(1, len(h6_headers) + 1):
+        ws6.cell(2, ci2).fill = PatternFill("solid", fgColor="DAEEF3")
+    row6 = 4
+
+    # Orange/red fills for high influence
+    high_fill = PatternFill("solid", fgColor="FCE4D6")
+    critical_font = Font(bold=True, color="CC0000")
+    warn_font = Font(bold=True, color="CC8800")
+    ok_font = Font(color="00AA00")
+
+    for item in items:
+        if not item["clusters"]:
+            continue
+
+        total_sold_item = item["sold"]
+        if total_sold_item <= 0:
+            continue
+
+        # 1. Calculate per-route influence
+        routes = []
+        for cl in item["clusters"]:
+            vol = cl["sold"]
+            hub = cl["hub"]
+            hours = cl["hub_hours"]
+            exceeds = hours > THRESHOLD_HOURS
+            influence = vol * hours if exceeds else 0
+            routes.append({
+                "cluster": cl["cluster"],
+                "hub": hub,
+                "vol": vol,
+                "hours": hours,
+                "exceeds": exceeds,
+                "influence": influence,
+            })
+
+        total_influence = sum(r["influence"] for r in routes)
+
+        # 2. Calculate weighted avg delivery time for this SKU
+        weighted_hours = sum(r["vol"] * r["hours"] for r in routes)
+        avg_hours = weighted_hours / total_sold_item if total_sold_item > 0 else 0
+
+        # 3. Generate recommendation
+        recommendation = ""
+        problem_routes = [r for r in routes if r["exceeds"]]
+        if avg_hours <= THRESHOLD_HOURS:
+            recommendation = "✅ Среднее время ≤29ч — оптимально"
+        elif problem_routes:
+            top_problem = max(problem_routes, key=lambda r: r["influence"])
+            pct_top = (top_problem["influence"] / total_influence * 100) if total_influence > 0 else 0
+            # Check if consolidating to a different hub would help
+            dest_cluster = top_problem["cluster"]
+            # Can we find a closer hub for the demand cluster?
+            local_hours = DELIVERY_HOURS.get(dest_cluster, {}).get(dest_cluster, 28)
+            if local_hours <= THRESHOLD_HOURS and top_problem["hours"] > THRESHOLD_HOURS:
+                recommendation = (
+                    f"⚠ Разбить поставку: {top_problem['vol']} шт → {dest_cluster} "
+                    f"(вместо {top_problem['hub']}). "
+                    f"Время: {top_problem['hours']}ч → {local_hours}ч. "
+                    f"Это снизит влияние на {pct_top:.0f}%"
+                )
+            else:
+                recommendation = (
+                    f"⚠ Маршрут {top_problem['hub']}→{dest_cluster} "
+                    f"({top_problem['hours']}ч) влияет на {pct_top:.0f}%. "
+                    f"Рассмотрите прямую поставку"
+                )
+
+        # SKU header row
+        sku_hdr_fill = PatternFill("solid", fgColor="D6E4F0")
+        c = ws6.cell(row6, 1, item["offer_id"])
+        c.font = Font(bold=True, size=11)
+        ws6.cell(row6, 2, item["name"]).font = Font(bold=True, size=10)
+        ws6.cell(row6, 10, round(avg_hours, 1)).font = (
+            critical_font if avg_hours > 45
+            else warn_font if avg_hours > THRESHOLD_HOURS
+            else ok_font
+        )
+        ws6.cell(row6, 10).number_format = "0.0"
+        ws6.cell(row6, 11, recommendation).font = Font(size=10)
+        if avg_hours > THRESHOLD_HOURS:
+            ws6.cell(row6, 11).font = Font(bold=True, size=10, color="CC6600")
+        for ci2 in range(1, len(h6_headers) + 1):
+            ws6.cell(row6, ci2).fill = sku_hdr_fill
+        row6 += 1
+
+        # Route detail rows
+        for r in sorted(routes, key=lambda x: x["influence"], reverse=True):
+            share_pct = (r["influence"] / total_influence * 100) if total_influence > 0 else 0
+
+            ws6.cell(row6, 3, r["hub"])
+            ws6.cell(row6, 4, r["cluster"])
+            ws6.cell(row6, 5, r["vol"]).number_format = num_fmt
+            c_h = ws6.cell(row6, 6, r["hours"])
+            if r["hours"] <= 28:
+                c_h.font = ok_font
+            elif r["hours"] <= 45:
+                c_h.font = warn_font
+            else:
+                c_h.font = critical_font
+
+            ws6.cell(row6, 7, "Да" if r["exceeds"] else "Нет").font = (
+                Font(bold=True, color="CC0000") if r["exceeds"]
+                else Font(color="00AA00")
+            )
+
+            ws6.cell(row6, 8, r["influence"]).number_format = num_fmt
+            c_s = ws6.cell(row6, 9, round(share_pct, 1) if total_influence > 0 else 0)
+            c_s.number_format = "0.0"
+            if share_pct >= 40:
+                c_s.font = critical_font
+                c_s.fill = high_fill
+            elif share_pct >= 20:
+                c_s.font = warn_font
+
+            row6 += 1
+
+        row6 += 1  # blank separator
+
     # ── Save & return ────────────────────────────────────────
     buf = io.BytesIO()
     wb.save(buf)
