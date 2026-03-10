@@ -14,6 +14,7 @@ import {
   Warehouse,
   ListTree,
   Wallet,
+  Zap,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -958,11 +959,13 @@ function WBSettingsPanel({
   targetDays, setTargetDays,
   salesPeriod, setSalesPeriod,
   safety, setSafety,
+  useAdBoost, setUseAdBoost,
   loading, onRefresh, onExport, exporting,
 }: {
   targetDays: number; setTargetDays: (v: number) => void
   salesPeriod: number; setSalesPeriod: (v: number) => void
   safety: number; setSafety: (v: number) => void
+  useAdBoost: boolean; setUseAdBoost: (v: boolean) => void
   loading: boolean; onRefresh: () => void
   onExport: () => void; exporting: boolean
 }) {
@@ -994,6 +997,16 @@ function WBSettingsPanel({
                 {SAFETY_OPTIONS.map(o => <button key={o.value} className={selCls(safety === o.value)} onClick={() => setSafety(o.value)}>{o.label}</button>)}
               </div>
             </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Рекламный буст</p>
+              <button
+                className={`px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer flex items-center gap-2 ${useAdBoost ? 'bg-gradient-to-r from-orange-600 to-orange-500 text-white shadow-md shadow-orange-500/25' : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))]'}`}
+                onClick={() => setUseAdBoost(!useAdBoost)}
+              >
+                <Zap className="h-3.5 w-3.5" />
+                {useAdBoost ? 'Ad Boost ВКЛ' : 'Ad Boost ВЫКЛ'}
+              </button>
+            </div>
             <div className="ml-auto flex items-center gap-2">
               <button onClick={onRefresh} disabled={loading} className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50">
                 <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Обновить
@@ -1021,23 +1034,24 @@ function WBContent({ shopId }: { shopId: number }) {
   const [targetDays, setTargetDays] = useState(45)
   const [salesPeriod, setSalesPeriod] = useState(30)
   const [safety, setSafety] = useState(1.15)
+  const [useAdBoost, setUseAdBoost] = useState(true)
   const [activeTab, setActiveTab] = useState<'sku' | 'warehouses'>('sku')
 
   const fetchData = useCallback(async () => {
     setLoading(true); setError(null)
     try {
-      const result = await getWBSupplyApi({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety })
+      const result = await getWBSupplyApi({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety, use_ad_boost: useAdBoost })
       setData(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки')
     } finally { setLoading(false) }
-  }, [shopId, salesPeriod, targetDays, safety])
+  }, [shopId, salesPeriod, targetDays, safety, useAdBoost])
 
   useEffect(() => { fetchData() }, [fetchData])
 
   const handleExport = async () => {
     setExporting(true)
-    try { await downloadWBSupplyExcel({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety }) }
+    try { await downloadWBSupplyExcel({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety, use_ad_boost: useAdBoost }) }
     catch { /* silent */ }
     finally { setExporting(false) }
   }
@@ -1064,7 +1078,7 @@ function WBContent({ shopId }: { shopId: number }) {
         <KpiCard title="Перезатарка" value={String(data.kpi.overstock_count)} subtitle="Оборот превышает горизонт поставки" icon={AlertCircle} accent="from-purple-600 to-purple-500" delay={0.1} />
         <KpiCard title="Хранение / мес" value={formatMoney(data.kpi.total_storage_month)} subtitle={`Средний запас: ${data.kpi.avg_days_supply} дн.`} icon={Wallet} accent="from-amber-600 to-amber-500" delay={0.15} />
       </div>
-      <WBSettingsPanel targetDays={targetDays} setTargetDays={setTargetDays} salesPeriod={salesPeriod} setSalesPeriod={setSalesPeriod} safety={safety} setSafety={setSafety} loading={loading} onRefresh={fetchData} onExport={handleExport} exporting={exporting} />
+      <WBSettingsPanel targetDays={targetDays} setTargetDays={setTargetDays} salesPeriod={salesPeriod} setSalesPeriod={setSalesPeriod} safety={safety} setSafety={setSafety} useAdBoost={useAdBoost} setUseAdBoost={setUseAdBoost} loading={loading} onRefresh={fetchData} onExport={handleExport} exporting={exporting} />
       <div className="flex gap-1 p-1 rounded-xl bg-[hsl(var(--muted)/0.15)] w-fit">
         <button className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === 'sku' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`} onClick={() => setActiveTab('sku')}>
           <ListTree className="h-4 w-4" /> По товарам

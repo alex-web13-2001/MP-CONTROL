@@ -961,7 +961,8 @@ def _parse_ru_float(s: str) -> float:
 
 
 async def _build_wb_supply_data(
-    shop_id: int, sales_period: int, target_days: int, safety: float, db: AsyncSession
+    shop_id: int, sales_period: int, target_days: int, safety: float,
+    use_ad_boost: bool, db: AsyncSession,
 ) -> dict:
     """
     Common data builder for WB supply (used by both JSON and XLSX endpoints).
@@ -1019,6 +1020,49 @@ async def _build_wb_supply_data(
         sales_by_nm[nm_id][row[1]] = {
             "orders": row[2], "revenue": float(row[3])
         }
+
+    # ── 2b. Ad boost (7d vs prev 7d) ─────────────────────────
+    boost_map: dict[int, float] = {}  # nm_id → boost coefficient
+    if use_ad_boost:
+        try:
+            # Sales 7d vs prev 7d per nm_id
+            s7_rows = ch.query(f"""
+                SELECT nm_id,
+                       countIf(date >= today() - 7)  AS qty_7d,
+                       countIf(date <  today() - 7)  AS qty_prev7d
+                FROM mms_analytics.fact_orders_raw
+                WHERE shop_id = {shop_id}
+                  AND date >= today() - 14
+                  AND is_cancel = 0
+                GROUP BY nm_id
+            """).result_rows
+            s7 = {int(r[0]): {"q7": r[1], "qp7": r[2]} for r in s7_rows}
+
+            # Ad spend per nm_id (7d)
+            ad_rows = ch.query(f"""
+                SELECT nm_id,
+                       sumIf(spend, date >= today() - 7)  AS ad_7d
+                FROM mms_analytics.fact_advert_stats_v3
+                WHERE shop_id = {shop_id}
+                  AND date >= today() - 14
+                GROUP BY nm_id
+            """).result_rows
+            ad_spend_7d = {int(r[0]): float(r[1]) for r in ad_rows}
+
+            # Calculate boost
+            all_boost_nms = set(list(s7.keys()) + list(ad_spend_7d.keys()))
+            for nm in all_boost_nms:
+                s = s7.get(nm, {"q7": 0, "qp7": 0})
+                has_ads = ad_spend_7d.get(nm, 0) > 0
+                if has_ads and s["qp7"] > 0 and s["q7"] > s["qp7"]:
+                    boost_map[nm] = min(s["q7"] / s["qp7"], 2.0)
+                elif has_ads and s["qp7"] == 0 and s["q7"] > 0:
+                    boost_map[nm] = 1.3
+                else:
+                    boost_map[nm] = 1.0
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("WB ad boost query failed: %s", e)
 
     # ── 3. Product info from PostgreSQL ──────────────────────
     prod_result = await db.execute(text("""
@@ -1113,8 +1157,10 @@ async def _build_wb_supply_data(
         total_sold = sum(s.get("orders", 0) for s in wh_sales.values())
         total_stock = sum(s.get("qty", 0) for s in wh_stocks.values())
         daily_avg = total_sold / max(sales_period, 1)
+        boost = boost_map.get(nm_id, 1.0)
+        boosted_daily = daily_avg * boost
 
-        turnover_days = total_stock / daily_avg if daily_avg > 0 else 999
+        turnover_days = total_stock / boosted_daily if boosted_daily > 0 else 999
 
         warehouses = []
         for wh in sorted(all_wh):
@@ -1122,8 +1168,9 @@ async def _build_wb_supply_data(
             orders = wh_sales.get(wh, {}).get("orders", 0)
             revenue = wh_sales.get(wh, {}).get("revenue", 0)
             wh_daily = orders / max(sales_period, 1)
+            wh_daily_boosted = wh_daily * boost
 
-            need = max(0, int(wh_daily * target_days * safety) - stock)
+            need = max(0, int(wh_daily_boosted * target_days * safety) - stock)
 
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
@@ -1140,6 +1187,7 @@ async def _build_wb_supply_data(
                 "warehouse": wh,
                 "stock": stock,
                 "orders": orders,
+                "daily_boosted": round(wh_daily_boosted, 2),
                 "revenue": revenue,
                 "daily": round(wh_daily, 2),
                 "need": need,
@@ -1175,6 +1223,8 @@ async def _build_wb_supply_data(
             "total_sold": total_sold,
             "total_stock": total_stock,
             "daily_avg": round(daily_avg, 2),
+            "boost": round(boost, 2),
+            "boosted_daily": round(boosted_daily, 2),
             "turnover_days": round(turnover_days, 1),
             "total_need": total_need,
             "status": status,
@@ -1234,6 +1284,7 @@ async def get_wb_supply(
     sales_period: int = Query(30, ge=7, le=90, description="Sales period for avg daily calc"),
     target_days: int = Query(45, ge=14, le=60, description="Target stock days (max 60 = free storage)"),
     safety: float = Query(1.15, ge=1.0, le=2.0, description="Safety coefficient"),
+    use_ad_boost: bool = Query(True, description="Apply ad boost coefficient"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1247,13 +1298,14 @@ async def get_wb_supply(
     if shop.marketplace != "wildberries":
         raise HTTPException(status_code=400, detail="Shop is not Wildberries")
 
-    result = await _build_wb_supply_data(shop_id, sales_period, target_days, safety, db)
+    result = await _build_wb_supply_data(shop_id, sales_period, target_days, safety, use_ad_boost, db)
 
     return {
         "shop_id": shop_id,
         "sales_period": sales_period,
         "target_days": target_days,
         "safety": safety,
+        "use_ad_boost": use_ad_boost,
         "kpi": result["kpi"],
         "items": result["items"],
         "warehouse_summary": result["warehouse_summary"],
@@ -1266,6 +1318,7 @@ async def get_wb_supply_xlsx(
     sales_period: int = Query(30, ge=7, le=90, description="Sales period for avg daily calc"),
     target_days: int = Query(45, ge=14, le=60, description="Target stock days (max 60 = free storage)"),
     safety: float = Query(1.15, ge=1.0, le=2.0, description="Safety coefficient"),
+    use_ad_boost: bool = Query(True, description="Apply ad boost coefficient"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -1282,7 +1335,7 @@ async def get_wb_supply_xlsx(
     if shop.marketplace != "wildberries":
         raise HTTPException(status_code=400, detail="Shop is not Wildberries")
 
-    result = await _build_wb_supply_data(shop_id, sales_period, target_days, safety, db)
+    result = await _build_wb_supply_data(shop_id, sales_period, target_days, safety, use_ad_boost, db)
     items = result["items"]
     tariffs = result["tariffs"]
 
@@ -1337,7 +1390,7 @@ async def get_wb_supply_xlsx(
         ws1.column_dimensions[get_column_letter(ci)].width = w
     ws1.freeze_panes = "A2"
 
-    ws1.cell(2, 1, f"Параметры расчёта: период продаж {sales_period} дн, горизонт {target_days} дн, запас прочности ×{safety}").font = Font(bold=True, size=10, color="1F4E79")
+    ws1.cell(2, 1, f"Параметры расчёта: период продаж {sales_period} дн, горизонт {target_days} дн, запас прочности ×{safety} | Ad boost: {'ДА' if use_ad_boost else 'НЕТ'}").font = Font(bold=True, size=10, color="1F4E79")
     ws1.cell(2, 2, f"WB: хранение платное с 1-го дня, коэфф. фиксируется на 60 дн").font = Font(italic=True, size=9, color="666666")
     for ci2 in range(1, len(h1) + 1):
         ws1.cell(2, ci2).fill = PatternFill("solid", fgColor="DAEEF3")

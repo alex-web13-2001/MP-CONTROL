@@ -137,6 +137,8 @@ export interface WBSupplyItem {
   total_sold: number
   total_stock: number
   daily_avg: number
+  boost: number
+  boosted_daily: number
   turnover_days: number
   total_need: number
   status: 'critical' | 'attention' | 'ok' | 'overstock'
@@ -171,6 +173,7 @@ export interface WBSupplyResponse {
   sales_period: number
   target_days: number
   safety: number
+  use_ad_boost: boolean
   kpi: WBSupplyKpi
   items: WBSupplyItem[]
   warehouse_summary: WBWarehouseSummary[]
@@ -181,6 +184,7 @@ export interface WBSupplyParams {
   sales_period?: number
   target_days?: number
   safety?: number
+  use_ad_boost?: boolean
 }
 
 export async function getWBSupplyApi(params: WBSupplyParams): Promise<WBSupplyResponse> {
