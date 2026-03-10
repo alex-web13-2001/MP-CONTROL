@@ -1187,10 +1187,12 @@ async def export_wb_excel(
         pass
 
     # Derived
-    bank_cur = payout_cur - logistics_cur - storage_cur - acceptance_cur - deductions_cur - deductions_ads_cur
-    bank_prev = payout_prev - logistics_prev - storage_prev - acceptance_prev - deductions_prev - deductions_ads_prev
-    profit_cur = bank_cur - ad_spend_cur - cogs_cur
-    profit_prev = bank_prev - ad_spend_prev - cogs_prev
+    # NOTE: For WB, ВБ Промо (deductions_ads) IS the advertising — no separate external ads.
+    # bank = payout minus all fees & deductions (including WB Promo)
+    bank_cur = payout_cur - logistics_cur - storage_cur - acceptance_cur - deductions_cur - deductions_ads_cur - penalties_cur
+    bank_prev = payout_prev - logistics_prev - storage_prev - acceptance_prev - deductions_prev - deductions_ads_prev - penalties_prev
+    profit_cur = bank_cur - cogs_cur
+    profit_prev = bank_prev - cogs_prev
 
     # ══════════════════════════════════════════════════════
     # 4. Daily dynamics
@@ -1438,6 +1440,7 @@ async def export_wb_excel(
 
     # 8. Expense detail (for "Расходы детально" sheet)
     # NOTE: penalty_total for 'Удержание' ops duplicates deduction — use raw penalty only
+    # Exclude Продажа/Возврат — those are revenue operations, not expenses
     expense_detail_rows = []
     try:
         exp = ch.query("""
@@ -1450,12 +1453,11 @@ async def export_wb_excel(
                 sum(acceptance_fee) AS acceptance_total,
                 sumIf(penalty_total, operation_type != 'Удержание') AS penalty_clean,
                 sum(JSONExtractFloat(raw_payload, 'deduction')) AS deduction_total,
-                sum(wb_acquiring) AS acquiring_total,
-                sum(payout_amount) AS payout_total,
-                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'), operation_type IN ('Продажа','Возврат')) AS revenue_total
+                sum(wb_acquiring) AS acquiring_total
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id={shop_id:UInt32} AND marketplace=1
               AND event_date>={d_start:Date} AND event_date<={d_end:Date}
+              AND operation_type NOT IN ('Продажа', 'Возврат')
             GROUP BY operation_type, bonus_type
             ORDER BY operation_type, bonus_type
         """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
@@ -1492,7 +1494,6 @@ async def export_wb_excel(
         ("ВБ Продвижение", deductions_ads_cur, deductions_ads_prev),
         ("Штрафы", penalties_cur, penalties_prev),
         ("Итого к оплате", bank_cur, bank_prev),
-        ("Реклама (внешн.)", ad_spend_cur, ad_spend_prev),
         ("Себестоимость", cogs_cur, cogs_prev),
         ("Чистая прибыль", profit_cur, profit_prev),
         ("Заказов (шт.)", orders_cur, orders_prev),
@@ -1782,7 +1783,7 @@ async def export_wb_excel(
 
     exp_headers = [
         "Тип операции", "Тип бонуса/удержания", "Записей",
-        "Выручка", "К перечисл.", "Логистика", "Хранение", "Приёмка",
+        "Логистика", "Хранение", "Приёмка",
         "Штрафы", "Удержания", "Эквайринг",
     ]
     for col, h in enumerate(exp_headers, 1):
@@ -1794,15 +1795,12 @@ async def export_wb_excel(
         ws6.cell(row=rn, column=1, value=str(r[0] or ""))
         ws6.cell(row=rn, column=2, value=str(r[1] or "—"))
         ws6.cell(row=rn, column=3, value=int(r[2] or 0))
-        # r[10] = revenue_total, r[9] = payout_total
-        ws6.cell(row=rn, column=4, value=float(r[10] or 0)).number_format = MONEY_FMT_2   # Выручка
-        ws6.cell(row=rn, column=5, value=float(r[9] or 0)).number_format = MONEY_FMT_2    # К перечисл.
-        ws6.cell(row=rn, column=6, value=abs(float(r[3] or 0))).number_format = MONEY_FMT_2   # Логистика
-        ws6.cell(row=rn, column=7, value=abs(float(r[4] or 0))).number_format = MONEY_FMT_2   # Хранение
-        ws6.cell(row=rn, column=8, value=abs(float(r[5] or 0))).number_format = MONEY_FMT_2   # Приёмка
-        ws6.cell(row=rn, column=9, value=abs(float(r[6] or 0))).number_format = MONEY_FMT_2   # Штрафы (penalty_clean)
-        ws6.cell(row=rn, column=10, value=abs(float(r[7] or 0))).number_format = MONEY_FMT_2  # Удержания
-        ws6.cell(row=rn, column=11, value=abs(float(r[8] or 0))).number_format = MONEY_FMT_2  # Эквайринг
+        ws6.cell(row=rn, column=4, value=abs(float(r[3] or 0))).number_format = MONEY_FMT_2   # Логистика
+        ws6.cell(row=rn, column=5, value=abs(float(r[4] or 0))).number_format = MONEY_FMT_2   # Хранение
+        ws6.cell(row=rn, column=6, value=abs(float(r[5] or 0))).number_format = MONEY_FMT_2   # Приёмка
+        ws6.cell(row=rn, column=7, value=abs(float(r[6] or 0))).number_format = MONEY_FMT_2   # Штрафы
+        ws6.cell(row=rn, column=8, value=abs(float(r[7] or 0))).number_format = MONEY_FMT_2   # Удержания
+        ws6.cell(row=rn, column=9, value=abs(float(r[8] or 0))).number_format = MONEY_FMT_2   # Эквайринг
         _style_data_row(ws6, rn, len(exp_headers), is_alt=(i % 2 == 1))
 
     _auto_width(ws6)
