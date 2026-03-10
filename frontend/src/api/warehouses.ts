@@ -110,3 +110,97 @@ export async function downloadSupplyExcel(params: SupplyParams): Promise<void> {
   link.remove()
   window.URL.revokeObjectURL(url)
 }
+
+// ── WB Supply Types ──────────────────────────────────────────
+
+export interface WBWarehouseDetail {
+  warehouse: string
+  stock: number
+  orders: number
+  revenue: number
+  daily: number
+  need: number
+  storage_per_day: number
+  storage_per_month: number
+  storage_coef: number
+  acceptance_coef: number
+  acceptance: string
+  turnover_days: number
+}
+
+export interface WBSupplyItem {
+  nm_id: number
+  vendor_code: string
+  name: string
+  image_url: string
+  vol_liters: number
+  total_sold: number
+  total_stock: number
+  daily_avg: number
+  turnover_days: number
+  total_need: number
+  status: 'critical' | 'attention' | 'ok' | 'overstock'
+  storage_cost_month: number
+  warehouses: WBWarehouseDetail[]
+}
+
+export interface WBSupplyKpi {
+  total_need: number
+  critical_count: number
+  attention_count: number
+  overstock_count: number
+  avg_days_supply: number
+  total_stock: number
+  total_sku: number
+  total_storage_month: number
+}
+
+export interface WBWarehouseSummary {
+  warehouse: string
+  total_stock: number
+  total_orders: number
+  total_need: number
+  total_revenue: number
+  items_count: number
+  storage_coef: number
+  acceptance: string
+}
+
+export interface WBSupplyResponse {
+  shop_id: number
+  sales_period: number
+  target_days: number
+  safety: number
+  kpi: WBSupplyKpi
+  items: WBSupplyItem[]
+  warehouse_summary: WBWarehouseSummary[]
+}
+
+export interface WBSupplyParams {
+  shop_id: number
+  sales_period?: number
+  target_days?: number
+  safety?: number
+}
+
+export async function getWBSupplyApi(params: WBSupplyParams): Promise<WBSupplyResponse> {
+  const { data } = await apiClient.get<WBSupplyResponse>('/warehouses/wb/supply', { params })
+  return data
+}
+
+export async function downloadWBSupplyExcel(params: WBSupplyParams): Promise<void> {
+  const response = await apiClient.get('/warehouses/wb/supply/xlsx', {
+    params,
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  const target = params.target_days ?? 45
+  link.setAttribute('download', `wb_supply_${params.shop_id}_${target}d.xlsx`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+

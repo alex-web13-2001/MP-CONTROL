@@ -13,6 +13,7 @@ import {
   MapPin,
   Warehouse,
   ListTree,
+  Wallet,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -24,6 +25,12 @@ import {
   SupplyItem,
   SupplyCluster,
   HubSummary,
+  getWBSupplyApi,
+  downloadWBSupplyExcel,
+  WBSupplyResponse,
+  WBSupplyItem,
+  WBWarehouseDetail,
+  WBWarehouseSummary,
 } from '@/api/warehouses'
 
 
@@ -650,13 +657,435 @@ function SupplySkeleton() {
   )
 }
 
+
 /* ═══════════════════════════════════════════════════════════
-   Main Page
+   WB — Status Badge (4 statuses: critical, attention, ok, overstock)
+   ═══════════════════════════════════════════════════════════ */
+
+function WBStatusBadge({ status }: { status: WBSupplyItem['status'] }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    critical: { label: 'Критично', cls: 'bg-red-500/15 text-red-400 ring-red-500/20' },
+    attention: { label: 'Внимание', cls: 'bg-amber-500/15 text-amber-400 ring-amber-500/20' },
+    ok: { label: 'В норме', cls: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20' },
+    overstock: { label: 'Перезатарка', cls: 'bg-purple-500/15 text-purple-400 ring-purple-500/20' },
+  }
+  const s = map[status] || map.ok
+  return (
+    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset ${s.cls}`}>
+      {s.label}
+    </span>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WB — Warehouse Detail Row (expanded)
+   ═══════════════════════════════════════════════════════════ */
+
+function WBWarehouseDetailTable({ warehouses }: { warehouses: WBWarehouseDetail[] }) {
+  const tdCls = 'px-3 py-2 text-right tabular-nums text-[12px] whitespace-nowrap'
+  return (
+    <tr>
+      <td colSpan={10} className="p-0">
+        <div className="mx-6 my-2 rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)] overflow-hidden">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr className="border-b border-[hsl(var(--border)/0.2)]">
+                <th className="px-3 py-2 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Склад WB</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Остаток</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Заказов</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">В день</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Оборач.</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Поставить</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Хран. ₽/мес</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Приёмка</th>
+                <th className="px-3 py-2 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Выручка</th>
+              </tr>
+            </thead>
+            <tbody>
+              {warehouses.map((wh) => (
+                <tr key={wh.warehouse} className="border-b border-[hsl(var(--border)/0.1)] last:border-0 hover:bg-[hsl(var(--muted)/0.08)]">
+                  <td className="px-3 py-2 text-left text-[12px] font-medium">{wh.warehouse}</td>
+                  <td className={tdCls}>{formatNumber(wh.stock)}</td>
+                  <td className={tdCls}>{formatNumber(wh.orders)}</td>
+                  <td className={tdCls}>{wh.daily.toFixed(2)}</td>
+                  <td className={tdCls}>
+                    <span className={`font-semibold ${
+                      wh.turnover_days > 60 ? 'text-purple-400' :
+                      wh.turnover_days > 45 ? 'text-amber-400' :
+                      wh.turnover_days < 14 ? 'text-red-400' :
+                      'text-emerald-400'
+                    }`}>
+                      {wh.turnover_days >= 999 ? '∞' : `${wh.turnover_days.toFixed(0)} дн`}
+                    </span>
+                  </td>
+                  <td className={tdCls}>
+                    {wh.need > 0 ? (
+                      <span className="inline-flex items-center justify-center min-w-[32px] rounded-md bg-blue-500/15 text-blue-400 px-2 py-0.5 text-[12px] font-bold">
+                        {wh.need}
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 font-medium">✓</span>
+                    )}
+                  </td>
+                  <td className={`${tdCls} ${wh.storage_per_month > 50 ? 'text-amber-400 font-semibold' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                    {wh.storage_per_month.toFixed(2)}
+                  </td>
+                  <td className={tdCls}>
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      wh.acceptance === 'Бесплатно' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                    }`}>{wh.acceptance}</span>
+                  </td>
+                  <td className={`${tdCls} text-[hsl(var(--muted-foreground))]`}>{formatMoney(wh.revenue)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WB — Supply Table by SKU
+   ═══════════════════════════════════════════════════════════ */
+
+type WBSortKey = 'turnover_days' | 'total_sold' | 'total_stock' | 'total_need' | 'storage_cost_month'
+
+function WBSupplyTable({ items }: { items: WBSupplyItem[] }) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [hoveredImg, setHoveredImg] = useState<{ url: string; x: number; y: number } | null>(null)
+  const [sortKey, setSortKey] = useState<WBSortKey>('turnover_days')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  const toggleSort = (key: WBSortKey) => {
+    if (key === sortKey) setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    else { setSortKey(key); setSortDir(key === 'turnover_days' ? 'asc' : 'desc') }
+  }
+
+  const sorted = useMemo(() =>
+    [...items].sort((a, b) => {
+      const av = a[sortKey] as number, bv = b[sortKey] as number
+      return sortDir === 'desc' ? bv - av : av - bv
+    }), [items, sortKey, sortDir])
+
+  const thBase = 'px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none'
+  const tdCls = 'px-4 py-3 text-right tabular-nums text-[13px] whitespace-nowrap'
+
+  const SortTh = ({ k, children, className = '' }: { k: WBSortKey; children: React.ReactNode; className?: string }) => (
+    <th className={`${thBase} ${className} cursor-pointer transition-colors ${
+      sortKey === k ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
+    }`} onClick={() => toggleSort(k)}>
+      <span className="inline-flex items-center gap-1 justify-end">
+        {children}
+        {sortKey === k && <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>}
+      </span>
+    </th>
+  )
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.4 }}>
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+          <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Рекомендации поставки по товарам</h2>
+          <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">Нажмите для детализации по складам</span>
+        </div>
+        <div className="overflow-auto max-h-[700px]">
+          <table className="w-full border-collapse" style={{ minWidth: 960 }}>
+            <thead className="sticky top-0 z-20">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                <th className="px-4 py-3.5 w-[40px]"></th>
+                <th className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[280px] min-w-[280px]">Товар</th>
+                <th className={`${thBase} text-center`}>Статус</th>
+                <SortTh k="total_sold">Продано</SortTh>
+                <SortTh k="total_stock">Остаток</SortTh>
+                <SortTh k="turnover_days">Оборач.</SortTh>
+                <SortTh k="total_need">ПОСТАВИТЬ</SortTh>
+                <SortTh k="storage_cost_month">Хран. ₽/мес</SortTh>
+                <th className={`${thBase} text-center`}>Склады</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((item, idx) => {
+                const isExpanded = expandedId === item.vendor_code
+                const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
+                return (
+                  <React.Fragment key={item.vendor_code || item.nm_id}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${
+                        isExpanded ? 'bg-[hsl(var(--primary)/0.06)]' : `${rowBg} hover:bg-[hsl(var(--muted)/0.15)]`
+                      }`}
+                      onClick={() => setExpandedId(isExpanded ? null : item.vendor_code)}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <motion.div animate={{ rotate: isExpanded ? 90 : 0 }} transition={{ duration: 0.15 }}>
+                          <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                        </motion.div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2.5">
+                          {item.image_url ? (
+                            <div className="relative shrink-0"
+                              onMouseEnter={(e) => { const r = (e.target as HTMLElement).getBoundingClientRect(); setHoveredImg({ url: item.image_url, x: r.right + 8, y: r.top }) }}
+                              onMouseLeave={() => setHoveredImg(null)}>
+                              <img src={item.image_url} alt="" className="w-9 h-9 rounded-lg object-cover border border-[hsl(var(--border)/0.3)]" loading="lazy" />
+                            </div>
+                          ) : (
+                            <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-sm">📦</div>
+                          )}
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[13px] font-medium truncate" title={item.name}>{item.name}</div>
+                            <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate">{item.vendor_code}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-center"><WBStatusBadge status={item.status} /></td>
+                      <td className={`${tdCls} font-semibold`}>{formatNumber(item.total_sold)}</td>
+                      <td className={tdCls}><span className={item.total_stock === 0 ? 'text-red-400 font-bold' : ''}>{formatNumber(item.total_stock)}</span></td>
+                      <td className={tdCls}>
+                        <span className={`font-semibold ${
+                          item.turnover_days >= 999 ? 'text-[hsl(var(--muted-foreground))] opacity-50' :
+                          item.turnover_days > 60 ? 'text-purple-400' :
+                          item.turnover_days > 45 ? 'text-amber-400' :
+                          item.turnover_days < 14 ? 'text-red-400' : 'text-emerald-400'
+                        }`}>
+                          {item.turnover_days >= 999 ? '∞' : `${item.turnover_days.toFixed(0)} дн`}
+                        </span>
+                      </td>
+                      <td className={tdCls}>
+                        {item.total_need > 0 ? (
+                          <span className="inline-flex items-center justify-center min-w-[40px] rounded-lg bg-red-500/15 text-red-400 px-3 py-1 text-[15px] font-bold">{item.total_need}</span>
+                        ) : <span className="text-emerald-400 font-medium">✓</span>}
+                      </td>
+                      <td className={`${tdCls} ${item.storage_cost_month > 100 ? 'text-amber-400 font-semibold' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                        {item.storage_cost_month > 0 ? formatMoney(item.storage_cost_month) : '—'}
+                      </td>
+                      <td className={`${tdCls} text-center text-[hsl(var(--muted-foreground))]`}>{item.warehouses.length}</td>
+                    </tr>
+                    {isExpanded && <WBWarehouseDetailTable warehouses={item.warehouses} />}
+                  </React.Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
+          <span className="text-sm text-[hsl(var(--muted-foreground))]">Всего SKU: <strong>{items.length}</strong></span>
+          <span className="text-sm font-bold">Итого поставить: <span className="text-red-400 text-base">{formatNumber(items.reduce((s, i) => s + i.total_need, 0))} ед.</span></span>
+        </div>
+        {hoveredImg && (
+          <div className="fixed z-50 rounded-xl overflow-hidden shadow-2xl border border-[hsl(var(--border))]" style={{ left: hoveredImg.x, top: hoveredImg.y, width: 160, height: 208 }}>
+            <img src={hoveredImg.url} alt="" className="h-full w-full object-cover" />
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WB — Warehouse Summary Table
+   ═══════════════════════════════════════════════════════════ */
+
+function WBWarehouseSummaryTable({ warehouses }: { warehouses: WBWarehouseSummary[] }) {
+  const thBase = 'px-4 py-3.5 text-right text-[13px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap'
+  const tdCls = 'px-4 py-3.5 text-right tabular-nums text-[13px] whitespace-nowrap'
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.4 }}>
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        <div className="px-6 py-5 border-b border-[hsl(var(--border))]">
+          <h2 className="text-xl font-bold">Сводка по складам WB</h2>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full border-collapse" style={{ minWidth: 800 }}>
+            <thead>
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                <th className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))]">Склад</th>
+                <th className={thBase}>Товаров</th>
+                <th className={thBase}>Остаток</th>
+                <th className={thBase}>Заказов</th>
+                <th className={thBase}>Поставить</th>
+                <th className={thBase}>Выручка</th>
+                <th className={`${thBase} text-center`}>Коэфф. хран.</th>
+                <th className={`${thBase} text-center`}>Приёмка</th>
+              </tr>
+            </thead>
+            <tbody>
+              {warehouses.map((wh, idx) => (
+                <tr key={wh.warehouse} className={`border-b border-[hsl(var(--border)/0.2)] hover:bg-[hsl(var(--muted)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.06)]' : ''}`}>
+                  <td className="px-4 py-3.5"><div className="flex items-center gap-2"><Warehouse className="h-4 w-4 text-[hsl(var(--muted-foreground))]" /><span className="text-[13px] font-medium">{wh.warehouse}</span></div></td>
+                  <td className={tdCls}>{wh.items_count}</td>
+                  <td className={`${tdCls} font-semibold`}>{formatNumber(wh.total_stock)}</td>
+                  <td className={tdCls}>{formatNumber(wh.total_orders)}</td>
+                  <td className={tdCls}>
+                    {wh.total_need > 0 ? (
+                      <span className="inline-flex items-center rounded-md bg-blue-500/15 text-blue-400 px-2 py-0.5 text-[13px] font-bold">{formatNumber(wh.total_need)}</span>
+                    ) : <span className="text-emerald-400 font-medium">✓</span>}
+                  </td>
+                  <td className={tdCls}>{formatMoney(wh.total_revenue)}</td>
+                  <td className={`${tdCls} text-center`}>{wh.storage_coef ? <span className={wh.storage_coef > 200 ? 'text-amber-400 font-medium' : ''}>{wh.storage_coef}%</span> : '—'}</td>
+                  <td className={`${tdCls} text-center`}>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                      wh.acceptance === 'Бесплатно' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                    }`}>{wh.acceptance}</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
+          <span className="text-sm text-[hsl(var(--muted-foreground))]">Складов: <strong>{warehouses.length}</strong></span>
+          <span className="text-sm font-bold">Итого поставить: <span className="text-blue-400 text-base">{formatNumber(warehouses.reduce((s, w) => s + w.total_need, 0))} ед.</span></span>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WB — Settings Panel (no Ad Boost, max 60 days)
+   ═══════════════════════════════════════════════════════════ */
+
+const WB_TARGET_OPTIONS = [
+  { value: 14, label: '14 дней' },
+  { value: 30, label: '30 дней' },
+  { value: 45, label: '45 дней' },
+  { value: 60, label: '60 дней' },
+]
+
+function WBSettingsPanel({
+  targetDays, setTargetDays,
+  salesPeriod, setSalesPeriod,
+  safety, setSafety,
+  loading, onRefresh, onExport, exporting,
+}: {
+  targetDays: number; setTargetDays: (v: number) => void
+  salesPeriod: number; setSalesPeriod: (v: number) => void
+  safety: number; setSafety: (v: number) => void
+  loading: boolean; onRefresh: () => void
+  onExport: () => void; exporting: boolean
+}) {
+  const selCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
+      active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)]'
+    }`
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.4 }}>
+      <Card>
+        <CardContent className="p-5">
+          <div className="flex flex-wrap items-center gap-6">
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Горизонт поставки</p>
+              <div className="flex gap-1">
+                {WB_TARGET_OPTIONS.map(o => <button key={o.value} className={selCls(targetDays === o.value)} onClick={() => setTargetDays(o.value)}>{o.label}</button>)}
+              </div>
+              <p className="text-[11px] text-amber-400/80">⚠ WB: бесплатное хранение до 60 дней</p>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Период для анализа продаж</p>
+              <div className="flex gap-1">
+                {PERIOD_OPTIONS.map(o => <button key={o.value} className={selCls(salesPeriod === o.value)} onClick={() => setSalesPeriod(o.value)}>{o.label}</button>)}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Страховой буфер</p>
+              <div className="flex gap-1">
+                {SAFETY_OPTIONS.map(o => <button key={o.value} className={selCls(safety === o.value)} onClick={() => setSafety(o.value)}>{o.label}</button>)}
+              </div>
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={onRefresh} disabled={loading} className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50">
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} /> Обновить
+              </button>
+              <button onClick={onExport} disabled={exporting || loading} className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-semibold bg-gradient-to-r from-emerald-600 to-emerald-500 text-white shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40 transition-all disabled:opacity-50">
+                <Download className="h-4 w-4" /> {exporting ? 'Генерация...' : 'Скачать Excel'}
+              </button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   WB — Full Content (state + fetch + KPIs + tabs)
+   ═══════════════════════════════════════════════════════════ */
+
+function WBContent({ shopId }: { shopId: number }) {
+  const [data, setData] = useState<WBSupplyResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [targetDays, setTargetDays] = useState(45)
+  const [salesPeriod, setSalesPeriod] = useState(30)
+  const [safety, setSafety] = useState(1.15)
+  const [activeTab, setActiveTab] = useState<'sku' | 'warehouses'>('sku')
+
+  const fetchData = useCallback(async () => {
+    setLoading(true); setError(null)
+    try {
+      const result = await getWBSupplyApi({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety })
+      setData(result)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Ошибка загрузки')
+    } finally { setLoading(false) }
+  }, [shopId, salesPeriod, targetDays, safety])
+
+  useEffect(() => { fetchData() }, [fetchData])
+
+  const handleExport = async () => {
+    setExporting(true)
+    try { await downloadWBSupplyExcel({ shop_id: shopId, sales_period: salesPeriod, target_days: targetDays, safety }) }
+    catch { /* silent */ }
+    finally { setExporting(false) }
+  }
+
+  if (loading && !data) return <SupplySkeleton />
+
+  if (error) return (
+    <Card>
+      <CardContent className="p-10 text-center">
+        <AlertCircle className="h-10 w-10 mx-auto text-red-400 mb-3" />
+        <p className="text-lg font-medium text-red-400">{error}</p>
+        <button onClick={fetchData} className="mt-4 px-4 py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-medium">Попробовать снова</button>
+      </CardContent>
+    </Card>
+  )
+
+  if (!data) return null
+
+  return (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <KpiCard title="Итого поставить" value={`${formatNumber(data.kpi.total_need)} ед.`} subtitle={`Всего SKU: ${data.kpi.total_sku}`} icon={Package} accent="from-blue-600 to-blue-500" delay={0} />
+        <KpiCard title="Критические SKU" value={String(data.kpi.critical_count)} subtitle="Запас < 14 дней" icon={AlertTriangle} accent="from-red-600 to-red-500" delay={0.05} />
+        <KpiCard title="Перезатарка" value={String(data.kpi.overstock_count)} subtitle="Оборот > 60 дн — платное хранение" icon={AlertCircle} accent="from-purple-600 to-purple-500" delay={0.1} />
+        <KpiCard title="Хранение / мес" value={formatMoney(data.kpi.total_storage_month)} subtitle={`Средний запас: ${data.kpi.avg_days_supply} дн.`} icon={Wallet} accent="from-amber-600 to-amber-500" delay={0.15} />
+      </div>
+      <WBSettingsPanel targetDays={targetDays} setTargetDays={setTargetDays} salesPeriod={salesPeriod} setSalesPeriod={setSalesPeriod} safety={safety} setSafety={setSafety} loading={loading} onRefresh={fetchData} onExport={handleExport} exporting={exporting} />
+      <div className="flex gap-1 p-1 rounded-xl bg-[hsl(var(--muted)/0.15)] w-fit">
+        <button className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === 'sku' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`} onClick={() => setActiveTab('sku')}>
+          <ListTree className="h-4 w-4" /> По товарам
+        </button>
+        <button className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${activeTab === 'warehouses' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`} onClick={() => setActiveTab('warehouses')}>
+          <Warehouse className="h-4 w-4" /> По складам
+        </button>
+      </div>
+      {activeTab === 'sku' ? <WBSupplyTable items={data.items} /> : <WBWarehouseSummaryTable warehouses={data.warehouse_summary} />}
+    </>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Main Page — auto-switches by marketplace
    ═══════════════════════════════════════════════════════════ */
 
 export default function WarehouseSupplyPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const isOzon = currentShop?.marketplace === 'ozon'
+  const isWB = currentShop?.marketplace === 'wildberries'
 
   const [data, setData] = useState<SupplyResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -690,7 +1119,7 @@ export default function WarehouseSupplyPage() {
     }
   }, [currentShop, isOzon, salesPeriod, targetDays, safety, useAdBoost])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { if (isOzon) fetchData() }, [fetchData, isOzon])
 
   const handleExport = async () => {
     if (!currentShop) return
@@ -710,14 +1139,17 @@ export default function WarehouseSupplyPage() {
     }
   }
 
-  // Not Ozon
-  if (currentShop && !isOzon) {
+  // ── WB marketplace → WBContent ──
+  if (currentShop && isWB) {
     return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <div className="text-center space-y-2">
-          <Package className="h-12 w-12 mx-auto text-[hsl(var(--muted-foreground))] opacity-40" />
-          <p className="text-lg font-medium text-[hsl(var(--muted-foreground))]">Поставки доступны только для Ozon</p>
+      <div className="space-y-6 pb-10">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Планирование поставки</h1>
+          <p className="text-[hsl(var(--muted-foreground))] mt-1">
+            Рекомендации по пополнению стоков Wildberries с учётом платного хранения
+          </p>
         </div>
+        <WBContent shopId={currentShop.id} />
       </div>
     )
   }
