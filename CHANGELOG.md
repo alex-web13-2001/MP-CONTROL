@@ -17,12 +17,19 @@
 ### Added — Excel экспорт LTV отчёта
 
 - **Backend / `ltv.py` + `wb_ltv.py`:** Endpoints `GET /sales/ozon/ltv/xlsx` и `GET /sales/wb/ltv/xlsx`
-  - 6 листов: KPI, Помесячные данные, Retention по SKU (1→5 покупка), Таблица товаров, Когортная матрица, Время до повторной
-  - Heatmap цветовое кодирование retention % (фиолетовая градация)
-  - Отдельный ClickHouse запрос: retention funnel по каждому SKU (countDistinctIf purchase_num ≥ N)
+  - 7 листов: KPI, Помесячные данные, Retention по SKU (1→5), Таблица товаров, Когортная матрица, Время до повторной, **🔀 Переходы по SKU**
+  - **Новинка:** Лист «Переходы» — кросс-товарные цепочки покупок (dense_rank по клиентам, reindex от target SKU, top-3 перехода на каждом уровне 2–5, ⭐ маркировка повтора)
+  - Heatmap retention % (фиолетовая градация)
   - Обогащение данных из PostgreSQL (offer_id, product_name)
 - **Frontend / `ltv.ts` + `wb_ltv.ts`:** Функции `downloadLtvXlsx()` и `downloadWbLtvXlsx()`
-- **Frontend / `LtvPage.tsx`:** Зелёная кнопка «📥 Excel» в шапке страницы с анимацией загрузки
+- **Frontend / `LtvPage.tsx`:** Зелёная кнопка «📥 Excel» в шапке
+
+### Fixed — LTV Excel исправления
+
+- Retention по SKU пустой лист — убраны вложенные агрегаты (argMax/any в CTE без GROUP BY)
+- `b1 = countDistinct` вместо `countDistinctIf` — % → 2 теперь корректный
+- Лист «Товары»: переименованы колонки («LTV повт.» → «Ср. чек повторных ₽», «Конв.→ 2» → «Повтор в 2-ю покупку»)
+- Добавлен подзаголовок-пояснение на листе «Товары»
 
 ### Added — Excel экспорт ABC/XYZ анализа
 
