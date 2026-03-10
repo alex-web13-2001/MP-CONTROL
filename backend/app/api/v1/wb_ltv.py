@@ -823,16 +823,14 @@ async def export_wb_ltv_xlsx(
                 sku_buyer_numbered AS (
                     SELECT
                         nm_id,
-                        any(supplier_article) AS supplier_article,
-                        any(subject) AS subject,
-                        any(brand) AS brand,
+                        supplier_article,
+                        subject,
+                        brand,
                         buyer_id,
                         order_date,
                         row_number() OVER (
                             PARTITION BY nm_id, buyer_id ORDER BY order_date
                         ) AS purchase_num,
-                        min(order_date) OVER (PARTITION BY nm_id, buyer_id) AS first_date,
-                        max(order_date) OVER (PARTITION BY nm_id, buyer_id) AS last_date,
                         count() OVER (PARTITION BY nm_id, buyer_id) AS total_purchases
                     FROM sku_orders
                 )
@@ -847,12 +845,15 @@ async def export_wb_ltv_xlsx(
                 countDistinctIf(buyer_id, purchase_num >= 4) AS b4,
                 countDistinctIf(buyer_id, purchase_num >= 5) AS b5,
                 round(avgIf(
-                    dateDiff('day', first_date, last_date) / (total_purchases - 1),
+                    dateDiff('day',
+                        minIf(order_date, purchase_num = 1),
+                        maxIf(order_date, purchase_num = total_purchases)
+                    ) / greatest(total_purchases - 1, 1),
                     total_purchases >= 2
                 ), 0) AS avg_days
             FROM sku_buyer_numbered
             GROUP BY nm_id
-            HAVING b1 >= 5
+            HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
         """, parameters=params).result_rows

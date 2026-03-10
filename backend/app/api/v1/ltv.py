@@ -913,19 +913,25 @@ def _build_ltv_xlsx(
     ws4 = wb.create_sheet("📦 Товары")
     ws4.sheet_properties.tabColor = "6366F1"
 
-    ws4.merge_cells("A1:H1")
+    ws4.merge_cells("A1:I1")
     ws4["A1"] = "Таблица повторных покупок по товарам"
     ws4["A1"].font = TITLE_FONT
     ws4.row_dimensions[1].height = 28
 
-    sku_headers = [
-        "Артикул", "Название", "Покупателей", "Повторных",
-        "Конв. → 2 (%)", "Конв. → 3 (%)", "Ср. дней", "LTV повт.", "Выручка",
-    ]
-    sku_widths = [18, 35, 13, 13, 13, 13, 12, 15, 15]
-    _hdr_row(ws4, 3, sku_headers, sku_widths)
+    ws4.merge_cells("A2:I2")
+    ws4["A2"] = "Покупатели, вернувшиеся за повторной покупкой того же товара"
+    ws4["A2"].font = SUBTITLE_FONT
 
-    for i, s in enumerate(sku_table, 4):
+    sku_headers = [
+        "Артикул", "Название товара",
+        "Всего покупателей", "Из них повторных",
+        "Повтор в 2-ю покупку", "Повтор в 3-ю покупку",
+        "Ср. дней между покупками", "Ср. чек повторных ₽", "Общая выручка ₽",
+    ]
+    sku_widths = [18, 38, 17, 17, 19, 19, 22, 20, 18]
+    _hdr_row(ws4, 4, sku_headers, sku_widths)
+
+    for i, s in enumerate(sku_table, 5):
         ws4.cell(row=i, column=1, value=s.get("offer_id", "")).font = Font(name="Calibri", size=10, bold=True)
         ws4.cell(row=i, column=2, value=s.get("name", "")[:60]).font = Font(name="Calibri", size=10)
         ws4.cell(row=i, column=3, value=s.get("total_buyers", 0)).number_format = NUM_FMT
@@ -935,7 +941,9 @@ def _build_ltv_xlsx(
         ws4.cell(row=i, column=5, value=s.get("conv_to_2", 0) / 100).number_format = PCT_FMT
         ws4.cell(row=i, column=6, value=s.get("conv_to_3", 0) / 100).number_format = PCT_FMT
         avg_d = s.get("avg_days_between", 0)
-        ws4.cell(row=i, column=7, value=f"{avg_d} дн" if avg_d > 0 else "—")
+        c_days = ws4.cell(row=i, column=7, value=avg_d if avg_d > 0 else None)
+        if avg_d > 0:
+            c_days.number_format = '0'
         ws4.cell(row=i, column=8, value=s.get("avg_ltv_repeat", 0)).number_format = MONEY_FMT
         ws4.cell(row=i, column=9, value=s.get("total_revenue", 0)).number_format = MONEY_FMT
         for col in range(1, 10):
@@ -1061,21 +1069,19 @@ async def export_ozon_ltv_xlsx(
                 sku_client_numbered AS (
                     SELECT
                         sku,
-                        argMax(offer_id, order_date) AS offer_id,
-                        any(product_name) AS product_name,
+                        offer_id,
+                        product_name,
                         client_id,
                         order_date,
                         row_number() OVER (
                             PARTITION BY sku, client_id ORDER BY order_date
                         ) AS purchase_num,
-                        min(order_date) OVER (PARTITION BY sku, client_id) AS first_date,
-                        max(order_date) OVER (PARTITION BY sku, client_id) AS last_date,
                         count() OVER (PARTITION BY sku, client_id) AS total_purchases
                     FROM sku_orders
                 )
             SELECT
                 sku,
-                argMax(offer_id, purchase_num) AS offer_id,
+                any(offer_id) AS offer_id,
                 any(product_name) AS name,
                 countDistinctIf(client_id, purchase_num >= 1) AS b1,
                 countDistinctIf(client_id, purchase_num >= 2) AS b2,
@@ -1083,12 +1089,15 @@ async def export_ozon_ltv_xlsx(
                 countDistinctIf(client_id, purchase_num >= 4) AS b4,
                 countDistinctIf(client_id, purchase_num >= 5) AS b5,
                 round(avgIf(
-                    dateDiff('day', first_date, last_date) / (total_purchases - 1),
+                    dateDiff('day',
+                        minIf(order_date, purchase_num = 1),
+                        maxIf(order_date, purchase_num = total_purchases)
+                    ) / greatest(total_purchases - 1, 1),
                     total_purchases >= 2
                 ), 0) AS avg_days
             FROM sku_client_numbered
             GROUP BY sku
-            HAVING b1 >= 5
+            HAVING b1 >= 3
             ORDER BY b2 DESC, b1 DESC
             LIMIT 100
         """, parameters=params).result_rows
