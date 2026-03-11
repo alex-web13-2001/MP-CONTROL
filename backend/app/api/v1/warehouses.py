@@ -2176,6 +2176,109 @@ async def ozon_warehouse_analytics(
         except Exception:
             pass
 
+        # ── 7. Storage risk SKUs (turnover > 120 days per SKU) ─────
+        # Calculate which SKUs are in paid storage zone or approaching it
+        storage_risk_query = ch.query("""
+            SELECT ws.sku, ws.offer_id, ws.product_name, ws.warehouse_name,
+                   ws.free_to_sell, ws.reserved,
+                   COALESCE(ord.sold, 0) as sold_period,
+                   COALESCE(ord.revenue, 0) as revenue_period
+            FROM fact_ozon_warehouse_stocks ws FINAL
+            LEFT JOIN (
+                SELECT sku, sum(quantity) as sold, sum(price * quantity) as revenue
+                FROM fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND order_date >= today() - {period:UInt32}
+                  AND status != 'cancelled'
+                GROUP BY sku
+            ) ord ON ws.sku = ord.sku
+            WHERE ws.shop_id = {shop_id:UInt32}
+              AND ws.dt = (SELECT max(dt) FROM fact_ozon_warehouse_stocks WHERE shop_id = {shop_id:UInt32})
+              AND ws.warehouse_type = 'fbo'
+              AND ws.free_to_sell > 0
+            ORDER BY ws.sku, ws.free_to_sell DESC
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # Aggregate per SKU
+        sku_agg: dict[int, dict] = {}
+        for row in storage_risk_query.result_rows:
+            sku_id = int(row[0])
+            if sku_id not in sku_agg:
+                sku_agg[sku_id] = {
+                    "sku": sku_id,
+                    "offer_id": row[1],
+                    "name": row[2],
+                    "total_stock": 0,
+                    "total_reserved": 0,
+                    "sold_period": int(row[6]),
+                    "revenue_period": float(row[7]),
+                    "warehouses": [],
+                }
+            sku_agg[sku_id]["total_stock"] += int(row[4])
+            sku_agg[sku_id]["total_reserved"] += int(row[5])
+            sku_agg[sku_id]["warehouses"].append({
+                "warehouse_name": row[3],
+                "stock": int(row[4]),
+                "reserved": int(row[5]),
+            })
+
+        # Calculate turnover and storage cost for each SKU
+        # Ozon tariff: ~0.07 ₽/л/день for items > 160 days turnover (approximate)
+        STORAGE_TARIFF_PER_LITER_PER_DAY = 0.07
+        storage_risk_skus = []
+
+        for sku_id, info in sku_agg.items():
+            daily_sales = info["sold_period"] / period if period > 0 else 0
+            turnover_days = (
+                info["total_stock"] / daily_sales if daily_sales > 0 else 99999
+            )
+
+            # Only include SKUs with turnover > 120 days (approaching or in paid zone)
+            if turnover_days <= 120:
+                continue
+
+            # Estimate volume-based storage cost
+            dims = dims_data.get(sku_id, {})  # product_id may differ from sku
+            vol_liters = dims.get("volume_liters", 0.5)  # default 0.5L
+
+            # Days over threshold (160 days = paid storage starts)
+            days_over = max(0, turnover_days - 160) if turnover_days < 99999 else 0
+            # Estimated daily cost for ALL items of this SKU
+            est_daily_cost = info["total_stock"] * vol_liters * STORAGE_TARIFF_PER_LITER_PER_DAY
+            est_monthly_cost = est_daily_cost * 30
+
+            zone = "free"
+            if turnover_days > 160:
+                zone = "paid"
+            elif turnover_days > 120:
+                zone = "warning"
+
+            storage_risk_skus.append({
+                "sku": sku_id,
+                "offer_id": info["offer_id"],
+                "name": info["name"],
+                "total_stock": info["total_stock"],
+                "sold_period": info["sold_period"],
+                "daily_sales": round(daily_sales, 2),
+                "turnover_days": round(turnover_days, 1) if turnover_days < 99999 else None,
+                "days_over_threshold": round(days_over, 0) if days_over > 0 else 0,
+                "zone": zone,
+                "volume_liters": vol_liters,
+                "est_daily_cost": round(est_daily_cost, 2),
+                "est_monthly_cost": round(est_monthly_cost, 2),
+                "revenue_period": round(info["revenue_period"], 2),
+                "warehouses": sorted(
+                    info["warehouses"],
+                    key=lambda w: w["stock"],
+                    reverse=True,
+                ),
+            })
+
+        # Sort: paid first, then by turnover descending
+        storage_risk_skus.sort(
+            key=lambda s: (0 if s["zone"] == "paid" else 1, -(s["turnover_days"] or 99999)),
+        )
+
         # ── Build response ───────────────────────────────────────
         # Index orders by warehouse
         orders_by_wh = {}
@@ -2523,6 +2626,7 @@ async def ozon_warehouse_analytics(
             "costs": costs_summary,
             "warehouses": warehouses,
             "recommendations": recommendations,
+            "storage_risk_skus": storage_risk_skus,
         }
 
     finally:

@@ -290,11 +290,29 @@ export interface Recommendation {
   [key: string]: any
 }
 
+export interface StorageRiskSku {
+  sku: number
+  offer_id: string
+  name: string
+  total_stock: number
+  sold_period: number
+  daily_sales: number
+  turnover_days: number | null
+  days_over_threshold: number
+  zone: 'paid' | 'warning' | 'free'
+  volume_liters: number
+  est_daily_cost: number
+  est_monthly_cost: number
+  revenue_period: number
+  warehouses: { warehouse_name: string; stock: number; reserved: number }[]
+}
+
 export interface WarehouseAnalyticsResponse {
   kpi: WarehouseAnalyticsKpi
   costs: Record<string, CostItem>
   warehouses: WarehouseDetail[]
   recommendations: Recommendation[]
+  storage_risk_skus: StorageRiskSku[]
 }
 
 export async function getOzonWarehouseAnalytics(params: {

@@ -13,6 +13,7 @@ import {
   Ban,
   Truck,
   ShieldAlert,
+  Package,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -22,6 +23,7 @@ import {
   WarehouseAnalyticsResponse,
   WarehouseDetail,
   type Recommendation,
+  type StorageRiskSku,
 } from '@/api/warehouses'
 
 
@@ -474,6 +476,175 @@ function RecommendationsPanel({ recs }: { recs: Recommendation[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Storage Risk SKUs Table
+   ═══════════════════════════════════════════════════════════ */
+
+function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  const paidCount = skus.filter(s => s.zone === 'paid').length
+  const warningCount = skus.filter(s => s.zone === 'warning').length
+  const totalMonthlyCost = skus
+    .filter(s => s.zone === 'paid')
+    .reduce((s, sk) => s + sk.est_monthly_cost, 0)
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.22, duration: 0.4 }}>
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-orange-600 to-red-500 shadow-lg">
+              <Package className="h-4.5 w-4.5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Платное хранение по SKU</h2>
+              <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                {paidCount} SKU в зоне платного хранения{warningCount > 0 && ` • ${warningCount} приближаются`}
+              </p>
+            </div>
+          </div>
+          {totalMonthlyCost > 0 && (
+            <div className="text-right">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Прогноз / мес</div>
+              <div className="text-xl font-bold text-red-400 tabular-nums">~{fmtM(totalMonthlyCost)}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="overflow-auto max-h-[600px]">
+          <table className="w-full border-collapse" style={{ minWidth: 900 }}>
+            <thead className="sticky top-0 z-20">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                <th className="px-3 py-3 w-[40px]"></th>
+                <th className="px-3 py-3 text-left text-[12px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px]">SKU</th>
+                <th className="px-3 py-3 text-center text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Зона</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Остаток</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Прод/д</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Оборач.</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Сверх лимита</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">~Стоим/мес</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Складов</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skus.map((sk, idx) => {
+                const isExp = expanded === sk.sku
+                const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
+                return (
+                  <React.Fragment key={sk.sku}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${
+                        isExp ? 'bg-[hsl(var(--primary)/0.06)]' : `${rowBg} hover:bg-[hsl(var(--muted)/0.15)]`
+                      } group`}
+                      onClick={() => setExpanded(isExp ? null : sk.sku)}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
+                          <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                        </motion.div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="max-w-[250px] truncate text-[13px] font-medium" title={sk.name}>
+                          {sk.name || sk.offer_id}
+                        </div>
+                        <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">{sk.offer_id}</div>
+                      </td>
+                      <td className="px-3 py-3 text-center">
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset ${
+                          sk.zone === 'paid'
+                            ? 'bg-red-500/15 text-red-400 ring-red-500/20'
+                            : 'bg-amber-500/15 text-amber-400 ring-amber-500/20'
+                        }`}>
+                          {sk.zone === 'paid' ? '💸 Платное' : '⚠️ Скоро'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px] font-semibold">{fmt(sk.total_stock)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{sk.daily_sales.toFixed(1)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                        <span className={`font-semibold ${
+                          sk.turnover_days == null ? 'text-purple-400' :
+                          sk.turnover_days > 160 ? 'text-red-400' :
+                          'text-orange-400'
+                        }`}>
+                          {sk.turnover_days != null ? `${Math.round(sk.turnover_days)} дн` : '∞'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                        {sk.days_over_threshold > 0 ? (
+                          <span className="font-semibold text-red-400">+{Math.round(sk.days_over_threshold)} дн</span>
+                        ) : sk.zone === 'warning' ? (
+                          <span className="text-amber-400 font-medium">~{Math.round(160 - (sk.turnover_days || 0))} дн до</span>
+                        ) : (
+                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                        <span className={`font-bold ${sk.zone === 'paid' ? 'text-red-400' : 'text-amber-400'}`}>
+                          {sk.est_monthly_cost > 0 ? `~${fmtM(sk.est_monthly_cost)}` : '—'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-center tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                        {sk.warehouses.length}
+                      </td>
+                    </tr>
+                    {/* Expanded: warehouses */}
+                    {isExp && (
+                      <tr>
+                        <td colSpan={9} className="p-0">
+                          <div className="bg-[hsl(var(--muted)/0.06)] border-t border-b border-[hsl(var(--border)/0.3)] px-5 py-4">
+                            <div className="flex items-center gap-4 mb-3">
+                              <h4 className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
+                                Распределение по складам ({sk.warehouses.length})
+                              </h4>
+                              {sk.revenue_period > 0 && (
+                                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                                  Выручка за период: <strong className="text-emerald-400">{fmtM(sk.revenue_period)}</strong>
+                                </span>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
+                              {sk.warehouses.map(wh => (
+                                <div
+                                  key={wh.warehouse_name}
+                                  className="flex items-center justify-between p-2.5 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)]"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="text-[11px] font-medium truncate" title={wh.warehouse_name}>
+                                      {wh.warehouse_name.replace('_РФЦ', '').replace('_МРФЦ', '')}
+                                    </div>
+                                  </div>
+                                  <span className="text-[13px] font-bold tabular-nums ml-2 shrink-0">{wh.stock}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
+          <span className="text-sm text-[hsl(var(--muted-foreground))]">
+            SKU в зоне риска: <strong className="text-red-400">{paidCount} платных</strong>
+            {warningCount > 0 && <>, <strong className="text-amber-400">{warningCount} приближаются</strong></>}
+          </span>
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            * Расчёт по тарифу ~0.07 ₽/л/день × объём × кол-во
+          </span>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
    Skeleton
    ═══════════════════════════════════════════════════════════ */
 
@@ -653,6 +824,11 @@ export default function WarehouseAnalyticsPage() {
 
           {/* Costs */}
           <CostsCard costs={data.costs} period={data.kpi.period_days} />
+
+          {/* Storage Risk SKUs */}
+          {data.storage_risk_skus && data.storage_risk_skus.length > 0 && (
+            <StorageRiskTable skus={data.storage_risk_skus} />
+          )}
 
           {/* Recommendations */}
           {data.recommendations && data.recommendations.length > 0 && (
