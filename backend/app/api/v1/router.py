@@ -18,6 +18,7 @@ from app.api.v1.events import router as events_router
 from app.api.v1.events_graph import router as events_graph_router
 from app.api.v1.events_analysis import router as events_analysis_router
 from app.api.v1.warehouses import router as warehouses_router
+from app.api.v1.finances_export import router as finances_export_router
 
 api_router = APIRouter()
 
@@ -27,6 +28,7 @@ api_router.include_router(shops_router)
 
 # Business logic
 api_router.include_router(finance_reports_router)
+api_router.include_router(finances_export_router)
 api_router.include_router(advertising_router)
 api_router.include_router(commercial_router)
 api_router.include_router(dashboard_router)
