@@ -283,7 +283,12 @@ export interface CostItem {
 export interface Recommendation {
   type: 'move_stock' | 'optimize_crossdocking' | 'storage_warning' | 'paid_storage'
   severity: 'high' | 'medium' | 'low'
+  title?: string
   reason: string
+  impact?: string
+  action_items?: string[]
+  affected_sku_names?: string[]
+  est_savings?: number
   warehouse?: string
   from_warehouse?: string
   to_warehouse?: string

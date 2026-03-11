@@ -2528,31 +2528,64 @@ async def ozon_warehouse_analytics(
                          and w["daily_sales"] > 0]
 
         for ow in overstocked_whs:
-            excess_days = (ow["turnover_days"] or 9999) - 90  # target: 90 days
+            ow_td = ow["turnover_days"] or 9999
+            excess_days = ow_td - 90  # target: 90 days
             if excess_days > 0 and ow["daily_sales"] > 0:
                 excess_qty = int(excess_days * ow["daily_sales"])
             else:
                 excess_qty = ow["stock_free"]
 
             # Find best target warehouse (same SKUs, low stock)
-            ow_skus = {s["sku"] for s in ow["skus"] if s["stock"] > 10}
+            ow_sku_map = {s["sku"]: s for s in ow["skus"] if s["stock"] > 10}
+            ow_skus = set(ow_sku_map.keys())
             for lw in low_stock_whs:
                 if lw["warehouse_name"] == ow["warehouse_name"]:
                     continue
                 lw_skus = {s["sku"] for s in lw["skus"]}
                 common = ow_skus & lw_skus
                 if common:
+                    common_names = [ow_sku_map[s].get("name", ow_sku_map[s].get("offer_id", ""))
+                                    for s in list(common)[:5]]
+                    lw_td = lw["turnover_days"] or 0
+                    is_paid = ow_td > 160
+
+                    # Estimate savings
+                    est_storage_saved = 0
+                    if is_paid:
+                        # Rough: excess_qty * 0.5L * 0.07₽/day * 30 days
+                        est_storage_saved = int(excess_qty * 0.5 * 0.07 * 30)
+
                     recommendations.append({
                         "type": "move_stock",
-                        "severity": "high" if ow["status"] == "overstocked" else "medium",
+                        "severity": "high" if is_paid else "medium",
                         "from_warehouse": ow["warehouse_name"],
                         "from_cluster": ow["cluster"],
                         "to_warehouse": lw["warehouse_name"],
                         "to_cluster": lw["cluster"],
-                        "reason": f"{ow['warehouse_name']} перезатарен ({int(ow['turnover_days'] or 0)} дн), "
-                                  f"{lw['warehouse_name']} ({lw['status']}, {int(lw['turnover_days'] or 0)} дн)",
+                        "title": f"Перемещение со склада {ow['warehouse_name']}",
+                        "reason": (
+                            f"На складе {ow['warehouse_name']} ({ow['cluster']}) оборачиваемость "
+                            f"{int(ow_td)} дн — {'в зоне ПЛАТНОГО хранения (>160 дн)' if is_paid else 'сильно выше нормы (90 дн)'}. "
+                            f"Склад {lw['warehouse_name']} ({lw['cluster']}) "
+                            f"испытывает {'критический' if lw['status'] == 'critical' else 'повышенный'} "
+                            f"дефицит — оборачиваемость всего {int(lw_td)} дн "
+                            f"({'товар закончится за 1-2 недели!' if lw_td < 14 else 'ниже нормы, спрос превышает запас'}). "
+                            f"У обоих складов {len(common)} общих SKU."
+                        ),
+                        "impact": (
+                            f"{'Вы платите за хранение товара, который не продаётся на этом складе. ' if is_paid else ''}"
+                            f"Перемещение ~{excess_qty} ед. сократит оборачиваемость {ow['warehouse_name']} до ~90 дн, "
+                            f"а {lw['warehouse_name']} получит товар, который там покупают."
+                            + (f" Потенциальная экономия на хранении: ~{est_storage_saved:,} ₽/мес." if est_storage_saved > 0 else "")
+                        ),
+                        "action_items": [
+                            f"Переместить ~{excess_qty} ед. из {ow['warehouse_name']} → {lw['warehouse_name']}",
+                            f"Приоритетные товары: {', '.join(common_names[:3])}",
+                        ],
                         "affected_skus": len(common),
+                        "affected_sku_names": common_names,
                         "excess_qty": excess_qty,
+                        "est_savings": est_storage_saved,
                     })
                     break  # one rec per overstocked wh
 
@@ -2560,6 +2593,7 @@ async def ozon_warehouse_analytics(
         for w in warehouses:
             cd_cost = abs(w["costs"].get("crossdocking", 0))
             if cd_cost > 5000 and w["daily_sales"] > 0.5:
+                monthly_cd = round(cd_cost / period * 30)
                 recommendations.append({
                     "type": "optimize_crossdocking",
                     "severity": "medium",
@@ -2567,8 +2601,24 @@ async def ozon_warehouse_analytics(
                     "cluster": w["cluster"],
                     "crossdocking_cost": round(cd_cost, 2),
                     "daily_sales": w["daily_sales"],
-                    "reason": f"Кроссдокинг {w['warehouse_name']}: {round(cd_cost):,} ₽ за {period} дн. "
-                              f"Рассмотри прямую поставку вместо кроссдокинга.",
+                    "title": f"Высокий расход на кроссдокинг: {w['warehouse_name']}",
+                    "reason": (
+                        f"Склад {w['warehouse_name']} ({w['cluster']}) — расход на кроссдокинг "
+                        f"{round(cd_cost):,} ₽ за {period} дн (~{monthly_cd:,} ₽/мес). "
+                        f"Кроссдокинг означает, что ваш товар сначала едет на центральный склад, "
+                        f"а потом перераспределяется — каждая перевалка стоит денег."
+                    ),
+                    "impact": (
+                        f"Прямая поставка на {w['warehouse_name']} может сэкономить "
+                        f"до {int(cd_cost * 0.6):,} ₽ за период (до 60% от расхода на кроссдокинг). "
+                        f"При продажах {w['daily_sales']:.1f} ед/день склад достаточно активный "
+                        f"для оправдания прямых поставок."
+                    ),
+                    "action_items": [
+                        f"Рассмотреть создание прямого маршрута поставки на {w['warehouse_name']}",
+                        f"Сравнить стоимость логистики прямой поставки vs кроссдокинг (~{monthly_cd:,} ₽/мес)",
+                    ],
+                    "est_savings": int(cd_cost * 0.6),
                 })
 
         # 3. Warehouses approaching paid storage threshold
@@ -2576,6 +2626,8 @@ async def ozon_warehouse_analytics(
             td = w["turnover_days"]
             if td and 120 < td <= 160:
                 days_left = int(160 - td)
+                # Estimate what storage would cost once it crosses threshold
+                est_monthly_if_paid = int(w["stock_free"] * 0.5 * 0.07 * 30)
                 recommendations.append({
                     "type": "storage_warning",
                     "severity": "medium",
@@ -2584,8 +2636,22 @@ async def ozon_warehouse_analytics(
                     "turnover_days": round(td),
                     "days_to_paid": days_left,
                     "stock": w["stock_free"],
-                    "reason": f"{w['warehouse_name']}: оборачиваемость {int(td)} дн, "
-                              f"до платного хранения ~{days_left} дн. Снизь стоки или цену.",
+                    "title": f"Приближение к платному хранению: {w['warehouse_name']}",
+                    "reason": (
+                        f"Склад {w['warehouse_name']} ({w['cluster']}) — оборачиваемость {int(td)} дн. "
+                        f"До порога платного хранения Ozon (160 дн) осталось ~{days_left} дней. "
+                        f"На складе {w['stock_free']} ед. товара."
+                    ),
+                    "impact": (
+                        f"Если ничего не делать, через ~{days_left} дн Ozon начнёт взимать плату "
+                        f"за хранение. Прогноз расхода при текущих стоках: ~{est_monthly_if_paid:,} ₽/мес."
+                    ),
+                    "action_items": [
+                        "Снизить цену для ускорения продаж на этом складе",
+                        "Запустить акцию/промо для товаров с низкой оборачиваемостью",
+                        f"Уменьшить поставки на {w['warehouse_name']} до стабилизации",
+                    ],
+                    "est_savings": est_monthly_if_paid,
                 })
 
         # 4. Already paying for storage
@@ -2593,6 +2659,14 @@ async def ozon_warehouse_analytics(
             td = w["turnover_days"]
             if td and td > 160:
                 est_cost = w["costs"].get("storage", 0)
+                excess_days = int(td - 160)
+                est_monthly = int(w["stock_free"] * 0.5 * 0.07 * 30)
+                # Find top SKUs on this warehouse with most stock
+                top_skus = sorted(w["skus"], key=lambda s: s["stock"], reverse=True)[:5]
+                top_sku_names = [
+                    f"{s.get('name', s.get('offer_id', ''))} ({s['stock']} шт)"
+                    for s in top_skus if s["stock"] > 0
+                ]
                 recommendations.append({
                     "type": "paid_storage",
                     "severity": "high",
@@ -2601,13 +2675,33 @@ async def ozon_warehouse_analytics(
                     "turnover_days": round(td),
                     "stock": w["stock_free"],
                     "storage_cost": round(abs(est_cost), 2),
-                    "reason": f"{w['warehouse_name']}: оборачиваемость {int(td)} дн — ПЛАТНОЕ хранение! "
-                              f"Стоки: {w['stock_free']} ед. Расход: {round(abs(est_cost)):,} ₽.",
+                    "title": f"ПЛАТНОЕ хранение: {w['warehouse_name']}",
+                    "reason": (
+                        f"Склад {w['warehouse_name']} ({w['cluster']}) — оборачиваемость {int(td)} дн, "
+                        f"что на {excess_days} дн выше порога платного хранения (160 дн). "
+                        f"На складе {w['stock_free']} ед. товара, "
+                        + (f"продажи крайне низкие." if w["daily_sales"] < 0.5
+                           else f"продажи всего {w['daily_sales']:.1f} ед/день.")
+                    ),
+                    "impact": (
+                        f"Ozon ежедневно начисляет плату за хранение этого товара. "
+                        f"Прогноз расхода: ~{est_monthly:,} ₽/мес. "
+                        f"Чем дольше товар лежит, тем выше тариф — после 200 дн сумма может вырасти в 2-3 раза."
+                    ),
+                    "action_items": [
+                        f"Срочно распродать или вывезти товар со склада {w['warehouse_name']}",
+                        "Снизить цену на 15-30% для активации продаж",
+                        "Запустить промо-акцию или бандл-продажу",
+                        f"Заказать возврат со склада Ozon (если объёмы более 100 ед.)"
+                        if w["stock_free"] > 100 else "Участвовать в распродажах Ozon",
+                    ],
+                    "affected_sku_names": top_sku_names,
+                    "est_savings": est_monthly,
                 })
 
-        # Sort recs: high severity first
+        # Sort recs: high severity first, then by est_savings descending
         severity_order = {"high": 0, "medium": 1, "low": 2}
-        recommendations.sort(key=lambda r: severity_order.get(r["severity"], 9))
+        recommendations.sort(key=lambda r: (severity_order.get(r["severity"], 9), -(r.get("est_savings", 0))))
 
         return {
             "kpi": {

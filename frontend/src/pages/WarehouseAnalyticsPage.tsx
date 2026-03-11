@@ -412,65 +412,154 @@ function CostsCard({ costs, period }: { costs: Record<string, { name: string; co
    ═══════════════════════════════════════════════════════════ */
 
 function RecommendationsPanel({ recs }: { recs: Recommendation[] }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(0) // first open by default
+
   const iconMap: Record<string, React.ElementType> = {
     move_stock: ArrowRightLeft,
     optimize_crossdocking: Truck,
     storage_warning: ShieldAlert,
     paid_storage: AlertTriangle,
   }
-  const colorMap: Record<string, { bg: string; border: string; icon: string }> = {
-    high: { bg: 'bg-red-500/8', border: 'border-red-500/20', icon: 'text-red-400' },
-    medium: { bg: 'bg-amber-500/8', border: 'border-amber-500/20', icon: 'text-amber-400' },
-    low: { bg: 'bg-blue-500/8', border: 'border-blue-500/20', icon: 'text-blue-400' },
+  const colorMap: Record<string, { bg: string; border: string; icon: string; headerBg: string }> = {
+    high: { bg: 'bg-red-500/5', border: 'border-red-500/20', icon: 'text-red-400', headerBg: 'bg-red-500/10' },
+    medium: { bg: 'bg-amber-500/5', border: 'border-amber-500/20', icon: 'text-amber-400', headerBg: 'bg-amber-500/10' },
+    low: { bg: 'bg-blue-500/5', border: 'border-blue-500/20', icon: 'text-blue-400', headerBg: 'bg-blue-500/10' },
   }
-  const labelMap: Record<string, string> = {
-    move_stock: 'Переместить сток',
-    optimize_crossdocking: 'Оптимизация кроссдокинга',
-    storage_warning: 'Риск платного хранения',
-    paid_storage: 'ПЛАТНОЕ хранение',
-  }
+
+  const totalSavings = recs.reduce((s, r) => s + (r.est_savings || 0), 0)
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.28, duration: 0.4 }}>
-      <Card>
-        <CardContent className="p-5">
-          <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-            <ShieldAlert className="h-5 w-5 text-amber-400" />
-            Рекомендации ({recs.length})
-          </h3>
-          <div className="space-y-3">
-            {recs.map((rec, idx) => {
-              const Icon = iconMap[rec.type] || AlertTriangle
-              const colors = colorMap[rec.severity] || colorMap.medium
-              return (
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-amber-600 to-orange-500 shadow-lg">
+              <ShieldAlert className="h-4.5 w-4.5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">{'\u0420\u0435\u043a\u043e\u043c\u0435\u043d\u0434\u0430\u0446\u0438\u0438'} ({recs.length})</h2>
+              <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                {recs.filter(r => r.severity === 'high').length} {'\u0432\u0430\u0436\u043d\u044b\u0445'} {'\u2022'} {recs.filter(r => r.severity === 'medium').length} {'\u0441\u043e\u0432\u0435\u0442\u043e\u0432'}
+              </p>
+            </div>
+          </div>
+          {totalSavings > 0 && (
+            <div className="text-right">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">{'\u041f\u043e\u0442\u0435\u043d\u0446\u0438\u0430\u043b \u044d\u043a\u043e\u043d\u043e\u043c\u0438\u0438'}</div>
+              <div className="text-xl font-bold text-emerald-400 tabular-nums">~{fmtM(totalSavings)}{'/\u043c\u0435\u0441'}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="p-4 space-y-3">
+          {recs.map((rec, idx) => {
+            const Icon = iconMap[rec.type] || AlertTriangle
+            const colors = colorMap[rec.severity] || colorMap.medium
+            const isOpen = expandedIdx === idx
+
+            return (
+              <div
+                key={idx}
+                className={`rounded-xl border ${colors.border} overflow-hidden transition-all`}
+              >
+                {/* Clickable header */}
                 <div
-                  key={idx}
-                  className={`flex items-start gap-3 p-4 rounded-xl ${colors.bg} border ${colors.border} transition-all`}
+                  className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${
+                    isOpen ? colors.headerBg : `${colors.bg} hover:${colors.headerBg}`
+                  }`}
+                  onClick={() => setExpandedIdx(isOpen ? null : idx)}
                 >
-                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--card))] ${colors.icon}`}>
-                    <Icon className="h-4 w-4" />
+                  <motion.div animate={{ rotate: isOpen ? 90 : 0 }} transition={{ duration: 0.15 }}>
+                    <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                  </motion.div>
+                  <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--card))] ${colors.icon}`}>
+                    <Icon className="h-3.5 w-3.5" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`text-[11px] font-bold uppercase tracking-wider ${colors.icon}`}>
-                        {labelMap[rec.type] || rec.type}
+                    <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
+                      {rec.title || rec.reason?.substring(0, 60)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {(rec.est_savings ?? 0) > 0 && (
+                      <span className="text-[11px] font-bold text-emerald-400 tabular-nums">
+                        ~{fmtM(rec.est_savings!)}
                       </span>
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset ${
-                        rec.severity === 'high'
-                          ? 'bg-red-500/15 text-red-400 ring-red-500/20'
-                          : 'bg-amber-500/15 text-amber-400 ring-amber-500/20'
-                      }`}>
-                        {rec.severity === 'high' ? 'Важно' : 'Совет'}
-                      </span>
-                    </div>
-                    <p className="text-[13px] text-[hsl(var(--foreground))]">{rec.reason}</p>
+                    )}
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset ${
+                      rec.severity === 'high'
+                        ? 'bg-red-500/15 text-red-400 ring-red-500/20'
+                        : 'bg-amber-500/15 text-amber-400 ring-amber-500/20'
+                    }`}>
+                      {rec.severity === 'high' ? '\u0412\u0430\u0436\u043d\u043e' : '\u0421\u043e\u0432\u0435\u0442'}
+                    </span>
                   </div>
                 </div>
-              )
-            })}
-          </div>
-        </CardContent>
-      </Card>
+
+                {/* Expanded content */}
+                {isOpen && (
+                  <div className="px-5 py-4 border-t border-[hsl(var(--border)/0.2)] space-y-4">
+                    {/* Reason */}
+                    <div>
+                      <h4 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+                        {'\u041f\u043e\u0447\u0435\u043c\u0443'}
+                      </h4>
+                      <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed">{rec.reason}</p>
+                    </div>
+
+                    {/* Impact */}
+                    {rec.impact && (
+                      <div>
+                        <h4 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+                          {'\u041f\u043e\u0441\u043b\u0435\u0434\u0441\u0442\u0432\u0438\u044f / \u044d\u043a\u043e\u043d\u043e\u043c\u0438\u044f'}
+                        </h4>
+                        <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed">{rec.impact}</p>
+                      </div>
+                    )}
+
+                    {/* Action items */}
+                    {rec.action_items && rec.action_items.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+                          {'\u0427\u0442\u043e \u0434\u0435\u043b\u0430\u0442\u044c'}
+                        </h4>
+                        <ul className="space-y-1.5">
+                          {rec.action_items.map((item: string, i: number) => (
+                            <li key={i} className="flex items-start gap-2 text-[13px] text-[hsl(var(--foreground))]">
+                              <span className="text-[hsl(var(--primary))] font-bold mt-0.5">{'\u2192'}</span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Affected SKUs */}
+                    {rec.affected_sku_names && rec.affected_sku_names.length > 0 && (
+                      <div>
+                        <h4 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">
+                          {'\u0417\u0430\u0442\u0440\u043e\u043d\u0443\u0442\u044b\u0435 \u0442\u043e\u0432\u0430\u0440\u044b'}
+                        </h4>
+                        <div className="flex flex-wrap gap-1.5">
+                          {rec.affected_sku_names.map((name: string, i: number) => (
+                            <span
+                              key={i}
+                              className="inline-flex items-center px-2.5 py-1 rounded-lg bg-[hsl(var(--muted)/0.15)] text-[11px] font-medium text-[hsl(var(--foreground))] border border-[hsl(var(--border)/0.2)]"
+                            >
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </motion.div>
   )
 }
