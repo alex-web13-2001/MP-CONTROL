@@ -1922,3 +1922,454 @@ async def get_wb_supply_xlsx(
         headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
 
+
+# ══════════════════════════════════════════════════════════════
+# Ozon: Warehouse Analytics — аналитика по складам
+# ══════════════════════════════════════════════════════════════
+
+# Маппинг warehouse_name → cluster (для расчёта скорости доставки)
+_WAREHOUSE_TO_CLUSTER: dict[str, str] = {
+    # Московский регион
+    "ДОМОДЕДОВО_РФЦ": "Москва, МО и Дальние регионы",
+    "ЖУКОВСКИЙ_РФЦ": "Москва, МО и Дальние регионы",
+    "ГРИВНО_РФЦ": "Москва, МО и Дальние регионы",
+    "СОФЬИНО_РФЦ": "Москва, МО и Дальние регионы",
+    "НОГИНСК_РФЦ": "Москва, МО и Дальние регионы",
+    "ПЕТРОВСКОЕ_РФЦ": "Москва, МО и Дальние регионы",
+    "Дедовск": "Москва, МО и Дальние регионы",
+    # СПБ
+    "СПБ_БУГРЫ_РФЦ": "Санкт-Петербург и СЗО",
+    "СПБ_КОЛПИНО_РФЦ": "Санкт-Петербург и СЗО",
+    "Санкт_Петербург_РФЦ": "Санкт-Петербург и СЗО",
+    "САНКТ-ПЕТЕРБУРГ_РФЦ": "Санкт-Петербург и СЗО",
+    # Юг
+    "РОСТОВ_НА_ДОНУ_2_РФЦ": "Ростов",
+    "АДЫГЕЙСК_РФЦ": "Краснодар",
+    "НЕВИННОМЫССК_РФЦ": "Невинномысск",
+    # Центр
+    "ВОРОНЕЖ_2_РФЦ": "Воронеж",
+    "САРАТОВ_РФЦ": "Саратов",
+    # Поволжье
+    "Казань_РФЦ_НОВЫЙ": "Казань",
+    "КАЗАНЬ_РФЦ_НОВЫЙ": "Казань",
+    "САМАРА_РФЦ": "Самара",
+    "УФА_РФЦ": "Уфа",
+    # Урал / Сибирь
+    "Екатеринбург_РФЦ_НОВЫЙ": "Екатеринбург",
+    "КРАСНОЯРСК_МРФЦ": "Красноярск",
+    "НИЖНИЙ_НОВГОРОД_РФЦ": "Казань",
+    "НОВОСИБИРСК_РФЦ": "Новосибирск",
+}
+
+
+def _get_cluster_for_warehouse(wh_name: str) -> str:
+    """Resolve warehouse name to delivery cluster."""
+    if not wh_name:
+        return "Неизвестный"
+    # Exact match
+    cluster = _WAREHOUSE_TO_CLUSTER.get(wh_name)
+    if cluster:
+        return cluster
+    # Fuzzy fallback by keywords
+    wh_upper = wh_name.upper()
+    keyword_map = {
+        "ДОМОДЕДОВО": "Москва, МО и Дальние регионы",
+        "ЖУКОВСКИЙ": "Москва, МО и Дальние регионы",
+        "ГРИВНО": "Москва, МО и Дальние регионы",
+        "СОФЬИНО": "Москва, МО и Дальние регионы",
+        "НОГИНСК": "Москва, МО и Дальние регионы",
+        "ПЕТРОВСКОЕ": "Москва, МО и Дальние регионы",
+        "ДЕДОВСК": "Москва, МО и Дальние регионы",
+        "ТВЕРЬ": "Тверь",
+        "СПБ": "Санкт-Петербург и СЗО",
+        "ПЕТЕРБУРГ": "Санкт-Петербург и СЗО",
+        "РОСТОВ": "Ростов",
+        "АДЫГЕЙСК": "Краснодар",
+        "КРАСНОДАР": "Краснодар",
+        "НЕВИННОМЫССК": "Невинномысск",
+        "ВОРОНЕЖ": "Воронеж",
+        "САРАТОВ": "Саратов",
+        "КАЗАНЬ": "Казань",
+        "САМАРА": "Самара",
+        "УФА": "Уфа",
+        "ЕКАТЕРИНБУРГ": "Екатеринбург",
+        "КРАСНОЯРСК": "Красноярск",
+        "НОВОСИБИРСК": "Новосибирск",
+        "НИЖНИЙ": "Казань",
+        "ПЕРМЬ": "Пермь",
+        "ТЮМЕНЬ": "Тюмень",
+        "ОМСК": "Омск",
+    }
+    for kw, cl in keyword_map.items():
+        if kw in wh_upper:
+            return cl
+    return "Неизвестный"
+
+
+# Тарифы хранения Ozon (руб/литр/день)
+OZON_STORAGE_TARIFFS = {
+    "free": {"max_days": 160, "rate": 0.0},
+    "low": {"max_days": 180, "rate": 0.75},
+    "high": {"max_days": 99999, "rate": 1.50},
+}
+
+
+@router.get("/ozon/analytics")
+async def ozon_warehouse_analytics(
+    shop_id: int = Query(...),
+    period: int = Query(30, description="Period in days for sales calculation"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Warehouse analytics for Ozon FBO.
+
+    Returns:
+    - KPI summary (total stock, warehouses, avg turnover, costs)
+    - Per-warehouse breakdown (stock, orders, turnover, delivery speed, costs)
+    - Per-warehouse SKU details
+    """
+    import os
+    import clickhouse_connect
+
+    # Verify shop ownership
+    shop = await db.get(Shop, shop_id)
+    if not shop or shop.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    if shop.marketplace != "ozon":
+        raise HTTPException(status_code=400, detail="Only Ozon shops supported")
+
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+    ch_user = os.getenv("CLICKHOUSE_USER", "default")
+    ch_pass = os.getenv("CLICKHOUSE_PASSWORD", "")
+
+    ch = clickhouse_connect.get_client(
+        host=ch_host, port=ch_port,
+        username=ch_user, password=ch_pass,
+        database="mms_analytics",
+    )
+
+    try:
+        # ── 1. Current stocks per warehouse ──────────────────────
+        stocks_data = ch.query("""
+            SELECT warehouse_name, warehouse_type,
+                   groupArray(sku) as skus,
+                   groupArray(offer_id) as offer_ids,
+                   groupArray(product_name) as names,
+                   groupArray(free_to_sell) as frees,
+                   groupArray(reserved) as reserveds,
+                   count() as sku_count,
+                   sum(free_to_sell) as total_free,
+                   sum(reserved) as total_reserved
+            FROM fact_ozon_warehouse_stocks FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt = (SELECT max(dt) FROM fact_ozon_warehouse_stocks WHERE shop_id = {shop_id:UInt32})
+              AND warehouse_type = 'fbo'
+            GROUP BY warehouse_name, warehouse_type
+            ORDER BY total_free DESC
+        """, parameters={"shop_id": shop_id})
+
+        # ── 2. Orders per warehouse (last N days) ────────────────
+        orders_data = ch.query("""
+            SELECT warehouse_name,
+                   count() as order_count,
+                   sum(quantity) as total_qty,
+                   sum(price * quantity) as revenue,
+                   uniq(sku) as active_skus
+            FROM fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= today() - {period:UInt32}
+              AND status NOT IN ('cancelled')
+            GROUP BY warehouse_name
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # ── 3. Geography: cluster_to distribution per warehouse ──
+        geo_data = ch.query("""
+            SELECT warehouse_name, cluster_to,
+                   count() as orders, sum(quantity) as qty
+            FROM fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= today() - {period:UInt32}
+              AND status NOT IN ('cancelled')
+              AND cluster_to != ''
+            GROUP BY warehouse_name, cluster_to
+            ORDER BY warehouse_name, qty DESC
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # ── 4. Logistics costs from transactions ─────────────────
+        costs_data = ch.query("""
+            SELECT operation_type, operation_type_name,
+                   count() as cnt, sum(amount) as total, sum(services_total) as svcs
+            FROM fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND operation_date >= today() - {period:UInt32}
+              AND operation_type IN (
+                  'MarketplaceServiceItemCrossdocking',
+                  'OperationMarketplaceServiceStorage',
+                  'OperationMarketplaceSupplyAdditional',
+                  'OperationMarketplaceSupplyExpirationDateProcessing',
+                  'OperationMarketplaceServiceSupplyInboundCargoShortage'
+              )
+            GROUP BY operation_type, operation_type_name
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # ── 5. Turnover data (if available) ──────────────────────
+        turnover_data = {}
+        try:
+            tr = ch.query("""
+                SELECT sku, days_of_supply, avg_daily_sales,
+                       stock_fbo, turnover_category
+                FROM fact_ozon_turnover FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt = (SELECT max(dt) FROM fact_ozon_turnover WHERE shop_id = {shop_id:UInt32})
+            """, parameters={"shop_id": shop_id})
+            for row in tr.result_rows:
+                turnover_data[row[0]] = {
+                    "days_of_supply": float(row[1]),
+                    "avg_daily_sales": float(row[2]),
+                    "stock_fbo": int(row[3]),
+                    "turnover_category": row[4],
+                }
+        except Exception:
+            pass  # Table may not exist yet
+
+        # ── 6. Product dimensions for storage cost estimation ────
+        dims_data = {}
+        try:
+            dims = await db.execute(text("""
+                SELECT product_id, length, width, height, weight
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND length > 0 AND width > 0 AND height > 0
+            """), {"shop_id": shop_id})
+            for row in dims.fetchall():
+                # Volume in liters (dimensions in mm → cm → liters)
+                vol_liters = (row[1] / 10) * (row[2] / 10) * (row[3] / 10) / 1000
+                dims_data[row[0]] = {
+                    "volume_liters": round(vol_liters, 2),
+                    "weight_kg": round(row[4] / 1000, 2) if row[4] else 0,
+                }
+        except Exception:
+            pass
+
+        # ── Build response ───────────────────────────────────────
+        # Index orders by warehouse
+        orders_by_wh = {}
+        for row in orders_data.result_rows:
+            orders_by_wh[row[0]] = {
+                "orders": int(row[1]),
+                "qty": int(row[2]),
+                "revenue": float(row[3]),
+                "active_skus": int(row[4]),
+            }
+
+        # Index geography by warehouse
+        geo_by_wh: dict[str, list] = {}
+        for row in geo_data.result_rows:
+            wh = row[0]
+            if wh not in geo_by_wh:
+                geo_by_wh[wh] = []
+            geo_by_wh[wh].append({
+                "cluster": row[1],
+                "orders": int(row[2]),
+                "qty": int(row[3]),
+            })
+
+        # Costs summary
+        costs_summary = {}
+        total_crossdocking = 0
+        total_storage = 0
+        total_fbo_processing = 0
+        for row in costs_data.result_rows:
+            op_type = row[0]
+            amount = float(row[3])
+            costs_summary[op_type] = {
+                "name": row[1],
+                "count": int(row[2]),
+                "amount": round(amount, 2),
+            }
+            if op_type == "MarketplaceServiceItemCrossdocking":
+                total_crossdocking = amount
+            elif op_type == "OperationMarketplaceServiceStorage":
+                total_storage = amount
+            elif op_type == "OperationMarketplaceSupplyAdditional":
+                total_fbo_processing = amount
+
+        # Build warehouse list
+        warehouses = []
+        total_stock = 0
+        total_skus_set = set()
+
+        for row in stocks_data.result_rows:
+            wh_name = row[0]
+            wh_type = row[1]
+            skus = row[2]
+            offer_ids = row[3]
+            names = row[4]
+            frees = row[5]
+            reserveds = row[6]
+            sku_count = int(row[7])
+            stock_free = int(row[8])
+            stock_reserved = int(row[9])
+
+            total_stock += stock_free
+            total_skus_set.update(skus)
+
+            # Get orders for this warehouse
+            wh_orders = orders_by_wh.get(wh_name, {})
+            order_qty = wh_orders.get("qty", 0)
+            order_revenue = wh_orders.get("revenue", 0)
+            order_count = wh_orders.get("orders", 0)
+
+            # Calculate daily sales and turnover
+            daily_sales = order_qty / period if period > 0 else 0
+            turnover_days = stock_free / daily_sales if daily_sales > 0 else 9999
+            days_to_zero = int(turnover_days) if turnover_days < 9999 else None
+
+            # Determine cluster
+            cluster = _get_cluster_for_warehouse(wh_name)
+
+            # Calculate average delivery speed
+            delivery_speed_avg = 28  # default local
+            geo = geo_by_wh.get(wh_name, [])
+            if geo:
+                cluster_routes = DELIVERY_HOURS.get(cluster, {})
+                total_weighted = 0
+                total_geo_qty = 0
+                for g in geo:
+                    dest_cluster = g["cluster"]
+                    hours = cluster_routes.get(dest_cluster, 60)
+                    total_weighted += hours * g["qty"]
+                    total_geo_qty += g["qty"]
+                if total_geo_qty > 0:
+                    delivery_speed_avg = round(total_weighted / total_geo_qty, 1)
+
+            # Storage cost estimation
+            storage_risk = "ok"
+            estimated_storage_cost = 0
+            if turnover_days > 180:
+                storage_risk = "critical"
+                estimated_storage_cost = stock_free * 1.50  # rough per-day
+            elif turnover_days > 160:
+                storage_risk = "warning"
+                estimated_storage_cost = stock_free * 0.75
+
+            # Status
+            if stock_free == 0 and order_qty > 0:
+                wh_status = "empty"
+            elif turnover_days < 14:
+                wh_status = "critical"
+            elif turnover_days < 30:
+                wh_status = "attention"
+            elif turnover_days > 180:
+                wh_status = "overstocked"
+            elif turnover_days > 160:
+                wh_status = "storage_fee"
+            else:
+                wh_status = "ok"
+
+            # Total sales for % calculation
+            total_orders_qty = sum(o.get("qty", 0) for o in orders_by_wh.values())
+            pct_of_sales = round(order_qty / total_orders_qty * 100, 1) if total_orders_qty > 0 else 0
+
+            # SKU details
+            sku_details = []
+            for i in range(len(skus)):
+                sku_id = int(skus[i])
+                sku_free = int(frees[i])
+                sku_turnover = turnover_data.get(sku_id, {})
+                sku_daily = sku_turnover.get("avg_daily_sales", 0)
+                sku_days_supply = sku_turnover.get("days_of_supply", 0)
+
+                # Fallback: calculate from orders if no turnover data
+                if sku_daily == 0 and daily_sales > 0 and sku_count > 0:
+                    sku_daily = daily_sales / sku_count  # rough approximation
+
+                sku_details.append({
+                    "sku": sku_id,
+                    "offer_id": offer_ids[i],
+                    "name": names[i],
+                    "stock": sku_free,
+                    "reserved": int(reserveds[i]),
+                    "daily_sales": round(sku_daily, 2),
+                    "days_supply": round(sku_days_supply, 1) if sku_days_supply > 0 else (
+                        round(sku_free / sku_daily, 0) if sku_daily > 0 else None
+                    ),
+                    "turnover_category": sku_turnover.get("turnover_category", ""),
+                })
+
+            # Sort SKU details: highest stock first
+            sku_details.sort(key=lambda x: x["stock"], reverse=True)
+
+            # Geography with shares
+            geo_total = sum(g["qty"] for g in geo) if geo else 0
+            clusters_served = []
+            for g in sorted(geo, key=lambda x: x["qty"], reverse=True)[:10]:
+                clusters_served.append({
+                    "cluster": g["cluster"],
+                    "orders": g["orders"],
+                    "qty": g["qty"],
+                    "share": round(g["qty"] / geo_total * 100, 1) if geo_total > 0 else 0,
+                })
+
+            warehouses.append({
+                "warehouse_name": wh_name,
+                "cluster": cluster,
+                "warehouse_type": wh_type,
+                "stock_free": stock_free,
+                "stock_reserved": stock_reserved,
+                "sku_count": sku_count,
+                "orders_period": order_count,
+                "qty_period": order_qty,
+                "revenue_period": round(order_revenue, 2),
+                "daily_sales": round(daily_sales, 2),
+                "turnover_days": round(turnover_days, 1) if turnover_days < 9999 else None,
+                "days_to_zero": days_to_zero,
+                "pct_of_total_sales": pct_of_sales,
+                "delivery_speed_avg_h": delivery_speed_avg,
+                "status": wh_status,
+                "storage_risk": storage_risk,
+                "estimated_storage_cost_day": round(estimated_storage_cost, 2),
+                "clusters_served": clusters_served,
+                "skus": sku_details,
+            })
+
+        # Sort: by daily sales descending
+        warehouses.sort(key=lambda w: w["daily_sales"], reverse=True)
+
+        # Averages
+        wh_with_sales = [w for w in warehouses if w["daily_sales"] > 0]
+        avg_turnover = (
+            round(sum(w["turnover_days"] for w in wh_with_sales if w["turnover_days"])
+                  / len(wh_with_sales), 1)
+            if wh_with_sales else None
+        )
+        avg_delivery = (
+            round(sum(w["delivery_speed_avg_h"] for w in wh_with_sales)
+                  / len(wh_with_sales), 1)
+            if wh_with_sales else None
+        )
+
+        critical_count = sum(1 for w in warehouses if w["status"] in ("critical", "empty"))
+        overstocked_count = sum(1 for w in warehouses if w["status"] in ("overstocked", "storage_fee"))
+
+        return {
+            "kpi": {
+                "total_warehouses": len(warehouses),
+                "total_stock": total_stock,
+                "total_skus": len(total_skus_set),
+                "avg_turnover_days": avg_turnover,
+                "avg_delivery_h": avg_delivery,
+                "total_crossdocking": round(total_crossdocking, 2),
+                "total_storage_fee": round(total_storage, 2),
+                "total_fbo_processing": round(total_fbo_processing, 2),
+                "critical_warehouses": critical_count,
+                "overstocked_warehouses": overstocked_count,
+                "period_days": period,
+            },
+            "costs": costs_summary,
+            "warehouses": warehouses,
+        }
+
+    finally:
+        ch.close()

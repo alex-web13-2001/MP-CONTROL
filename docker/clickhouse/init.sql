@@ -947,3 +947,26 @@ CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_availability (
 ) ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(dt)
 ORDER BY (shop_id, product_id, source, dt);
+
+-- ═══════════════════════════════════════════════════════════
+-- Ozon: Item Turnover (оборачиваемость FBO)
+-- ═══════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_turnover (
+    dt Date,
+    shop_id UInt32,
+    sku UInt64,
+    product_id UInt64,
+    offer_id String,
+    product_name String,
+    days_on_site UInt32 DEFAULT 0,
+    stock_fbo UInt32 DEFAULT 0,
+    avg_daily_sales Float32 DEFAULT 0,
+    days_of_supply Float32 DEFAULT 0,
+    turnover_category String DEFAULT '',
+    revenue_30d Decimal(18, 2) DEFAULT 0,
+    sold_30d UInt32 DEFAULT 0,
+    updated_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree(updated_at)
+PARTITION BY toYYYYMM(dt)
+ORDER BY (shop_id, sku, dt)
+TTL dt + INTERVAL 1 YEAR;

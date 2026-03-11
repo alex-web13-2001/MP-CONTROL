@@ -16,6 +16,7 @@ import LtvPage from '@/pages/LtvPage'
 import EventsPage from '@/pages/EventsPage'
 import EventsGraphPage from '@/pages/EventsGraphPage'
 import WarehouseSupplyPage from '@/pages/WarehouseSupplyPage'
+import WarehouseAnalyticsPage from '@/pages/WarehouseAnalyticsPage'
 
 export default function App() {
   return (
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="/advertising" element={<AdvertisingPage />} />
           */}
           <Route path="/warehouses/supply" element={<WarehouseSupplyPage />} />
+          <Route path="/warehouses/analytics" element={<WarehouseAnalyticsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

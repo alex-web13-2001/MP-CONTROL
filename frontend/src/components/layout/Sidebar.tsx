@@ -60,6 +60,7 @@ const navSections: NavSection[] = [
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse, children: [
           { path: '/warehouses/supply', label: 'Поставки', icon: TrendingUp },
+          { path: '/warehouses/analytics', label: 'Аналитика складов', icon: BarChart3 },
         ] },
       { path: '/finances', label: 'Финансы', icon: DollarSign },
       {

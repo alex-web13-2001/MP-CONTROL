@@ -357,6 +357,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 sync_ozon_content_rating,
                 sync_ozon_content,
                 backfill_ozon_ads,
+                sync_ozon_turnover,
             )
 
             seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
@@ -373,6 +374,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 ("Загрузка рейтинга продавца",         sync_ozon_seller_rating,     seller_kwargs),
                 ("Загрузка рейтинга контента",         sync_ozon_content_rating,    seller_kwargs),
                 ("Синхронизация контента (хэши)",       sync_ozon_content,           seller_kwargs),
+                ("Оборачиваемость товаров FBO",         sync_ozon_turnover,          seller_kwargs),
             ]
 
             # Add ads backfill only if Performance API credentials exist
@@ -663,6 +665,7 @@ def sync_all_frequent(self):
                 sync_ozon_warehouse_stocks,
                 sync_ozon_prices,
                 sync_ozon_ad_stats,
+                sync_ozon_turnover,
             )
 
             kwargs = dict(api_key=api_key, client_id=client_id)
@@ -672,6 +675,12 @@ def sync_all_frequent(self):
                     dispatched += 1
                 else:
                     skipped += 1
+
+            # Turnover: once per day (86400 TTL)
+            if _dedup_dispatch(sync_ozon_turnover, r, shop.id, ttl=86400, **kwargs):
+                dispatched += 1
+            else:
+                skipped += 1
 
             # Ozon ad stats (requires perf credentials)
             if shop.perf_client_id and shop.perf_client_secret_encrypted:
@@ -4364,3 +4373,75 @@ def backfill_ozon_ads(
 
     return asyncio.run(run_backfill())
 
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_ozon_turnover(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+):
+    """
+    Daily sync of Ozon FBO item turnover (оборачиваемость).
+
+    Fetches via POST /v1/analytics/item_turnover:
+    - days_of_supply (на сколько дней хватит стока)
+    - avg_daily_sales (средние дневные продажи)
+    - turnover_category (категория оборачиваемости)
+
+    Also tries beta /v1/analytics/turnover/stocks for enrichment.
+    Queue: DEFAULT.
+    """
+    import asyncio
+    import os
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_turnover_service import (
+        OzonTurnoverService, OzonTurnoverLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    async def run_sync():
+        engine = create_async_engine(settings.database_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            async with sf() as db:
+                service = OzonTurnoverService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                # Primary: /v1/analytics/item_turnover
+                rows = await service.fetch_turnover()
+                # Enrichment: beta /v1/analytics/turnover/stocks
+                beta_rows = await service.fetch_turnover_stocks()
+
+            # Merge beta data where primary data is missing
+            if beta_rows:
+                existing_skus = {r["sku"] for r in rows}
+                for br in beta_rows:
+                    if br["sku"] not in existing_skus:
+                        rows.append(br)
+
+            logger.info("Turnover sync: %d rows for shop %d", len(rows), shop_id)
+
+            with OzonTurnoverLoader(
+                host=ch_host, port=ch_port,
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+            ) as loader:
+                inserted = loader.insert_rows(shop_id, rows)
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {"status": "completed", "rows_inserted": inserted, **stats}
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())

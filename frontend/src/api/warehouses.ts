@@ -208,3 +208,79 @@ export async function downloadWBSupplyExcel(params: WBSupplyParams): Promise<voi
   window.URL.revokeObjectURL(url)
 }
 
+
+// ── Ozon Warehouse Analytics Types ───────────────────────────
+
+export interface WarehouseAnalyticsKpi {
+  total_warehouses: number
+  total_stock: number
+  total_skus: number
+  avg_turnover_days: number | null
+  avg_delivery_h: number | null
+  total_crossdocking: number
+  total_storage_fee: number
+  total_fbo_processing: number
+  critical_warehouses: number
+  overstocked_warehouses: number
+  period_days: number
+}
+
+export interface WarehouseClusterServed {
+  cluster: string
+  orders: number
+  qty: number
+  share: number
+}
+
+export interface WarehouseSkuDetail {
+  sku: number
+  offer_id: string
+  name: string
+  stock: number
+  reserved: number
+  daily_sales: number
+  days_supply: number | null
+  turnover_category: string
+}
+
+export interface WarehouseDetail {
+  warehouse_name: string
+  cluster: string
+  warehouse_type: string
+  stock_free: number
+  stock_reserved: number
+  sku_count: number
+  orders_period: number
+  qty_period: number
+  revenue_period: number
+  daily_sales: number
+  turnover_days: number | null
+  days_to_zero: number | null
+  pct_of_total_sales: number
+  delivery_speed_avg_h: number
+  status: 'critical' | 'empty' | 'attention' | 'overstocked' | 'storage_fee' | 'ok'
+  storage_risk: 'critical' | 'warning' | 'ok'
+  estimated_storage_cost_day: number
+  clusters_served: WarehouseClusterServed[]
+  skus: WarehouseSkuDetail[]
+}
+
+export interface CostItem {
+  name: string
+  count: number
+  amount: number
+}
+
+export interface WarehouseAnalyticsResponse {
+  kpi: WarehouseAnalyticsKpi
+  costs: Record<string, CostItem>
+  warehouses: WarehouseDetail[]
+}
+
+export async function getOzonWarehouseAnalytics(params: {
+  shop_id: number
+  period?: number
+}): Promise<WarehouseAnalyticsResponse> {
+  const { data } = await apiClient.get<WarehouseAnalyticsResponse>('/warehouses/ozon/analytics', { params })
+  return data
+}
