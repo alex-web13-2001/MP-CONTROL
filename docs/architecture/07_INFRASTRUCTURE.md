@@ -373,30 +373,31 @@ docker-compose up -d --build
 | `backend/scripts/run_ch_migrations.py` | Применение ClickHouse миграций             |
 | `docker/clickhouse/migrations/*.sql`   | SQL файлы изменений схемы CH               |
 
-### Процесс деплоя (`./deploy.sh`)
+### Процесс деплоя (`deploy/deploy.sh`)
 
-```
-1. git add && git push origin main
-2. git pull на сервере
-3. docker cp backend/app, celery_app, scripts, migrations → контейнеры
-4. python3 run_ch_migrations.py  ← ClickHouse schema изменения ПЕРЕД рестартом
-5. docker restart mms-backend, mms-celery-worker, mms-celery-beat
-6. npm run build (frontend на сервере)
-7. nginx -s reload
-8. health check
-```
+Скрипт запускается **на сервере** (не с локала):
 
 ```bash
-# Fast deploy (по умолчанию, ~30 сек):
-./deploy.sh
+# С локала через SSH:
+ssh root@5.42.98.106 "cd /opt/mp-control && bash deploy/deploy.sh"
+```
 
-# Full rebuild (нужен при изменении pip зависимостей/Dockerfile, ~10 мин):
-./deploy.sh --full-rebuild
+**6 шагов:**
+
+```
+1. git fetch origin main + git reset --hard  ← sync с GitHub (без diverge)
+2. ClickHouse миграции (docker cp + run_ch_migrations.py)  ← ДО рестарта
+3. docker compose build + up  ← backend + celery (Alembic auto via entrypoint.sh)
+4. npm ci + npm run build  ← frontend
+5. docker compose restart nginx  ← bind mount refresh (НЕ reload!)
+6. health check
 ```
 
 > [!IMPORTANT]
-> CH миграции применяются **автоматически** при каждом деплое, **до** рестарта контейнеров.
-> Это гарантирует, что новый код никогда не запустится с устаревшей схемой БД.
+> - **ClickHouse** миграции применяются **автоматически** при каждом деплое, **до** рестарта контейнеров.
+> - **PostgreSQL (Alembic)** миграции применяются автоматически через `entrypoint.sh` при старте backend.
+> - **НЕ** делать `git commit` на сервере — создаёт divergent branches.
+> - **НЕ** делать `rm -rf dist` — ломает Docker bind mount nginx.
 
 ### Переменные окружения (прод)
 
