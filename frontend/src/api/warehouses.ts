@@ -261,6 +261,15 @@ export interface WarehouseDetail {
   status: 'critical' | 'empty' | 'attention' | 'overstocked' | 'storage_fee' | 'ok'
   storage_risk: 'critical' | 'warning' | 'ok'
   estimated_storage_cost_day: number
+  costs: {
+    crossdocking: number
+    crossdocking_cnt: number
+    storage: number
+    storage_cnt: number
+    fbo_processing: number
+    fbo_cnt: number
+    total: number
+  }
   clusters_served: WarehouseClusterServed[]
   skus: WarehouseSkuDetail[]
 }
@@ -271,10 +280,21 @@ export interface CostItem {
   amount: number
 }
 
+export interface Recommendation {
+  type: 'move_stock' | 'optimize_crossdocking' | 'storage_warning' | 'paid_storage'
+  severity: 'high' | 'medium' | 'low'
+  reason: string
+  warehouse?: string
+  from_warehouse?: string
+  to_warehouse?: string
+  [key: string]: any
+}
+
 export interface WarehouseAnalyticsResponse {
   kpi: WarehouseAnalyticsKpi
   costs: Record<string, CostItem>
   warehouses: WarehouseDetail[]
+  recommendations: Recommendation[]
 }
 
 export async function getOzonWarehouseAnalytics(params: {

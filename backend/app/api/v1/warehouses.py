@@ -2114,6 +2114,30 @@ async def ozon_warehouse_analytics(
             GROUP BY operation_type, operation_type_name
         """, parameters={"shop_id": shop_id, "period": period})
 
+        # ── 4b. Costs per warehouse (via JOIN with orders) ────────
+        costs_per_wh_data = ch.query("""
+            SELECT o.warehouse_name,
+                   t.operation_type,
+                   count() as cnt,
+                   sum(t.amount) as total
+            FROM fact_ozon_transactions t FINAL
+            INNER JOIN (
+                SELECT DISTINCT posting_number, warehouse_name
+                FROM fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND warehouse_name != ''
+            ) o USING (posting_number)
+            WHERE t.shop_id = {shop_id:UInt32}
+              AND t.operation_date >= today() - {period:UInt32}
+              AND t.operation_type IN (
+                  'MarketplaceServiceItemCrossdocking',
+                  'OperationMarketplaceServiceStorage',
+                  'OperationMarketplaceSupplyAdditional'
+              )
+              AND t.posting_number != ''
+            GROUP BY o.warehouse_name, t.operation_type
+        """, parameters={"shop_id": shop_id, "period": period})
+
         # ── 5. Turnover data (if available) ──────────────────────
         turnover_data = {}
         try:
@@ -2162,6 +2186,26 @@ async def ozon_warehouse_analytics(
                 "revenue": float(row[3]),
                 "active_skus": int(row[4]),
             }
+
+        # Index per-warehouse costs
+        costs_by_wh: dict[str, dict] = {}
+        for row in costs_per_wh_data.result_rows:
+            wh = row[0]
+            op = row[1]
+            if wh not in costs_by_wh:
+                costs_by_wh[wh] = {"crossdocking": 0, "storage": 0, "fbo_processing": 0,
+                                    "crossdocking_cnt": 0, "storage_cnt": 0, "fbo_cnt": 0}
+            amount = float(row[3])
+            cnt = int(row[2])
+            if op == "MarketplaceServiceItemCrossdocking":
+                costs_by_wh[wh]["crossdocking"] += amount
+                costs_by_wh[wh]["crossdocking_cnt"] += cnt
+            elif op == "OperationMarketplaceServiceStorage":
+                costs_by_wh[wh]["storage"] += amount
+                costs_by_wh[wh]["storage_cnt"] += cnt
+            elif op == "OperationMarketplaceSupplyAdditional":
+                costs_by_wh[wh]["fbo_processing"] += amount
+                costs_by_wh[wh]["fbo_cnt"] += cnt
 
         # Index geography by warehouse
         geo_by_wh: dict[str, list] = {}
@@ -2312,6 +2356,9 @@ async def ozon_warehouse_analytics(
                     "share": round(g["qty"] / geo_total * 100, 1) if geo_total > 0 else 0,
                 })
 
+            # Per-warehouse costs
+            wh_costs = costs_by_wh.get(wh_name, {})
+
             warehouses.append({
                 "warehouse_name": wh_name,
                 "cluster": cluster,
@@ -2330,6 +2377,19 @@ async def ozon_warehouse_analytics(
                 "status": wh_status,
                 "storage_risk": storage_risk,
                 "estimated_storage_cost_day": round(estimated_storage_cost, 2),
+                "costs": {
+                    "crossdocking": round(wh_costs.get("crossdocking", 0), 2),
+                    "crossdocking_cnt": wh_costs.get("crossdocking_cnt", 0),
+                    "storage": round(wh_costs.get("storage", 0), 2),
+                    "storage_cnt": wh_costs.get("storage_cnt", 0),
+                    "fbo_processing": round(wh_costs.get("fbo_processing", 0), 2),
+                    "fbo_cnt": wh_costs.get("fbo_cnt", 0),
+                    "total": round(
+                        wh_costs.get("crossdocking", 0)
+                        + wh_costs.get("storage", 0)
+                        + wh_costs.get("fbo_processing", 0), 2
+                    ),
+                },
                 "clusters_served": clusters_served,
                 "skus": sku_details,
             })
@@ -2353,6 +2413,99 @@ async def ozon_warehouse_analytics(
         critical_count = sum(1 for w in warehouses if w["status"] in ("critical", "empty"))
         overstocked_count = sum(1 for w in warehouses if w["status"] in ("overstocked", "storage_fee"))
 
+        # ── Generate recommendations ─────────────────────────────
+        recommendations = []
+
+        # 1. Overstocked → recommend moving to low-stock warehouses
+        overstocked_whs = [w for w in warehouses
+                           if w["status"] in ("overstocked", "storage_fee")
+                           and w["stock_free"] > 0]
+        low_stock_whs = [w for w in warehouses
+                         if w["status"] in ("critical", "attention")
+                         and w["daily_sales"] > 0]
+
+        for ow in overstocked_whs:
+            excess_days = (ow["turnover_days"] or 9999) - 90  # target: 90 days
+            if excess_days > 0 and ow["daily_sales"] > 0:
+                excess_qty = int(excess_days * ow["daily_sales"])
+            else:
+                excess_qty = ow["stock_free"]
+
+            # Find best target warehouse (same SKUs, low stock)
+            ow_skus = {s["sku"] for s in ow["skus"] if s["stock"] > 10}
+            for lw in low_stock_whs:
+                if lw["warehouse_name"] == ow["warehouse_name"]:
+                    continue
+                lw_skus = {s["sku"] for s in lw["skus"]}
+                common = ow_skus & lw_skus
+                if common:
+                    recommendations.append({
+                        "type": "move_stock",
+                        "severity": "high" if ow["status"] == "overstocked" else "medium",
+                        "from_warehouse": ow["warehouse_name"],
+                        "from_cluster": ow["cluster"],
+                        "to_warehouse": lw["warehouse_name"],
+                        "to_cluster": lw["cluster"],
+                        "reason": f"{ow['warehouse_name']} перезатарен ({int(ow['turnover_days'] or 0)} дн), "
+                                  f"{lw['warehouse_name']} ({lw['status']}, {int(lw['turnover_days'] or 0)} дн)",
+                        "affected_skus": len(common),
+                        "excess_qty": excess_qty,
+                    })
+                    break  # one rec per overstocked wh
+
+        # 2. Warehouses with high crossdocking → recommend direct supply
+        for w in warehouses:
+            cd_cost = abs(w["costs"].get("crossdocking", 0))
+            if cd_cost > 5000 and w["daily_sales"] > 0.5:
+                recommendations.append({
+                    "type": "optimize_crossdocking",
+                    "severity": "medium",
+                    "warehouse": w["warehouse_name"],
+                    "cluster": w["cluster"],
+                    "crossdocking_cost": round(cd_cost, 2),
+                    "daily_sales": w["daily_sales"],
+                    "reason": f"Кроссдокинг {w['warehouse_name']}: {round(cd_cost):,} ₽ за {period} дн. "
+                              f"Рассмотри прямую поставку вместо кроссдокинга.",
+                })
+
+        # 3. Warehouses approaching paid storage threshold
+        for w in warehouses:
+            td = w["turnover_days"]
+            if td and 120 < td <= 160:
+                days_left = int(160 - td)
+                recommendations.append({
+                    "type": "storage_warning",
+                    "severity": "medium",
+                    "warehouse": w["warehouse_name"],
+                    "cluster": w["cluster"],
+                    "turnover_days": round(td),
+                    "days_to_paid": days_left,
+                    "stock": w["stock_free"],
+                    "reason": f"{w['warehouse_name']}: оборачиваемость {int(td)} дн, "
+                              f"до платного хранения ~{days_left} дн. Снизь стоки или цену.",
+                })
+
+        # 4. Already paying for storage
+        for w in warehouses:
+            td = w["turnover_days"]
+            if td and td > 160:
+                est_cost = w["costs"].get("storage", 0)
+                recommendations.append({
+                    "type": "paid_storage",
+                    "severity": "high",
+                    "warehouse": w["warehouse_name"],
+                    "cluster": w["cluster"],
+                    "turnover_days": round(td),
+                    "stock": w["stock_free"],
+                    "storage_cost": round(abs(est_cost), 2),
+                    "reason": f"{w['warehouse_name']}: оборачиваемость {int(td)} дн — ПЛАТНОЕ хранение! "
+                              f"Стоки: {w['stock_free']} ед. Расход: {round(abs(est_cost)):,} ₽.",
+                })
+
+        # Sort recs: high severity first
+        severity_order = {"high": 0, "medium": 1, "low": 2}
+        recommendations.sort(key=lambda r: severity_order.get(r["severity"], 9))
+
         return {
             "kpi": {
                 "total_warehouses": len(warehouses),
@@ -2369,6 +2522,7 @@ async def ozon_warehouse_analytics(
             },
             "costs": costs_summary,
             "warehouses": warehouses,
+            "recommendations": recommendations,
         }
 
     finally:

@@ -5,11 +5,14 @@ import {
   BarChart3,
   AlertTriangle,
   ArrowDownRight,
+  ArrowRightLeft,
   Timer,
   ChevronRight,
   MapPin,
   RefreshCw,
   Ban,
+  Truck,
+  ShieldAlert,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -18,6 +21,7 @@ import {
   getOzonWarehouseAnalytics,
   WarehouseAnalyticsResponse,
   WarehouseDetail,
+  type Recommendation,
 } from '@/api/warehouses'
 
 
@@ -299,6 +303,39 @@ function WarehouseTable({ warehouses }: { warehouses: WarehouseDetail[] }) {
                                   </div>
                                 </div>
                               )}
+
+                              {/* Per-warehouse costs */}
+                              {(wh as any).costs && (wh as any).costs.total !== 0 && (
+                                <div className="w-full lg:w-[240px] shrink-0">
+                                  <h4 className="text-[13px] font-semibold mb-3 text-[hsl(var(--foreground))]">
+                                    Расходы за период
+                                  </h4>
+                                  <div className="rounded-xl border border-[hsl(var(--border)/0.3)] overflow-hidden p-3 space-y-2">
+                                    {(wh as any).costs.crossdocking !== 0 && (
+                                      <div className="flex items-center justify-between text-[12px]">
+                                        <span className="text-[hsl(var(--muted-foreground))]">🔄 Кроссдокинг</span>
+                                        <span className="font-bold text-red-400 tabular-nums">{fmtM((wh as any).costs.crossdocking)}</span>
+                                      </div>
+                                    )}
+                                    {(wh as any).costs.storage !== 0 && (
+                                      <div className="flex items-center justify-between text-[12px]">
+                                        <span className="text-[hsl(var(--muted-foreground))]">📦 Хранение</span>
+                                        <span className="font-bold text-orange-400 tabular-nums">{fmtM((wh as any).costs.storage)}</span>
+                                      </div>
+                                    )}
+                                    {(wh as any).costs.fbo_processing !== 0 && (
+                                      <div className="flex items-center justify-between text-[12px]">
+                                        <span className="text-[hsl(var(--muted-foreground))]">🏭 Обработка FBO</span>
+                                        <span className="font-bold text-amber-400 tabular-nums">{fmtM((wh as any).costs.fbo_processing)}</span>
+                                      </div>
+                                    )}
+                                    <div className="border-t border-[hsl(var(--border)/0.2)] pt-2 mt-2 flex items-center justify-between text-[12px]">
+                                      <span className="font-semibold">Итого</span>
+                                      <span className="font-bold text-red-400 tabular-nums">{fmtM((wh as any).costs.total)}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -361,6 +398,74 @@ function CostsCard({ costs, period }: { costs: Record<string, { name: string; co
                 </div>
               </div>
             ))}
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Recommendations Panel
+   ═══════════════════════════════════════════════════════════ */
+
+function RecommendationsPanel({ recs }: { recs: Recommendation[] }) {
+  const iconMap: Record<string, React.ElementType> = {
+    move_stock: ArrowRightLeft,
+    optimize_crossdocking: Truck,
+    storage_warning: ShieldAlert,
+    paid_storage: AlertTriangle,
+  }
+  const colorMap: Record<string, { bg: string; border: string; icon: string }> = {
+    high: { bg: 'bg-red-500/8', border: 'border-red-500/20', icon: 'text-red-400' },
+    medium: { bg: 'bg-amber-500/8', border: 'border-amber-500/20', icon: 'text-amber-400' },
+    low: { bg: 'bg-blue-500/8', border: 'border-blue-500/20', icon: 'text-blue-400' },
+  }
+  const labelMap: Record<string, string> = {
+    move_stock: 'Переместить сток',
+    optimize_crossdocking: 'Оптимизация кроссдокинга',
+    storage_warning: 'Риск платного хранения',
+    paid_storage: 'ПЛАТНОЕ хранение',
+  }
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.28, duration: 0.4 }}>
+      <Card>
+        <CardContent className="p-5">
+          <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+            <ShieldAlert className="h-5 w-5 text-amber-400" />
+            Рекомендации ({recs.length})
+          </h3>
+          <div className="space-y-3">
+            {recs.map((rec, idx) => {
+              const Icon = iconMap[rec.type] || AlertTriangle
+              const colors = colorMap[rec.severity] || colorMap.medium
+              return (
+                <div
+                  key={idx}
+                  className={`flex items-start gap-3 p-4 rounded-xl ${colors.bg} border ${colors.border} transition-all`}
+                >
+                  <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--card))] ${colors.icon}`}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className={`text-[11px] font-bold uppercase tracking-wider ${colors.icon}`}>
+                        {labelMap[rec.type] || rec.type}
+                      </span>
+                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ring-inset ${
+                        rec.severity === 'high'
+                          ? 'bg-red-500/15 text-red-400 ring-red-500/20'
+                          : 'bg-amber-500/15 text-amber-400 ring-amber-500/20'
+                      }`}>
+                        {rec.severity === 'high' ? 'Важно' : 'Совет'}
+                      </span>
+                    </div>
+                    <p className="text-[13px] text-[hsl(var(--foreground))]">{rec.reason}</p>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </CardContent>
       </Card>
@@ -548,6 +653,11 @@ export default function WarehouseAnalyticsPage() {
 
           {/* Costs */}
           <CostsCard costs={data.costs} period={data.kpi.period_days} />
+
+          {/* Recommendations */}
+          {data.recommendations && data.recommendations.length > 0 && (
+            <RecommendationsPanel recs={data.recommendations} />
+          )}
 
           {/* Warehouse Table */}
           <WarehouseTable warehouses={data.warehouses} />
