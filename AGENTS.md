@@ -146,3 +146,83 @@ MP-CONTROL/
 - `REDIS_URL` — Redis для state + Celery
 - `JWT_SECRET_KEY` — JWT авторизация
 - `KIE_AI_API_KEY` — API ключ для Gemini 2.5 Flash (ИИ-анализ)
+
+---
+
+## Прод-сервер
+
+- **IP:** `5.42.98.106` (Timeweb Cloud VPS, Ubuntu 24.04)
+- **SSH:** `ssh -i ~/.ssh/id_rsa root@5.42.98.106`
+- **Путь проекта:** `/opt/mp-control`
+- **Домен:** `mp-control.ru` (SSL Let's Encrypt)
+- **Git на сервере:** HTTPS без пароля (credentials stored)
+
+---
+
+## Магазины (shop_id)
+
+| shop_id | Название       | Маркетплейс |
+| ------- | -------------- | ----------- |
+| 3       | ДУО + ГМ Озон  | Ozon        |
+| 9       | PF Ozon        | Ozon        |
+| 11      | Ортипо ВБ      | Wildberries |
+| 12      | PF WB          | Wildberries |
+| 13      | Тейлорд Озон   | Ozon        |
+| 14      | DUP + GM - WB  | Wildberries |
+| 15      | Тейлорд ВБ     | Wildberries |
+| 16      | Ортипо Озон    | Ozon        |
+
+> **Для тестирования:** Ozon → `shop_id=9`, WB → `shop_id=12`
+
+---
+
+## Грабли деплоя (НЕ ДЕЛАТЬ!)
+
+1. **НЕ** делать `git commit` на сервере — создаёт divergent branches, `git pull` потом ломается
+2. **НЕ** делать `rm -rf frontend/dist` на сервере — ломает Docker bind mount, nginx начинает отдавать 403
+3. **НЕ** запускать `deploy.sh` на сервере напрямую — он предназначен для запуска через SSH с локала
+4. **Новый роутер** = обязательно зарегистрировать в `backend/app/api/v1/router.py`, иначе endpoint вернёт 404
+5. **Nginx:** после frontend build нужен `docker compose restart nginx` (не `reload`) — иначе bind mount не обновляется
+
+---
+
+## Миграции БД
+
+### PostgreSQL (Alembic)
+
+```bash
+# Создать миграцию
+cd backend && alembic revision --autogenerate -m "описание"
+
+# Применяется АВТОМАТИЧЕСКИ при рестарте backend через entrypoint.sh
+```
+
+### ClickHouse (идемпотентные SQL)
+
+```bash
+# Создать файл миграции
+cat > docker/clickhouse/migrations/NNN_описание.sql << 'EOF'
+ALTER TABLE mms_analytics.my_table
+    ADD COLUMN IF NOT EXISTS my_column UInt64 DEFAULT 0;
+EOF
+
+# Применяется АВТОМАТИЧЕСКИ при деплое (deploy/deploy.sh шаг 2)
+# Скрипт: backend/scripts/run_ch_migrations.py
+```
+
+> **Важно:** CH миграции применяются ДО рестарта контейнеров — новый код никогда не запустится с устаревшей схемой.
+
+---
+
+## Финансовые данные — WB специфика
+
+Ключевые нюансы при работе с финансовыми данными Wildberries:
+
+- **Source of truth:** `fact_finances FINAL` (ClickHouse) — единственный источник P&L WB
+- **Реклама = ВБ Промо:** расход рекламы WB приходит как `deduction` с типом «продвижение» в `fact_finances`. **НЕ** брать отдельно из `fact_advert_stats_v3` — это тот же расход, будет дублирование
+- **`penalty_total` vs `deduction`:** для `operation_type='Удержание'` оба поля содержат одну сумму. Фильтровать `penalty_total` по `operation_type != 'Удержание'`
+- **Хранение/удержания по SKU:** WB **не привязывает** записи хранения, приёмки и удержаний к конкретному `vendor_code` — по товарам эти поля = 0
+- **Revenue:** `retail_price_withdisc_rub` из `raw_payload` (розничная цена), НЕ `retail_amount`
+- **Commission:** `revenue − payout` (включает SPP скидку + комиссию WB)
+- **Marketplace filter:** `marketplace = 1` (Enum8), НЕ `marketplace = 'wildberries'`
+
