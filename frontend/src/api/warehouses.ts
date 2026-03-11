@@ -312,12 +312,26 @@ export interface StorageRiskSku {
   warehouses: { warehouse_name: string; stock: number; reserved: number }[]
 }
 
+export interface CrossdockingSku {
+  sku: number
+  offer_id: string
+  name: string
+  total_sold_via_cd: number
+  total_revenue: number
+  daily_sales_cd: number
+  est_cd_cost: number
+  recommended_supply: number
+  warehouse_count: number
+  warehouses: { warehouse_name: string; sold: number; revenue: number; current_stock: number }[]
+}
+
 export interface WarehouseAnalyticsResponse {
   kpi: WarehouseAnalyticsKpi
   costs: Record<string, CostItem>
   warehouses: WarehouseDetail[]
   recommendations: Recommendation[]
   storage_risk_skus: StorageRiskSku[]
+  crossdocking_skus: CrossdockingSku[]
 }
 
 export async function getOzonWarehouseAnalytics(params: {

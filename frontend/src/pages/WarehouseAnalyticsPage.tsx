@@ -24,6 +24,7 @@ import {
   WarehouseDetail,
   type Recommendation,
   type StorageRiskSku,
+  type CrossdockingSku,
 } from '@/api/warehouses'
 
 
@@ -734,6 +735,149 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Crossdocking Optimization Table
+   ═══════════════════════════════════════════════════════════ */
+
+function CrossdockingTable({ skus, totalCdCost }: { skus: CrossdockingSku[]; totalCdCost: number }) {
+  const [expanded, setExpanded] = useState<number | null>(null)
+
+  const totalSoldViaCd = skus.reduce((s, sk) => s + sk.total_sold_via_cd, 0)
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, duration: 0.4 }}>
+      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-500 shadow-lg">
+              <Truck className="h-4.5 w-4.5 text-white" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Кроссдокинг: куда завезти напрямую</h2>
+              <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                {skus.length} SKU продаются через кроссдокинг • {totalSoldViaCd} ед. за период
+              </p>
+            </div>
+          </div>
+          {totalCdCost > 0 && (
+            <div className="text-right">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Расход на кроссдокинг</div>
+              <div className="text-xl font-bold text-blue-400 tabular-nums">{fmtM(totalCdCost)}</div>
+            </div>
+          )}
+        </div>
+
+        <div className="overflow-auto max-h-[600px]">
+          <table className="w-full border-collapse" style={{ minWidth: 850 }}>
+            <thead className="sticky top-0 z-20">
+              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                <th className="px-3 py-3 w-[40px]"></th>
+                <th className="px-3 py-3 text-left text-[12px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px]">SKU</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Продано (CD)</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Выручка</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Прод/д</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">~Расход CD</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Завезти</th>
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Складов</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skus.map((sk, idx) => {
+                const isExp = expanded === sk.sku
+                const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
+                return (
+                  <React.Fragment key={sk.sku}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${
+                        isExp ? 'bg-[hsl(var(--primary)/0.06)]' : `${rowBg} hover:bg-[hsl(var(--muted)/0.15)]`
+                      } group`}
+                      onClick={() => setExpanded(isExp ? null : sk.sku)}
+                    >
+                      <td className="px-3 py-3 text-center">
+                        <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
+                          <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                        </motion.div>
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="max-w-[250px] truncate text-[13px] font-medium" title={sk.name}>
+                          {sk.name || sk.offer_id}
+                        </div>
+                        <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">{sk.offer_id}</div>
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px] font-semibold text-blue-400">
+                        {fmt(sk.total_sold_via_cd)} шт
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{fmtM(sk.total_revenue)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{sk.daily_sales_cd.toFixed(1)}</td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px] text-orange-400 font-semibold">
+                        ~{fmtM(sk.est_cd_cost)}
+                      </td>
+                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                        <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold bg-emerald-500/15 text-emerald-400 ring-1 ring-inset ring-emerald-500/20">
+                          {fmt(sk.recommended_supply)} шт
+                        </span>
+                      </td>
+                      <td className="px-3 py-3 text-center tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                        {sk.warehouse_count}
+                      </td>
+                    </tr>
+                    {/* Expanded: warehouses where it's sold via CD */}
+                    {isExp && (
+                      <tr>
+                        <td colSpan={8} className="p-0">
+                          <div className="bg-[hsl(var(--muted)/0.06)] border-t border-b border-[hsl(var(--border)/0.3)] px-5 py-4">
+                            <h4 className="text-[13px] font-semibold text-[hsl(var(--foreground))] mb-3">
+                              Склады с продажами без стока — товар доставляется через кроссдокинг:
+                            </h4>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                              {sk.warehouses.map(wh => (
+                                <div
+                                  key={wh.warehouse_name}
+                                  className="flex flex-col p-3 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)]"
+                                >
+                                  <div className="text-[11px] font-medium truncate mb-1" title={wh.warehouse_name}>
+                                    {wh.warehouse_name.replace('_РФЦ', '').replace('_МРФЦ', '')}
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[12px] text-blue-400 font-bold tabular-nums">{wh.sold} прод.</span>
+                                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{fmtM(wh.revenue)}</span>
+                                  </div>
+                                  <div className="text-[10px] text-red-400 mt-1">сток: 0 → кроссдокинг</div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/15">
+                              <p className="text-[12px] text-[hsl(var(--foreground))]">
+                                <strong className="text-blue-400">Рекомендация:</strong> Завезите {fmt(sk.recommended_supply)} шт напрямую на эти {sk.warehouse_count} складов.
+                                Это сократит расход на кроссдокинг ~{fmtM(sk.est_cd_cost)} и ускорит доставку покупателям.
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
+          <span className="text-sm text-[hsl(var(--muted-foreground))]">
+            {totalSoldViaCd} ед. продано через кроссдокинг за период
+          </span>
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            * Прямая поставка = меньше расход + быстрее доставка
+          </span>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
    Skeleton
    ═══════════════════════════════════════════════════════════ */
 
@@ -917,6 +1061,14 @@ export default function WarehouseAnalyticsPage() {
           {/* Storage Risk SKUs */}
           {data.storage_risk_skus && data.storage_risk_skus.length > 0 && (
             <StorageRiskTable skus={data.storage_risk_skus} />
+          )}
+
+          {/* Crossdocking Optimization */}
+          {data.crossdocking_skus && data.crossdocking_skus.length > 0 && (
+            <CrossdockingTable
+              skus={data.crossdocking_skus}
+              totalCdCost={Math.abs(data.costs?.crossdocking?.amount || 0)}
+            />
           )}
 
           {/* Recommendations */}

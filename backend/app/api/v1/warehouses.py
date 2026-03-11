@@ -2279,6 +2279,81 @@ async def ozon_warehouse_analytics(
             key=lambda s: (0 if s["zone"] == "paid" else 1, -(s["turnover_days"] or 99999)),
         )
 
+        # ── 8. Crossdocking analysis (SKUs selling on warehouses with no stock) ───
+        # If a SKU sells on a warehouse where stock=0, it's delivered via crossdocking
+        crossdocking_analysis_query = ch.query("""
+            SELECT o.warehouse_name, o.sku, o.offer_id, o.product_name,
+                   sum(o.quantity) as sold,
+                   round(sum(o.price * o.quantity), 2) as revenue,
+                   COALESCE(ws.free_to_sell, 0) as current_stock
+            FROM fact_ozon_orders o FINAL
+            LEFT JOIN (
+                SELECT sku, warehouse_name, free_to_sell
+                FROM fact_ozon_warehouse_stocks FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt = (SELECT max(dt) FROM fact_ozon_warehouse_stocks
+                            WHERE shop_id = {shop_id:UInt32})
+                  AND warehouse_type = 'fbo'
+            ) ws ON o.sku = ws.sku AND o.warehouse_name = ws.warehouse_name
+            WHERE o.shop_id = {shop_id:UInt32}
+              AND o.order_date >= today() - {period:UInt32}
+              AND o.status != 'cancelled'
+            GROUP BY o.warehouse_name, o.sku, o.offer_id, o.product_name, ws.free_to_sell
+            HAVING current_stock = 0 AND sold >= 2
+            ORDER BY sold DESC
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # Aggregate: per SKU → list of warehouses where it's sold via crossdocking
+        cd_sku_agg: dict[int, dict] = {}
+        for row in crossdocking_analysis_query.result_rows:
+            sku_id = int(row[1])
+            if sku_id not in cd_sku_agg:
+                cd_sku_agg[sku_id] = {
+                    "sku": sku_id,
+                    "offer_id": row[2],
+                    "name": row[3],
+                    "total_sold_via_cd": 0,
+                    "total_revenue": 0,
+                    "warehouses": [],
+                }
+            cd_sku_agg[sku_id]["total_sold_via_cd"] += int(row[4])
+            cd_sku_agg[sku_id]["total_revenue"] += float(row[5])
+            cd_sku_agg[sku_id]["warehouses"].append({
+                "warehouse_name": row[0],
+                "sold": int(row[4]),
+                "revenue": round(float(row[5]), 2),
+                "current_stock": int(row[6]),
+            })
+
+        crossdocking_skus = []
+        # Avg crossdocking cost per unit (~50₽ estimated for medium-size goods)
+        AVG_CD_COST_PER_UNIT = 50
+
+        for sku_id, info in cd_sku_agg.items():
+            est_cd_cost = info["total_sold_via_cd"] * AVG_CD_COST_PER_UNIT
+            daily_sales_cd = info["total_sold_via_cd"] / period if period > 0 else 0
+            # Recommended supply: 60 days of stock (2 months)
+            recommended_supply = int(daily_sales_cd * 60) if daily_sales_cd > 0 else info["total_sold_via_cd"]
+
+            crossdocking_skus.append({
+                "sku": sku_id,
+                "offer_id": info["offer_id"],
+                "name": info["name"],
+                "total_sold_via_cd": info["total_sold_via_cd"],
+                "total_revenue": round(info["total_revenue"], 2),
+                "daily_sales_cd": round(daily_sales_cd, 2),
+                "est_cd_cost": round(est_cd_cost, 2),
+                "recommended_supply": recommended_supply,
+                "warehouse_count": len(info["warehouses"]),
+                "warehouses": sorted(
+                    info["warehouses"],
+                    key=lambda w: w["sold"],
+                    reverse=True,
+                ),
+            })
+
+        crossdocking_skus.sort(key=lambda s: -s["total_sold_via_cd"])
+
         # ── Build response ───────────────────────────────────────
         # Index orders by warehouse
         orders_by_wh = {}
@@ -2721,6 +2796,7 @@ async def ozon_warehouse_analytics(
             "warehouses": warehouses,
             "recommendations": recommendations,
             "storage_risk_skus": storage_risk_skus,
+            "crossdocking_skus": crossdocking_skus,
         }
 
     finally:
