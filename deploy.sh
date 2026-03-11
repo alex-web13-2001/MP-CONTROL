@@ -4,6 +4,8 @@
 # Usage: ./deploy.sh [--full-rebuild]
 # Default: fast deploy (git pull + docker cp + restart) ~30s
 # --full-rebuild: пересобрать Docker образы (~10 min)
+#
+# ⚠️  Запускать ТОЛЬКО с локальной машины (не на сервере!)
 # ============================================================
 
 SERVER="root@5.42.98.106"
@@ -23,9 +25,9 @@ git push origin main
 echo "   ✓ Git push done"
 echo ""
 
-# ── 2. Pull on server ────────────────────────────────────
+# ── 2. Pull on server (force reset to avoid divergent branches) ──
 echo "⬇️  Pulling on server..."
-$SSH "cd $REMOTE_DIR && git pull origin main 2>&1 | tail -3"
+$SSH "cd $REMOTE_DIR && git fetch origin main && git reset --hard origin/main 2>&1 | tail -3"
 echo ""
 
 if [ "$1" == "--full-rebuild" ]; then
@@ -59,10 +61,15 @@ else
 fi
 
 # ── 3. Build & serve Frontend ────────────────────────────
+# ⚠️  НЕ удаляем dist/ целиком — это сломает Docker bind mount!
+#     npm run build сам перезаписывает содержимое.
 echo ""
 echo "🎨 Building frontend..."
 $SSH "cd $REMOTE_DIR/frontend && npm run build 2>&1 | grep -E 'built in|error TS|Error'"
-$SSH "docker exec mms-nginx nginx -s reload && echo '   ✓ nginx reloaded'"
+
+# Restart nginx to pick up new dist files (bind mount может не обновиться)
+$SSH "cd $REMOTE_DIR && docker compose -f docker-compose.prod.yml restart nginx 2>&1 | tail -2"
+echo "   ✓ nginx restarted"
 echo ""
 
 # ── 4. Health check ─────────────────────────────────────
@@ -71,6 +78,8 @@ sleep 3
 STATUS=$($SSH "curl -s -o /dev/null -w '%{http_code}' http://localhost/api/v1/auth/health" 2>/dev/null)
 if [ "$STATUS" == "200" ]; then
     echo "   ✓ API is healthy (HTTP $STATUS)"
+elif [ "$STATUS" == "301" ]; then
+    echo "   ✓ API responds (HTTP $STATUS — HTTPS redirect)"
 else
     echo "   ⚠ API status: HTTP $STATUS"
 fi
