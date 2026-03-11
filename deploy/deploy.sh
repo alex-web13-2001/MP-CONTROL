@@ -58,13 +58,39 @@ echo "→ [4/6] Building frontend..."
 cd frontend
 npm ci --production=false 2>&1 | tail -3
 npm run build 2>&1 | grep -E 'built in|error TS|Error'
+
+# Верификация: index.html и assets/index-*.js должны совпадать по хешу
+EXPECTED_JS=$(grep -oP 'index-[a-zA-Z0-9_]+\.js' dist/index.html | head -1)
+ACTUAL_JS=$(ls dist/assets/index-*.js 2>/dev/null | grep -oP 'index-[a-zA-Z0-9_]+\.js' | head -1)
+if [ "$EXPECTED_JS" != "$ACTUAL_JS" ]; then
+  echo "  ⚠️  HASH MISMATCH: index.html expects $EXPECTED_JS but found $ACTUAL_JS"
+  echo "  → Пересобираем фронтенд..."
+  rm -rf dist
+  npm run build 2>&1 | grep -E 'built in|error TS|Error'
+  EXPECTED_JS=$(grep -oP 'index-[a-zA-Z0-9_]+\.js' dist/index.html | head -1)
+  ACTUAL_JS=$(ls dist/assets/index-*.js 2>/dev/null | grep -oP 'index-[a-zA-Z0-9_]+\.js' | head -1)
+  if [ "$EXPECTED_JS" != "$ACTUAL_JS" ]; then
+    echo "  ❌ CRITICAL: Hash mismatch after rebuild! $EXPECTED_JS vs $ACTUAL_JS"
+    exit 1
+  fi
+fi
+echo "  ✅ Frontend built (JS: $EXPECTED_JS)"
 cd ..
 
-# 5. Restart nginx (bind mount обновляется только при restart, не reload)
+# 5. Restart nginx (RESTART, не reload — чтобы bind mount обновился)
 echo ""
 echo "→ [5/6] Restarting nginx..."
 docker compose -f $COMPOSE_FILE restart nginx 2>&1 | tail -2
-echo "  ✅ Nginx restarted"
+
+# Проверяем что nginx отдаёт JS-файл а не HTML
+sleep 2
+HTTP_CODE=$(docker exec mms-nginx curl -s -o /dev/null -w '%{http_code}' http://localhost/assets/$EXPECTED_JS 2>/dev/null || echo "000")
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "  ⚠️  Nginx не отдаёт $EXPECTED_JS (HTTP $HTTP_CODE), пересоздаю контейнер..."
+  docker compose -f $COMPOSE_FILE up -d --force-recreate nginx 2>&1 | tail -2
+  sleep 2
+fi
+echo "  ✅ Nginx restarted, assets verified"
 
 # 6. Verify
 echo ""
