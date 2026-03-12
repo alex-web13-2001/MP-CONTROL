@@ -235,6 +235,31 @@ def _compute_supply(
         })
         sku_totals[offer] = sku_totals.get(offer, 0) + qty
 
+    # ── 2b. Actual warehouse consumption (for cross-cluster analysis) ──
+    #   Which warehouse actually shipped each order? This reveals
+    #   cross-cluster drain: e.g. Moscow warehouse serving Kazan orders.
+    cross_rows = ch.query("""
+        SELECT warehouse_name, offer_id, cluster_to, sum(quantity) AS qty
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND order_date >= {d_start:Date}
+          AND status NOT IN ('cancelled', 'canceled')
+          AND warehouse_name != ''
+        GROUP BY warehouse_name, offer_id, cluster_to
+    """, parameters={"shop_id": shop_id, "d_start": d_sales_start})
+
+    # wh_consumption: {offer_id: {source_cluster: {dest_cluster: qty}}}
+    wh_consumption: dict[str, dict[str, dict[str, int]]] = {}
+    for r in cross_rows.result_rows:
+        wh_name, offer, dest_cluster, qty = r[0], r[1], r[2], r[3]
+        src_cluster = WAREHOUSE_TO_CLUSTER.get(wh_name)
+        if not src_cluster:
+            continue
+        wh_consumption.setdefault(offer, {}).setdefault(src_cluster, {})
+        wh_consumption[offer][src_cluster][dest_cluster] = (
+            wh_consumption[offer][src_cluster].get(dest_cluster, 0) + qty
+        )
+
     # ── 3. Ad boost (7d vs prev 7d) ─────────────────────────
     boost_map = {}
     if use_ad_boost:
@@ -399,10 +424,73 @@ def _compute_supply(
             "clusters": clusters_out,
         })
 
+    # ── 4b. Cross-cluster analysis: effective_days & post_restock_days ──
+    #   For each cluster with stock, check if the warehouse ALSO ships
+    #   to other clusters (cross-drain). If so, the real stock horizon
+    #   is shorter than days_supply suggests.
+    for item in items:
+        offer = item["offer_id"]
+        offer_cross = wh_consumption.get(offer, {})
+
+        for cl in item["clusters"]:
+            cluster = cl["cluster"]
+            wh_stock = cl.get("wh_stock", 0)
+
+            # What did this cluster's warehouse actually ship?
+            consumption = offer_cross.get(cluster, {})
+            own_qty = consumption.get(cluster, 0)       # orders TO own cluster
+            total_qty = sum(consumption.values())       # ALL orders FROM this wh
+            cross_qty = total_qty - own_qty             # orders to OTHER clusters
+
+            total_daily = total_qty / sales_period if sales_period > 0 else 0
+            own_daily = own_qty / sales_period if sales_period > 0 else 0
+
+            # effective_days: stock / real consumption (includes cross-drain)
+            eff_days = wh_stock / total_daily if total_daily > 0 else 9999
+            # post_restock_days: if all empty clusters get restocked, only own demand remains
+            post_days = wh_stock / own_daily if own_daily > 0 else 9999
+
+            # Cross-cluster details
+            cross_clusters = []
+            for dest_cl, q in consumption.items():
+                if dest_cl != cluster and q > 0:
+                    cross_clusters.append({
+                        "cluster": dest_cl,
+                        "qty": q,
+                        "daily": round(q / sales_period, 2),
+                    })
+            cross_clusters.sort(key=lambda x: x["qty"], reverse=True)
+
+            cl["effective_days"] = round(eff_days, 1)
+            cl["post_restock_days"] = round(post_days, 1)
+            cl["cross_consumption"] = cross_qty
+            cl["cross_clusters"] = cross_clusters
+
+        # Recompute item-level effective_days: weighted by revenue
+        total_rev = sum(c["revenue"] for c in item["clusters"])
+        if total_rev > 0:
+            item_eff_days = sum(
+                c["effective_days"] * c["revenue"] for c in item["clusters"]
+            ) / total_rev
+        else:
+            item_eff_days = item["days_supply"]
+        item["effective_days"] = round(item_eff_days, 1)
+
+        # Re-evaluate status using effective_days if it's worse
+        if item["effective_days"] < item["days_supply"]:
+            if item["effective_days"] < 14 and item["status"] != "critical":
+                item["status"] = "critical"
+                critical_count += 1
+                if item.get("_was_attention"):
+                    attention_count -= 1
+            elif item["effective_days"] < target_days and item["status"] == "ok":
+                item["status"] = "attention"
+                attention_count += 1
+
     # Sort: critical first, then by days_supply ascending
     items.sort(key=lambda x: (
         0 if x["status"] == "critical" else 1 if x["status"] == "attention" else 2,
-        x["days_supply"],
+        min(x["days_supply"], x.get("effective_days", x["days_supply"])),
     ))
 
     avg_days = round(weighted_days_sum / weighted_rev_sum, 1) if weighted_rev_sum > 0 else 0
@@ -574,7 +662,8 @@ async def export_ozon_supply(
         ("Склад отгрузки", 28), ("Доставка, ч", 10),
         ("Продано", 10), ("Доля", 8), ("Ежедн.", 8),
         ("Boost", 7), ("Ежедн×b", 8), ("FBO", 8),
-        ("Сток РФЦ", 10), ("Склады", 32), ("Дн.зап", 8), ("ПОСТАВИТЬ", 12),
+        ("Сток РФЦ", 10), ("Склады", 32), ("Дн.зап", 8),
+        ("Реал.зап", 9), ("Кросс", 36), ("ПОСТАВИТЬ", 12),
         ("Выручка", 12), ("Рекл₽", 10), ("Показы", 8),
         ("Клики", 7), ("Корзины", 8), ("Р.заказы", 8),
     ]
@@ -647,20 +736,47 @@ async def export_ozon_supply(
             else:
                 ws.cell(r, 14, "")
 
-            c = ws.cell(r, 15, cl["need"])
+            # Col 15: Реал.зап (effective_days with cross-drain)
+            eff_d = cl.get("effective_days", 9999)
+            if first and eff_d < 9999:
+                c = ws.cell(r, 15, eff_d)
+                c.number_format = "0.0"
+                if eff_d < item["days_supply"] * 0.8:  # significantly lower
+                    c.font = Font(bold=True, color="CC0000")
+                    c.fill = PatternFill("solid", fgColor="FFC7CE")
+                elif eff_d < item["days_supply"]:
+                    c.font = Font(bold=True, color="CC8800")
+            elif first:
+                ws.cell(r, 15, "—")
+            else:
+                ws.cell(r, 15, "")
+
+            # Col 16: Кросс (cross-cluster drain description)
+            cross_cls = cl.get("cross_clusters", [])
+            if cross_cls:
+                cross_desc = ", ".join(
+                    f"{cc['cluster']} +{cc['daily']}/д" for cc in cross_cls[:3]
+                )
+                if len(cross_cls) > 3:
+                    cross_desc += f" +{len(cross_cls)-3} ещё"
+                ws.cell(r, 16, cross_desc).font = Font(italic=True, size=9, color="CC6600")
+            else:
+                ws.cell(r, 16, "—")
+
+            c = ws.cell(r, 17, cl["need"])
             c.number_format = num_fmt
             if cl["need"] > 0:
                 c.font = Font(bold=True, size=12, color="CC0000")
                 c.fill = need_fill
 
-            ws.cell(r, 16, cl["revenue"]).number_format = num_fmt
+            ws.cell(r, 18, cl["revenue"]).number_format = num_fmt
 
             if first:
-                ws.cell(r, 17, item.get("ad_spend_7d", 0)).number_format = num_fmt
-                ws.cell(r, 18, item.get("ad_views_7d", 0)).number_format = num_fmt
-                ws.cell(r, 19, item.get("ad_clicks_7d", 0)).number_format = num_fmt
-                ws.cell(r, 20, item.get("ad_carts_7d", 0)).number_format = num_fmt
-                ws.cell(r, 21, item.get("ad_orders_7d", 0)).number_format = num_fmt
+                ws.cell(r, 19, item.get("ad_spend_7d", 0)).number_format = num_fmt
+                ws.cell(r, 20, item.get("ad_views_7d", 0)).number_format = num_fmt
+                ws.cell(r, 21, item.get("ad_clicks_7d", 0)).number_format = num_fmt
+                ws.cell(r, 22, item.get("ad_carts_7d", 0)).number_format = num_fmt
+                ws.cell(r, 23, item.get("ad_orders_7d", 0)).number_format = num_fmt
                 for ci2 in range(1, len(headers) + 1):
                     ws.cell(r, ci2).border = Border(top=Side(style="medium", color="2F5496"))
 
@@ -734,6 +850,15 @@ async def export_ozon_supply(
         ("🔴 Критический — запас < 14 дней", False, 11),
         (f"🟡 Внимание — запас < {target_days} дней", False, 11),
         (f"🟢 Норма — запас ≥ {target_days} дней", False, 11),
+        ("", False, 11),
+        ("═══ КРОСС-КЛАСТЕРНЫЙ АНАЛИЗ ═══", True, 12),
+        ("• Анализируем warehouse_name из fact_ozon_orders — с какого склада реально уехал заказ", False, 11),
+        ("• Если склад кластера А отгружает заказы в кластер Б (потому что на Б пусто) —", False, 11),
+        ("  это «кросс-слив»: сток А расходуется быстрее расчётного", False, 11),
+        ("• «Реал.зап» = сток / ФАКТИЧЕСКИЙ расход склада (включая чужие заказы)", False, 11),
+        ("• «Кросс» = какие кластеры «паразитируют» на этом складе и сколько шт/день", False, 11),
+        ("• Если «Реал.зап» << «Дн.зап» — склад тратится быстрее чем кажется!", False, 11),
+        ("• После поставки в пустые кластеры — кросс-нагрузка уйдёт, и расход нормализуется", False, 11),
     ]
     for ri, (t, bold, sz) in enumerate(lines, 1):
         c = ws3.cell(ri, 1, t)

@@ -1,3 +1,25 @@
+## 2026-03-12 (v2)
+
+### feat(warehouses): Ozon — кросс-кластерный анализ расхода стока
+
+**Backend** (`warehouses.py`):
+- Новый SQL: фактический расход по `warehouse_name × offer_id × cluster_to` из `fact_ozon_orders`
+- `wh_consumption` — маппинг {offer_id: {source_cluster: {dest_cluster: qty}}} через `WAREHOUSE_TO_CLUSTER`
+- `effective_days` — реальный запас: `stock / фактический_расход` (включая кросс-нагрузку от соседних пустых кластеров)
+- `post_restock_days` — прогноз после закрытия дефицитов: `stock / собственный_расход`
+- `cross_consumption` / `cross_clusters` — детализация паразитной нагрузки (какой кластер сколько шт/день)
+- Пересчёт статуса товара по `effective_days` (attention → critical если реальный запас <14д)
+- Сортировка по min(days_supply, effective_days)
+
+**Excel экспорт**:
+- Лист «Рекомендации»: колонки «Реал.зап» (col 15) и «Кросс» (col 16) — сдвинуты ПОСТАВИТЬ и далее на +2
+- Лист «Методология»: секция «КРОСС-КЛАСТЕРНЫЙ АНАЛИЗ» — объяснение warehouse_name анализа
+
+**Frontend** (`warehouses.ts`):
+- `CrossClusterDrain` — новый тип
+- `SupplyCluster` + `effective_days`, `post_restock_days`, `cross_consumption`, `cross_clusters`
+- `SupplyItem` + `effective_days`
+
 ## 2026-03-12
 
 ### feat(warehouses): Ozon поставки — реальные стоки по РФЦ

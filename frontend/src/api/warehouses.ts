@@ -5,6 +5,12 @@ import { apiClient } from './client'
 
 // ── Types ────────────────────────────────────────────────────
 
+export interface CrossClusterDrain {
+  cluster: string
+  qty: number
+  daily: number
+}
+
 export interface SupplyCluster {
   cluster: string
   sold: number
@@ -18,6 +24,11 @@ export interface SupplyCluster {
   hub: string
   hub_hours: number
   warehouses: string[]
+  // Cross-cluster analysis
+  effective_days?: number
+  post_restock_days?: number
+  cross_consumption?: number
+  cross_clusters?: CrossClusterDrain[]
 }
 
 export interface SupplyItem {
@@ -34,6 +45,7 @@ export interface SupplyItem {
   boost: number
   boosted_daily: number
   days_supply: number
+  effective_days?: number
   status: 'critical' | 'attention' | 'ok'
   total_need: number
   ad_spend_7d: number
