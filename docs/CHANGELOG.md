@@ -1,3 +1,172 @@
+## 2026-03-12
+
+### feat(warehouses): Ozon поставки — реальные стоки по РФЦ
+
+**Backend** (`warehouses.py`):
+- Маппинг `WAREHOUSE_TO_CLUSTER` (34 РФЦ → кластеры доставки) + обратный `CLUSTER_TO_WAREHOUSES_OZON`
+- `_compute_supply` переписан: стоки берутся **по каждому складу** из `fact_ozon_warehouse_stocks` (`GROUP BY offer_id, warehouse_name`)
+- Формула: `need = max(0, daily×target×safety − РЕАЛЬНЫЙ_сток_на_РФЦ)` вместо пропорциональной оценки
+- Новые поля в JSON: `wh_stock`, `warehouses` (список РФЦ с остатками)
+- Excel: колонка «Оц.стока» → «Сток РФЦ» + новая колонка «Склады» (Лист 1)
+- Excel: Sheet 4 «Поставка по кластерам» + Sheet 5 «Объединённые кластеры» — добавлена колонка «Сток РФЦ»
+- Excel: Методология обновлена — формула с real stock, описание маппинга складов
+
+**Frontend** (`WarehouseSupplyPage.tsx`, `warehouses.ts`):
+- `SupplyCluster` + `wh_stock`, `warehouses` поля
+- `HubItem` + `wh_stock`
+- Колонка «Оц. стока» → «Сток РФЦ»
+
+### docs: обновление архитектурной документации
+
+- `04_BACKEND_API.md`: Response Schema Ozon Supply обновлена (wh_stock, warehouses, warehouse), маппинг WAREHOUSE_TO_CLUSTER, формула per-warehouse stock, Excel описание обновлено
+- `06_FRONTEND.md`: типы SupplyCluster/HubItem + колонка «Сток РФЦ»
+
+## 2026-03-11 (v10)
+
+### fix(warehouses): исключение FBS складов из плана кроссдокинга
+
+**Backend** (`warehouses.py`):
+- Crossdocking analysis теперь фильтрует заказы через FBO whitelist (`warehouse_type='fbo'`)
+- FBS склады (ООО "ТЕЙЛОРД" и т.п.) больше не попадают в план распределения
+- Ранее FBS заказы ошибочно показывали «поставить на свой же склад»
+
+## 2026-03-11 (v9)
+
+### feat(warehouses): Excel экспорт плана распределения
+
+**Backend** (`warehouses.py`):
+- Новый endpoint `GET /ozon/analytics/distribution-plan/excel`
+- Лист 1 «Сводный план» — все SKU со складами, действиями, причинами, выгодой, городами спроса
+- Лист 2 «Поставки по складам» — supply items сгруппированы по складу с merge cells и итогами
+- Лист 3 «Перемещения» — transfer items сгруппированы по источнику, с окупаемостью и итогами
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`, `warehouses.ts`):
+- `downloadDistributionPlanExcel()` в API
+- Зеленая кнопка «Скачать Excel» на табе Кроссдокинг со стейтом загрузки
+
+## 2026-03-11 (v8)
+
+### feat(warehouses): кроссдокинг — контекст «почему» и «что даст»
+
+**Backend** (`warehouses.py`):
+- SQL запрос географии CD-заказов: `city`, `cluster_from` по SKU × warehouse из `fact_ozon_orders`
+- Каждый distribution_plan item обогащён: `demand_cities` (top-5 городов спроса), `shipped_from` (откуда отгружается), `reason` (текстовое объяснение), `benefit` (ожидаемый эффект с окупаемостью)
+- Warehouse-level: `top_demand_cities` (top-5 городов по всем SKU склада), `total_orders_cd`
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- Warehouse header: строка «📍 Спрос: Москва (8), Домодедово (4)...» — top-4 города
+- SKU sub-rows: контекстный блок с причиной (📍) и выгодой (💡) под каждым товаром
+- `React.Fragment` для корректного рендера пар строк (данные + контекст)
+
+**Types** (`warehouses.ts`):
+- `DistributionPlanItem` + `demand_cities`, `shipped_from`, `reason`, `benefit`
+- `DistributionPlanWarehouse` + `top_demand_cities`, `total_orders_cd`
+
+## 2026-03-11 (v7)
+
+### feat(warehouses): Кроссдокинг → План распределения по складам
+
+**Backend** (`warehouses.py`):
+- Новая агрегация `distribution_plan`: группировка crossdocking SKU по складу-получателю
+- Для каждого склада: список SKU с action (`transfer`/`supply`), qty, source_warehouse, transfer_cost
+- Алгоритм: ищет склад-донор с избытком → если есть, action=transfer (со стоимостью), иначе supply
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- `CrossdockingTable` заменён на `DistributionPlanTable` — складоцентричный вид
+- 4 KPI-карточки: складов с CD, расход/мес, переместить, поставить
+- Раскрываемые блоки складов с таблицей SKU: действие, кол-во, прод/д, CD/мес, источник
+- Фильтры (Все/Переместить/Поставить) и поиск работают по distribution_plan
+
+**Types** (`warehouses.ts`):
+- `DistributionPlanItem`, `DistributionPlanWarehouse` + поле `distribution_plan` в response
+
+## 2026-03-11 (v6)
+
+### feat(warehouses): столбец Реклама + компактные бейджи + умные рекомендации
+
+**Backend** (`warehouses.py`):
+- Добавлен ClickHouse запрос к `fact_ozon_ad_daily` для SKU из зоны риска (spend_30d, orders_30d, has_active_ads)
+- Рекомендации теперь ad-aware: учитывают наличие/отсутствие рекламы в каждом SKU
+- Добавлено поле `ad_info` в `storage_risk_skus`
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- Бейдж «Зона» стал компактным (без emoji, fixed-width, меньше padding)
+- Колонка «Сверх лимита» заменена на «Реклама» (Да/Нет)
+- Рекомендации различают ситуации: «Запустить рекламу + скидка» vs «Скидка 30-50% или вывоз»
+
+**Types** (`warehouses.ts`):
+- `StorageRiskSku` + `ad_info: { has_ads, spend_30d, orders_30d }`
+
+## 2026-03-11 (v5)
+
+### refactor(warehouses): per-SKU рекомендации вместо per-warehouse
+
+**Backend** (`warehouses.py`):
+- Удалены `paid_storage` рекомендации по складам (одинаковый текст для всех)
+- Добавлено поле `recommendation` в `storage_risk_skus` — индивидуальная рекомендация для каждого SKU:
+  - `critical`: «Вывезти или списать» (0 продаж, мёртвый сток)
+  - `high`: «Скидка 30-50% или вывоз» (низкие продажи) / «Скидка 20-30% + промо» (оборач. >300д)
+  - `medium`: «Ускорить продажи» (рекламой + акции) / «Снизить цену 15-20%» (warning)
+  - `low`: «Не поставлять новые» (есть продажи, но избыточный запас)
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- Карточки по складам → одна сводка-баннер (кол-во SKU + прогноз расходов + кол-во мёртвого стока)
+- Колонка «Складов» → «Рекомендация» с action + reason для каждого SKU
+
+**Types** (`warehouses.ts`):
+- `StorageRiskSku` + `recommendation: { action, reason, severity }`
+
+## 2026-03-11 (v4)
+
+### fix(warehouses): читаемость рекомендаций + логика распределения по складам
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- Шрифты увеличены (14px заголовки, 13px impact), контрастные `dark:`/light модификаторы
+- `bg-orange-50`/`bg-blue-50` + `text-orange-800`/`text-blue-800` для light theme
+
+**Backend** (`warehouses.py`):
+- `move_stock` полностью переписан: распределение по **нескольким складам**
+- Расчёт capacity каждого склада-получателя (90 дней запаса)
+- Проекция оборачиваемости: `[склад: Xд → Yд запаса]` — видно что будет после перемещения
+- Лимит: каждый склад получает только столько, сколько может продать за 90 дней
+
+## 2026-03-11 (v3)
+
+### fix(warehouses): фидбек — автокомплит, география продаж, рекомендации
+
+**Backend** (`warehouses.py`):
+- SQL запрос `sku_sales_geo_data` — продажи по SKU × cluster_to (fact_ozon_orders)
+- `sales_clusters` в `sku_geography` — кластеры с заказами, шт, выручкой
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+- Кастомный автокомплит вместо нативного select (поиск по артикулу/название/SKU)
+- **«Где лежит» + «Куда продаётся»** — два side-by-side блока в географии товара
+- Inline рекомендации: добавлен impact, action items, потенциал экономии в ₽/мес
+
+**API types** (`warehouses.ts`): добавлен `SalesCluster`
+
+## 2026-03-11 (v2)
+
+### feat(warehouses): редизайн «Аналитика складов» — табовый дашборд
+
+**Backend** (`warehouses.py`):
+
+- Автогенерация текстового `summary` — сводка проблем (платное хранение, перезатарка, кроссдокинг, потенциал экономии, скорость доставки)
+- `sku_geography` — инвертированный вид warehouse→SKU для географии по конкретному товару
+
+**Frontend** (`WarehouseAnalyticsPage.tsx`):
+
+- **4 вкладки** вместо простыни ~5000px:
+  - **Обзор**: текстовое саммари + KPI с бенчмарками/цветовой индикацией + расходы + top-3 проблемных SKU
+  - **Хранение**: StorageRiskTable + фильтры (Платное/Скоро/Все) + поиск + inline рекомендации
+  - **Кроссдокинг**: CrossdockingTable + фильтры (Переместить/Поставить/Все) + поиск + inline рекомендации
+  - **Склады и география**: WarehouseTable + SKU geography selector + фильтры по статусу
+- KPI карточки: цветовая индикация (🔴 Критично /🟡 Внимание / 🟢 Норма) + бенчмарки (160дн, 48ч)
+- Кнопки навигации из саммари → конкретная вкладка
+- Убран отдельный блок «Рекомендации» — встроены inline в контексте каждой вкладки
+
+**API types** (`warehouses.ts`): добавлены `SkuGeography`, `SkuGeographyWarehouse`, обновлен `WarehouseAnalyticsResponse`
+
 ## 2026-03-11
 
 ### feat(finances): WB Excel финансовый отчёт (6 листов)

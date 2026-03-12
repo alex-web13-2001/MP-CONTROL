@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { motion } from 'framer-motion'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   Warehouse,
   BarChart3,
@@ -14,6 +14,9 @@ import {
   Truck,
   ShieldAlert,
   Package,
+  Search,
+  TrendingUp,
+  Download,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -25,6 +28,9 @@ import {
   type Recommendation,
   type StorageRiskSku,
   type CrossdockingSku,
+  type DistributionPlanWarehouse,
+  type DistributionPlanItem,
+  downloadDistributionPlanExcel,
 } from '@/api/warehouses'
 
 
@@ -603,18 +609,18 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
         </div>
 
         <div className="overflow-auto max-h-[600px]">
-          <table className="w-full border-collapse" style={{ minWidth: 900 }}>
+          <table className="w-full border-collapse">
             <thead className="sticky top-0 z-20">
               <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-3 py-3 w-[40px]"></th>
-                <th className="px-3 py-3 text-left text-[12px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px]">SKU</th>
-                <th className="px-3 py-3 text-center text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Зона</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Остаток</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Прод/д</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Оборач.</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Сверх лимита</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">~Стоим/мес</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Складов</th>
+                <th className="px-1 py-2.5 w-8"></th>
+                <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">SKU</th>
+                <th className="px-2 py-2.5 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Зона</th>
+                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Остаток</th>
+                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Прод/д</th>
+                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Оборач.</th>
+                <th className="px-2 py-2.5 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Реклама</th>
+                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">~Стоим/мес</th>
+                <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Рекомендация</th>
               </tr>
             </thead>
             <tbody>
@@ -629,29 +635,29 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
                       } group`}
                       onClick={() => setExpanded(isExp ? null : sk.sku)}
                     >
-                      <td className="px-3 py-3 text-center">
+                      <td className="px-2 py-2.5 text-center">
                         <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
-                          <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                          <ChevronRight className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
                         </motion.div>
                       </td>
-                      <td className="px-3 py-3">
-                        <div className="max-w-[250px] truncate text-[13px] font-medium" title={sk.name}>
+                      <td className="px-3 py-2.5">
+                        <div className="text-[13px] font-medium" title={sk.name}>
                           {sk.name || sk.offer_id}
                         </div>
-                        <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">{sk.offer_id}</div>
+                        <div className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">{sk.offer_id}</div>
                       </td>
-                      <td className="px-3 py-3 text-center">
-                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold ring-1 ring-inset ${
+                      <td className="px-2 py-2.5 text-center">
+                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap ${
                           sk.zone === 'paid'
-                            ? 'bg-red-500/15 text-red-400 ring-red-500/20'
-                            : 'bg-amber-500/15 text-amber-400 ring-amber-500/20'
+                            ? 'bg-red-500/15 text-red-400'
+                            : 'bg-amber-500/15 text-amber-400'
                         }`}>
-                          {sk.zone === 'paid' ? '💸 Платное' : '⚠️ Скоро'}
+                          {sk.zone === 'paid' ? 'Платное' : 'Скоро'}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px] font-semibold">{fmt(sk.total_stock)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{sk.daily_sales.toFixed(1)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px] font-semibold">{fmt(sk.total_stock)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">{sk.daily_sales.toFixed(1)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">
                         <span className={`font-semibold ${
                           sk.turnover_days == null ? 'text-purple-400' :
                           sk.turnover_days > 160 ? 'text-red-400' :
@@ -660,22 +666,36 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
                           {sk.turnover_days != null ? `${Math.round(sk.turnover_days)} дн` : '∞'}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
-                        {sk.days_over_threshold > 0 ? (
-                          <span className="font-semibold text-red-400">+{Math.round(sk.days_over_threshold)} дн</span>
-                        ) : sk.zone === 'warning' ? (
-                          <span className="text-amber-400 font-medium">~{Math.round(160 - (sk.turnover_days || 0))} дн до</span>
+                      <td className="px-2 py-2.5 text-center">
+                        {sk.ad_info?.has_ads ? (
+                          <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-bold bg-blue-500/15 text-blue-400"
+                                title={`Расход: ${fmtM(sk.ad_info.spend_30d)} за 30д, заказов: ${sk.ad_info.orders_30d}`}>
+                            Да
+                          </span>
                         ) : (
-                          <span className="text-[hsl(var(--muted-foreground))]">—</span>
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Нет</span>
                         )}
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">
                         <span className={`font-bold ${sk.zone === 'paid' ? 'text-red-400' : 'text-amber-400'}`}>
                           {sk.est_monthly_cost > 0 ? `~${fmtM(sk.est_monthly_cost)}` : '—'}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-center tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
-                        {sk.warehouses.length}
+                      <td className="px-3 py-2.5">
+                        {sk.recommendation && (
+                          <div title={sk.recommendation.reason}>
+                            <div className={`text-[12px] font-semibold ${
+                              sk.recommendation.severity === 'critical' ? 'text-red-500' :
+                              sk.recommendation.severity === 'high' ? 'text-orange-500' :
+                              'text-[hsl(var(--foreground)/0.7)]'
+                            }`}>
+                              {sk.recommendation.action}
+                            </div>
+                            <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                              {sk.recommendation.reason}
+                            </div>
+                          </div>
+                        )}
                       </td>
                     </tr>
                     {/* Expanded: warehouses */}
@@ -735,144 +755,225 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Crossdocking Optimization Table
+   Distribution Plan (replaces old CrossdockingTable)
+   Groups SKUs by destination warehouse with unified action plan
    ═══════════════════════════════════════════════════════════ */
 
-function CrossdockingTable({ skus, totalCdCost }: { skus: CrossdockingSku[]; totalCdCost: number }) {
-  const [expanded, setExpanded] = useState<number | null>(null)
+function DistributionPlanTable({ plan, totalCdCost }: { plan: DistributionPlanWarehouse[]; totalCdCost: number }) {
+  const [expandedWh, setExpandedWh] = useState<string | null>(null)
 
-  const totalSoldViaCd = skus.reduce((s, sk) => s + sk.total_sold_via_cd, 0)
+  const totalItems = plan.reduce((s, w) => s + w.items.length, 0)
+  const totalTransfers = plan.reduce((s, w) => s + w.transfer_count, 0)
+  const totalSupplies = plan.reduce((s, w) => s + w.supply_count, 0)
+  const totalQty = plan.reduce((s, w) => s + w.total_qty, 0)
+  const totalMonthlyCd = plan.reduce((s, w) => s + w.total_cd_cost_monthly, 0)
 
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, duration: 0.4 }}>
-      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-blue-600 to-indigo-500 shadow-lg">
-              <Truck className="h-4.5 w-4.5 text-white" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Кроссдокинг: куда завезти напрямую</h2>
-              <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
-                {skus.length} SKU продаются через кроссдокинг • {totalSoldViaCd} ед. за период
-              </p>
-            </div>
-          </div>
-          {totalCdCost > 0 && (
-            <div className="text-right">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Расход на кроссдокинг</div>
-              <div className="text-xl font-bold text-blue-400 tabular-nums">{fmtM(totalCdCost)}</div>
-            </div>
-          )}
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15, duration: 0.4 }}>
+      {/* Summary KPI cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">Складов с CD</div>
+          <div className="text-2xl font-bold text-[hsl(var(--foreground))] tabular-nums">{plan.length}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{totalItems} SKU, {fmt(totalQty)} шт</div>
         </div>
-
-        <div className="overflow-auto max-h-[600px]">
-          <table className="w-full border-collapse" style={{ minWidth: 850 }}>
-            <thead className="sticky top-0 z-20">
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-3 py-3 w-[40px]"></th>
-                <th className="px-3 py-3 text-left text-[12px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px]">SKU</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Продано (CD)</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Выручка</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Прод/д</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">~Расход CD</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Завезти</th>
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-[hsl(var(--muted-foreground))]">Складов</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skus.map((sk, idx) => {
-                const isExp = expanded === sk.sku
-                const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
-                return (
-                  <React.Fragment key={sk.sku}>
-                    <tr
-                      className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${
-                        isExp ? 'bg-[hsl(var(--primary)/0.06)]' : `${rowBg} hover:bg-[hsl(var(--muted)/0.15)]`
-                      } group`}
-                      onClick={() => setExpanded(isExp ? null : sk.sku)}
-                    >
-                      <td className="px-3 py-3 text-center">
-                        <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
-                          <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
-                        </motion.div>
-                      </td>
-                      <td className="px-3 py-3">
-                        <div className="max-w-[250px] truncate text-[13px] font-medium" title={sk.name}>
-                          {sk.name || sk.offer_id}
-                        </div>
-                        <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">{sk.offer_id}</div>
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px] font-semibold text-blue-400">
-                        {fmt(sk.total_sold_via_cd)} шт
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{fmtM(sk.total_revenue)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">{sk.daily_sales_cd.toFixed(1)}</td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px] text-orange-400 font-semibold">
-                        ~{fmtM(sk.est_cd_cost)}
-                      </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-[13px]">
-                        <span className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-bold bg-emerald-500/15 text-emerald-400 ring-1 ring-inset ring-emerald-500/20">
-                          {fmt(sk.recommended_supply)} шт
-                        </span>
-                      </td>
-                      <td className="px-3 py-3 text-center tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
-                        {sk.warehouse_count}
-                      </td>
-                    </tr>
-                    {/* Expanded: warehouses where it's sold via CD */}
-                    {isExp && (
-                      <tr>
-                        <td colSpan={8} className="p-0">
-                          <div className="bg-[hsl(var(--muted)/0.06)] border-t border-b border-[hsl(var(--border)/0.3)] px-5 py-4">
-                            <h4 className="text-[13px] font-semibold text-[hsl(var(--foreground))] mb-3">
-                              Склады с продажами без стока — товар доставляется через кроссдокинг:
-                            </h4>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                              {sk.warehouses.map(wh => (
-                                <div
-                                  key={wh.warehouse_name}
-                                  className="flex flex-col p-3 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)]"
-                                >
-                                  <div className="text-[11px] font-medium truncate mb-1" title={wh.warehouse_name}>
-                                    {wh.warehouse_name.replace('_РФЦ', '').replace('_МРФЦ', '')}
-                                  </div>
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-[12px] text-blue-400 font-bold tabular-nums">{wh.sold} прод.</span>
-                                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{fmtM(wh.revenue)}</span>
-                                  </div>
-                                  <div className="text-[10px] text-red-400 mt-1">сток: 0 → кроссдокинг</div>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="mt-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/15">
-                              <p className="text-[12px] text-[hsl(var(--foreground))]">
-                                <strong className="text-blue-400">Рекомендация:</strong> Завезите {fmt(sk.recommended_supply)} шт напрямую на эти {sk.warehouse_count} складов.
-                                Это сократит расход на кроссдокинг ~{fmtM(sk.est_cd_cost)} и ускорит доставку покупателям.
-                              </p>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                )
-              })}
-            </tbody>
-          </table>
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">CD расход/мес</div>
+          <div className="text-2xl font-bold text-orange-400 tabular-nums">{fmtM(totalMonthlyCd)}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Можно сократить</div>
         </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            {totalSoldViaCd} ед. продано через кроссдокинг за период
-          </span>
-          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            * Прямая поставка = меньше расход + быстрее доставка
-          </span>
+        <div className="p-4 rounded-xl border border-purple-500/20 bg-[hsl(var(--card))]">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-purple-400 mb-1">⇄ Переместить</div>
+          <div className="text-2xl font-bold text-purple-400 tabular-nums">{totalTransfers}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">SKU с избытком на других</div>
+        </div>
+        <div className="p-4 rounded-xl border border-emerald-500/20 bg-[hsl(var(--card))]">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-400 mb-1">↓ Поставить</div>
+          <div className="text-2xl font-bold text-emerald-400 tabular-nums">{totalSupplies}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Нет стока нигде</div>
         </div>
       </div>
+
+      {/* Warehouse blocks */}
+      <div className="space-y-3">
+        {plan.map((wh, whIdx) => {
+          const isExp = expandedWh === wh.warehouse_name
+          const whShort = wh.warehouse_name.replace('_РФЦ', '').replace('_МРФЦ', '')
+
+          return (
+            <motion.div
+              key={wh.warehouse_name}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: whIdx * 0.05, duration: 0.3 }}
+              className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden"
+            >
+              {/* Warehouse header — clickable */}
+              <div
+                className="flex items-center justify-between px-5 py-4 cursor-pointer hover:bg-[hsl(var(--muted)/0.08)] transition-colors group"
+                onClick={() => setExpandedWh(isExp ? null : wh.warehouse_name)}
+              >
+                <div className="flex items-center gap-3">
+                  <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
+                    <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                  </motion.div>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-indigo-500 shadow">
+                    <MapPin className="h-4 w-4 text-white" />
+                  </div>
+                  <div>
+                    <div className="text-[15px] font-bold text-[hsl(var(--foreground))]">{whShort}</div>
+                    <div className="text-[11px] text-[hsl(var(--muted-foreground))] flex items-center gap-2">
+                      <span>{wh.items.length} SKU</span>
+                      <span>•</span>
+                      <span>{fmt(wh.total_qty)} шт нужно</span>
+                      {wh.transfer_count > 0 && (
+                        <span className="text-purple-400">⇄ {wh.transfer_count} перем.</span>
+                      )}
+                      {wh.supply_count > 0 && (
+                        <span className="text-emerald-400">↓ {wh.supply_count} пост.</span>
+                      )}
+                    </div>
+                    {wh.top_demand_cities && wh.top_demand_cities.length > 0 && (
+                      <div className="text-[13px] text-blue-400/80 mt-0.5 flex items-center gap-1 flex-wrap">
+                        <span className="text-[hsl(var(--muted-foreground))]">📍 Спрос:</span>
+                        {wh.top_demand_cities.slice(0, 4).map((dc, i) => (
+                          <span key={dc.city}>
+                            {dc.city} <span className="text-[hsl(var(--muted-foreground))]">({dc.qty})</span>
+                            {i < Math.min(wh.top_demand_cities!.length, 4) - 1 && ', '}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[13px] font-bold text-orange-400 tabular-nums">~{fmtM(wh.total_cd_cost_monthly)}/мес</div>
+                  <div className="text-[10px] text-[hsl(var(--muted-foreground))]">расход CD</div>
+                </div>
+              </div>
+
+              {/* Expanded: items table */}
+              <AnimatePresence>
+                {isExp && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="border-t border-[hsl(var(--border))]">
+                      <table className="w-full border-collapse">
+                        <thead>
+                          <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.06)]">
+                            <th className="px-5 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Действие</th>
+                            <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">SKU</th>
+                            <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Кол-во</th>
+                            <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Прод/д</th>
+                            <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">CD/мес</th>
+                            <th className="px-5 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Источник</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {wh.items.map((item, idx) => {
+                            const isTransfer = item.action === 'transfer'
+                            const rowBg = idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.04)]'
+                            return (
+                              <React.Fragment key={`${item.sku}-${idx}`}>
+                              <tr className={`border-b border-[hsl(var(--border)/0.15)] ${rowBg}`}>
+                                <td className="px-5 py-3">
+                                  <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-bold ring-1 ring-inset ${
+                                    isTransfer
+                                      ? 'bg-purple-500/15 text-purple-400 ring-purple-500/20'
+                                      : 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20'
+                                  }`}>
+                                    {isTransfer ? '⇄ Переместить' : '↓ Поставить'}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-3">
+                                  <div className="text-[13px] font-medium" title={item.name}>{item.name || item.offer_id}</div>
+                                  <div className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">{item.offer_id}</div>
+                                </td>
+                                <td className="px-3 py-3 text-right tabular-nums">
+                                  <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">{fmt(item.qty)} шт</span>
+                                </td>
+                                <td className="px-3 py-3 text-right tabular-nums text-[13px] text-[hsl(var(--muted-foreground))]">
+                                  {item.daily_sales_cd.toFixed(1)}
+                                </td>
+                                <td className="px-3 py-3 text-right tabular-nums text-[13px] text-orange-400 font-semibold">
+                                  ~{fmtM(item.est_cd_cost_monthly)}
+                                </td>
+                                <td className="px-5 py-3">
+                                  {isTransfer && item.source_warehouse ? (
+                                    <div>
+                                      <div className="text-[12px] text-purple-400 font-medium">
+                                        ← {item.source_warehouse.replace('_РФЦ', '').replace('_МРФЦ', '')}
+                                      </div>
+                                      <div className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                                        избыток {fmt(item.source_excess || 0)} шт • перемещение {fmtM(item.transfer_cost || 0)}
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="text-[12px] text-emerald-400/70">Новая поставка</div>
+                                  )}
+                                </td>
+                              </tr>
+                              {/* Context row: reason + benefit */}
+                              {(item.reason || item.benefit) && (
+                                <tr className={rowBg}>
+                                  <td colSpan={6} className="px-5 pb-3 pt-0">
+                                    <div className="flex flex-col gap-1 ml-2 pl-4 border-l-2 border-blue-500/30">
+                                      {item.reason && (
+                                        <div className="text-[14px] text-[hsl(var(--foreground)/0.8)] leading-snug">
+                                          <span className="text-blue-400/80">📍 </span>{item.reason}
+                                        </div>
+                                      )}
+                                      {item.benefit && (
+                                        <div className="text-[14px] text-emerald-400 font-semibold leading-snug">
+                                          💡 {item.benefit}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                              </React.Fragment>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+
+                      {/* Warehouse summary footer */}
+                      <div className="flex items-center justify-between px-5 py-3 bg-[hsl(var(--muted)/0.06)] border-t border-[hsl(var(--border)/0.3)]">
+                        <span className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                          Итого: {fmt(wh.total_qty)} шт на склад {whShort}
+                        </span>
+                        <div className="flex items-center gap-4">
+                          {wh.total_transfer_cost > 0 && (
+                            <span className="text-[12px] text-purple-400 font-semibold">
+                              Стоимость перемещений: {fmtM(wh.total_transfer_cost)}
+                            </span>
+                          )}
+                          <span className="text-[12px] text-orange-400 font-semibold">
+                            CD экономия: ~{fmtM(wh.total_cd_cost_monthly)}/мес
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          )
+        })}
+      </div>
+
+      {/* Global footer */}
+      {plan.length > 0 && (
+        <div className="mt-4 p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)] text-[12px] text-[hsl(var(--muted-foreground))]">
+          * Тарифы перемещения Ozon FBO 2024-2026 • До 5л: 50,4 ₽/шт • Зависит от объёма товара
+        </div>
+      )}
     </motion.div>
   )
 }
@@ -910,6 +1011,574 @@ const PERIOD_OPTIONS = [
    Main Page
    ═══════════════════════════════════════════════════════════ */
 
+type TabKey = 'overview' | 'storage' | 'crossdocking' | 'warehouses'
+
+const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
+  { key: 'overview', label: 'Обзор', icon: BarChart3 },
+  { key: 'storage', label: 'Хранение', icon: Package },
+  { key: 'crossdocking', label: 'Кроссдокинг', icon: Truck },
+  { key: 'warehouses', label: 'Склады и география', icon: MapPin },
+]
+
+/* ── Overview Tab ─────────────────────────────────────────── */
+
+function OverviewTab({ data, onNavigate }: { data: WarehouseAnalyticsResponse; onNavigate: (tab: TabKey) => void }) {
+  const avgTurnover = data.kpi.avg_turnover_days
+  const turnoverStatus = !avgTurnover ? 'ok' : avgTurnover > 160 ? 'critical' : avgTurnover > 120 ? 'warning' : 'ok'
+  const deliveryStatus = !data.kpi.avg_delivery_h ? 'ok' : data.kpi.avg_delivery_h > 48 ? 'warning' : 'ok'
+
+  const kpiColor = (s: string) =>
+    s === 'critical' ? 'text-red-400' : s === 'warning' ? 'text-amber-400' : 'text-emerald-400'
+  const kpiBadge = (s: string) =>
+    s === 'critical' ? '🔴 Критично' : s === 'warning' ? '🟡 Внимание' : '🟢 Норма'
+
+  // Top problem SKUs
+  const topStorage = [...(data.storage_risk_skus || [])].filter(s => s.zone === 'paid').sort((a, b) => b.est_monthly_cost - a.est_monthly_cost).slice(0, 3)
+  const topCd = [...(data.crossdocking_skus || [])].sort((a, b) => b.est_cd_cost_monthly - a.est_cd_cost_monthly).slice(0, 3)
+
+  return (
+    <div className="space-y-5">
+      {/* Text Summary */}
+      {data.summary && (
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+          <Card>
+            <CardContent className="p-5">
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-600 to-indigo-500 shadow-lg mt-0.5">
+                  <BarChart3 className="h-4.5 w-4.5 text-white" />
+                </div>
+                <div>
+                  <h3 className="text-[15px] font-bold mb-2">Сводка проблем</h3>
+                  <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed whitespace-pre-line">
+                    {data.summary}
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {(data.storage_risk_skus?.length ?? 0) > 0 && (
+                      <button onClick={() => onNavigate('storage')} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20 transition-colors">
+                        Хранение → {data.storage_risk_skus.filter(s => s.zone === 'paid').length} SKU
+                      </button>
+                    )}
+                    {(data.crossdocking_skus?.length ?? 0) > 0 && (
+                      <button onClick={() => onNavigate('crossdocking')} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors">
+                        Кроссдокинг → {data.crossdocking_skus.length} SKU
+                      </button>
+                    )}
+                    <button onClick={() => onNavigate('warehouses')} className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors">
+                      Склады → {data.kpi.total_warehouses}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
+      {/* KPI Cards with benchmarks */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+        <KpiCard title="Складов FBO" value={String(data.kpi.total_warehouses)} subtitle={`${fmt(data.kpi.total_stock)} ед. на стоках`} icon={Warehouse} accent="from-blue-600 to-blue-500" delay={0} />
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05, duration: 0.4 }}>
+          <Card className="relative overflow-hidden h-full">
+            <CardContent className="p-5 flex flex-col justify-between h-full">
+              <div className="flex items-start justify-between">
+                <div className="space-y-1 min-w-0">
+                  <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Ср. оборачиваемость</p>
+                  <p className={`text-2xl font-bold tracking-tight ${kpiColor(turnoverStatus)}`}>{fmtD(avgTurnover)}</p>
+                </div>
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-600 to-emerald-500 shadow-lg">
+                  <BarChart3 className="h-5 w-5 text-white" />
+                </div>
+              </div>
+              <div className="mt-3 min-h-[24px] flex items-center gap-2">
+                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{kpiBadge(turnoverStatus)}</span>
+                <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">порог: 160 дн</span>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1, duration: 0.4 }}>
+          <Card className="relative overflow-hidden h-full">
+            <CardContent className="p-5 flex flex-col justify-between h-full">
+              <div className="flex items-start justify-between">
+                <div className="space-y-1 min-w-0">
+                  <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Ср. доставка (СВД)</p>
+                  <p className={`text-2xl font-bold tracking-tight ${kpiColor(deliveryStatus)}`}>{data.kpi.avg_delivery_h ? `${data.kpi.avg_delivery_h}ч` : '—'}</p>
+                </div>
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-600 to-cyan-500 shadow-lg">
+                  <Timer className="h-5 w-5 text-white" />
+                </div>
+              </div>
+              <div className="mt-3 min-h-[24px] flex items-center gap-2">
+                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{kpiBadge(deliveryStatus)}</span>
+                <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60">норма: ≤48ч</span>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+        <KpiCard title="Кроссдокинг" value={fmtM(data.kpi.total_crossdocking)} subtitle={`Хранение: ${fmtM(data.kpi.total_storage_fee)}`} icon={ArrowDownRight} accent="from-orange-600 to-orange-500" delay={0.15} />
+        <KpiCard title="Проблемные" value={`${data.kpi.critical_warehouses + data.kpi.overstocked_warehouses}`} subtitle={`${data.kpi.critical_warehouses} крит. • ${data.kpi.overstocked_warehouses} перезат.`} icon={AlertTriangle} accent="from-red-600 to-red-500" delay={0.2} />
+      </div>
+
+      {/* Costs */}
+      <CostsCard costs={data.costs} period={data.kpi.period_days} />
+
+      {/* Top problems mini-tables */}
+      {(topStorage.length > 0 || topCd.length > 0) && (
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {topStorage.length > 0 && (
+              <Card>
+                <CardContent className="p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-[14px] font-bold flex items-center gap-2">
+                      <span className="text-orange-400">📦</span> Топ платное хранение
+                    </h3>
+                    <button onClick={() => onNavigate('storage')} className="text-[11px] font-medium text-[hsl(var(--primary))] hover:underline">Все →</button>
+                  </div>
+                  <div className="space-y-2">
+                    {topStorage.map(sk => (
+                      <div key={sk.sku} className="flex items-center justify-between p-2.5 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
+                        <div className="min-w-0 flex-1 mr-3">
+                          <div className="text-[12px] font-medium truncate">{sk.name || sk.offer_id}</div>
+                          <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{sk.offer_id} • {fmt(sk.total_stock)} ед.</div>
+                        </div>
+                        <span className="text-[13px] font-bold text-red-400 tabular-nums shrink-0">~{fmtM(sk.est_monthly_cost)}/м</span>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {topCd.length > 0 && (
+              <Card>
+                <CardContent className="p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-[14px] font-bold flex items-center gap-2">
+                      <span className="text-blue-400">🔄</span> Топ расходы на кроссдокинг
+                    </h3>
+                    <button onClick={() => onNavigate('crossdocking')} className="text-[11px] font-medium text-[hsl(var(--primary))] hover:underline">Все →</button>
+                  </div>
+                  <div className="space-y-2">
+                    {topCd.map(sk => (
+                      <div key={sk.sku} className="flex items-center justify-between p-2.5 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
+                        <div className="min-w-0 flex-1 mr-3">
+                          <div className="text-[12px] font-medium truncate">{sk.name || sk.offer_id}</div>
+                          <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{sk.offer_id} • {fmt(sk.total_sold_via_cd)} через CD</div>
+                        </div>
+                        <span className="text-[13px] font-bold text-orange-400 tabular-nums shrink-0">~{fmtM(sk.est_cd_cost_monthly)}/м</span>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </motion.div>
+      )}
+    </div>
+  )
+}
+
+/* ── Storage Tab ──────────────────────────────────────────── */
+
+function StorageTab({ data }: { data: WarehouseAnalyticsResponse }) {
+  const [filter, setFilter] = useState<'all' | 'paid' | 'warning'>('all')
+  const [search, setSearch] = useState('')
+
+  const paidSkus = (data.storage_risk_skus || []).filter(s => s.zone === 'paid')
+  const warningSkus = (data.storage_risk_skus || []).filter(s => s.zone === 'warning')
+  const totalMonthly = paidSkus.reduce((s, sk) => s + sk.est_monthly_cost, 0)
+  const deadStockSkus = paidSkus.filter(s => s.daily_sales === 0)
+  const criticalSkus = paidSkus.filter(s => s.recommendation?.severity === 'critical')
+
+  const filtered = useMemo(() => {
+    let items = data.storage_risk_skus || []
+    if (filter !== 'all') items = items.filter(s => s.zone === filter)
+    if (search.trim()) {
+      const q = search.toLowerCase()
+      items = items.filter(s => (s.name || '').toLowerCase().includes(q) || (s.offer_id || '').toLowerCase().includes(q))
+    }
+    return items
+  }, [data.storage_risk_skus, filter, search])
+
+  const selCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer ${active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)]'}`
+
+  return (
+    <div className="space-y-4">
+      {/* Summary banner */}
+      {paidSkus.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+          className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)]">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="h-5 w-5 text-orange-500 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="text-[14px] font-semibold text-[hsl(var(--foreground))]">
+                {paidSkus.length} SKU в зоне платного хранения
+                {warningSkus.length > 0 && <span className="font-normal text-[hsl(var(--muted-foreground))]"> + {warningSkus.length} приближаются</span>}
+              </div>
+              <div className="text-[13px] text-[hsl(var(--foreground)/0.8)] mt-1 leading-relaxed">
+                Прогноз расходов: <strong className="text-red-500">~{fmtM(totalMonthly)}</strong>
+                {deadStockSkus.length > 0 && (
+                  <span> • <strong className="text-orange-500">{deadStockSkus.length} SKU с нулевыми продажами</strong> — мёртвый сток, рекомендуется вывезти</span>
+                )}
+                {criticalSkus.length > 0 && criticalSkus.length !== deadStockSkus.length && (
+                  <span> • {criticalSkus.length} SKU требуют срочных действий</span>
+                )}
+              </div>
+            </div>
+            <div className="shrink-0 text-right">
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Прогноз/мес</div>
+              <div className="text-[17px] font-bold text-red-500">~{fmtM(totalMonthly)}</div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+      {/* Filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-1">
+          <button className={selCls(filter === 'all')} onClick={() => setFilter('all')}>Все ({data.storage_risk_skus?.length || 0})</button>
+          <button className={selCls(filter === 'paid')} onClick={() => setFilter('paid')}>💸 Платное ({data.storage_risk_skus?.filter(s => s.zone === 'paid').length || 0})</button>
+          <button className={selCls(filter === 'warning')} onClick={() => setFilter('warning')}>⚠️ Скоро ({data.storage_risk_skus?.filter(s => s.zone === 'warning').length || 0})</button>
+        </div>
+        <input
+          type="text"
+          placeholder="Поиск по артикулу или названию..."
+          className="flex-1 min-w-[200px] px-3 py-1.5 rounded-lg text-[12px] bg-[hsl(var(--muted)/0.15)] border border-[hsl(var(--border)/0.3)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+      </div>
+      <StorageRiskTable skus={filtered} />
+    </div>
+  )
+}
+
+/* ── Crossdocking Tab ─────────────────────────────────────── */
+
+function CrossdockingTab({ data, shopId, period }: { data: WarehouseAnalyticsResponse; shopId: number; period: number }) {
+  const [filter, setFilter] = useState<'all' | 'transfer' | 'supply'>('all')
+  const [search, setSearch] = useState('')
+  const [downloading, setDownloading] = useState(false)
+
+  const totalCdCost = Math.abs((data.costs as any)?.MarketplaceServiceItemCrossdocking?.amount || 0)
+
+  // Filter distribution_plan by action type and search query
+  const filteredPlan = useMemo(() => {
+    const plan = data.distribution_plan || []
+    return plan.map(wh => {
+      let items = wh.items
+      if (filter !== 'all') items = items.filter(i => i.action === filter)
+      if (search.trim()) {
+        const q = search.toLowerCase()
+        items = items.filter(i => (i.name || '').toLowerCase().includes(q) || (i.offer_id || '').toLowerCase().includes(q))
+      }
+      return { ...wh, items }
+    }).filter(wh => wh.items.length > 0)
+  }, [data.distribution_plan, filter, search])
+
+  // Count totals from distribution_plan for filter buttons
+  const allPlanItems = (data.distribution_plan || []).flatMap(w => w.items)
+  const totalTransferItems = allPlanItems.filter(i => i.action === 'transfer').length
+  const totalSupplyItems = allPlanItems.filter(i => i.action === 'supply').length
+
+  const selCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer ${active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)]'}`
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-1">
+          <button className={selCls(filter === 'all')} onClick={() => setFilter('all')}>Все ({allPlanItems.length})</button>
+          <button className={selCls(filter === 'transfer')} onClick={() => setFilter('transfer')}>⇄ Переместить ({totalTransferItems})</button>
+          <button className={selCls(filter === 'supply')} onClick={() => setFilter('supply')}>↓ Поставить ({totalSupplyItems})</button>
+        </div>
+        <input
+          type="text"
+          placeholder="Поиск по артикулу или названию..."
+          className="flex-1 min-w-[200px] px-3 py-1.5 rounded-lg text-[12px] bg-[hsl(var(--muted)/0.15)] border border-[hsl(var(--border)/0.3)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <button
+          onClick={async () => {
+            setDownloading(true)
+            try {
+              await downloadDistributionPlanExcel({ shop_id: shopId, period })
+            } catch (e) {
+              console.error('Download failed', e)
+            } finally {
+              setDownloading(false)
+            }
+          }}
+          disabled={downloading || allPlanItems.length === 0}
+          className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-[13px] font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-md disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+        >
+          <Download className="h-4 w-4" />
+          {downloading ? 'Скачивание...' : 'Скачать Excel'}
+        </button>
+      </div>
+      <DistributionPlanTable plan={filteredPlan} totalCdCost={totalCdCost} />
+    </div>
+  )
+}
+
+/* ── Warehouses & Geography Tab ───────────────────────────── */
+
+function WarehousesGeoTab({ data }: { data: WarehouseAnalyticsResponse }) {
+  const [selectedSku, setSelectedSku] = useState<number | null>(null)
+  const [geoSearch, setGeoSearch] = useState('')
+  const [geoDropdownOpen, setGeoDropdownOpen] = useState(false)
+  const [whSearch, setWhSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  const skuGeo = data.sku_geography || []
+  const selectedSkuData = useMemo(() => skuGeo.find(s => s.sku === selectedSku), [skuGeo, selectedSku])
+
+  // Filter SKUs for autocomplete
+  const filteredSkuOptions = useMemo(() => {
+    if (!geoSearch.trim()) return skuGeo.slice(0, 30)
+    const q = geoSearch.toLowerCase()
+    return skuGeo.filter(s =>
+      (s.offer_id || '').toLowerCase().includes(q) ||
+      (s.name || '').toLowerCase().includes(q) ||
+      String(s.sku).includes(q)
+    ).slice(0, 30)
+  }, [skuGeo, geoSearch])
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setGeoDropdownOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  const filteredWarehouses = useMemo(() => {
+    let whs = data.warehouses
+    if (statusFilter !== 'all') whs = whs.filter(w => w.status === statusFilter)
+    if (whSearch.trim()) {
+      const q = whSearch.toLowerCase()
+      whs = whs.filter(w => w.warehouse_name.toLowerCase().includes(q) || w.cluster.toLowerCase().includes(q))
+    }
+    return whs
+  }, [data.warehouses, statusFilter, whSearch])
+
+  const selCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all cursor-pointer ${active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)]'}`
+
+  // Total sales for selected SKU
+  const totalSalesQty = selectedSkuData?.sales_clusters?.reduce((s, c) => s + c.qty, 0) || 0
+  const totalSalesRev = selectedSkuData?.sales_clusters?.reduce((s, c) => s + c.revenue, 0) || 0
+
+  return (
+    <div className="space-y-4">
+      {/* SKU Geography with Autocomplete */}
+      {skuGeo.length > 0 && (
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <Card>
+            <CardContent className="p-5">
+              <h3 className="text-[15px] font-bold mb-3 flex items-center gap-2">
+                <MapPin className="h-4 w-4 text-[hsl(var(--primary))]" />
+                География по товару
+              </h3>
+
+              {/* Custom Autocomplete */}
+              <div className="relative" ref={dropdownRef}>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 max-w-[600px]">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+                    <input
+                      type="text"
+                      placeholder="Введите артикул или название товара..."
+                      className="w-full pl-9 pr-8 py-2.5 rounded-xl text-[13px] bg-[hsl(var(--muted)/0.1)] border border-[hsl(var(--border)/0.3)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] focus:border-[hsl(var(--primary)/0.5)] transition-all"
+                      value={geoSearch}
+                      onChange={e => { setGeoSearch(e.target.value); setGeoDropdownOpen(true) }}
+                      onFocus={() => setGeoDropdownOpen(true)}
+                    />
+                    {selectedSku && (
+                      <button
+                        onClick={() => { setSelectedSku(null); setGeoSearch('') }}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded-full bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-colors"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Dropdown */}
+                {geoDropdownOpen && filteredSkuOptions.length > 0 && (
+                  <div className="absolute z-50 left-0 right-0 max-w-[600px] mt-1 py-1 rounded-xl bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.3)] shadow-xl max-h-[300px] overflow-auto">
+                    {filteredSkuOptions.map(s => (
+                      <button
+                        key={s.sku}
+                        className={`w-full text-left px-4 py-2.5 text-[12px] hover:bg-[hsl(var(--muted)/0.15)] transition-colors flex items-center justify-between gap-3 ${selectedSku === s.sku ? 'bg-[hsl(var(--primary)/0.08)]' : ''}`}
+                        onClick={() => {
+                          setSelectedSku(s.sku)
+                          setGeoSearch(s.offer_id || s.name || '')
+                          setGeoDropdownOpen(false)
+                        }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium truncate">{s.name || s.offer_id}</div>
+                          <div className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                            {s.offer_id} • SKU {s.sku}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="text-[11px] font-semibold tabular-nums">{fmt(s.total_stock)} ед.</div>
+                          <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{s.warehouses.length} скл.</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Selected SKU details */}
+              {selectedSkuData && (
+                <div className="mt-5 space-y-4">
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">
+                    <strong className="text-[hsl(var(--foreground))]">{selectedSkuData.name || selectedSkuData.offer_id}</strong>
+                    <span className="text-[11px] ml-2 px-2 py-0.5 rounded-md bg-[hsl(var(--muted)/0.15)]">{selectedSkuData.offer_id}</span>
+                    {' '} — {fmt(selectedSkuData.total_stock)} ед. • {selectedSkuData.total_daily_sales.toFixed(1)} прод/день
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* Where stocked */}
+                    <div>
+                      <h4 className="text-[12px] font-bold mb-2 text-[hsl(var(--muted-foreground))] uppercase tracking-wider flex items-center gap-1.5">
+                        <Package className="h-3.5 w-3.5" /> Где лежит ({selectedSkuData.warehouses.length})
+                      </h4>
+                      <div className="rounded-xl border border-[hsl(var(--border)/0.3)] overflow-hidden">
+                        <div className="overflow-auto max-h-[280px]">
+                          <table className="w-full text-[12px]">
+                            <thead className="sticky top-0 bg-[hsl(var(--card))]">
+                              <tr className="text-[hsl(var(--muted-foreground))] text-[10px] uppercase tracking-wider">
+                                <th className="text-left py-2 px-3 font-semibold">Склад</th>
+                                <th className="text-right py-2 px-3 font-semibold">Сток</th>
+                                <th className="text-right py-2 px-3 font-semibold">Прод/д</th>
+                                <th className="text-right py-2 px-3 font-semibold">Запас</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {selectedSkuData.warehouses.map(wh => (
+                                <tr key={wh.warehouse_name} className="border-t border-[hsl(var(--border)/0.1)] hover:bg-[hsl(var(--muted)/0.06)]">
+                                  <td className="py-1.5 px-3">
+                                    <div className="font-medium text-[11px]">{wh.warehouse_name}</div>
+                                    <div className="text-[9px] text-[hsl(var(--muted-foreground))]">{wh.cluster}</div>
+                                  </td>
+                                  <td className={`py-1.5 px-3 text-right tabular-nums font-semibold ${wh.stock === 0 ? 'text-red-400' : ''}`}>{wh.stock}</td>
+                                  <td className="py-1.5 px-3 text-right tabular-nums">{wh.daily_sales.toFixed(1)}</td>
+                                  <td className="py-1.5 px-3 text-right tabular-nums">
+                                    <span className={`font-semibold ${!wh.days_supply ? 'text-[hsl(var(--muted-foreground))]' : wh.days_supply < 14 ? 'text-red-400' : wh.days_supply > 180 ? 'text-purple-400' : 'text-emerald-400'}`}>
+                                      {wh.days_supply != null ? `${Math.round(wh.days_supply)}д` : '—'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Where sold */}
+                    <div>
+                      <h4 className="text-[12px] font-bold mb-2 text-[hsl(var(--muted-foreground))] uppercase tracking-wider flex items-center gap-1.5">
+                        <TrendingUp className="h-3.5 w-3.5" /> Куда продаётся ({selectedSkuData.sales_clusters?.length || 0})
+                      </h4>
+                      <div className="rounded-xl border border-[hsl(var(--border)/0.3)] overflow-hidden">
+                        <div className="overflow-auto max-h-[280px]">
+                          <table className="w-full text-[12px]">
+                            <thead className="sticky top-0 bg-[hsl(var(--card))]">
+                              <tr className="text-[hsl(var(--muted-foreground))] text-[10px] uppercase tracking-wider">
+                                <th className="text-left py-2 px-3 font-semibold">Кластер доставки</th>
+                                <th className="text-right py-2 px-3 font-semibold">Заказы</th>
+                                <th className="text-right py-2 px-3 font-semibold">Шт.</th>
+                                <th className="text-right py-2 px-3 font-semibold">Выручка</th>
+                                <th className="text-right py-2 px-3 font-semibold">Доля</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(selectedSkuData.sales_clusters || []).map(cl => {
+                                const share = totalSalesQty > 0 ? (cl.qty / totalSalesQty * 100) : 0
+                                return (
+                                  <tr key={cl.cluster} className="border-t border-[hsl(var(--border)/0.1)] hover:bg-[hsl(var(--muted)/0.06)]">
+                                    <td className="py-1.5 px-3 font-medium text-[11px]">{cl.cluster}</td>
+                                    <td className="py-1.5 px-3 text-right tabular-nums">{cl.orders}</td>
+                                    <td className="py-1.5 px-3 text-right tabular-nums font-semibold">{cl.qty}</td>
+                                    <td className="py-1.5 px-3 text-right tabular-nums">{fmtM(cl.revenue)}</td>
+                                    <td className="py-1.5 px-3 text-right">
+                                      <div className="flex items-center justify-end gap-1.5">
+                                        <div className="w-12 h-1.5 rounded-full bg-[hsl(var(--muted)/0.15)] overflow-hidden">
+                                          <div className="h-full rounded-full bg-[hsl(var(--primary))]" style={{ width: `${Math.min(share, 100)}%` }} />
+                                        </div>
+                                        <span className="text-[10px] tabular-nums w-8 text-right">{share.toFixed(0)}%</span>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                              {(selectedSkuData.sales_clusters || []).length === 0 && (
+                                <tr><td colSpan={5} className="py-4 text-center text-[hsl(var(--muted-foreground))]">Нет данных о продажах за период</td></tr>
+                              )}
+                            </tbody>
+                            {totalSalesQty > 0 && (
+                              <tfoot className="sticky bottom-0 bg-[hsl(var(--card))] border-t-2 border-[hsl(var(--border)/0.2)]">
+                                <tr className="font-semibold text-[11px]">
+                                  <td className="py-2 px-3">Итого</td>
+                                  <td className="py-2 px-3 text-right tabular-nums">{selectedSkuData.sales_clusters?.reduce((s, c) => s + c.orders, 0)}</td>
+                                  <td className="py-2 px-3 text-right tabular-nums">{totalSalesQty}</td>
+                                  <td className="py-2 px-3 text-right tabular-nums">{fmtM(totalSalesRev)}</td>
+                                  <td className="py-2 px-3 text-right">100%</td>
+                                </tr>
+                              </tfoot>
+                            )}
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
+
+      {/* Warehouse filters */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex gap-1">
+          <button className={selCls(statusFilter === 'all')} onClick={() => setStatusFilter('all')}>Все ({data.warehouses.length})</button>
+          <button className={selCls(statusFilter === 'critical')} onClick={() => setStatusFilter('critical')}>🔴 Критично</button>
+          <button className={selCls(statusFilter === 'overstocked')} onClick={() => setStatusFilter('overstocked')}>🟣 Перезатарка</button>
+          <button className={selCls(statusFilter === 'ok')} onClick={() => setStatusFilter('ok')}>🟢 Норма</button>
+        </div>
+        <input
+          type="text"
+          placeholder="Поиск по складу..."
+          className="flex-1 min-w-[200px] px-3 py-1.5 rounded-lg text-[12px] bg-[hsl(var(--muted)/0.15)] border border-[hsl(var(--border)/0.3)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
+          value={whSearch}
+          onChange={e => setWhSearch(e.target.value)}
+        />
+      </div>
+
+      <WarehouseTable warehouses={filteredWarehouses} />
+    </div>
+  )
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   Main Page
+   ═══════════════════════════════════════════════════════════ */
+
 export default function WarehouseAnalyticsPage() {
   const { currentShop } = useAppStore()
 
@@ -917,6 +1586,7 @@ export default function WarehouseAnalyticsPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [data, setData] = useState<WarehouseAnalyticsResponse | null>(null)
+  const [activeTab, setActiveTab] = useState<TabKey>('overview')
 
   const isOzon = currentShop?.marketplace === 'ozon'
 
@@ -950,11 +1620,18 @@ export default function WarehouseAnalyticsPage() {
     )
   }
 
-  const selCls = (active: boolean) =>
+  const periodSelCls = (active: boolean) =>
     `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
       active
         ? 'bg-[hsl(var(--primary))] text-white shadow-md'
         : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)]'
+    }`
+
+  const tabCls = (active: boolean) =>
+    `flex items-center gap-2 px-4 py-2.5 rounded-xl text-[13px] font-semibold transition-all cursor-pointer border ${
+      active
+        ? 'bg-[hsl(var(--primary)/0.12)] text-[hsl(var(--primary))] border-[hsl(var(--primary)/0.25)] shadow-sm'
+        : 'bg-transparent text-[hsl(var(--muted-foreground))] border-transparent hover:bg-[hsl(var(--muted)/0.15)] hover:text-[hsl(var(--foreground))]'
     }`
 
   return (
@@ -977,20 +1654,30 @@ export default function WarehouseAnalyticsPage() {
         </button>
       </div>
 
-      {/* Period control */}
+      {/* Period + Tabs */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
         <Card>
-          <CardContent className="p-5">
-            <div className="flex items-center gap-4">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">
-                Период анализа
-              </p>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              {/* Tabs */}
               <div className="flex gap-1">
-                {PERIOD_OPTIONS.map(o => (
-                  <button key={o.value} className={selCls(period === o.value)} onClick={() => setPeriod(o.value)}>
-                    {o.label}
+                {TABS.map(tab => (
+                  <button key={tab.key} className={tabCls(activeTab === tab.key)} onClick={() => setActiveTab(tab.key)}>
+                    <tab.icon className="h-4 w-4" />
+                    {tab.label}
                   </button>
                 ))}
+              </div>
+              {/* Period */}
+              <div className="flex items-center gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Период</p>
+                <div className="flex gap-1">
+                  {PERIOD_OPTIONS.map(o => (
+                    <button key={o.value} className={periodSelCls(period === o.value)} onClick={() => setPeriod(o.value)}>
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </CardContent>
@@ -1011,73 +1698,10 @@ export default function WarehouseAnalyticsPage() {
         </Card>
       ) : data ? (
         <>
-          {/* KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            <KpiCard
-              title="Складов FBO"
-              value={String(data.kpi.total_warehouses)}
-              subtitle={`${fmt(data.kpi.total_stock)} ед. на стоках`}
-              icon={Warehouse}
-              accent="from-blue-600 to-blue-500"
-              delay={0}
-            />
-            <KpiCard
-              title="Ср. оборачиваемость"
-              value={fmtD(data.kpi.avg_turnover_days)}
-              subtitle={`${data.kpi.total_skus} SKU`}
-              icon={BarChart3}
-              accent="from-emerald-600 to-emerald-500"
-              delay={0.05}
-            />
-            <KpiCard
-              title="Ср. СВД (доставка)"
-              value={data.kpi.avg_delivery_h ? `${data.kpi.avg_delivery_h}ч` : '—'}
-              subtitle="Средневзвешенная скорость"
-              icon={Timer}
-              accent="from-cyan-600 to-cyan-500"
-              delay={0.1}
-            />
-            <KpiCard
-              title="Кроссдокинг"
-              value={fmtM(data.kpi.total_crossdocking)}
-              subtitle={`Хранение: ${fmtM(data.kpi.total_storage_fee)}`}
-              icon={ArrowDownRight}
-              accent="from-orange-600 to-orange-500"
-              delay={0.15}
-            />
-            <KpiCard
-              title="Проблемные"
-              value={`${data.kpi.critical_warehouses + data.kpi.overstocked_warehouses}`}
-              subtitle={`${data.kpi.critical_warehouses} крит. • ${data.kpi.overstocked_warehouses} перезат.`}
-              icon={AlertTriangle}
-              accent="from-red-600 to-red-500"
-              delay={0.2}
-            />
-          </div>
-
-          {/* Costs */}
-          <CostsCard costs={data.costs} period={data.kpi.period_days} />
-
-          {/* Storage Risk SKUs */}
-          {data.storage_risk_skus && data.storage_risk_skus.length > 0 && (
-            <StorageRiskTable skus={data.storage_risk_skus} />
-          )}
-
-          {/* Crossdocking Optimization */}
-          {data.crossdocking_skus && data.crossdocking_skus.length > 0 && (
-            <CrossdockingTable
-              skus={data.crossdocking_skus}
-              totalCdCost={Math.abs(data.costs?.crossdocking?.amount || 0)}
-            />
-          )}
-
-          {/* Recommendations */}
-          {data.recommendations && data.recommendations.length > 0 && (
-            <RecommendationsPanel recs={data.recommendations} />
-          )}
-
-          {/* Warehouse Table */}
-          <WarehouseTable warehouses={data.warehouses} />
+          {activeTab === 'overview' && <OverviewTab data={data} onNavigate={setActiveTab} />}
+          {activeTab === 'storage' && <StorageTab data={data} />}
+          {activeTab === 'crossdocking' && <CrossdockingTab data={data} shopId={currentShop!.id} period={period} />}
+          {activeTab === 'warehouses' && <WarehousesGeoTab data={data} />}
         </>
       ) : null}
     </div>

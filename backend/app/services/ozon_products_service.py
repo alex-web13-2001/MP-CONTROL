@@ -436,6 +436,9 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
             min_price = _safe_decimal(item.get("min_price"))
             marketing_price = _safe_decimal(item.get("marketing_price", 0))
             volume_weight = _safe_decimal(item.get("volume_weight"))
+            depth = _safe_decimal(item.get("depth"))  # mm
+            height = _safe_decimal(item.get("height"))  # mm
+            width = _safe_decimal(item.get("width"))  # mm
 
             fbo, fbs = _extract_stocks(item)
             is_archived = item.get("is_archived", False)
@@ -542,14 +545,16 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
                 INSERT INTO dim_ozon_products
                     (shop_id, product_id, offer_id, sku, name, main_image_url,
                      barcode, category_id, price, old_price, min_price,
-                     marketing_price, volume_weight, stocks_fbo, stocks_fbs,
+                     marketing_price, volume_weight, depth, height, width,
+                     stocks_fbo, stocks_fbs,
                      is_archived, has_fbo_stocks, has_fbs_stocks,
                      created_at_ozon, updated_at_ozon, vat, type_id,
                      model_id, model_count, price_index_color, price_index_value,
                      competitor_min_price, is_kgt, status, moderate_status,
                      status_name, all_images_json, images_hash,
                      primary_image_url, availability, availability_source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (shop_id, product_id) DO UPDATE SET
                     offer_id = EXCLUDED.offer_id,
@@ -563,6 +568,9 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
                     min_price = EXCLUDED.min_price,
                     marketing_price = EXCLUDED.marketing_price,
                     volume_weight = EXCLUDED.volume_weight,
+                    depth = EXCLUDED.depth,
+                    height = EXCLUDED.height,
+                    width = EXCLUDED.width,
                     stocks_fbo = EXCLUDED.stocks_fbo,
                     stocks_fbs = EXCLUDED.stocks_fbs,
                     is_archived = EXCLUDED.is_archived,
@@ -590,7 +598,8 @@ def upsert_ozon_products(conn_params: dict, shop_id: int, products: List[dict]) 
             """, (
                 shop_id, product_id, offer_id, sku, name, main_image,
                 barcode, category_id, price, old_price, min_price,
-                marketing_price, volume_weight, fbo, fbs,
+                marketing_price, volume_weight, depth, height, width,
+                fbo, fbs,
                 is_archived, fbo > 0, fbs > 0,
                 created_at_ozon, updated_at_ozon, vat, type_id,
                 model_id, model_count, price_index_color, price_index_value,

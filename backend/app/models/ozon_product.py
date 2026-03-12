@@ -41,8 +41,11 @@ class DimOzonProduct(Base):
     min_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     marketing_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
 
-    # Dimensions
+    # Dimensions (millimeters from Ozon API)
     volume_weight: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 2), nullable=True)
+    depth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    height: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    width: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Stocks
     stocks_fbo: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))

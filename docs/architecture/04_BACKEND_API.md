@@ -600,8 +600,12 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
     ad_spend_7d, ad_views_7d, ad_clicks_7d, ad_carts_7d, ad_orders_7d,
     clusters: [{
       cluster, sold, share, daily, daily_boosted,
-      est_stock, need, revenue,
-      hub, hub_hours              // приоритетный склад отгрузки
+      est_stock,               // backward compat (= wh_stock)
+      wh_stock,                // реальный сток на РФЦ кластера
+      need, revenue,
+      hub, hub_hours,          // приоритетный склад отгрузки
+      warehouse,               // название РФЦ
+      warehouses: ["WH1 (qty)", ...]  // все склады с остатками
     }]
   }],
   hubs: [{
@@ -610,12 +614,29 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
     total_revenue: float,
     items: [{
       offer_id, name, image_url, cluster,
-      hub_hours, daily_boosted, need, revenue
+      hub_hours, daily_boosted, need, revenue,
+      wh_stock                 // реальный сток на РФЦ
     }]
   }],
   summary: { total_skus, total_need, critical, attention }
 }
 ```
+
+### Маппинг РФЦ → Кластеры (WAREHOUSE_TO_CLUSTER)
+
+34 Ozon РФЦ привязаны к кластерам доставки. Примеры:
+
+| РФЦ (warehouse_name)         | Кластер доставки                |
+| ---------------------------- | ------------------------------- |
+| ГРИВНО_РФЦ, НОВАЯ_РИГА_РФЦ  | Москва, МО и Дальние регионы    |
+| ХОРУГВИНО_КРУПНОГАБАРИТ_РФЦ  | Москва, МО и Дальние регионы    |
+| СПБ_БУГРЫ_РФЦ, СпБ_РФЦ      | Санкт-Петербург и СЗО           |
+| ЕКАТЕРИНБУРГ_ХАУС_РФЦ        | Екатеринбург                    |
+| НОВОСИБИРСК_РФЦ              | Новосибирск                     |
+| РОСТОВ_РФЦ                   | Ростов                          |
+| КАЗАНЬ_ЗЕЛЕНОДОЛЬСК_РФЦ      | Казань                          |
+
+Обратный маппинг `CLUSTER_TO_WAREHOUSES_OZON` — для агрегации стоков: `{cluster → [warehouse_name, ...]}`
 
 ### Матрица доставки (DELIVERY_HOURS)
 
@@ -642,22 +663,25 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
 
 ### Excel-экспорт (5 листов)
 
-| Лист | Название              | Содержимое                                                    |
-| ---- | --------------------- | ------------------------------------------------------------- |
-| 1    | Рекомендации          | SKU × кластер: status, sold, daily, need, revenue, hub, hours |
-| 2    | Сводка                | 1 строка на SKU: итого need, status, кол-во кластеров         |
-| 3    | Параметры             | Период, target_days, safety, boost — мета-информация          |
-| 4    | Поставка по кластерам | Группировка по hub → SKU с need > 0                           |
-| 5    | Объединённые кластеры | 9 хабов → SKU × кластер спроса, ∑need по хабу, время доставки |
+| Лист | Название              | Содержимое                                                                    |
+| ---- | --------------------- | ----------------------------------------------------------------------------- |
+| 1    | Рекомендации          | SKU × кластер: status, sold, daily, need, **Сток РФЦ**, **Склады**, hub, hours |
+| 2    | Сводка                | 1 строка на SKU: итого need, status, кол-во кластеров                         |
+| 3    | Параметры             | Период, target_days, safety, boost — мета-информация + формула per-warehouse  |
+| 4    | Поставка по кластерам | hub → SKU с need > 0 + колонка **Сток РФЦ**                                  |
+| 5    | Объединённые кластеры | 9 хабов → SKU × кластер спроса + колонка **Сток РФЦ**, ∑need, время доставки |
 
 ### Ключевая логика
 
-1. `fact_ozon_fbo_supply` (ClickHouse) → FBO остатки по кластерам
-2. `fact_ozon_orders` (ClickHouse) → продажи по кластерам за `sales_period`
-3. `fact_ozon_ad_daily` (ClickHouse) → рекламная статистика 7д
-4. `dim_ozon_products` (PostgreSQL) → имена, изображения
-5. `need = max(0, ceil(daily_boosted × target_days × safety − est_stock))`
-6. `boost = (views > 0) ? max(1.0, min(5.0, (ad_carts × 3) / daily)) : 1.0`
+1. `fact_ozon_warehouse_stocks` (ClickHouse) → FBO остатки **по каждому складу** (`GROUP BY offer_id, warehouse_name`)
+2. `WAREHOUSE_TO_CLUSTER` → агрегация `fbo_by_cluster: {offer_id: {cluster: qty}}`
+3. `fact_ozon_orders` (ClickHouse) → продажи по кластерам за `sales_period`
+4. `fact_ozon_ad_daily` (ClickHouse) → рекламная статистика 7д
+5. `dim_ozon_products` (PostgreSQL) → имена, изображения
+6. `need = max(0, ceil(daily_boosted × target_days × safety − wh_stock))` — **wh_stock = реальный сток на РФЦ кластера**
+7. `boost = (views > 0) ? max(1.0, min(5.0, (ad_carts × 3) / daily)) : 1.0`
+
+> **Важно:** до v2026-03-12 использовалась пропорциональная оценка `est_stock = fbo_total × share%`. Теперь сток берётся реальный по складам РФЦ, обслуживающим кластер.
 
 ---
 
@@ -1062,3 +1086,12 @@ data: [DONE]
 - Цветовое кодирование ABC/XYZ групп, условное форматирование маржи/прибыли
 - RFC 5987 `filename*=UTF-8''` для кириллицы в Content-Disposition
 - Функция `_build_abc_xyz_xlsx()` — единая для Ozon и WB
+
+### 2026-03-12
+
+- **Ozon Supply — per-warehouse stocks:**
+  - Маппинг `WAREHOUSE_TO_CLUSTER` (34 РФЦ → кластеры) + обратный `CLUSTER_TO_WAREHOUSES_OZON`
+  - `_compute_supply()` переписан: стоки из `fact_ozon_warehouse_stocks` по каждому складу
+  - Формула: `need = max(0, daily×target×safety − реальный_сток_на_РФЦ)` (не пропорциональная оценка)
+  - Response: новые поля `wh_stock`, `warehouse`, `warehouses[]` в clusters и hubs
+  - Excel: «Сток РФЦ» + «Склады» во всех листах, обновлённая методология

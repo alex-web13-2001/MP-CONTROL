@@ -12,10 +12,12 @@ export interface SupplyCluster {
   daily: number
   daily_boosted: number
   est_stock: number
+  wh_stock: number
   need: number
   revenue: number
   hub: string
   hub_hours: number
+  warehouses: string[]
 }
 
 export interface SupplyItem {
@@ -57,6 +59,7 @@ export interface HubItem {
   image_url: string
   cluster: string
   need: number
+  wh_stock: number
   revenue: number
   hub_hours: number
   daily_boosted: number
@@ -309,6 +312,8 @@ export interface StorageRiskSku {
   est_daily_cost: number
   est_monthly_cost: number
   revenue_period: number
+  ad_info: { has_ads: boolean; spend_30d: number; orders_30d: number }
+  recommendation: { action: string; reason: string; severity: string }
   warehouses: { warehouse_name: string; stock: number; reserved: number }[]
 }
 
@@ -319,19 +324,89 @@ export interface CrossdockingSku {
   total_sold_via_cd: number
   total_revenue: number
   daily_sales_cd: number
-  est_cd_cost: number
+  est_cd_cost_monthly: number
   recommended_supply: number
   warehouse_count: number
-  warehouses: { warehouse_name: string; sold: number; revenue: number; current_stock: number }[]
+  action: 'transfer' | 'supply'
+  transfer_qty: number
+  supply_qty: number
+  volume_liters: number
+  transfer_cost_per_unit: number
+  total_transfer_cost: number
+  source_warehouses: { warehouse_name: string; stock: number; sales: number; daily_sales: number; turnover_days: number; excess: number }[]
+  demand_warehouses: { warehouse_name: string; sold: number; revenue: number; current_stock: number }[]
+}
+
+export interface SkuGeographyWarehouse {
+  warehouse_name: string
+  cluster: string
+  stock: number
+  reserved: number
+  daily_sales: number
+  days_supply: number | null
+  warehouse_status: string
+}
+
+export interface SalesCluster {
+  cluster: string
+  orders: number
+  qty: number
+  revenue: number
+}
+
+export interface SkuGeography {
+  sku: number
+  offer_id: string
+  name: string
+  total_stock: number
+  total_daily_sales: number
+  warehouses: SkuGeographyWarehouse[]
+  sales_clusters: SalesCluster[]
+}
+
+export interface DistributionPlanItem {
+  sku: number
+  offer_id: string
+  name: string
+  action: 'transfer' | 'supply'
+  qty: number
+  sold_via_cd: number
+  daily_sales_cd: number
+  revenue: number
+  volume_liters: number
+  transfer_cost_per_unit: number
+  est_cd_cost_monthly: number
+  source_warehouse?: string
+  source_excess?: number
+  transfer_cost?: number
+  demand_cities?: { city: string; qty: number }[]
+  shipped_from?: { cluster: string; qty: number }[]
+  reason?: string
+  benefit?: string
+}
+
+export interface DistributionPlanWarehouse {
+  warehouse_name: string
+  items: DistributionPlanItem[]
+  total_cd_cost_monthly: number
+  total_transfer_cost: number
+  transfer_count: number
+  supply_count: number
+  total_qty: number
+  top_demand_cities?: { city: string; qty: number }[]
+  total_orders_cd?: number
 }
 
 export interface WarehouseAnalyticsResponse {
   kpi: WarehouseAnalyticsKpi
+  summary: string
   costs: Record<string, CostItem>
   warehouses: WarehouseDetail[]
   recommendations: Recommendation[]
   storage_risk_skus: StorageRiskSku[]
   crossdocking_skus: CrossdockingSku[]
+  distribution_plan: DistributionPlanWarehouse[]
+  sku_geography: SkuGeography[]
 }
 
 export async function getOzonWarehouseAnalytics(params: {
@@ -340,4 +415,22 @@ export async function getOzonWarehouseAnalytics(params: {
 }): Promise<WarehouseAnalyticsResponse> {
   const { data } = await apiClient.get<WarehouseAnalyticsResponse>('/warehouses/ozon/analytics', { params })
   return data
+}
+
+export async function downloadDistributionPlanExcel(params: {
+  shop_id: number
+  period?: number
+}): Promise<void> {
+  const response = await apiClient.get('/warehouses/ozon/analytics/distribution-plan/excel', {
+    params,
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', `distribution_plan_shop${params.shop_id}_${params.period ?? 30}d.xlsx`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
 }

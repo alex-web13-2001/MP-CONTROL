@@ -232,7 +232,7 @@ function ClusterTable({ clusters }: { clusters: SupplyCluster[] }) {
                 <th className="text-right py-1.5 font-semibold">Доля</th>
                 <th className="text-right py-1.5 font-semibold">Ежедн.</th>
                 <th className="text-right py-1.5 font-semibold">Ежедн.×boost</th>
-                <th className="text-right py-1.5 font-semibold">Оц. стока</th>
+                <th className="text-right py-1.5 font-semibold">Сток РФЦ</th>
                 <th className="text-right py-1.5 font-semibold">Выручка</th>
                 <th className="text-right py-1.5 font-semibold w-[100px]">ПОСТАВИТЬ</th>
               </tr>
@@ -250,7 +250,7 @@ function ClusterTable({ clusters }: { clusters: SupplyCluster[] }) {
                   <td className="py-2 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{cl.share}%</td>
                   <td className="py-2 text-right tabular-nums">{cl.daily.toFixed(2)}</td>
                   <td className="py-2 text-right tabular-nums">{cl.daily_boosted.toFixed(2)}</td>
-                  <td className="py-2 text-right tabular-nums">{cl.est_stock}</td>
+                  <td className="py-2 text-right tabular-nums">{cl.wh_stock ?? cl.est_stock}</td>
                   <td className="py-2 text-right tabular-nums">{formatMoney(cl.revenue)}</td>
                   <td className="py-2 text-right tabular-nums font-bold">
                     {cl.need > 0 ? (

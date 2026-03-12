@@ -542,8 +542,10 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **API модуль:** `src/api/warehouses.ts`:
 
-- Ozon: `SupplyItem`, `SupplyCluster`, `HubSummary`, `HubItem`, `SupplyResponse`
+- Ozon: `SupplyItem`, `SupplyCluster` (`wh_stock`, `warehouses[]`), `HubSummary`, `HubItem` (`wh_stock`), `SupplyResponse`
 - WB: `WBSupplyItem`, `WBWarehouseDetail`, `WBWarehouseSummary`, `WBSupplyResponse`
+
+**Ozon кластерная таблица (`ClusterTable`):** колонка «Сток РФЦ» показывает реальные остатки на складах, обслуживающих кластер (ранее «Оц. стока» — пропорциональная оценка).
 
 ---
 
@@ -811,3 +813,10 @@ Bоковая панель с вложенной навигацией (collapse 
   - **Кнопка «📥 Excel»** в шапке с анимацией загрузки
 - **`ltv.ts`** — `downloadLtvXlsx()`, **`wb_ltv.ts`** — `downloadWbLtvXlsx()`: blob download xlsx
 - **Секция «Новые / повторные»** добавлена в таблицу секций LtvPage
+
+### 2026-03-12
+
+- **WarehouseSupplyPage — per-warehouse stocks:**
+  - `SupplyCluster` тип: добавлены поля `wh_stock`, `warehouses: string[]`
+  - `HubItem` тип: добавлено поле `wh_stock`
+  - Колонка кластерной таблицы: «Оц. стока» → «Сток РФЦ» (реальные остатки по складам)
