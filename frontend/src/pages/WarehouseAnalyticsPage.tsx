@@ -27,9 +27,7 @@ import {
   WarehouseDetail,
   type Recommendation,
   type StorageRiskSku,
-  type CrossdockingSku,
   type DistributionPlanWarehouse,
-  type DistributionPlanItem,
   downloadDistributionPlanExcel,
 } from '@/api/warehouses'
 
@@ -418,7 +416,8 @@ function CostsCard({ costs, period }: { costs: Record<string, { name: string; co
    Recommendations Panel
    ═══════════════════════════════════════════════════════════ */
 
-function RecommendationsPanel({ recs }: { recs: Recommendation[] }) {
+// @ts-ignore: component prepared for future use
+export function _RecommendationsPanel({ recs }: { recs: Recommendation[] }) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0) // first open by default
 
   const iconMap: Record<string, React.ElementType> = {
@@ -759,7 +758,7 @@ function StorageRiskTable({ skus }: { skus: StorageRiskSku[] }) {
    Groups SKUs by destination warehouse with unified action plan
    ═══════════════════════════════════════════════════════════ */
 
-function DistributionPlanTable({ plan, totalCdCost }: { plan: DistributionPlanWarehouse[]; totalCdCost: number }) {
+function DistributionPlanTable({ plan }: { plan: DistributionPlanWarehouse[] }) {
   const [expandedWh, setExpandedWh] = useState<string | null>(null)
 
   const totalItems = plan.reduce((s, w) => s + w.items.length, 0)
@@ -1260,8 +1259,7 @@ function CrossdockingTab({ data, shopId, period }: { data: WarehouseAnalyticsRes
   const [filter, setFilter] = useState<'all' | 'transfer' | 'supply'>('all')
   const [search, setSearch] = useState('')
   const [downloading, setDownloading] = useState(false)
-
-  const totalCdCost = Math.abs((data.costs as any)?.MarketplaceServiceItemCrossdocking?.amount || 0)
+  void ((data.costs as any)?.MarketplaceServiceItemCrossdocking?.amount)
 
   // Filter distribution_plan by action type and search query
   const filteredPlan = useMemo(() => {
@@ -1318,7 +1316,7 @@ function CrossdockingTab({ data, shopId, period }: { data: WarehouseAnalyticsRes
           {downloading ? 'Скачивание...' : 'Скачать Excel'}
         </button>
       </div>
-      <DistributionPlanTable plan={filteredPlan} totalCdCost={totalCdCost} />
+      <DistributionPlanTable plan={filteredPlan} />
     </div>
   )
 }
