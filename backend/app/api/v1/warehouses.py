@@ -1706,15 +1706,26 @@ async def _build_wb_supply_data(
             revenue = wh_sales.get(wh, {}).get("revenue", 0)
             wh_daily = orders / max(sales_period, 1)
 
+            # For food/SGT variants: include sales from paired regular warehouse
+            # because WB books actual sales under "Котовск" not "Котовск: Питание"
+            paired_orders = 0
+            if _FOOD_SUFFIX in wh:
+                base_name = wh.replace(_FOOD_SUFFIX, "").strip()
+                paired_orders = wh_sales.get(base_name, {}).get("orders", 0)
+            elif _SGT_SUFFIX in wh:
+                base_name = wh.replace(" СГТ", "").strip()
+                paired_orders = wh_sales.get(base_name, {}).get("orders", 0)
+            paired_daily = paired_orders / max(sales_period, 1)
+
             # Региональный спрос → daily для этого склада
             rd = demand_by_wh.get(wh, {})
             regional_orders = rd.get("regional_orders", 0)
             regional_daily = regional_orders / max(sales_period, 1)
             demand_regions = rd.get("regions", [])
 
-            # Используем МАКСИМУМ из (фактический daily, региональный daily)
+            # Используем МАКСИМУМ из (фактический daily, региональный daily, парный daily)
             # чтобы не занизить если склад уже отгружает больше
-            effective_daily = max(wh_daily, regional_daily)
+            effective_daily = max(wh_daily, regional_daily, paired_daily)
             effective_daily_boosted = effective_daily * boost
 
             # For food/SGT warehouses: account for stock at paired regular warehouse
@@ -1733,7 +1744,18 @@ async def _build_wb_supply_data(
                 )
 
             combined_stock = stock + paired_stock
-            need = max(0, int(effective_daily_boosted * target_days * safety) - combined_stock)
+
+            # Food/SGT products: need=0 on REGULAR warehouses.
+            # All supply should go to the paired :Питание / СГТ variant.
+            # Regular warehouse rows stay visible (show stock/sales) but don't generate supply.
+            is_wrong_type_wh = (
+                (product_type == "food" and _FOOD_SUFFIX not in wh) or
+                (product_type == "sgt" and _SGT_SUFFIX not in wh)
+            )
+            if is_wrong_type_wh:
+                need = 0
+            else:
+                need = max(0, int(effective_daily_boosted * target_days * safety) - combined_stock)
 
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
