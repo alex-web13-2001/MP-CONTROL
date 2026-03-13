@@ -1192,6 +1192,67 @@ def _parse_ru_float(s: str) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Маппинг: склад WB → его «домашний» федеральный округ
+# Используется для кросс-складского анализа:
+# если warehouse_name.okrug != oblast_okrug_name → кросс-слив
+# ═══════════════════════════════════════════════════════════════
+WAREHOUSE_TO_OKRUG: dict[str, str] = {
+    # ЦФО (Московская обл. + Центральная Россия)
+    "Котовск": "Центральный федеральный округ",
+    "Котовск: Питание": "Центральный федеральный округ",
+    "Электросталь": "Центральный федеральный округ",
+    "Электросталь: Питание": "Центральный федеральный округ",
+    "Рязань (Тюшевское)": "Центральный федеральный округ",
+    "Рязань (Тюшевское): Питание": "Центральный федеральный округ",
+    "Истра": "Центральный федеральный округ",
+    "Подольск 3": "Центральный федеральный округ",
+    "Подольск 4": "Центральный федеральный округ",
+    "Коледино": "Центральный федеральный округ",
+    "Белые Столбы": "Центральный федеральный округ",
+    "Обухово": "Центральный федеральный округ",
+    "Обухово 2": "Центральный федеральный округ",
+    "Домодедово-2": "Центральный федеральный округ",
+    "Домодедово 2": "Центральный федеральный округ",
+    "Домодедово 2: Питание": "Центральный федеральный округ",
+    "Пушкино": "Центральный федеральный округ",
+    "Чехов 1": "Центральный федеральный округ",
+    "Чехов 2": "Центральный федеральный округ",
+    "Ногинск": "Центральный федеральный округ",
+    "Воронеж": "Центральный федеральный округ",
+    # СЗО
+    "Санкт-Петербург Уткина Заводь": "Северо-Западный федеральный округ",
+    "Никольское": "Северо-Западный федеральный округ",
+    "Шушары: Питание": "Северо-Западный федеральный округ",
+    # ПФО
+    "Самара (Новосемейкино)": "Приволжский федеральный округ",
+    "Новосемейкино": "Приволжский федеральный округ",
+    "Новосемейкино: Питание": "Приволжский федеральный округ",
+    "Казань": "Приволжский федеральный округ",
+    "Казань: Питание": "Приволжский федеральный округ",
+    "Пенза": "Приволжский федеральный округ",
+    "Сарапул": "Приволжский федеральный округ",
+    # ЮФО
+    "Краснодар": "Южный федеральный округ",
+    "Краснодар (Тихорецкая)": "Южный федеральный округ",
+    "Краснодар (Тихорецкая): Питание": "Южный федеральный округ",
+    "Волгоград": "Южный федеральный округ",
+    "Волгоград: Питание": "Южный федеральный округ",
+    "Ростов, Гайдара 8": "Южный федеральный округ",
+    # СКФО
+    "Невинномысск": "Северо-Кавказский федеральный округ",
+    # Урал
+    "Екатеринбург - Перспективная 14": "Уральский федеральный округ",
+    "Екатеринбург (Перспективная): Питание": "Уральский федеральный округ",
+    "Екатеринбург - Испытателей 14г": "Уральский федеральный округ",
+    # Сибирь
+    "Новосибирск": "Сибирский федеральный округ",
+    "Новосибирск СГТ": "Сибирский федеральный округ",
+    # ДВ
+    "Владивосток": "Дальневосточный федеральный округ",
+    "Владивосток СГТ": "Дальневосточный федеральный округ",
+}
+
+# ═══════════════════════════════════════════════════════════════
 # Маппинг: округ покупателя → ближайшие склады WB
 # Содержит ВСЕ варианты: обычные, : Питание, СГТ
 # Фильтрация по типу товара происходит в runtime
@@ -1457,6 +1518,31 @@ async def _build_wb_supply_data(
         import logging
         logging.getLogger(__name__).warning("WB regional demand query failed: %s", e)
 
+    # ── 2d. Cross-warehouse consumption (actual warehouse → buyer okrug) ──
+    # Which warehouse shipped to which buyer region?
+    # If warehouse's home okrug != buyer okrug → cross-warehouse drain
+    wh_consumption: dict[int, dict[str, dict[str, int]]] = {}  # nm_id → {wh → {okrug → qty}}
+    try:
+        cross_rows = ch.query(f"""
+            SELECT nm_id, warehouse_name, oblast_okrug_name,
+                   count() AS qty
+            FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {shop_id}
+              AND date >= '{d_sales_start}'
+              AND date <= '{today}'
+              AND is_cancel = 0
+              AND warehouse_name != ''
+              AND oblast_okrug_name != ''
+            GROUP BY nm_id, warehouse_name, oblast_okrug_name
+        """).result_rows
+        for row in cross_rows:
+            nm = int(row[0])
+            wh_name, okrug, qty = row[1], row[2], row[3]
+            wh_consumption.setdefault(nm, {}).setdefault(wh_name, {})[okrug] = qty
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("WB cross-warehouse query failed: %s", e)
+
     # ── 3. Product info from PostgreSQL ──────────────────────
     prod_result = await db.execute(text("""
         SELECT nm_id, vendor_code, name,
@@ -1620,18 +1706,56 @@ async def _build_wb_supply_data(
             revenue = wh_sales.get(wh, {}).get("revenue", 0)
             wh_daily = orders / max(sales_period, 1)
 
+            # For food/SGT variants: include sales from paired regular warehouse
+            # because WB books actual sales under "Котовск" not "Котовск: Питание"
+            paired_orders = 0
+            if _FOOD_SUFFIX in wh:
+                base_name = wh.replace(_FOOD_SUFFIX, "").strip()
+                paired_orders = wh_sales.get(base_name, {}).get("orders", 0)
+            elif _SGT_SUFFIX in wh:
+                base_name = wh.replace(" СГТ", "").strip()
+                paired_orders = wh_sales.get(base_name, {}).get("orders", 0)
+            paired_daily = paired_orders / max(sales_period, 1)
+
             # Региональный спрос → daily для этого склада
             rd = demand_by_wh.get(wh, {})
             regional_orders = rd.get("regional_orders", 0)
             regional_daily = regional_orders / max(sales_period, 1)
             demand_regions = rd.get("regions", [])
 
-            # Используем МАКСИМУМ из (фактический daily, региональный daily)
+            # Используем МАКСИМУМ из (фактический daily, региональный daily, парный daily)
             # чтобы не занизить если склад уже отгружает больше
-            effective_daily = max(wh_daily, regional_daily)
+            effective_daily = max(wh_daily, regional_daily, paired_daily)
             effective_daily_boosted = effective_daily * boost
 
-            need = max(0, int(effective_daily_boosted * target_days * safety) - stock)
+            # For food/SGT warehouses: account for stock at paired regular warehouse
+            # "Котовск: Питание" and "Котовск" are the SAME physical location
+            paired_stock = 0
+            if _FOOD_SUFFIX in wh or _SGT_SUFFIX in wh:
+                base_name = wh.replace(_FOOD_SUFFIX, "").replace(" СГТ", "").strip()
+                paired_stock = wh_stocks.get(base_name, {}).get("qty", 0)
+            elif product_type in ("food", "sgt"):
+                # Regular warehouse for a food product — check if food variant exists
+                food_variant = f"{wh}{_FOOD_SUFFIX}"
+                sgt_variant = f"{wh} СГТ"
+                paired_stock = (
+                    wh_stocks.get(food_variant, {}).get("qty", 0) +
+                    wh_stocks.get(sgt_variant, {}).get("qty", 0)
+                )
+
+            combined_stock = stock + paired_stock
+
+            # Food/SGT products: need=0 on REGULAR warehouses.
+            # All supply should go to the paired :Питание / СГТ variant.
+            # Regular warehouse rows stay visible (show stock/sales) but don't generate supply.
+            is_wrong_type_wh = (
+                (product_type == "food" and _FOOD_SUFFIX not in wh) or
+                (product_type == "sgt" and _SGT_SUFFIX not in wh)
+            )
+            if is_wrong_type_wh:
+                need = 0
+            else:
+                need = max(0, int(effective_daily_boosted * target_days * safety) - combined_stock)
 
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
@@ -1663,6 +1787,49 @@ async def _build_wb_supply_data(
                 "turnover_days": round(wh_turnover, 1),
             })
 
+        # ── 5c. Cross-warehouse drain analysis ──
+        # Enrich each warehouse with effective_days based on actual consumption
+        nm_cross = wh_consumption.get(nm_id, {})
+        item_effective_days = 9999
+        for wh_item in warehouses:
+            wh_name = wh_item["warehouse"]
+            wh_okrug_data = nm_cross.get(wh_name, {})
+            if not wh_okrug_data:
+                wh_item["effective_days"] = wh_item["turnover_days"]
+                wh_item["cross_daily"] = 0.0
+                wh_item["cross_okrugs"] = []
+                continue
+
+            home_okrug = WAREHOUSE_TO_OKRUG.get(wh_name, "")
+            own_qty = 0
+            cross_qty = 0
+            cross_details = []  # [{okrug, qty, daily}]
+            for dest_okrug, qty in wh_okrug_data.items():
+                if dest_okrug == home_okrug:
+                    own_qty += qty
+                else:
+                    cross_qty += qty
+                    cross_details.append({
+                        "okrug": dest_okrug,
+                        "qty": qty,
+                        "daily": round(qty / max(sales_period, 1), 2),
+                    })
+
+            total_actual = own_qty + cross_qty
+            actual_daily = total_actual / max(sales_period, 1)
+            own_daily = own_qty / max(sales_period, 1)
+            cross_daily_total = cross_qty / max(sales_period, 1)
+
+            stock = wh_item["stock"]
+            eff_days = stock / actual_daily if actual_daily > 0 else 9999
+
+            wh_item["effective_days"] = round(eff_days, 1)
+            wh_item["cross_daily"] = round(cross_daily_total, 2)
+            wh_item["cross_okrugs"] = sorted(cross_details, key=lambda x: x["qty"], reverse=True)
+
+            if eff_days < item_effective_days:
+                item_effective_days = eff_days
+
         # Status — хранение платное с 1-го дня, overstock = оборот > target_days
         if daily_avg == 0 and total_stock == 0:
             status = "ok"
@@ -1674,6 +1841,13 @@ async def _build_wb_supply_data(
             status = "attention"
         else:
             status = "ok"
+
+        # Re-evaluate status using effective_days (cross-warehouse drain)
+        if item_effective_days < 9999:
+            if item_effective_days < 14 and status in ("ok", "attention", "overstock"):
+                status = "critical"
+            elif item_effective_days < target_days and status == "ok":
+                status = "attention"
 
         total_need = sum(w["need"] for w in warehouses)
         storage_cost_month = sum(w["storage_per_month"] * w["stock"] for w in warehouses)
@@ -1690,6 +1864,7 @@ async def _build_wb_supply_data(
             "boost": round(boost, 2),
             "boosted_daily": round(boosted_daily, 2),
             "turnover_days": round(turnover_days, 1),
+            "effective_days": round(item_effective_days, 1) if item_effective_days < 9999 else None,
             "total_need": total_need,
             "status": status,
             "storage_cost_month": round(storage_cost_month, 2),
@@ -1843,7 +2018,8 @@ async def get_wb_supply_xlsx(
     h1 = [
         ("Артикул", 18), ("Название товара", 35), ("Склад WB", 28),
         ("Продано, шт", 12), ("Продаж в день", 10), ("Остаток, шт", 12),
-        ("Оборачиваемость, дн", 14), ("Нужно довезти, шт", 14), ("Выручка, руб", 14),
+        ("Оборачиваемость, дн", 14), ("Реал.зап, дн", 12), ("Кросс", 30),
+        ("Нужно довезти, шт", 14), ("Выручка, руб", 14),
         ("Хранение, руб/день", 12), ("Хранение, руб/мес", 12),
         ("Коэфф. хранения", 12), ("Приёмка", 14),
     ]
@@ -1871,6 +2047,14 @@ async def get_wb_supply_xlsx(
         ws1.cell(row1, 7, _fmt_turnover(td_val)).font = (
             critical_font if td_val > 60 else warn_font if td_val > 45 else ok_font
         )
+        # Item-level effective_days
+        eff = item.get("effective_days")
+        if eff is not None:
+            ws1.cell(row1, 8, f"{eff:.0f} дн").font = (
+                critical_font if eff < 14 else warn_font if eff < target_days else ok_font
+            )
+        else:
+            ws1.cell(row1, 8, "—").font = gray_font
         for ci2 in range(1, len(h1) + 1):
             ws1.cell(row1, ci2).fill = sku_hdr_fill
         row1 += 1
@@ -1885,19 +2069,43 @@ async def get_wb_supply_xlsx(
                 else warn_font if wh["turnover_days"] > 45
                 else ok_font
             )
-            ws1.cell(row1, 8, wh["need"]).number_format = num_fmt
+
+            # Реал.зап — effective_days per warehouse
+            wh_eff = wh.get("effective_days", wh["turnover_days"])
+            if wh_eff < 9999:
+                ws1.cell(row1, 8, f"{wh_eff:.0f} дн").font = (
+                    critical_font if wh_eff < 14 else warn_font if wh_eff < target_days else ok_font
+                )
+            else:
+                ws1.cell(row1, 8, "—").font = gray_font
+
+            # Кросс — cross-warehouse drain details
+            cross_okrugs = wh.get("cross_okrugs", [])
+            cross_daily = wh.get("cross_daily", 0)
+            if cross_okrugs and cross_daily > 0:
+                # Shorten okrug names for readability
+                parts = []
+                for co in cross_okrugs[:3]:  # top-3
+                    short_okrug = co["okrug"].replace(" федеральный округ", "").strip()
+                    parts.append(f"{short_okrug} +{co['daily']}/д")
+                cross_text = ", ".join(parts)
+                ws1.cell(row1, 9, cross_text).font = warn_font
+            else:
+                ws1.cell(row1, 9, "—").font = gray_font
+
+            ws1.cell(row1, 10, wh["need"]).number_format = num_fmt
             if wh["need"] > 0:
-                ws1.cell(row1, 8).font = blue_font
-            ws1.cell(row1, 9, wh["revenue"]).number_format = money_fmt
-            ws1.cell(row1, 10, wh["storage_per_day"]).number_format = "0.0000"
-            ws1.cell(row1, 11, wh["storage_per_month"]).number_format = money_fmt
+                ws1.cell(row1, 10).font = blue_font
+            ws1.cell(row1, 11, wh["revenue"]).number_format = money_fmt
+            ws1.cell(row1, 12, wh["storage_per_day"]).number_format = "0.0000"
+            ws1.cell(row1, 13, wh["storage_per_month"]).number_format = money_fmt
             if wh["storage_per_month"] > 50:
-                ws1.cell(row1, 11).font = warn_font
+                ws1.cell(row1, 13).font = warn_font
 
             sc = wh.get("storage_coef", 0)
             ac = wh.get("acceptance_coef", 0)
-            ws1.cell(row1, 12, f"{sc:.0f}%" if sc else "нет данных")
-            ws1.cell(row1, 13, _fmt_acceptance(ac)).font = _acceptance_font(ac)
+            ws1.cell(row1, 14, f"{sc:.0f}%" if sc else "нет данных")
+            ws1.cell(row1, 15, _fmt_acceptance(ac)).font = _acceptance_font(ac)
 
             row1 += 1
         row1 += 1

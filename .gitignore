@@ -63,3 +63,4 @@ htmlcov/
 *.bak
 *.tmp
 backend/lightning_logs/
+supply_9_30d-2.xlsx
