@@ -1717,7 +1717,23 @@ async def _build_wb_supply_data(
             effective_daily = max(wh_daily, regional_daily)
             effective_daily_boosted = effective_daily * boost
 
-            need = max(0, int(effective_daily_boosted * target_days * safety) - stock)
+            # For food/SGT warehouses: account for stock at paired regular warehouse
+            # "Котовск: Питание" and "Котовск" are the SAME physical location
+            paired_stock = 0
+            if _FOOD_SUFFIX in wh or _SGT_SUFFIX in wh:
+                base_name = wh.replace(_FOOD_SUFFIX, "").replace(" СГТ", "").strip()
+                paired_stock = wh_stocks.get(base_name, {}).get("qty", 0)
+            elif product_type in ("food", "sgt"):
+                # Regular warehouse for a food product — check if food variant exists
+                food_variant = f"{wh}{_FOOD_SUFFIX}"
+                sgt_variant = f"{wh} СГТ"
+                paired_stock = (
+                    wh_stocks.get(food_variant, {}).get("qty", 0) +
+                    wh_stocks.get(sgt_variant, {}).get("qty", 0)
+                )
+
+            combined_stock = stock + paired_stock
+            need = max(0, int(effective_daily_boosted * target_days * safety) - combined_stock)
 
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
