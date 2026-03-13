@@ -713,13 +713,23 @@ safety: float (default: 1.15)        — коэффициент безопасн
   },
   items: [{
     nm_id, vendor_code, name, image_url, vol_liters,
-    total_sold, total_stock, daily_avg, turnover_days, total_need,
+    total_sold, total_stock, daily_avg, turnover_days,
+    effective_days,              // реальный запас с учётом кросс-складского расхода (null если нет данных)
+    total_need,
     status: "critical" | "attention" | "ok" | "overstock",
     storage_cost_month,
+    product_type: "food" | "sgt" | "normal",
     warehouses: [{
       warehouse, stock, orders, daily, turnover_days,
+      effective_days,            // реальный запас на этом складе (с учётом кросс-расхода)
+      cross_daily,               // чужих заказов/день (из других округов)
+      cross_okrugs: [{           // детализация кросс-расхода
+        okrug, qty, daily
+      }],
       need, storage_per_day, storage_per_month,
-      storage_coef, acceptance_coef, acceptance, revenue
+      storage_coef, acceptance_coef, acceptance, revenue,
+      regional_orders, regional_daily, demand_regions,
+      daily_boosted
     }]
   }],
   warehouse_summary: [{
@@ -728,6 +738,39 @@ safety: float (default: 1.15)        — коэффициент безопасн
   }]
 }
 ```
+
+### Маппинг складов → округа (WAREHOUSE_TO_OKRUG)
+
+50+ складов WB привязаны к 8 федеральным округам (включая варианты `:Питание` и `СГТ`):
+
+| Склад (warehouse_name)                | Федеральный округ   |
+| -------------------------------------- | ------------------- |
+| Котовск, Подольск 4, Домодедово 2      | Центральный         |
+| Шушары, СПб Шушары                     | Северо-Западный     |
+| Казань, Самара (Новосемейкино)         | Приволжский         |
+| Екатеринбург, Челябинск                | Уральский           |
+| Краснодар (Тихорецкая), Волгоград      | Южный               |
+| Новосибирск                            | Сибирский           |
+| Хабаровск                              | Дальневосточный     |
+| Ростов, Минеральные Воды               | Северо-Кавказский   |
+
+### Кросс-складской анализ
+
+Анализ фактического расхода стока по `warehouse_name × nm_id × oblast_okrug_name`:
+
+1. SQL: `GROUP BY nm_id, warehouse_name, oblast_okrug_name` из `fact_orders_raw`
+2. Если `oblast_okrug_name != WAREHOUSE_TO_OKRUG[warehouse_name]` → **кросс-слив**
+3. `effective_days = stock / actual_daily` (включая кросс-заказы)
+4. Пересчёт статуса: `effective_days < 14` → `critical`, `< target_days` → `attention`
+
+### Food / SGT логика
+
+- **Классификация**: категория `Товары для животных`, `Продукты питания` и т.д. → тип `food`
+- **Ограничение**: food-товары принимают ТОЛЬКО склады с суффиксом `: Питание`
+- **Парные склады**: «Котовск» и «Котовск: Питание» — одна физическая локация
+- **need = 0** на обычном складе для food-товара (поставка только на `:Питание`)
+- **paired_stock**: food-вариант учитывает stock парного обычного склада
+- **paired_daily**: food-вариант агрегирует продажи парного склада (WB записывает под обычным именем)
 
 ### WB-специфика
 
@@ -740,10 +783,10 @@ safety: float (default: 1.15)        — коэффициент безопасн
 
 ### Источники данных
 
-1. `fact_wb_stocks` (ClickHouse) → остатки по складам
-2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period`
+1. `fact_inventory_snapshot` (ClickHouse) → остатки по складам
+2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period` (включая `warehouse_name`, `oblast_okrug_name`)
 3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
-4. `wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
+4. `fact_wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
 5. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
 
 ---
@@ -1095,3 +1138,16 @@ data: [DONE]
   - Формула: `need = max(0, daily×target×safety − реальный_сток_на_РФЦ)` (не пропорциональная оценка)
   - Response: новые поля `wh_stock`, `warehouse`, `warehouses[]` в clusters и hubs
   - Excel: «Сток РФЦ» + «Склады» во всех листах, обновлённая методология
+
+### 2026-03-13
+
+- **WB Supply — кросс-складской анализ:**
+  - `WAREHOUSE_TO_OKRUG`: маппинг 50+ складов WB → 8 федеральных округов (вкл. `:Питание`, `СГТ`)
+  - Новый SQL: `warehouse_name × nm_id × oblast_okrug_name` → `wh_consumption`
+  - Response: новые поля `effective_days`, `cross_daily`, `cross_okrugs[]`, `product_type`
+  - Пересчёт `status` по `effective_days` (ok→attention→critical)
+  - Excel: колонки «Реал.зап, дн» + «Кросс» в листе Рекомендации
+- **WB Supply — food/SGT paired warehouse fix:**
+  - `need = 0` на обычных складах для food-товаров (поставка только на `:Питание`)
+  - `paired_stock`: food-вариант учитывает stock парного обычного склада
+  - `paired_daily`: food-вариант агрегирует продажи парного склада
