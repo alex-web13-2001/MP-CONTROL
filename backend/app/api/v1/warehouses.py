@@ -1618,6 +1618,39 @@ async def _build_wb_supply_data(
         # Таблица wb_acceptance_tariffs может отсутствовать — работаем с дефолтами
         tariffs = {}
 
+    # ── 4b. Actual paid storage from fact_wb_paid_storage ─────
+    # Real per-SKU per-warehouse daily storage cost (avg last 14d)
+    actual_storage_per_day: dict[int, dict[str, float]] = {}  # nm_id → {warehouse → cost_per_day}
+    has_actual_storage = False
+    try:
+        ps_rows = ch.query(f"""
+            SELECT nm_id, warehouse,
+                   SUM(warehouse_price) AS cost_period,
+                   count(DISTINCT dt) AS days_cnt
+            FROM mms_analytics.fact_wb_paid_storage FINAL
+            WHERE shop_id = {shop_id}
+              AND dt >= today() - 14
+              AND dt < today()
+            GROUP BY nm_id, warehouse
+            HAVING cost_period != 0
+        """).result_rows
+        if ps_rows:
+            has_actual_storage = True
+        for r in ps_rows:
+            nm_id_ps = int(r[0])
+            wh_ps = r[1]
+            cost_period = float(r[2])
+            days_cnt = max(int(r[3]), 1)
+            cost_per_day = cost_period / days_cnt  # average daily cost per unit-like
+            actual_storage_per_day.setdefault(nm_id_ps, {})[wh_ps] = cost_per_day
+        import logging
+        logging.getLogger(__name__).info(
+            "WB supply: loaded actual storage for %d nm_ids from fact_wb_paid_storage",
+            len(actual_storage_per_day))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("WB supply: paid storage query failed: %s", e)
+
     # ── 5. Build recommendations per SKU × warehouse ─────────
     # Используем РЕГИОНАЛЬНЫЙ спрос: округ покупателя → ближайший склад
     all_nm_ids = set(
@@ -1760,10 +1793,20 @@ async def _build_wb_supply_data(
             t = tariffs.get(wh, {})
             stor_base = t.get("storage_base_liter", 0)
             stor_add = t.get("storage_add_liter", 0)
-            if vol <= 1:
-                storage_per_day = stor_base * vol
+
+            # Use REAL paid storage data if available, fallback to tariff
+            real_cost = actual_storage_per_day.get(nm_id, {}).get(wh)
+            if real_cost is not None and stock > 0:
+                # real_cost = daily cost for this nm_id on this warehouse (summed over all units)
+                # storage_per_day = cost per unit per day
+                storage_per_day = real_cost / stock
+                storage_source = "actual"
             else:
-                storage_per_day = stor_base + stor_add * (vol - 1)
+                if vol <= 1:
+                    storage_per_day = stor_base * vol
+                else:
+                    storage_per_day = stor_base + stor_add * (vol - 1)
+                storage_source = "tariff"
 
             wh_turnover = stock / effective_daily if effective_daily > 0 else 999
             ac = t.get("acceptance_coef", 0)
@@ -1782,6 +1825,7 @@ async def _build_wb_supply_data(
                 "storage_per_day": round(storage_per_day, 4),
                 "storage_per_month": round(storage_per_day * 30, 2),
                 "storage_coef": t.get("storage_coef", 0),
+                "storage_source": storage_source,
                 "acceptance_coef": ac,
                 "acceptance": "Без коэфф." if ac <= 0 or ac == -1 else f"x{ac:.0f}",
                 "turnover_days": round(wh_turnover, 1),
