@@ -5733,7 +5733,7 @@ async def get_wb_geography(
             region_name AS region,
             count() AS orders,
             sum(toFloat64(price_with_disc)) AS revenue,
-            count(DISTINCT date) AS active_days
+            count(DISTINCT toDate(date)) AS active_days
         FROM mms_analytics.fact_orders_raw FINAL
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
@@ -5750,7 +5750,7 @@ async def get_wb_geography(
     okrug_stability_rows = ch.query(f"""
         SELECT
             oblast_okrug_name AS okrug,
-            count(DISTINCT date) AS active_days
+            count(DISTINCT toDate(date)) AS active_days
         FROM mms_analytics.fact_orders_raw FINAL
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
