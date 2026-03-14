@@ -727,7 +727,8 @@ safety: float (default: 1.15)        — коэффициент безопасн
         okrug, qty, daily
       }],
       need, storage_per_day, storage_per_month,
-      storage_coef, acceptance_coef, acceptance, revenue,
+      storage_coef, storage_source,  // "actual" (fact_wb_paid_storage) или "tariff"
+      acceptance_coef, acceptance, revenue,
       regional_orders, regional_daily, demand_regions,
       daily_boosted
     }]
@@ -778,7 +779,8 @@ safety: float (default: 1.15)        — коэффициент безопасн
 - **Фиксация коэффициентов**: 60 дней (большинство категорий), 90 дней (одежда/обувь)
 - **Overstock**: `turnover_days > target_days` (настраиваемый порог)
 - **Acceptance**: коэффициент приёмки склада (`"Без коэфф."` или `"x{N}"`)
-- **storage_cost_month**: `vol_liters × tariff_per_liter × storage_coef × stock × 30`
+- **storage_cost_month**: приоритет — реальные данные из `fact_wb_paid_storage` (avg 14д), fallback — тариф `vol_liters × tariff_per_liter × storage_coef × stock × 30`
+- **storage_source**: `"actual"` (fact_wb_paid_storage) или `"tariff"` — источник расчёта хранения для каждого склада
 - **helper**: `_build_wb_supply_data()` — общая логика для JSON и Excel endpoints
 
 ### Источники данных
@@ -787,7 +789,8 @@ safety: float (default: 1.15)        — коэффициент безопасн
 2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period` (включая `warehouse_name`, `oblast_okrug_name`)
 3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
 4. `fact_wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
-5. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
+5. `fact_wb_paid_storage` (ClickHouse) → реальная стоимость хранения per-SKU per-warehouse (avg 14д)
+6. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
 
 ---
 
@@ -1117,6 +1120,12 @@ data: [DONE]
 
 - Добавлена секция «WB Supply» с JSON endpoint `GET /warehouses/wb/supply`
 - Response schema: `kpi` + `items[]` (с `warehouses[]`) + `warehouse_summary[]`
+
+### 2026-03-14
+
+- WB Supply: `storage_per_day` теперь приоритетно из `fact_wb_paid_storage` (avg 14д), fallback — тарифная оценка
+- Добавлен `storage_source` (actual/tariff) в response schema warehouse
+- WB Analytics: исправлен `total_penalties` — только native `operation_type='Штраф'`, «Списание за отзыв» выделено отдельно
 - WB-специфика: хранение платное с 1-го дня, фиксация коэффициентов 60/90 дней
 - Overstock = `turnover_days > target_days` (не > 60)
 - Acceptance: «Без коэфф.» вместо «Бесплатно»
