@@ -74,7 +74,7 @@ DEL key
 | Marketplace | Dispatch задачи                                                                                                                                                                                      |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Ozon**    | sync_ozon_products, sync_ozon_product_snapshots, sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns, sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content, sync_ozon_commissions |
-| **WB**      | sync_warehouses, sync_product_content, **sync_wb_finance_history(days_back=30)**, **sync_wb_tariffs**                                                                                                |
+| **WB**      | sync_warehouses, sync_product_content, **sync_wb_finance_history(days_back=30)**, **sync_wb_tariffs**, **sync_wb_paid_storage**                                                                      |
 
 ### `sync_all_frequent` — каждые 30 мин
 
@@ -107,6 +107,23 @@ DEL key
 
 **Сервис:** `WBTariffsService` (`backend/app/services/wb_tariffs_service.py`)  
 **Retry:** 3 попытки, 60 сек пауза.
+
+---
+
+### `sync_wb_paid_storage` (ежедневно)
+
+```
+1. GET /api/v1/paid_storage?dateFrom=...&dateTo=... → taskId (async report)
+2. Poll GET /api/v1/paid_storage/tasks/{taskId}/status → done/processing
+3. GET /api/v1/paid_storage/tasks/{taskId}/download → items[]
+4. WBPaidStorageService.prepare_ch_rows() → нормализация с shop_id
+5. INSERT → fact_wb_paid_storage (ClickHouse, ReplacingMergeTree)
+```
+
+**Сервис:** `WBPaidStorageService` (`backend/app/services/wb_paid_storage_service.py`)  
+**Retry:** 5 попыток, exponential backoff (10→20→40→80→120 сек) при 429 + ConnectError.  
+**Лимит API:** max 8 дней per report → автоматическая разбивка на 7-дневные чанки.  
+**Паузы:** 5 сек между чанками.
 
 ---
 
@@ -422,6 +439,7 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 | `backfill_ozon_funnel`    | 365 дней | 90-day quarters                                                           | standard                   |
 | `backfill_ozon_returns`   | 180 дней | Standard                                                                  | standard                   |
 | `backfill_ozon_ads`       | 180 дней | 30-day chunks (newest first), CSV report, early exit after 5 empty chunks | 60с retry, 15с batch pause |
+| `backfill_wb_paid_storage` | 3 мес    | 7-day chunks, 3-step async report (create→poll→download)                  | 429 retry: 10→20→40→80→120 сек |
 
 ---
 
@@ -466,3 +484,12 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 - Интеграция в `sync_all_daily` для WB магазинов
 - Сервис: `WBTariffsService` → `fact_wb_acceptance_tariffs` (ClickHouse)
 - Retry: 3 попытки, 60 сек
+
+### 2026-03-14
+
+- **Новая задача:** `sync_wb_paid_storage` — ежедневная синхронизация фактических данных платного хранения WB per SKU
+- **Новая задача:** `backfill_wb_paid_storage` — одноразовый бэкфилл за N месяцев
+- Интеграция в `sync_all_daily` для WB магазинов
+- Сервис: `WBPaidStorageService` → `fact_wb_paid_storage` (ClickHouse)
+- 3-step async report API с 7-дневными чанками
+- Retry: exponential backoff (10→120 сек) при 429 + ConnectError

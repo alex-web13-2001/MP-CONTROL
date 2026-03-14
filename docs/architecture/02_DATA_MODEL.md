@@ -43,6 +43,7 @@ graph LR
         CH_WBBids["log_wb_bids"]
         CH_OzBids["log_ozon_bids"]
         CH_OzAdDaily["fact_ozon_ad_daily"]
+        CH_PaidStorage["fact_wb_paid_storage"]
     end
 
     PG_Users -->|"1:N"| PG_Shops
@@ -277,7 +278,7 @@ SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
 
 ---
 
-## ClickHouse — 16 таблиц + views
+## ClickHouse — 17 таблиц + views
 
 ### Паттерны движков
 
@@ -459,6 +460,39 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 
 ---
 
+#### `fact_wb_paid_storage` — фактическое платное хранение WB per SKU
+
+| Engine    | ReplacingMergeTree(updated_at)                         |
+| --------- | ------------------------------------------------------ |
+| ORDER BY  | (shop_id, dt, nm_id, office_id, calc_type)             |
+| TTL       | 1 год                                                  |
+| Partition | toYYYYMM(dt)                                           |
+
+Источник: WB API `GET /api/v1/paid_storage` (3-step async report).  
+Синхронизация: ежедневно через Celery task `sync_wb_paid_storage`.
+
+| Поле                 | Тип      | Описание                                                    |
+| -------------------- | -------- | ----------------------------------------------------------- |
+| `dt`                 | Date     | Дата хранения                                               |
+| `shop_id`            | UInt16   | ID магазина                                                 |
+| `vendor_code`        | String   | Артикул продавца                                            |
+| `nm_id`              | UInt64   | ID номенклатуры WB                                          |
+| `warehouse`          | String   | Название склада WB                                          |
+| `office_id`          | UInt32   | ID склада                                                   |
+| `warehouse_coef`     | Float64  | Коэффициент склада                                          |
+| `log_warehouse_coef` | Float64  | Логистический коэффициент                                   |
+| `volume_liters`      | Float64  | Объём товара в литрах                                       |
+| `calc_type`          | String   | Тип расчёта (основное, скидка остатка, скидка поставки)     |
+| `warehouse_price`    | Float64  | Сумма хранения ₽ (отрицательная = скидка WB)               |
+| `barcodes_count`     | UInt32   | Количество баркодов                                         |
+| `loyalty_discount`   | Float64  | Скидка за лояльность                                        |
+| `updated_at`         | DateTime | Время записи                                                |
+
+> [!NOTE]
+> `warehouse_price` может быть **отрицательным** — WB даёт скидки на хранение (до 94% от начислений), зависящие от остатка товара и срока поставки.
+
+---
+
 ### Materialized Views
 
 | MV                | Источник        | Движок             | Агрегация                                |
@@ -541,3 +575,11 @@ alembic revision --autogenerate -m "описание"
 - Миграция: `docker/clickhouse/migrations/002_add_wb_acceptance_tariffs.sql`
 - Источник: WB API `GET /api/tariffs/v1/acceptance/coefficients`
 - ReplacingMergeTree(updated_at), ORDER BY (warehouse_id, box_type_id, dt), TTL 1 год
+
+### 2026-03-14
+
+- **Новая таблица ClickHouse:** `fact_wb_paid_storage` — фактическое платное хранение WB per SKU × склад × день
+- Миграция: `docker/clickhouse/migrations/004_add_wb_paid_storage.sql`
+- Источник: WB API `GET /api/v1/paid_storage` (3-step async report)
+- ReplacingMergeTree(updated_at), ORDER BY (shop_id, dt, nm_id, office_id, calc_type), TTL 1 год
+- `warehouse_price` может быть отрицательным (скидки WB: 76–94%)

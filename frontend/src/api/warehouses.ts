@@ -446,3 +446,203 @@ export async function downloadDistributionPlanExcel(params: {
   link.remove()
   window.URL.revokeObjectURL(url)
 }
+
+
+// ── WB Warehouse Analytics ──────────────────────────────────
+
+export interface WBAnalyticsKpi {
+  total_warehouses: number
+  total_stock: number
+  total_sku: number
+  avg_turnover_days: number | null
+  total_logistics: number
+  total_storage: number
+  total_penalties: number
+  cross_pct: number
+  total_orders: number
+  period_days: number
+}
+
+export interface WBAnalyticsSkuDetail {
+  nm_id: number
+  vendor_code: string
+  name: string
+  stock: number
+  daily_sales: number
+  days_supply: number | null
+  orders: number
+  cross_orders: number
+  cross_pct: number
+  geography: WBAnalyticsGeography[]
+}
+
+export interface WBAnalyticsGeography {
+  okrug: string
+  orders: number
+  share: number
+  is_local: boolean
+}
+
+export interface WBAnalyticsWarehouse {
+  warehouse_name: string
+  okrug: string
+  warehouse_type: 'food' | 'sgt' | 'normal'
+  status: 'critical' | 'attention' | 'ok' | 'overstocked' | 'empty'
+  stock: number
+  sku_count: number
+  orders: number
+  revenue: number
+  daily_sales: number
+  turnover_days: number | null
+  pct_of_total_sales: number
+  cross_pct: number
+  cross_orders: number
+  local_orders: number
+  logistics_cost: number
+  logistics_count: number
+  storage_coef: number
+  acceptance_coef: number
+  acceptance: string
+  skus: WBAnalyticsSkuDetail[]
+  geography: WBAnalyticsGeography[]
+}
+
+export interface WBCrossMapRow {
+  warehouse: string
+  home_okrug: string
+  total_orders: number
+  okrugs: Record<string, { count: number; is_local: boolean }>
+}
+
+export interface WBCostSummary {
+  operation_type: string
+  label: string
+  icon: string
+  count: number
+  amount: number
+}
+
+export interface WBStorageSku {
+  nm_id: number
+  vendor_code: string
+  name: string
+  vol_liters: number
+  total_stock: number
+  est_cost_month: number
+  warehouses: { warehouse: string; stock: number; stor_base: number; cost_month: number }[]
+}
+
+export interface WBRecommendation {
+  type: string
+  severity: 'high' | 'medium' | 'low'
+  title: string
+  reason: string
+  impact?: string
+  action_items: string[]
+  warehouse: string
+}
+
+export interface WBWarehouseAnalyticsResponse {
+  kpi: WBAnalyticsKpi
+  warehouses: WBAnalyticsWarehouse[]
+  cross_map: WBCrossMapRow[]
+  okrug_list: string[]
+  costs: WBCostSummary[]
+  storage_skus: WBStorageSku[]
+  recommendations: WBRecommendation[]
+  period_days: number
+}
+
+export async function getWBWarehouseAnalytics(params: {
+  shop_id: number
+  period?: number
+}): Promise<WBWarehouseAnalyticsResponse> {
+  const { data } = await apiClient.get<WBWarehouseAnalyticsResponse>('/warehouses/wb/analytics', { params })
+  return data
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// AI Warehouse Analysis (2-block: SKU problems + redistribution)
+// ═══════════════════════════════════════════════════════════
+
+export interface AISkuOption {
+  action: 'discount' | 'launch_ads' | 'withdraw' | 'do_nothing' | 'reduce_supply'
+  label: string
+  detail: string
+  expected_savings: number
+  risk: 'low' | 'medium' | 'high'
+}
+
+export interface AISkuAction {
+  vendor_code: string
+  name: string
+  problem: string
+  storage_cost_month: number
+  net_profit_month: number
+  current_turnover_days: number
+  stock: number
+  options: AISkuOption[]
+  recommended_option: number
+}
+
+export interface AITransferDestination {
+  warehouse: string
+  qty: number
+  reason: string
+}
+
+export interface AITransfer {
+  vendor_code: string
+  name: string
+  from_warehouse: string
+  from_stock: number
+  keep_at_source: number
+  destinations: AITransferDestination[]
+  expected_effect: string
+}
+
+export interface AIKeyMetrics {
+  cross_logistics_loss: number
+  storage_excess: number
+  unprofitable_skus_count: number
+}
+
+export interface AIAnalysisContext {
+  total_orders: number
+  total_stock: number
+  cross_pct: number
+  costs_logistics: number
+  costs_storage: number
+  costs_penalties: number
+  skus_in_ads: number
+  skus_no_ads: number
+  warehouses_count: number
+}
+
+export interface AIWarehouseAnalysis {
+  severity: 'critical' | 'warning' | 'ok'
+  diagnosis: string
+  total_potential_savings: number
+  key_metrics: AIKeyMetrics
+  sku_actions: AISkuAction[]
+  transfers: AITransfer[]
+  general_tips: string[]
+  supply_tip: string
+  shop_name: string
+  period_days: number
+  analyzed_at: number
+  context: AIAnalysisContext
+  cached: boolean
+  cached_at?: number
+}
+
+export async function getWBWarehouseAIAnalysis(params: {
+  shop_id: number
+  period?: number
+  force?: boolean
+}): Promise<AIWarehouseAnalysis> {
+  const { data } = await apiClient.get<AIWarehouseAnalysis>('/warehouses/wb/ai-analysis', { params })
+  return data
+}
+

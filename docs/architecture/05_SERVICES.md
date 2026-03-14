@@ -1,6 +1,6 @@
 # MP-CONTROL — Services Layer
 
-> Полное описание всех 22 сервисов: API endpoints, трансформация данных, целевые таблицы.  
+> Полное описание всех 23 сервисов: API endpoints, трансформация данных, целевые таблицы.  
 > Директория: `backend/app/services/`
 
 ---
@@ -21,7 +21,7 @@ Service (async, MarketplaceClient)    →    Loader (sync, ClickHouse/PostgreSQL
 
 ---
 
-## Wildberries Services (11 файлов)
+## Wildberries Services (12 файлов)
 
 ### `wb_finance_loader.py` (463 строки)
 
@@ -180,6 +180,37 @@ API для фронтенда — запрос финансовых данных
 
 **Выход:** ClickHouse `fact_wb_acceptance_tariffs` (ReplacingMergeTree)  
 **Поля:** warehouse_id, warehouse_name, box_type_id, coefficient, storage/delivery тарифы, allow_unload
+
+---
+
+### `wb_paid_storage_service.py` (9.7 КБ)
+
+Фактические данные платного хранения WB per SKU.
+
+| Компонент                 | Описание                                                                 |
+| ------------------------- | ------------------------------------------------------------------------ |
+| **WBPaidStorageService**  | 3-step async report: create → poll → download                            |
+
+**API endpoints:** WB Seller Analytics API
+
+- `GET /api/v1/paid_storage?dateFrom=...&dateTo=...` → taskId
+- `GET /api/v1/paid_storage/tasks/{taskId}/status` → done/processing
+- `GET /api/v1/paid_storage/tasks/{taskId}/download` → items[]
+
+**Ключевые методы:**
+
+| Метод               | Описание                                                    |
+| ------------------- | ----------------------------------------------------------- |
+| `fetch_period()`    | Полный цикл create→poll→download для 1 периода (max 8 дн)  |
+| `fetch_date_range()`| Автоматическая разбивка на 7-дневные чанки + progress       |
+| `prepare_ch_rows()` | Нормализация API → CH rows с shop_id                        |
+
+**Retry:** `_request_with_retry` — exponential backoff (10→120 сек) при 429 + ConnectError/ConnectTimeout/ReadTimeout  
+**Выход:** ClickHouse `fact_wb_paid_storage` (ReplacingMergeTree)  
+**Паузы:** 5 сек между чанками для обхода rate limit WB
+
+> [!NOTE]
+> `warehouse_price` может быть отрицательным — WB даёт скидки на хранение (76–94% от начислений).
 
 ---
 
@@ -385,6 +416,7 @@ FBO + FBS возвраты Ozon.
 | `wb_warehouses_service`         | WB          | Marketplace API | PG: `dim_warehouses`                               |
 | `wb_finance_report_service`     | WB          | — (internal)    | ClickHouse queries                                 |
 | `wb_tariffs_service`            | WB          | Tariffs API     | CH: `fact_wb_acceptance_tariffs`                   |
+| `wb_paid_storage_service`       | WB          | Seller Analytics API | CH: `fact_wb_paid_storage`                    |
 | `event_detector`                | WB          | — (stateful)    | PG: `event_log`, Redis                             |
 | `ozon_products_service`         | Ozon        | Seller API      | PG: `dim_ozon_products`, CH: `fact_ozon_inventory` |
 | `ozon_orders_service`           | Ozon        | Seller API      | CH: `fact_ozon_orders`                             |
@@ -435,3 +467,10 @@ FBO + FBS возвраты Ozon.
 - **Новый сервис:** `wb_tariffs_service.py` — `WBTariffsService` для загрузки тарифов приёмки/хранения/логистики WB
 - API endpoint: `GET /api/tariffs/v1/acceptance/coefficients` → 144 склада, коэффициенты на 14 дней вперёд
 - Обновлена сводная таблица Service → API → Storage (22 сервиса)
+
+### 2026-03-14
+
+- **Новый сервис:** `wb_paid_storage_service.py` — `WBPaidStorageService` для загрузки фактических данных платного хранения WB per SKU
+- 3-step async report API: create → poll → download, 7-дневные чанки
+- Retry: exponential backoff (10→120 сек) при 429 + ConnectError/ReadTimeout
+- Обновлена сводная таблица Service → API → Storage (23 сервиса)

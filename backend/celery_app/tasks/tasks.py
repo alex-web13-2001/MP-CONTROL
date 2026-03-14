@@ -583,9 +583,10 @@ def sync_all_daily(self):
                 sync_product_content,
                 sync_wb_finance_history,
                 sync_wb_tariffs,
+                sync_wb_paid_storage,
             )
 
-            for task_ref in [sync_warehouses, sync_product_content, sync_wb_tariffs]:
+            for task_ref in [sync_warehouses, sync_product_content, sync_wb_tariffs, sync_wb_paid_storage]:
                 if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, api_key=api_key):
                     dispatched += 1
                 else:
@@ -2009,6 +2010,171 @@ def sync_wb_tariffs(
         return {"rows_inserted": len(rows)}
 
     return asyncio.run(run_sync())
+
+
+# ====================
+# WB PAID STORAGE TASKS
+# Fetch actual paid storage costs per SKU from WB report API
+# ====================
+
+@celery_app.task(bind=True, queue="sync", time_limit=300, soft_time_limit=280,
+                 autoretry_for=(Exception,), retry_kwargs={"max_retries": 2, "countdown": 120})
+def sync_wb_paid_storage(
+    self,
+    shop_id: int,
+    api_key: str,
+    days_back: int = 7,
+):
+    """
+    Sync WB paid storage report: actual per-SKU storage costs with discounts.
+
+    Source: GET /api/v1/paid_storage (async report: create → poll → download)
+    Target: ClickHouse fact_wb_paid_storage
+
+    Runs daily via sync_all_daily coordinator.
+    Fetches last 7 days by default (with 7-day chunk splitting for API limit).
+    Queue: SYNC.
+    """
+    import asyncio
+    import logging
+    from datetime import date, timedelta
+    from app.core.clickhouse import get_clickhouse_client
+    from app.services.wb_paid_storage_service import WBPaidStorageService
+
+    logger = logging.getLogger(__name__)
+    logger.info("sync_wb_paid_storage: shop=%s days_back=%d starting", shop_id, days_back)
+
+    async def run_sync():
+        service = WBPaidStorageService(api_key=api_key)
+
+        date_to = date.today() - timedelta(days=1)  # yesterday (today may not be ready)
+        date_from = date_to - timedelta(days=days_back - 1)
+
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Fetching paid storage {date_from} — {date_to}...",
+            "shop_id": shop_id,
+        })
+
+        def on_progress(chunk, total, items):
+            self.update_state(state="PROGRESS", meta={
+                "status": f"Chunk {chunk}/{total}: {items} items...",
+                "shop_id": shop_id,
+            })
+
+        items = await service.fetch_date_range(date_from, date_to, on_progress=on_progress)
+        if not items:
+            logger.warning("sync_wb_paid_storage: shop=%s no data from API", shop_id)
+            return {"shop_id": shop_id, "rows_inserted": 0, "status": "no_data"}
+
+        # Prepare and insert ClickHouse rows
+        rows = service.prepare_ch_rows(items, shop_id)
+        if not rows:
+            return {"shop_id": shop_id, "rows_inserted": 0, "status": "no_valid_rows"}
+
+        ch = get_clickhouse_client()
+        column_names = [
+            "dt", "shop_id", "vendor_code", "nm_id",
+            "warehouse", "office_id", "warehouse_coef", "log_warehouse_coef",
+            "volume_liters", "calc_type", "warehouse_price",
+            "barcodes_count", "pallet_place_code", "pallet_count",
+            "original_date", "loyalty_discount",
+            "tariff_fix_date", "tariff_lower_date",
+            "gi_id", "barcode", "brand", "subject", "updated_at",
+        ]
+        ch.insert("mms_analytics.fact_wb_paid_storage", rows, column_names=column_names)
+        ch.close()
+
+        logger.info("sync_wb_paid_storage: shop=%s inserted %d rows (%s — %s)",
+                     shop_id, len(rows), date_from, date_to)
+        return {
+            "shop_id": shop_id,
+            "rows_inserted": len(rows),
+            "api_items": len(items),
+            "period": f"{date_from} — {date_to}",
+            "status": "completed",
+        }
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, queue="sync", time_limit=1800, soft_time_limit=1700)
+def backfill_wb_paid_storage(
+    self,
+    shop_id: int,
+    api_key: str,
+    months: int = 3,
+):
+    """
+    One-time backfill: load paid storage history for last N months.
+
+    Splits into 7-day chunks, sequentially creates → polls → downloads.
+    Can run up to 30 minutes due to polling delays.
+    Queue: SYNC.
+    """
+    import asyncio
+    import logging
+    from datetime import date, timedelta
+    from app.core.clickhouse import get_clickhouse_client
+    from app.services.wb_paid_storage_service import WBPaidStorageService
+
+    logger = logging.getLogger(__name__)
+    logger.info("backfill_wb_paid_storage: shop=%s months=%d starting", shop_id, months)
+
+    async def run_backfill():
+        service = WBPaidStorageService(api_key=api_key)
+
+        date_to = date.today() - timedelta(days=1)
+        date_from = date_to - timedelta(days=months * 30)
+
+        self.update_state(state="PROGRESS", meta={
+            "status": f"Backfilling paid storage {date_from} — {date_to}...",
+            "shop_id": shop_id,
+            "months": months,
+        })
+
+        def on_progress(chunk, total, items):
+            self.update_state(state="PROGRESS", meta={
+                "status": f"Chunk {chunk}/{total}: {items} items so far...",
+                "shop_id": shop_id,
+            })
+
+        items = await service.fetch_date_range(date_from, date_to, on_progress=on_progress)
+        if not items:
+            logger.warning("backfill_wb_paid_storage: shop=%s no data", shop_id)
+            return {"shop_id": shop_id, "rows_inserted": 0, "status": "no_data"}
+
+        rows = service.prepare_ch_rows(items, shop_id)
+        if not rows:
+            return {"shop_id": shop_id, "rows_inserted": 0, "status": "no_valid_rows"}
+
+        ch = get_clickhouse_client()
+        column_names = [
+            "dt", "shop_id", "vendor_code", "nm_id",
+            "warehouse", "office_id", "warehouse_coef", "log_warehouse_coef",
+            "volume_liters", "calc_type", "warehouse_price",
+            "barcodes_count", "pallet_place_code", "pallet_count",
+            "original_date", "loyalty_discount",
+            "tariff_fix_date", "tariff_lower_date",
+            "gi_id", "barcode", "brand", "subject", "updated_at",
+        ]
+        ch.insert("mms_analytics.fact_wb_paid_storage", rows, column_names=column_names)
+        ch.close()
+
+        logger.info("backfill_wb_paid_storage: shop=%s inserted %d rows (%s — %s)",
+                     shop_id, len(rows), date_from, date_to)
+        return {
+            "shop_id": shop_id,
+            "rows_inserted": len(rows),
+            "api_items": len(items),
+            "period": f"{date_from} — {date_to}",
+            "months": months,
+            "status": "completed",
+        }
+
+    try:
+        return asyncio.run(run_backfill())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)
 
 
 # ====================

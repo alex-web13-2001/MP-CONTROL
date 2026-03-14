@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import WBWarehouseAnalyticsContent from './WBWarehouseAnalyticsContent'
 import {
   Warehouse,
   BarChart3,
@@ -1609,11 +1610,27 @@ export default function WarehouseAnalyticsPage() {
 
   if (!currentShop) return null
 
+  const isWB = currentShop?.marketplace === 'wildberries'
+
+  if (isWB) {
+    return (
+      <div className="space-y-6 pb-10">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Аналитика складов</h1>
+          <p className="text-[hsl(var(--muted-foreground))] mt-1">
+            Распределение стоков, кросс-отправки и расходы по складам Wildberries
+          </p>
+        </div>
+        <WBWarehouseAnalyticsContent shopId={currentShop.id} />
+      </div>
+    )
+  }
+
   if (!isOzon) {
     return (
       <div className="flex flex-col items-center justify-center py-20 space-y-4">
         <Ban className="h-16 w-16 text-[hsl(var(--muted-foreground))] opacity-30" />
-        <p className="text-lg text-[hsl(var(--muted-foreground))]">Аналитика складов доступна только для магазинов Ozon</p>
+        <p className="text-lg text-[hsl(var(--muted-foreground))]">Аналитика складов недоступна для данного маркетплейса</p>
       </div>
     )
   }

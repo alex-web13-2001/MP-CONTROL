@@ -1,3 +1,84 @@
+## 2026-03-14 (v3)
+
+### feat(warehouses): WB Paid Storage API — фактические данные хранения по SKU
+
+**ClickHouse** (`docker/clickhouse/migrations/004_add_wb_paid_storage.sql`):
+- Новая таблица `fact_wb_paid_storage` — ежедневные данные хранения по SKU × склад × тип расчёта
+- `shop_id` в ORDER BY — привязка к магазину как везде в системе
+- `warehouse_price` — фактическая сумма (может быть отрицательной для скидок WB)
+- `calc_type` — различает основное хранение, скидки на остаток/период поставки
+
+**Backend** (`wb_paid_storage_service.py`):
+- `WBPaidStorageService` — create→poll→download цикл для WB Report API
+- Автоматическая разбивка по 7-дневным чанкам (лимит API = 8 дней)
+- `prepare_ch_rows()` — конвертация API-ответа в CH rows с `shop_id`
+
+**Celery** (`tasks.py`):
+- `sync_wb_paid_storage` — ежедневная задача, 7 дней назад, queue=sync
+- `backfill_wb_paid_storage` — одноразовый бэкфилл за N месяцев
+- `sync_all_daily` обновлён — `sync_wb_paid_storage` включён для всех WB-магазинов
+
+**ИИ-анализ** (`warehouses.py`):
+- Гибридная логика `est_storage_month`: приоритетно фактические данные из `fact_wb_paid_storage`, fallback на тарифную оценку
+- `storage_source: "actual" | "estimated"` — источник данных для каждого SKU
+- `has_actual_storage` + `actual_storage_skus` — метаданные в AI response
+- Prompt обновлён: «факт» vs «оценка» для прозрачности
+
+---
+
+## 2026-03-14 (v2)
+
+### feat(warehouses): ИИ-анализ складов v2 — P&L + перераспределение + параллельные запросы
+
+**Backend** (`warehouses.py`):
+- Два специализированных Gemini-промпта вместо одного:
+  - **Промпт 1 (SKU problems)**: сценарный анализ по каждому проблемному SKU с вариантами: `discount`, `launch_ads` (для оборачиваемости), `withdraw`, `do_nothing`, `reduce_supply`
+  - **Промпт 2 (Redistribution)**: конкретные рекомендации по перемещению товаров между складами (`transfers[]` с `from_warehouse`, `destinations[]`, `keep_at_source`, `expected_effect`)
+- **P&L обогащение**: для каждого SKU подтягиваются данные из `fact_finances`: revenue, payout, logistics, storage_fact, deductions, cogs → `net_profit` (чистая прибыль)
+- **Параллельные Gemini API вызовы** через `asyncio.gather()` — ~2x быстрее
+- **Исправлен ClickHouse SQL**: разбит сложный JOIN-запрос warehouse summary на 4 простых запроса (stock per warehouse, orders per warehouse, stock per nm_id, orders per nm_id) → мержатся в Python. Устранена ошибка `Correlated subqueries are not supported in JOINs yet`
+- Кеширование с TTL 6ч для обоих промптов
+- Новый формат ответа: `sku_actions[]` (с `net_profit_month`), `transfers[]` (с `destinations[]`), `general_tips[]`, `supply_tip`
+
+**Frontend** (`warehouses.ts`, `WBWarehouseAnalyticsContent.tsx`):
+- Новые TypeScript интерфейсы: `AITransfer`, `AITransferDestination`, обновлён `AISkuAction` (+`net_profit_month`), `AISkuOption` (`launch_ads` вместо `advertise`)
+- Компонент `WarehouseAIInsight` переписан на 3 визуальных блока:
+  1. **Проблемные товары**: expandable карточки SKU с P&L данными (хранение, чист. прибыль), grid сценариев (discount/ads/withdraw/do_nothing)
+  2. **Перераспределение**: таблица трансферов (склад-источник → склады-получатели с qty, причиной, эффектом)
+  3. **Supply tip**: рекомендация по поставке + кнопка-ссылка на раздел Поставки
+- Увеличены шрифты: 13-14px основной текст, 14px заголовки сценариев
+- Удалён `advertise` action (заменён на `launch_ads` — контекст оборачиваемости)
+- 3 KPI карточки: Кросс-логистика, Избыточное хранение, Потенциал экономии
+
+---
+
+## 2026-03-14
+
+### feat(warehouses): ИИ-анализ складов → сценарный формат по SKU
+
+
+**Backend** (`warehouses.py`):
+- Полностью переписан AI system prompt: вместо общих рекомендаций → детальный сценарный анализ по каждому проблемному SKU
+- Новый формат ответа: `sku_actions[]` (vendor_code, problem, options[]), `warehouse_tips[]`, `supply_tip`
+- Каждый SKU получает 2-3 опции: `discount`, `advertise`, `redistribute`, `withdraw`, `do_nothing`, `reduce_supply`
+- Опции включают: label, detail (с расчётами DRR, маржи, прогнозом продаж), expected_savings, risk (low/medium/high)
+- ИИ указывает `recommended_option` — индекс лучшего варианта
+- Новый SQL запрос: per-warehouse stock distribution (nm_id × warehouse_name из fact_inventory_snapshot)
+- Обогащённый SKU-контекст: цена, себестоимость, маржа (руб/%), estimated_storage_cost/month, warehouse_distribution{}
+- Запрещены рекомендации по рекламе/ценам вне складского контекста
+
+**Frontend** (`warehouses.ts`, `WBWarehouseAnalyticsContent.tsx`):
+- Новые TypeScript интерфейсы: `AISkuAction`, `AISkuOption`, `AIWarehouseTip`
+- Компонент `WarehouseAIInsight` переписан:
+  - Expandable карточки SKU с vendor_code, problem, storage_cost/month
+  - Grid сценариев внутри каждого SKU: иконка + label + detail + risk badge + savings
+  - Рекомендуемый вариант выделен зелёной рамкой + бейджем «✓ Рекомендуем»
+  - Блок «По складам» с конкретными советами по перераспределению
+  - Supply tip с кнопкой-ссылкой на раздел Поставки (корректный shop_id)
+  - Auto-expand первых 2 SKU карточек
+
+---
+
 ## 2026-03-13
 
 ### feat(warehouses): WB — кросс-складской анализ расхода стока
