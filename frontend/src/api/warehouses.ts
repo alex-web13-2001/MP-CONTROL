@@ -534,21 +534,28 @@ export interface WBStorageSku {
   vol_liters: number
   total_stock: number
   est_cost_month: number
+  est_monthly_cost: number
   storage_source: 'actual' | 'estimated'
   forecast_30d: number | null
   daily_sales: number
   daily_cost: number | null
   days_to_sell: number | null
-  warehouses: { warehouse: string; stock: number; stor_base: number; cost_month: number; source: string }[]
+  zone: 'paid' | 'warning' | 'free'
+  turnover_days: number | null
+  revenue_period: number
+  ad_info: { has_ads: boolean; spend_30d: number; orders_30d: number } | null
+  recommendation: { action: string; reason: string; severity: string } | null
+  warehouses: { warehouse_name: string; warehouse: string; stock: number; stor_base: number; cost_month: number; source: string }[]
 }
 
 export interface WBRecommendation {
   type: string
-  severity: 'high' | 'medium' | 'low'
+  severity: 'high' | 'medium' | 'low' | 'critical'
   title: string
   reason: string
   impact?: string
   action_items: string[]
+  affected_skus?: string[]
   warehouse: string
 }
 
@@ -568,6 +575,55 @@ export async function getWBWarehouseAnalytics(params: {
   period?: number
 }): Promise<WBWarehouseAnalyticsResponse> {
   const { data } = await apiClient.get<WBWarehouseAnalyticsResponse>('/warehouses/wb/analytics', { params })
+  return data
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// WB Sales Geography
+// ═══════════════════════════════════════════════════════════
+
+export interface WBGeographyRegion {
+  region: string
+  orders: number
+  revenue: number
+  share_pct: number
+}
+
+export interface WBGeographyOkrug {
+  okrug: string
+  orders: number
+  revenue: number
+  share_pct: number
+  regions: WBGeographyRegion[]
+}
+
+export interface WBGeographyProduct {
+  nm_id: number
+  vendor_code: string
+  name: string
+  orders: number
+  revenue: number
+  okrug_count: number
+  share_pct: number
+}
+
+export interface WBGeographyResponse {
+  total_orders: number
+  total_revenue: number
+  period_days: number
+  regions: WBGeographyOkrug[]
+  top_products: WBGeographyProduct[]
+  okrug_top_products: Record<string, WBGeographyProduct[]>
+  sku_filter: { nm_id: number; vendor_code: string; name: string } | null
+}
+
+export async function getWBGeography(params: {
+  shop_id: number
+  period?: number
+  nm_id?: number
+}): Promise<WBGeographyResponse> {
+  const { data } = await apiClient.get<WBGeographyResponse>('/warehouses/wb/geography', { params })
   return data
 }
 
@@ -655,4 +711,3 @@ export async function getWBWarehouseAIAnalysis(params: {
   const { data } = await apiClient.get<AIWarehouseAnalysis>('/warehouses/wb/ai-analysis', { params })
   return data
 }
-

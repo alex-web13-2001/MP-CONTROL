@@ -5686,3 +5686,197 @@ async def get_wb_ai_analysis(
         logger.exception("AI warehouse analysis failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
 
+
+# ═══════════════════════════════════════════════════════════════
+# WB Sales Geography
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/wb/geography")
+async def get_wb_geography(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    nm_id: int = Query(None, description="Optional: filter by specific product nm_id"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """WB sales geography by federal district and region."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    nm_filter = ""
+    params: dict = {"shop_id": shop_id, "d_start": d_start}
+    if nm_id is not None:
+        nm_filter = "AND nm_id = {nm_id:UInt32}"
+        params["nm_id"] = nm_id
+
+    # ── 1. Orders by okrug + region ──
+    rows = ch.query(f"""
+        SELECT
+            oblast_okrug_name AS okrug,
+            region_name AS region,
+            count() AS orders,
+            sum(toFloat64(price_with_disc)) AS revenue,
+            sum(toFloat64(final_price)) AS revenue_final
+        FROM mms_analytics.fact_orders_raw FINAL
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND date >= {{d_start:Date}}
+          AND is_cancel = 0
+          {nm_filter}
+        GROUP BY okrug, region
+        ORDER BY orders DESC
+    """, parameters=params).result_rows
+
+    total_orders = sum(int(r[2]) for r in rows)
+    total_revenue = sum(float(r[3]) for r in rows)
+
+    # Group by okrug
+    okrug_data: dict[str, dict] = {}
+    for r in rows:
+        okrug = str(r[0]) or "Не определено"
+        region = str(r[1]) or "Не определено"
+        orders = int(r[2])
+        revenue = float(r[3])
+
+        if okrug not in okrug_data:
+            okrug_data[okrug] = {
+                "okrug": okrug,
+                "orders": 0,
+                "revenue": 0,
+                "share_pct": 0,
+                "regions": [],
+            }
+        okrug_data[okrug]["orders"] += orders
+        okrug_data[okrug]["revenue"] += revenue
+        okrug_data[okrug]["regions"].append({
+            "region": region,
+            "orders": orders,
+            "revenue": round(revenue, 2),
+            "share_pct": round(orders / total_orders * 100, 1) if total_orders > 0 else 0,
+        })
+
+    regions_result = []
+    for okrug_name, od in sorted(okrug_data.items(), key=lambda x: x[1]["orders"], reverse=True):
+        od["share_pct"] = round(od["orders"] / total_orders * 100, 1) if total_orders > 0 else 0
+        od["revenue"] = round(od["revenue"], 2)
+        od["regions"] = sorted(od["regions"], key=lambda x: x["orders"], reverse=True)
+        regions_result.append(od)
+
+    # ── 2. Top products (if no nm_id filter) ──
+    top_products = []
+    if nm_id is None:
+        prod_rows = ch.query(f"""
+            SELECT
+                nm_id,
+                count() AS orders,
+                sum(toFloat64(price_with_disc)) AS revenue,
+                count(DISTINCT oblast_okrug_name) AS okrug_count
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND date >= {{d_start:Date}}
+              AND is_cancel = 0
+            GROUP BY nm_id
+            ORDER BY orders DESC
+            LIMIT 50
+        """, parameters=params).result_rows
+
+        prod_nm_ids = [int(r[0]) for r in prod_rows]
+        prod_map: dict[int, dict] = {}
+        if prod_nm_ids:
+            nm_list = ", ".join(str(x) for x in prod_nm_ids)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT nm_id, vendor_code, name
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({nm_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"vendor_code": r[1] or "", "name": (r[2] or "")[:80]}
+
+        for r in prod_rows:
+            nm = int(r[0])
+            prod = prod_map.get(nm, {})
+            top_products.append({
+                "nm_id": nm,
+                "vendor_code": prod.get("vendor_code", ""),
+                "name": prod.get("name", ""),
+                "orders": int(r[1]),
+                "revenue": round(float(r[2]), 2),
+                "okrug_count": int(r[3]),
+                "share_pct": round(int(r[1]) / total_orders * 100, 1) if total_orders > 0 else 0,
+            })
+
+    # ── 3. Per-okrug top products ──
+    okrug_top_products: dict[str, list] = {}
+    if nm_id is None:
+        otop_rows = ch.query(f"""
+            SELECT
+                oblast_okrug_name AS okrug,
+                nm_id,
+                count() AS orders,
+                sum(toFloat64(price_with_disc)) AS revenue
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND date >= {{d_start:Date}}
+              AND is_cancel = 0
+            GROUP BY okrug, nm_id
+            ORDER BY okrug, orders DESC
+        """, parameters=params).result_rows
+
+        # Group and limit top 5 per okrug
+        current_okrug = ""
+        count = 0
+        for r in otop_rows:
+            okrug = str(r[0]) or "Не определено"
+            if okrug != current_okrug:
+                current_okrug = okrug
+                count = 0
+            count += 1
+            if count <= 5:
+                nm = int(r[1])
+                prod = prod_map.get(nm, {})
+                okrug_top_products.setdefault(okrug, []).append({
+                    "nm_id": nm,
+                    "vendor_code": prod.get("vendor_code", ""),
+                    "name": prod.get("name", ""),
+                    "orders": int(r[2]),
+                    "revenue": round(float(r[3]), 2),
+                })
+
+    # ── 4. SKU info (if nm_id filter is set) ──
+    sku_filter_info = None
+    if nm_id is not None:
+        sku_row = await db.execute(
+            text("SELECT nm_id, vendor_code, name FROM dim_products WHERE shop_id = :sid AND nm_id = :nm"),
+            {"sid": shop_id, "nm": nm_id},
+        )
+        sku = sku_row.fetchone()
+        if sku:
+            sku_filter_info = {
+                "nm_id": sku[0],
+                "vendor_code": sku[1] or "",
+                "name": (sku[2] or "")[:80],
+            }
+
+    ch.close()
+
+    return {
+        "total_orders": total_orders,
+        "total_revenue": round(total_revenue, 2),
+        "period_days": period,
+        "regions": regions_result,
+        "top_products": top_products,
+        "okrug_top_products": okrug_top_products,
+        "sku_filter": sku_filter_info,
+    }

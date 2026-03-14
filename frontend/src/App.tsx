@@ -17,6 +17,10 @@ import EventsPage from '@/pages/EventsPage'
 import EventsGraphPage from '@/pages/EventsGraphPage'
 import WarehouseSupplyPage from '@/pages/WarehouseSupplyPage'
 import WarehouseAnalyticsPage from '@/pages/WarehouseAnalyticsPage'
+import WarehousesOverviewPage from '@/pages/WarehousesOverviewPage'
+import WarehousesCrossPage from '@/pages/WarehousesCrossPage'
+import WarehousesStoragePage from '@/pages/WarehousesStoragePage'
+import WarehousesGeographyPage from '@/pages/WarehousesGeographyPage'
 
 export default function App() {
   return (
@@ -56,10 +60,11 @@ export default function App() {
           <Route path="/events" element={<EventsPage />} />
           <Route path="/events/graph" element={<EventsGraphPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          {/* Future routes will be added here:
-          <Route path="/funnel" element={<FunnelPage />} />
-          <Route path="/advertising" element={<AdvertisingPage />} />
-          */}
+          {/* Warehouses */}
+          <Route path="/warehouses/overview" element={<WarehousesOverviewPage />} />
+          <Route path="/warehouses/cross" element={<WarehousesCrossPage />} />
+          <Route path="/warehouses/storage" element={<WarehousesStoragePage />} />
+          <Route path="/warehouses/geography" element={<WarehousesGeographyPage />} />
           <Route path="/warehouses/supply" element={<WarehouseSupplyPage />} />
           <Route path="/warehouses/analytics" element={<WarehouseAnalyticsPage />} />
         </Route>
@@ -67,3 +72,4 @@ export default function App() {
     </BrowserRouter>
   )
 }
+

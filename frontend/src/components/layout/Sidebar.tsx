@@ -18,6 +18,8 @@ import {
   Grid3X3,
   LineChart,
   Users,
+  ArrowRightLeft,
+  Globe,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -59,8 +61,11 @@ const navSections: NavSection[] = [
       },
       { path: '/funnel', label: 'Воронка', icon: BarChart3 },
       { path: '/warehouses', label: 'Склады', icon: Warehouse, children: [
+          { path: '/warehouses/overview', label: 'Обзор', icon: BarChart3 },
+          { path: '/warehouses/cross', label: 'Кросс-логистика', icon: ArrowRightLeft },
+          { path: '/warehouses/storage', label: 'Хранение', icon: Package },
+          { path: '/warehouses/geography', label: 'География продаж', icon: Globe },
           { path: '/warehouses/supply', label: 'Поставки', icon: TrendingUp },
-          { path: '/warehouses/analytics', label: 'Аналитика складов', icon: BarChart3 },
         ] },
       { path: '/finances', label: 'Финансы', icon: DollarSign },
       {
