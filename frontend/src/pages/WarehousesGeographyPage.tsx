@@ -30,7 +30,6 @@ import {
   searchGeographyProducts,
   type WBGeographyResponse,
   type WBGeographyOkrug,
-  type WBGeographyRegion,
   type WBGeographyProduct,
   type WBGeographySkuInfo,
   type WBRegionProductsResponse,
@@ -367,77 +366,69 @@ function OkrugsTable({
                             Регионы ({ok.regions.length})
                           </h3>
                           <div className="rounded-xl border border-[hsl(var(--border)/0.5)] overflow-hidden max-h-[400px] overflow-auto">
-                            <table className="w-full text-[12px]">
-                              <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
-                                <tr className="border-b border-[hsl(var(--border))]">
-                                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Регион</th>
-                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Заказов</th>
-                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Выручка</th>
-                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Ср. чек</th>
-                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Стабил.</th>
-                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Доля</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {ok.regions.map((reg) => {
-                                  const isRegExpanded = expandedRegion === reg.region
-                                  return (
-                                    <tr key={reg.region}>
-                                      <td colSpan={6} className="p-0">
-                                        <button
-                                          onClick={() => handleRegionClick(reg.region)}
-                                          className={`w-full text-left flex items-center hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.05)]' : ''}`}
-                                        >
-                                          <td className="px-3 py-2 flex items-center gap-1.5 font-medium">
-                                            {isRegExpanded ? <ChevronDown className="h-3 w-3 text-[hsl(var(--primary))]" /> : <ChevronRight className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />}
-                                            <span className="line-clamp-1">{reg.region}</span>
-                                          </td>
-                                          <td className="px-2 py-2 text-right tabular-nums w-[60px]">{fmt(reg.orders)}</td>
-                                          <td className="px-2 py-2 text-right tabular-nums w-[80px]">{fmtM(reg.revenue)}</td>
-                                          <td className="px-2 py-2 text-right tabular-nums w-[70px]">{fmtM(reg.avg_check)}</td>
-                                          <td className="px-2 py-2 text-right w-[60px]">
-                                            <span className={`text-[11px] font-semibold tabular-nums ${reg.stability_pct >= 80 ? 'text-emerald-400' : reg.stability_pct >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
-                                              {reg.stability_pct.toFixed(0)}%
-                                            </span>
-                                          </td>
-                                          <td className="px-2 py-2 text-right tabular-nums w-[50px] text-[hsl(var(--muted-foreground))]">{reg.share_pct}%</td>
-                                        </button>
-                                        {/* Region drill-down: top products */}
-                                        {isRegExpanded && (
-                                          <div className="px-6 py-3 bg-[hsl(var(--muted)/0.04)] border-t border-b border-[hsl(var(--border)/0.2)]">
-                                            {regionLoading ? (
-                                              <div className="flex items-center gap-2 py-3 text-[hsl(var(--muted-foreground))]">
-                                                <Loader2 className="h-4 w-4 animate-spin" />
-                                                <span className="text-[12px]">Загрузка...</span>
-                                              </div>
-                                            ) : regionProducts && regionProducts.products.length > 0 ? (
-                                              <div>
-                                                <div className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-2">
-                                                  Топ товары · {reg.region}
-                                                </div>
-                                                <div className="space-y-1.5">
-                                                  {regionProducts.products.slice(0, 10).map((p, i) => (
-                                                    <div key={p.nm_id} className="flex items-center gap-3 text-[12px]">
-                                                      <span className="w-5 text-[hsl(var(--muted-foreground))] text-right shrink-0">{i + 1}.</span>
-                                                      <span className="flex-1 min-w-0 truncate font-medium">{p.name || p.vendor_code || `#${p.nm_id}`}</span>
-                                                      <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0">{fmt(p.orders)} зак.</span>
-                                                      <span className="tabular-nums font-semibold shrink-0 w-[80px] text-right">{fmtM(p.revenue)}</span>
-                                                      <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0 w-[60px] text-right">{fmtM(p.avg_check)}</span>
-                                                    </div>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            ) : (
-                                              <div className="text-[12px] text-[hsl(var(--muted-foreground))] py-2">Нет данных</div>
-                                            )}
+                            {/* Header */}
+                            <div className="grid grid-cols-[1fr_70px_90px_80px_60px_50px] px-3 py-2 border-b border-[hsl(var(--border))] bg-[hsl(var(--card))] sticky top-0 z-10">
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Регион</span>
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] text-right">Заказов</span>
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] text-right">Выручка</span>
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] text-right">Ср. чек</span>
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] text-right">Стабил.</span>
+                              <span className="text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] text-right">Доля</span>
+                            </div>
+                            {/* Rows */}
+                            {ok.regions.map((reg) => {
+                              const isRegExpanded = expandedRegion === reg.region
+                              return (
+                                <div key={reg.region}>
+                                  <button
+                                    onClick={() => handleRegionClick(reg.region)}
+                                    className={`w-full grid grid-cols-[1fr_70px_90px_80px_60px_50px] items-center px-3 py-2 text-[12px] border-b border-[hsl(var(--border)/0.15)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.05)]' : ''}`}
+                                  >
+                                    <span className="flex items-center gap-1.5 font-medium text-left min-w-0">
+                                      {isRegExpanded ? <ChevronDown className="h-3 w-3 shrink-0 text-[hsl(var(--primary))]" /> : <ChevronRight className="h-3 w-3 shrink-0 text-[hsl(var(--muted-foreground)/0.4)]" />}
+                                      <span className="truncate">{reg.region}</span>
+                                    </span>
+                                    <span className="text-right tabular-nums">{fmt(reg.orders)}</span>
+                                    <span className="text-right tabular-nums">{fmtM(reg.revenue)}</span>
+                                    <span className="text-right tabular-nums">{fmtM(reg.avg_check)}</span>
+                                    <span className={`text-right text-[11px] font-semibold tabular-nums ${reg.stability_pct >= 80 ? 'text-emerald-400' : reg.stability_pct >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+                                      {reg.stability_pct.toFixed(0)}%
+                                    </span>
+                                    <span className="text-right tabular-nums text-[hsl(var(--muted-foreground))]">{reg.share_pct}%</span>
+                                  </button>
+                                  {/* Region drill-down: top products */}
+                                  {isRegExpanded && (
+                                    <div className="px-6 py-3 bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.2)]">
+                                      {regionLoading ? (
+                                        <div className="flex items-center gap-2 py-3 text-[hsl(var(--muted-foreground))]">
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          <span className="text-[12px]">Загрузка...</span>
+                                        </div>
+                                      ) : regionProducts && regionProducts.products.length > 0 ? (
+                                        <div>
+                                          <div className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-2">
+                                            Топ товары · {reg.region}
                                           </div>
-                                        )}
-                                      </td>
-                                    </tr>
-                                  )
-                                })}
-                              </tbody>
-                            </table>
+                                          <div className="space-y-1.5">
+                                            {regionProducts.products.slice(0, 10).map((p, i) => (
+                                              <div key={p.nm_id} className="flex items-center gap-3 text-[12px]">
+                                                <span className="w-5 text-[hsl(var(--muted-foreground))] text-right shrink-0">{i + 1}.</span>
+                                                <span className="flex-1 min-w-0 truncate font-medium">{p.name || p.vendor_code || `#${p.nm_id}`}</span>
+                                                <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0">{fmt(p.orders)} зак.</span>
+                                                <span className="tabular-nums font-semibold shrink-0 w-[80px] text-right">{fmtM(p.revenue)}</span>
+                                                <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0 w-[60px] text-right">{fmtM(p.avg_check)}</span>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="text-[12px] text-[hsl(var(--muted-foreground))] py-2">Нет данных</div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
                           </div>
                         </div>
 
