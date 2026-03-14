@@ -1,30 +1,39 @@
 /**
- * Warehouses Geography — Sales geography by region/city.
- * WB: Shows sales by federal district + region, top products, search by SKU.
- * Ozon: redirects to /warehouses/analytics.
+ * WarehousesGeographyPage — Sales geography with multi-SKU combobox,
+ * stability metrics, drill-down by region, top products.
  */
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Navigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Globe,
   RefreshCw,
   AlertTriangle,
-  ChevronRight,
-  Search,
   MapPin,
-  Package,
-  TrendingUp,
+  ChevronRight,
+  ChevronDown,
   X,
+  Search,
+  ShoppingCart,
+  DollarSign,
+  BarChart3,
+  Activity,
+  Package,
+  Loader2,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import {
   getWBGeography,
+  getWBGeographyRegionProducts,
+  searchGeographyProducts,
   type WBGeographyResponse,
   type WBGeographyOkrug,
+  type WBGeographyRegion,
   type WBGeographyProduct,
+  type WBGeographySkuInfo,
+  type WBRegionProductsResponse,
 } from '@/api/warehouses'
 
 /* ── Helpers ── */
@@ -40,224 +49,423 @@ const PERIOD_OPTIONS = [
   { label: '90 дн', value: 90 },
 ]
 
-/* ═══ KPI Summary ═══ */
-function GeographyKpi({ data }: { data: WBGeographyResponse }) {
-  const topOkrug = data.regions[0]
-  const avgRevenuePerOrder = data.total_orders > 0 ? data.total_revenue / data.total_orders : 0
+/* ── Stability badge ── */
+function StabilityBadge({ pct }: { pct: number }) {
+  const color = pct >= 90 ? 'bg-emerald-500/15 text-emerald-400' :
+    pct >= 50 ? 'bg-amber-500/15 text-amber-400' :
+    'bg-red-500/15 text-red-400'
+  const label = pct >= 90 ? 'Стабильный' : pct >= 50 ? 'Средний' : 'Нестабильный'
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${color}`}>
+      <Activity className="h-3 w-3" />
+      {pct.toFixed(0)}% · {label}
+    </span>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Product Combobox — multi-select with autocomplete
+   ═══════════════════════════════════════════════════════════ */
+
+function ProductCombobox({
+  shopId,
+  selected,
+  onSelect,
+  onRemove,
+  onClear,
+}: {
+  shopId: number
+  selected: WBGeographySkuInfo[]
+  onSelect: (p: WBGeographySkuInfo) => void
+  onRemove: (nmId: number) => void
+  onClear: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [options, setOptions] = useState<WBGeographySkuInfo[]>([])
+  const [loading, setLoading] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+
+  // Search with debounce
+  useEffect(() => {
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(async () => {
+      setLoading(true)
+      try {
+        const res = await searchGeographyProducts({ shop_id: shopId, q: search })
+        setOptions(res.products)
+      } catch {
+        setOptions([])
+      } finally {
+        setLoading(false)
+      }
+    }, 300)
+    return () => clearTimeout(timerRef.current)
+  }, [search, shopId])
+
+  // Close on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const selectedIds = new Set(selected.map(s => s.nm_id))
+  const filteredOptions = options.filter(o => !selectedIds.has(o.nm_id))
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-      <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">
-          Всего заказов
-        </div>
-        <div className="text-2xl font-bold tabular-nums">{fmt(data.total_orders)}</div>
-        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">за {data.period_days} дней</div>
+    <div ref={dropdownRef} className="relative flex-1 min-w-0">
+      {/* Input area with chips */}
+      <div
+        className="flex flex-wrap items-center gap-1.5 px-3 py-2 min-h-[44px] rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] cursor-text transition-all focus-within:ring-2 focus-within:ring-[hsl(var(--primary)/0.3)]"
+        onClick={() => { inputRef.current?.focus(); setOpen(true) }}
+      >
+        <Search className="h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)]" />
+        {selected.map(s => (
+          <span
+            key={s.nm_id}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))] text-[12px] font-medium max-w-[200px] truncate"
+          >
+            {s.vendor_code || `#${s.nm_id}`}
+            <X
+              className="h-3 w-3 cursor-pointer hover:text-red-400 shrink-0"
+              onClick={(e) => { e.stopPropagation(); onRemove(s.nm_id) }}
+            />
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder={selected.length === 0 ? 'Поиск по артикулу, названию или nm_id...' : 'Ещё...'}
+          className="flex-1 min-w-[80px] bg-transparent text-[13px] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] outline-none"
+        />
+        {selected.length > 0 && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onClear() }}
+            className="shrink-0 text-[hsl(var(--muted-foreground)/0.5)] hover:text-red-400 transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
       </div>
-      <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">
-          Выручка
-        </div>
-        <div className="text-2xl font-bold tabular-nums text-emerald-400">{fmtM(data.total_revenue)}</div>
-        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">≈{fmtM(avgRevenuePerOrder)}/заказ</div>
-      </div>
-      <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">
-          Округов
-        </div>
-        <div className="text-2xl font-bold tabular-nums">{data.regions.length}</div>
-        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">с заказами</div>
-      </div>
-      <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-        <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1">
-          Топ округ
-        </div>
-        <div className="text-lg font-bold truncate">{topOkrug?.okrug?.replace(' федеральный округ', '') || '—'}</div>
-        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-          {topOkrug ? `${topOkrug.share_pct}% заказов` : ''}
-        </div>
-      </div>
+
+      {/* Dropdown */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="absolute z-50 mt-1 w-full max-h-[280px] overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
+          >
+            {loading ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="h-5 w-5 animate-spin text-[hsl(var(--muted-foreground))]" />
+              </div>
+            ) : filteredOptions.length > 0 ? (
+              filteredOptions.map(opt => (
+                <button
+                  key={opt.nm_id}
+                  onClick={() => { onSelect(opt); setSearch(''); }}
+                  className="w-full text-left px-4 py-2.5 hover:bg-[hsl(var(--muted)/0.1)] transition-colors border-b border-[hsl(var(--border)/0.2)] last:border-0"
+                >
+                  <div className="text-[13px] font-medium text-[hsl(var(--foreground))] line-clamp-1">
+                    {opt.name || `Товар #${opt.nm_id}`}
+                  </div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                    {opt.vendor_code && <span className="font-semibold">{opt.vendor_code}</span>}
+                    {opt.vendor_code && ' · '}
+                    nm_id: {opt.nm_id}
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="px-4 py-6 text-center text-[13px] text-[hsl(var(--muted-foreground))]">
+                {search ? 'Ничего не найдено' : 'Нет товаров'}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
 
-/* ═══ Okrug Distribution Bar ═══ */
-function OkrugDistributionBar({ regions }: { regions: WBGeographyOkrug[] }) {
-  const colors = [
-    'bg-blue-500', 'bg-emerald-500', 'bg-violet-500', 'bg-amber-500',
-    'bg-cyan-500', 'bg-rose-500', 'bg-indigo-500', 'bg-orange-500',
-    'bg-teal-500', 'bg-pink-500',
+/* ═══════════════════════════════════════════════════════════
+   KPI Cards
+   ═══════════════════════════════════════════════════════════ */
+
+function GeographyKpiCards({ data }: { data: WBGeographyResponse }) {
+  const kpis = [
+    { label: 'Всего заказов', value: fmt(data.total_orders), icon: ShoppingCart, color: 'text-blue-400' },
+    { label: 'Выручка', value: fmtM(data.total_revenue), icon: DollarSign, color: 'text-emerald-400' },
+    { label: 'Средний чек', value: fmtM(data.avg_check), icon: BarChart3, color: 'text-purple-400' },
+    { label: 'Охват', value: `${data.total_okrugs} ФО · ${data.total_regions} рег.`, icon: Globe, color: 'text-cyan-400' },
   ]
-
-  const totalOrders = regions.reduce((s, r) => s + r.orders, 0)
-  if (totalOrders === 0) return null
-
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-      <Card>
-        <CardContent className="p-5">
-          <h3 className="text-sm font-semibold text-[hsl(var(--muted-foreground))] mb-3">Распределение по округам</h3>
-          <div className="flex rounded-lg overflow-hidden h-5">
-            {regions.map((r, i) => (
-              <div
-                key={r.okrug}
-                className={`${colors[i % colors.length]} relative group transition-all hover:brightness-110`}
-                style={{ width: `${r.share_pct}%` }}
-                title={`${r.okrug}: ${r.share_pct}%`}
-              >
-                {r.share_pct > 8 && (
-                  <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white">
-                    {r.share_pct}%
-                  </span>
-                )}
-              </div>
-            ))}
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {kpis.map((k) => (
+          <div key={k.label} className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+            <div className="flex items-center gap-2 mb-1">
+              <k.icon className={`h-4 w-4 ${k.color}`} />
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">{k.label}</span>
+            </div>
+            <div className="text-2xl font-bold tabular-nums">{k.value}</div>
           </div>
-          <div className="flex flex-wrap gap-3 mt-3">
-            {regions.map((r, i) => (
-              <div key={r.okrug} className="flex items-center gap-1.5 text-[11px]">
-                <span className={`w-2.5 h-2.5 rounded-sm ${colors[i % colors.length]}`} />
-                <span className="text-[hsl(var(--muted-foreground))]">
-                  {r.okrug.replace(' федеральный округ', '')} — {r.share_pct}%
-                </span>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+        ))}
+      </div>
     </motion.div>
   )
 }
 
-/* ═══ Regions Table (expandable) ═══ */
-function RegionsTable({
-  regions,
+/* ═══════════════════════════════════════════════════════════
+   Okrugs Table with drill-down
+   ═══════════════════════════════════════════════════════════ */
+
+function OkrugsTable({
+  okrugs,
   okrugTopProducts,
-  onSelectProduct,
+  shopId,
+  period,
 }: {
-  regions: WBGeographyOkrug[]
+  okrugs: WBGeographyOkrug[]
   okrugTopProducts: Record<string, WBGeographyProduct[]>
-  onSelectProduct: (nm_id: number) => void
+  shopId: number
+  period: number
 }) {
   const [expandedOkrug, setExpandedOkrug] = useState<string | null>(null)
+  const [expandedRegion, setExpandedRegion] = useState<string | null>(null)
+  const [regionProducts, setRegionProducts] = useState<WBRegionProductsResponse | null>(null)
+  const [regionLoading, setRegionLoading] = useState(false)
+
+  const handleOkrugClick = (okrug: string) => {
+    setExpandedOkrug(prev => prev === okrug ? null : okrug)
+    setExpandedRegion(null)
+    setRegionProducts(null)
+  }
+
+  const handleRegionClick = async (region: string) => {
+    if (expandedRegion === region) {
+      setExpandedRegion(null)
+      setRegionProducts(null)
+      return
+    }
+    setExpandedRegion(region)
+    setRegionLoading(true)
+    try {
+      const res = await getWBGeographyRegionProducts({ shop_id: shopId, period, region })
+      setRegionProducts(res)
+    } catch {
+      setRegionProducts(null)
+    } finally {
+      setRegionLoading(false)
+    }
+  }
+
+  const maxOrders = Math.max(...okrugs.map(o => o.orders), 1)
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+        <div className="px-6 py-5 border-b border-[hsl(var(--border))]">
           <h2 className="text-xl font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
-            <MapPin className="h-5 w-5 text-blue-400" />
-            Регионы
+            <MapPin className="h-5 w-5 text-purple-400" />
+            Федеральные округа
           </h2>
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            Нажмите для детализации по городам и товарам
-          </span>
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
+            Нажмите на округ → регионы; нажмите на регион → топ товары
+          </p>
         </div>
 
-        <div className="overflow-auto max-h-[600px]">
-          {regions.map((okrug) => {
-            const isExpanded = expandedOkrug === okrug.okrug
-            const topProds = okrugTopProducts[okrug.okrug] || []
-
+        <div className="divide-y divide-[hsl(var(--border)/0.3)]">
+          {okrugs.map((ok) => {
+            const isExpanded = expandedOkrug === ok.okrug
+            const barPct = ok.orders / maxOrders * 100
+            const topProds = okrugTopProducts[ok.okrug] || []
             return (
-              <div key={okrug.okrug} className="border-b border-[hsl(var(--border)/0.15)]">
+              <div key={ok.okrug}>
                 {/* Okrug row */}
-                <div
-                  className={`flex items-center gap-4 px-6 py-4 cursor-pointer transition-colors ${
-                    isExpanded ? 'bg-[hsl(var(--primary)/0.06)]' : 'hover:bg-[hsl(var(--muted)/0.08)]'
-                  }`}
-                  onClick={() => setExpandedOkrug(isExpanded ? null : okrug.okrug)}
+                <button
+                  onClick={() => handleOkrugClick(ok.okrug)}
+                  className="w-full text-left px-6 py-4 hover:bg-[hsl(var(--muted)/0.05)] transition-colors"
                 >
-                  <motion.div animate={{ rotate: isExpanded ? 90 : 0 }} transition={{ duration: 0.15 }}>
-                    <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
-                  </motion.div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[14px] font-semibold text-[hsl(var(--foreground))]">
-                      {okrug.okrug.replace(' федеральный округ', ' ФО')}
+                  <div className="flex items-center gap-4">
+                    {/* Expand icon */}
+                    <div className="shrink-0">
+                      {isExpanded ? (
+                        <ChevronDown className="h-4 w-4 text-[hsl(var(--primary))]" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+                      )}
                     </div>
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                      {okrug.regions.length} регионов
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-[14px] font-bold tabular-nums">{fmt(okrug.orders)}</div>
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">заказов</div>
-                  </div>
-                  <div className="text-right w-24">
-                    <div className="text-[14px] font-bold tabular-nums text-emerald-400">{fmtM(okrug.revenue)}</div>
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">выручка</div>
-                  </div>
-                  <div className="w-20 text-right">
-                    <div className={`text-[14px] font-bold tabular-nums ${
-                      okrug.share_pct > 20 ? 'text-blue-400' : 'text-[hsl(var(--foreground))]'
-                    }`}>
-                      {okrug.share_pct}%
-                    </div>
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">доля</div>
-                  </div>
-                </div>
 
-                {/* Expanded detail */}
+                    {/* Name + regions count */}
+                    <div className="w-[200px] shrink-0">
+                      <div className="text-[14px] font-bold">{ok.okrug}</div>
+                      <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{ok.regions.length} регионов</div>
+                    </div>
+
+                    {/* Progress bar */}
+                    <div className="flex-1 min-w-0">
+                      <div className="h-6 rounded-full bg-[hsl(var(--muted)/0.08)] overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-[hsl(var(--primary)/0.3)] to-[hsl(var(--primary)/0.15)]"
+                          style={{ width: `${barPct}%`, transition: 'width 0.5s ease' }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Metrics */}
+                    <div className="flex items-center gap-5 shrink-0">
+                      <div className="text-right w-[80px]">
+                        <div className="text-[12px] font-bold tabular-nums">{fmt(ok.orders)}</div>
+                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">заказов</div>
+                      </div>
+                      <div className="text-right w-[90px]">
+                        <div className="text-[12px] font-bold tabular-nums">{fmtM(ok.revenue)}</div>
+                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">выручка</div>
+                      </div>
+                      <div className="text-right w-[70px]">
+                        <div className="text-[12px] font-bold tabular-nums">{fmtM(ok.avg_check)}</div>
+                        <div className="text-[10px] text-[hsl(var(--muted-foreground))]">ср. чек</div>
+                      </div>
+                      <div className="w-[50px] text-right">
+                        <span className="text-[12px] font-bold text-[hsl(var(--primary))] tabular-nums">{ok.share_pct}%</span>
+                      </div>
+                      <div className="w-[110px]">
+                        <StabilityBadge pct={ok.stability_pct} />
+                      </div>
+                    </div>
+                  </div>
+                </button>
+
+                {/* Expanded: regions + top products */}
                 <AnimatePresence>
                   {isExpanded && (
                     <motion.div
                       initial={{ height: 0, opacity: 0 }}
                       animate={{ height: 'auto', opacity: 1 }}
                       exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
+                      transition={{ duration: 0.25 }}
                       className="overflow-hidden"
                     >
-                      <div className="bg-[hsl(var(--muted)/0.04)] border-t border-[hsl(var(--border)/0.2)] px-6 py-4">
-                        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
-                          {/* Regions */}
-                          <div>
-                            <h4 className="text-[13px] font-bold text-[hsl(var(--foreground))] mb-3 flex items-center gap-2">
-                              <Globe className="h-4 w-4 text-blue-400" />
-                              Города / регионы ({okrug.regions.length})
-                            </h4>
-                            <div className="space-y-1 max-h-[300px] overflow-y-auto">
-                              {okrug.regions.map((region) => (
-                                <div key={region.region} className="flex items-center gap-3 py-1.5 px-3 rounded-lg hover:bg-[hsl(var(--muted)/0.1)]">
-                                  <div className="flex-1 min-w-0">
-                                    <span className="text-[13px] font-medium truncate block">{region.region}</span>
-                                  </div>
-                                  <span className="text-[12px] tabular-nums font-semibold w-16 text-right">{fmt(region.orders)}</span>
-                                  <span className="text-[12px] tabular-nums text-emerald-400 w-20 text-right">{fmtM(region.revenue)}</span>
-                                  <span className="text-[11px] tabular-nums text-[hsl(var(--muted-foreground))] w-10 text-right">{region.share_pct}%</span>
-                                </div>
-                              ))}
-                            </div>
+                      <div className="px-6 pb-5 flex gap-4">
+                        {/* Left: Regions list */}
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-[12px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-3 pl-2">
+                            Регионы ({ok.regions.length})
+                          </h3>
+                          <div className="rounded-xl border border-[hsl(var(--border)/0.5)] overflow-hidden max-h-[400px] overflow-auto">
+                            <table className="w-full text-[12px]">
+                              <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
+                                <tr className="border-b border-[hsl(var(--border))]">
+                                  <th className="px-3 py-2 text-left text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Регион</th>
+                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Заказов</th>
+                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Выручка</th>
+                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Ср. чек</th>
+                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Стабил.</th>
+                                  <th className="px-2 py-2 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))]">Доля</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {ok.regions.map((reg) => {
+                                  const isRegExpanded = expandedRegion === reg.region
+                                  return (
+                                    <tr key={reg.region}>
+                                      <td colSpan={6} className="p-0">
+                                        <button
+                                          onClick={() => handleRegionClick(reg.region)}
+                                          className={`w-full text-left flex items-center hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.05)]' : ''}`}
+                                        >
+                                          <td className="px-3 py-2 flex items-center gap-1.5 font-medium">
+                                            {isRegExpanded ? <ChevronDown className="h-3 w-3 text-[hsl(var(--primary))]" /> : <ChevronRight className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />}
+                                            <span className="line-clamp-1">{reg.region}</span>
+                                          </td>
+                                          <td className="px-2 py-2 text-right tabular-nums w-[60px]">{fmt(reg.orders)}</td>
+                                          <td className="px-2 py-2 text-right tabular-nums w-[80px]">{fmtM(reg.revenue)}</td>
+                                          <td className="px-2 py-2 text-right tabular-nums w-[70px]">{fmtM(reg.avg_check)}</td>
+                                          <td className="px-2 py-2 text-right w-[60px]">
+                                            <span className={`text-[11px] font-semibold tabular-nums ${reg.stability_pct >= 80 ? 'text-emerald-400' : reg.stability_pct >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+                                              {reg.stability_pct.toFixed(0)}%
+                                            </span>
+                                          </td>
+                                          <td className="px-2 py-2 text-right tabular-nums w-[50px] text-[hsl(var(--muted-foreground))]">{reg.share_pct}%</td>
+                                        </button>
+                                        {/* Region drill-down: top products */}
+                                        {isRegExpanded && (
+                                          <div className="px-6 py-3 bg-[hsl(var(--muted)/0.04)] border-t border-b border-[hsl(var(--border)/0.2)]">
+                                            {regionLoading ? (
+                                              <div className="flex items-center gap-2 py-3 text-[hsl(var(--muted-foreground))]">
+                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                <span className="text-[12px]">Загрузка...</span>
+                                              </div>
+                                            ) : regionProducts && regionProducts.products.length > 0 ? (
+                                              <div>
+                                                <div className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-2">
+                                                  Топ товары · {reg.region}
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                  {regionProducts.products.slice(0, 10).map((p, i) => (
+                                                    <div key={p.nm_id} className="flex items-center gap-3 text-[12px]">
+                                                      <span className="w-5 text-[hsl(var(--muted-foreground))] text-right shrink-0">{i + 1}.</span>
+                                                      <span className="flex-1 min-w-0 truncate font-medium">{p.name || p.vendor_code || `#${p.nm_id}`}</span>
+                                                      <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0">{fmt(p.orders)} зак.</span>
+                                                      <span className="tabular-nums font-semibold shrink-0 w-[80px] text-right">{fmtM(p.revenue)}</span>
+                                                      <span className="tabular-nums text-[hsl(var(--muted-foreground))] shrink-0 w-[60px] text-right">{fmtM(p.avg_check)}</span>
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            ) : (
+                                              <div className="text-[12px] text-[hsl(var(--muted-foreground))] py-2">Нет данных</div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  )
+                                })}
+                              </tbody>
+                            </table>
                           </div>
+                        </div>
 
-                          {/* Top products for this okrug */}
-                          {topProds.length > 0 && (
-                            <div>
-                              <h4 className="text-[13px] font-bold text-[hsl(var(--foreground))] mb-3 flex items-center gap-2">
-                                <Package className="h-4 w-4 text-emerald-400" />
-                                Топ товары
-                              </h4>
-                              <div className="space-y-2">
-                                {topProds.map((p, i) => (
-                                  <div
-                                    key={p.nm_id}
-                                    className="flex items-center gap-3 p-2.5 rounded-xl bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)] cursor-pointer hover:border-[hsl(var(--primary)/0.5)] transition-colors"
-                                    onClick={(e) => { e.stopPropagation(); onSelectProduct(p.nm_id) }}
-                                  >
-                                    <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] w-4">{i + 1}</span>
+                        {/* Right: top products for this okrug */}
+                        {topProds.length > 0 && (
+                          <div className="w-[320px] shrink-0">
+                            <h3 className="text-[12px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-3">
+                              Топ товары · {ok.okrug}
+                            </h3>
+                            <div className="rounded-xl border border-[hsl(var(--border)/0.5)] divide-y divide-[hsl(var(--border)/0.2)]">
+                              {topProds.map((p, i) => (
+                                <div key={p.nm_id} className="px-3 py-2.5 hover:bg-[hsl(var(--muted)/0.05)] transition-colors">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] w-4 shrink-0">{i + 1}</span>
                                     <div className="flex-1 min-w-0">
-                                      <div className="text-[12px] font-medium truncate">{p.name || p.vendor_code}</div>
+                                      <div className="text-[12px] font-medium line-clamp-1">{p.name || `#${p.nm_id}`}</div>
                                       <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{p.vendor_code}</div>
                                     </div>
                                     <div className="text-right shrink-0">
                                       <div className="text-[12px] font-bold tabular-nums">{fmt(p.orders)}</div>
-                                      <div className="text-[10px] text-emerald-400 tabular-nums">{fmtM(p.revenue)}</div>
+                                      <div className="text-[10px] text-[hsl(var(--muted-foreground))] tabular-nums">{fmtM(p.revenue)}</div>
                                     </div>
                                   </div>
-                                ))}
-                              </div>
+                                </div>
+                              ))}
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                     </motion.div>
                   )}
@@ -271,59 +479,79 @@ function RegionsTable({
   )
 }
 
-/* ═══ Top Products Table ═══ */
-function TopProductsTable({
-  products,
-  onSelectProduct,
-}: {
-  products: WBGeographyProduct[]
-  onSelectProduct: (nm_id: number) => void
-}) {
+/* ═══════════════════════════════════════════════════════════
+   Top Products Table
+   ═══════════════════════════════════════════════════════════ */
+
+function TopProductsTable({ products, onSelectProduct }: { products: WBGeographyProduct[]; onSelectProduct?: (p: WBGeographySkuInfo) => void }) {
   if (products.length === 0) return null
+  const [sortKey, setSortKey] = useState<string>('orders')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(key); setSortDir('desc') }
+  }
+
+  const sorted = [...products].sort((a, b) => {
+    const av = (a as any)[sortKey] ?? 0
+    const bv = (b as any)[sortKey] ?? 0
+    return sortDir === 'asc' ? av - bv : bv - av
+  })
+
+  const SortArrow = ({ col }: { col: string }) => (
+    <span className={`ml-0.5 text-[8px] ${sortKey === col ? 'text-[hsl(var(--foreground))]' : 'opacity-30'}`}>
+      {sortKey === col ? (sortDir === 'asc' ? '▲' : '▼') : '▼'}
+    </span>
+  )
+
+  const thCls = "px-3 py-2.5 text-right text-[10px] font-semibold uppercase text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
 
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
+        <div className="px-6 py-5 border-b border-[hsl(var(--border))]">
           <h2 className="text-xl font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
-            <TrendingUp className="h-5 w-5 text-emerald-400" />
+            <Package className="h-5 w-5 text-amber-400" />
             Топ товары по географии
           </h2>
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            Нажмите для просмотра географии конкретного товара
-          </span>
+          <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
+            Нажмите на товар, чтобы отфильтровать географию
+          </p>
         </div>
 
         <div className="overflow-auto max-h-[500px]">
-          <table className="w-full border-collapse">
-            <thead className="sticky top-0 z-20">
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-3 py-2.5 w-10 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">#</th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Товар</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Заказов</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Выручка</th>
-                <th className="px-3 py-2.5 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Округов</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Доля</th>
+          <table className="w-full border-collapse text-[13px]">
+            <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
+              <tr className="border-b border-[hsl(var(--border))]">
+                <th className={`${thCls} !text-left !px-4`}>Товар</th>
+                <th className={thCls} onClick={() => handleSort('orders')}>Заказов<SortArrow col="orders" /></th>
+                <th className={thCls} onClick={() => handleSort('revenue')}>Выручка<SortArrow col="revenue" /></th>
+                <th className={thCls} onClick={() => handleSort('avg_check')}>Ср. чек<SortArrow col="avg_check" /></th>
+                <th className={thCls} onClick={() => handleSort('okrug_count')}>Округов<SortArrow col="okrug_count" /></th>
+                <th className={thCls} onClick={() => handleSort('region_count')}>Регионов<SortArrow col="region_count" /></th>
+                <th className={thCls} onClick={() => handleSort('share_pct')}>Доля<SortArrow col="share_pct" /></th>
               </tr>
             </thead>
             <tbody>
-              {products.slice(0, 30).map((p, idx) => (
+              {sorted.map((p, idx) => (
                 <tr
                   key={p.nm_id}
-                  className={`border-b border-[hsl(var(--border)/0.15)] cursor-pointer transition-colors ${
-                    idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.04)]'
-                  } hover:bg-[hsl(var(--primary)/0.06)]`}
-                  onClick={() => onSelectProduct(p.nm_id)}
+                  onClick={() => onSelectProduct?.({ nm_id: p.nm_id, vendor_code: p.vendor_code, name: p.name })}
+                  className={`border-b border-[hsl(var(--border)/0.1)] cursor-pointer ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''} hover:bg-[hsl(var(--primary)/0.05)] transition-colors`}
                 >
-                  <td className="px-3 py-2.5 text-center text-[12px] text-[hsl(var(--muted-foreground))]">{idx + 1}</td>
-                  <td className="px-3 py-2.5">
-                    <div className="text-[13px] font-medium truncate max-w-[250px]">{p.name || p.vendor_code}</div>
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{p.vendor_code}</div>
+                  <td className="px-4 py-2.5 text-left">
+                    <div className="text-[12px] font-medium line-clamp-1 max-w-[250px]">{p.name || `#${p.nm_id}`}</div>
+                    <div className="text-[11px] font-bold text-[hsl(var(--muted-foreground))]">{p.vendor_code}</div>
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-[13px] font-semibold">{fmt(p.orders)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-[13px] text-emerald-400">{fmtM(p.revenue)}</td>
-                  <td className="px-3 py-2.5 text-center tabular-nums text-[13px]">{p.okrug_count}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-[13px] font-semibold">{p.share_pct}%</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{fmt(p.orders)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtM(p.revenue)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{fmtM(p.avg_check)}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">
+                    <span className="text-[hsl(var(--primary))] font-semibold">{p.okrug_count}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">{p.region_count}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{p.share_pct}%</td>
                 </tr>
               ))}
             </tbody>
@@ -334,55 +562,18 @@ function TopProductsTable({
   )
 }
 
-/* ═══ SKU Filter Header ═══ */
-function SkuFilterHeader({
-  skuFilter,
-  onClear,
-}: {
-  skuFilter: { nm_id: number; vendor_code: string; name: string }
-  onClear: () => void
-}) {
-  return (
-    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 0.2 }}>
-      <Card className="border-blue-500/30 bg-blue-500/5">
-        <CardContent className="p-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/15">
-              <Package className="h-4 w-4 text-blue-400" />
-            </div>
-            <div>
-              <div className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
-                География товара: <span className="text-blue-400">{skuFilter.name || skuFilter.vendor_code}</span>
-              </div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                {skuFilter.vendor_code} • nm_id: {skuFilter.nm_id}
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={onClear}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all"
-          >
-            <X className="h-3.5 w-3.5" />
-            Сбросить
-          </button>
-        </CardContent>
-      </Card>
-    </motion.div>
-  )
-}
+/* ═══════════════════════════════════════════════════════════
+   Skeleton
+   ═══════════════════════════════════════════════════════════ */
 
-/* ═══ Skeleton ═══ */
 function GeographySkeleton() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-[90px] rounded-2xl" />
-        ))}
+        {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-[80px] rounded-2xl" />)}
       </div>
-      <Skeleton className="h-[60px] rounded-2xl" />
       <Skeleton className="h-[400px] rounded-2xl" />
+      <Skeleton className="h-[300px] rounded-2xl" />
     </div>
   )
 }
@@ -400,70 +591,40 @@ export default function WarehousesGeographyPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [period, setPeriod] = useState(30)
-  const [selectedNmId, setSelectedNmId] = useState<number | undefined>(undefined)
-  const [searchQuery, setSearchQuery] = useState('')
+  const [selectedProducts, setSelectedProducts] = useState<WBGeographySkuInfo[]>([])
 
-  const fetchData = useCallback(async (nmId?: number) => {
+  const fetchData = useCallback(async () => {
     if (!currentShop || !isWB) return
     setLoading(true)
     setError(null)
     try {
-      const result = await getWBGeography({
-        shop_id: currentShop.id,
-        period,
-        nm_id: nmId,
-      })
+      const nm_ids = selectedProducts.length > 0
+        ? selectedProducts.map(p => p.nm_id).join(',')
+        : undefined
+      const result = await getWBGeography({ shop_id: currentShop.id, period, nm_ids })
       setData(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
       setLoading(false)
     }
-  }, [currentShop, isWB, period])
+  }, [currentShop, isWB, period, selectedProducts])
 
-  useEffect(() => { if (isWB) fetchData(selectedNmId) }, [fetchData, isWB, selectedNmId])
-
-  const handleSelectProduct = useCallback((nm_id: number) => {
-    setSelectedNmId(nm_id)
-  }, [])
-
-  const handleClearFilter = useCallback(() => {
-    setSelectedNmId(undefined)
-    setSearchQuery('')
-  }, [])
-
-  const handleSearch = useCallback((e: React.FormEvent) => {
-    e.preventDefault()
-    const q = searchQuery.trim()
-    if (!q) {
-      handleClearFilter()
-      return
-    }
-    // Try to parse as nm_id
-    const num = parseInt(q, 10)
-    if (!isNaN(num) && num > 0) {
-      setSelectedNmId(num)
-    }
-  }, [searchQuery, handleClearFilter])
-
-  // Filter regions by search query (when no nm_id filter)
-  const filteredRegions = useMemo(() => {
-    if (!data || selectedNmId) return data?.regions || []
-    if (!searchQuery.trim()) return data.regions
-    const q = searchQuery.toLowerCase()
-    return data.regions
-      .map((okrug) => ({
-        ...okrug,
-        regions: okrug.regions.filter((r) =>
-          r.region.toLowerCase().includes(q)
-        ),
-      }))
-      .filter((okrug) =>
-        okrug.okrug.toLowerCase().includes(q) || okrug.regions.length > 0
-      )
-  }, [data, searchQuery, selectedNmId])
+  useEffect(() => { if (isWB) fetchData() }, [fetchData, isWB])
 
   if (isOzon) return <Navigate to="/warehouses/analytics" replace />
+
+  const handleSelectProduct = (p: WBGeographySkuInfo) => {
+    if (!selectedProducts.find(s => s.nm_id === p.nm_id)) {
+      setSelectedProducts(prev => [...prev, p])
+    }
+  }
+
+  const handleRemoveProduct = (nmId: number) => {
+    setSelectedProducts(prev => prev.filter(p => p.nm_id !== nmId))
+  }
+
+  const handleClearProducts = () => setSelectedProducts([])
 
   const periodSelCls = (active: boolean) =>
     `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
@@ -483,7 +644,7 @@ export default function WarehousesGeographyPage() {
           </p>
         </div>
         <button
-          onClick={() => fetchData(selectedNmId)}
+          onClick={fetchData}
           disabled={loading}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
         >
@@ -492,12 +653,12 @@ export default function WarehousesGeographyPage() {
         </button>
       </div>
 
-      {/* Controls: Period + Search */}
+      {/* Filters: Period + Product Combobox */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
         <Card>
           <CardContent className="p-4">
-            <div className="flex items-center justify-between flex-wrap gap-3">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div className="flex items-center gap-3 shrink-0">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Период</p>
                 <div className="flex gap-1">
                   {PERIOD_OPTIONS.map(o => (
@@ -507,38 +668,33 @@ export default function WarehousesGeographyPage() {
                   ))}
                 </div>
               </div>
-              <form onSubmit={handleSearch} className="flex items-center gap-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[hsl(var(--muted-foreground))]" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Артикул, nm_id или город..."
-                    className="pl-9 pr-4 py-2 w-[260px] rounded-xl text-[13px] bg-[hsl(var(--muted)/0.15)] border border-[hsl(var(--border)/0.5)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--primary))] text-white hover:opacity-90 transition-all"
-                >
-                  Найти
-                </button>
-                {(selectedNmId || searchQuery) && (
-                  <button
-                    type="button"
-                    onClick={handleClearFilter}
-                    className="p-2 rounded-lg text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.3)] transition-all"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                )}
-              </form>
+              <div className="h-6 w-px bg-[hsl(var(--border))]" />
+              {currentShop && (
+                <ProductCombobox
+                  shopId={currentShop.id}
+                  selected={selectedProducts}
+                  onSelect={handleSelectProduct}
+                  onRemove={handleRemoveProduct}
+                  onClear={handleClearProducts}
+                />
+              )}
             </div>
           </CardContent>
         </Card>
       </motion.div>
 
+      {/* SKU filter pills info */}
+      {selectedProducts.length > 0 && data && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+          <div className="flex items-center gap-2 text-[12px] text-[hsl(var(--muted-foreground))]">
+            <Package className="h-3.5 w-3.5" />
+            Фильтр: {selectedProducts.length} {selectedProducts.length === 1 ? 'товар' : selectedProducts.length < 5 ? 'товара' : 'товаров'}
+            <button onClick={handleClearProducts} className="text-red-400 hover:text-red-300 ml-1 underline">Сбросить</button>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Content */}
       {loading && !data ? (
         <GeographySkeleton />
       ) : error ? (
@@ -546,34 +702,27 @@ export default function WarehousesGeographyPage() {
           <CardContent className="p-10 text-center">
             <AlertTriangle className="h-10 w-10 mx-auto text-red-400 mb-3" />
             <p className="text-lg font-medium text-red-400">{error}</p>
-            <button onClick={() => fetchData(selectedNmId)} className="mt-4 px-4 py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-medium">
+            <button onClick={fetchData} className="mt-4 px-4 py-2 rounded-xl bg-[hsl(var(--primary))] text-white text-sm font-medium">
               Попробовать снова
             </button>
           </CardContent>
         </Card>
       ) : data ? (
         <>
-          {/* SKU filter header */}
-          {data.sku_filter && (
-            <SkuFilterHeader skuFilter={data.sku_filter} onClear={handleClearFilter} />
-          )}
+          <GeographyKpiCards data={data} />
 
-          {/* KPI */}
-          <GeographyKpi data={data} />
-
-          {/* Distribution bar */}
-          <OkrugDistributionBar regions={data.regions} />
-
-          {/* Regions table */}
-          <RegionsTable
-            regions={filteredRegions}
+          <OkrugsTable
+            okrugs={data.regions}
             okrugTopProducts={data.okrug_top_products}
-            onSelectProduct={handleSelectProduct}
+            shopId={currentShop!.id}
+            period={period}
           />
 
-          {/* Top products (only when no SKU filter) */}
-          {!selectedNmId && data.top_products.length > 0 && (
-            <TopProductsTable products={data.top_products} onSelectProduct={handleSelectProduct} />
+          {data.top_products.length > 0 && (
+            <TopProductsTable
+              products={data.top_products}
+              onSelectProduct={handleSelectProduct}
+            />
           )}
         </>
       ) : null}

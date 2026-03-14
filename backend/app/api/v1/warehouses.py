@@ -5695,11 +5695,11 @@ async def get_wb_ai_analysis(
 async def get_wb_geography(
     shop_id: int = Query(...),
     period: int = Query(30, ge=7, le=90),
-    nm_id: int = Query(None, description="Optional: filter by specific product nm_id"),
+    nm_ids: str = Query(None, description="Comma-separated nm_ids to filter by"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """WB sales geography by federal district and region."""
+    """WB sales geography — okrugs with stability, avg check, drill-down."""
     shop_result = await db.execute(
         select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
     )
@@ -5713,20 +5713,27 @@ async def get_wb_geography(
     today = date.today()
     d_start = today - timedelta(days=period)
 
+    # Parse multi-SKU filter
+    nm_id_list: list[int] = []
     nm_filter = ""
-    params: dict = {"shop_id": shop_id, "d_start": d_start}
-    if nm_id is not None:
-        nm_filter = "AND nm_id = {nm_id:UInt32}"
-        params["nm_id"] = nm_id
+    params: dict = {"shop_id": shop_id, "d_start": d_start, "period_days": period}
+    if nm_ids:
+        try:
+            nm_id_list = [int(x.strip()) for x in nm_ids.split(",") if x.strip()]
+        except ValueError:
+            pass
+        if nm_id_list:
+            id_str = ", ".join(str(x) for x in nm_id_list)
+            nm_filter = f"AND nm_id IN ({id_str})"
 
-    # ── 1. Orders by okrug + region ──
+    # ── 1. Orders by okrug + region with stability ──
     rows = ch.query(f"""
         SELECT
             oblast_okrug_name AS okrug,
             region_name AS region,
             count() AS orders,
             sum(toFloat64(price_with_disc)) AS revenue,
-            sum(toFloat64(total_price)) AS revenue_final
+            count(DISTINCT date) AS active_days
         FROM mms_analytics.fact_orders_raw FINAL
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
@@ -5739,6 +5746,22 @@ async def get_wb_geography(
     total_orders = sum(int(r[2]) for r in rows)
     total_revenue = sum(float(r[3]) for r in rows)
 
+    # ── 1b. Stability per okrug (unique days with orders) ──
+    okrug_stability_rows = ch.query(f"""
+        SELECT
+            oblast_okrug_name AS okrug,
+            count(DISTINCT date) AS active_days
+        FROM mms_analytics.fact_orders_raw FINAL
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND date >= {{d_start:Date}}
+          AND is_cancel = 0
+          {nm_filter}
+        GROUP BY okrug
+    """, parameters=params).result_rows
+    okrug_active_days: dict[str, int] = {}
+    for r in okrug_stability_rows:
+        okrug_active_days[str(r[0]) or "Не определено"] = int(r[1])
+
     # Group by okrug
     okrug_data: dict[str, dict] = {}
     for r in rows:
@@ -5746,6 +5769,7 @@ async def get_wb_geography(
         region = str(r[1]) or "Не определено"
         orders = int(r[2])
         revenue = float(r[3])
+        active_days = int(r[4])
 
         if okrug not in okrug_data:
             okrug_data[okrug] = {
@@ -5753,14 +5777,20 @@ async def get_wb_geography(
                 "orders": 0,
                 "revenue": 0,
                 "share_pct": 0,
+                "avg_check": 0,
+                "stability_pct": 0,
                 "regions": [],
             }
         okrug_data[okrug]["orders"] += orders
         okrug_data[okrug]["revenue"] += revenue
+        region_avg_check = round(revenue / orders, 2) if orders > 0 else 0
+        region_stability = round(active_days / period * 100, 1)
         okrug_data[okrug]["regions"].append({
             "region": region,
             "orders": orders,
             "revenue": round(revenue, 2),
+            "avg_check": region_avg_check,
+            "stability_pct": region_stability,
             "share_pct": round(orders / total_orders * 100, 1) if total_orders > 0 else 0,
         })
 
@@ -5768,18 +5798,23 @@ async def get_wb_geography(
     for okrug_name, od in sorted(okrug_data.items(), key=lambda x: x[1]["orders"], reverse=True):
         od["share_pct"] = round(od["orders"] / total_orders * 100, 1) if total_orders > 0 else 0
         od["revenue"] = round(od["revenue"], 2)
+        od["avg_check"] = round(od["revenue"] / od["orders"], 2) if od["orders"] > 0 else 0
+        active_d = okrug_active_days.get(okrug_name, 0)
+        od["stability_pct"] = round(active_d / period * 100, 1)
         od["regions"] = sorted(od["regions"], key=lambda x: x["orders"], reverse=True)
         regions_result.append(od)
 
-    # ── 2. Top products (if no nm_id filter) ──
+    # ── 2. Top products ──
     top_products = []
-    if nm_id is None:
+    prod_map: dict[int, dict] = {}
+    if not nm_id_list:
         prod_rows = ch.query(f"""
             SELECT
                 nm_id,
                 count() AS orders,
                 sum(toFloat64(price_with_disc)) AS revenue,
-                count(DISTINCT oblast_okrug_name) AS okrug_count
+                count(DISTINCT oblast_okrug_name) AS okrug_count,
+                count(DISTINCT region_name) AS region_count
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {{shop_id:UInt32}}
               AND date >= {{d_start:Date}}
@@ -5790,7 +5825,6 @@ async def get_wb_geography(
         """, parameters=params).result_rows
 
         prod_nm_ids = [int(r[0]) for r in prod_rows]
-        prod_map: dict[int, dict] = {}
         if prod_nm_ids:
             nm_list = ", ".join(str(x) for x in prod_nm_ids)
             pg_rows = (await db.execute(
@@ -5807,19 +5841,23 @@ async def get_wb_geography(
         for r in prod_rows:
             nm = int(r[0])
             prod = prod_map.get(nm, {})
+            nm_orders = int(r[1])
+            nm_rev = float(r[2])
             top_products.append({
                 "nm_id": nm,
                 "vendor_code": prod.get("vendor_code", ""),
                 "name": prod.get("name", ""),
-                "orders": int(r[1]),
-                "revenue": round(float(r[2]), 2),
+                "orders": nm_orders,
+                "revenue": round(nm_rev, 2),
+                "avg_check": round(nm_rev / nm_orders, 2) if nm_orders > 0 else 0,
                 "okrug_count": int(r[3]),
-                "share_pct": round(int(r[1]) / total_orders * 100, 1) if total_orders > 0 else 0,
+                "region_count": int(r[4]),
+                "share_pct": round(nm_orders / total_orders * 100, 1) if total_orders > 0 else 0,
             })
 
     # ── 3. Per-okrug top products ──
     okrug_top_products: dict[str, list] = {}
-    if nm_id is None:
+    if not nm_id_list:
         otop_rows = ch.query(f"""
             SELECT
                 oblast_okrug_name AS okrug,
@@ -5834,7 +5872,6 @@ async def get_wb_geography(
             ORDER BY okrug, orders DESC
         """, parameters=params).result_rows
 
-        # Group and limit top 5 per okrug
         current_okrug = ""
         count = 0
         for r in otop_rows:
@@ -5854,29 +5891,193 @@ async def get_wb_geography(
                     "revenue": round(float(r[3]), 2),
                 })
 
-    # ── 4. SKU info (if nm_id filter is set) ──
-    sku_filter_info = None
-    if nm_id is not None:
-        sku_row = await db.execute(
-            text("SELECT nm_id, vendor_code, name FROM dim_products WHERE shop_id = :sid AND nm_id = :nm"),
-            {"sid": shop_id, "nm": nm_id},
-        )
-        sku = sku_row.fetchone()
-        if sku:
-            sku_filter_info = {
-                "nm_id": sku[0],
-                "vendor_code": sku[1] or "",
-                "name": (sku[2] or "")[:80],
-            }
+    # ── 4. SKU filter info ──
+    sku_filter_info = []
+    if nm_id_list:
+        nm_list_str = ", ".join(str(x) for x in nm_id_list)
+        pg_rows = (await db.execute(
+            text(f"""
+                SELECT nm_id, vendor_code, name
+                FROM dim_products
+                WHERE shop_id = :sid AND nm_id IN ({nm_list_str})
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+        for r in pg_rows:
+            sku_filter_info.append({
+                "nm_id": r[0],
+                "vendor_code": r[1] or "",
+                "name": (r[2] or "")[:80],
+            })
+
+    # ── 5. Total unique regions count ──
+    total_regions = len(set(
+        str(r[1]) for r in rows if str(r[1])
+    ))
+    total_okrugs = len(okrug_data)
+
+    avg_check = round(total_revenue / total_orders, 2) if total_orders > 0 else 0
 
     ch.close()
 
     return {
         "total_orders": total_orders,
         "total_revenue": round(total_revenue, 2),
+        "avg_check": avg_check,
+        "total_okrugs": total_okrugs,
+        "total_regions": total_regions,
         "period_days": period,
         "regions": regions_result,
         "top_products": top_products,
         "okrug_top_products": okrug_top_products,
         "sku_filter": sku_filter_info,
     }
+
+
+@router.get("/wb/geography/region-products")
+async def get_wb_geography_region_products(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    region: str = Query(..., description="Region name (e.g. Московская область)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top products for a specific region (drill-down)."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    prod_rows = ch.query("""
+        SELECT
+            nm_id,
+            count() AS orders,
+            sum(toFloat64(price_with_disc)) AS revenue
+        FROM mms_analytics.fact_orders_raw FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {d_start:Date}
+          AND is_cancel = 0
+          AND region_name = {region:String}
+        GROUP BY nm_id
+        ORDER BY orders DESC
+        LIMIT 20
+    """, parameters={"shop_id": shop_id, "d_start": d_start, "region": region}).result_rows
+
+    ch.close()
+
+    nm_ids = [int(r[0]) for r in prod_rows]
+    prod_map: dict[int, dict] = {}
+    if nm_ids:
+        nm_list = ", ".join(str(x) for x in nm_ids)
+        pg_rows = (await db.execute(
+            text(f"""
+                SELECT nm_id, vendor_code, name
+                FROM dim_products
+                WHERE shop_id = :sid AND nm_id IN ({nm_list})
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+        for r in pg_rows:
+            prod_map[r[0]] = {"vendor_code": r[1] or "", "name": (r[2] or "")[:80]}
+
+    result = []
+    for r in prod_rows:
+        nm = int(r[0])
+        prod = prod_map.get(nm, {})
+        nm_orders = int(r[1])
+        nm_rev = float(r[2])
+        result.append({
+            "nm_id": nm,
+            "vendor_code": prod.get("vendor_code", ""),
+            "name": prod.get("name", ""),
+            "orders": nm_orders,
+            "revenue": round(nm_rev, 2),
+            "avg_check": round(nm_rev / nm_orders, 2) if nm_orders > 0 else 0,
+        })
+
+    return {"region": region, "products": result}
+
+
+@router.get("/wb/geography/products-search")
+async def get_wb_geography_products_search(
+    shop_id: int = Query(...),
+    q: str = Query("", description="Search query (name, vendor_code, or nm_id)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search products for autocomplete in geography filter."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    search = q.strip()
+    if not search:
+        # Return all products (limited)
+        pg_rows = (await db.execute(
+            text("""
+                SELECT nm_id, vendor_code, name
+                FROM dim_products
+                WHERE shop_id = :sid
+                ORDER BY name
+                LIMIT 100
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+    else:
+        # Try numeric search (nm_id)
+        try:
+            nm_int = int(search)
+            pg_rows = (await db.execute(
+                text("""
+                    SELECT nm_id, vendor_code, name
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id = :nm
+                    LIMIT 20
+                """),
+                {"sid": shop_id, "nm": nm_int},
+            )).fetchall()
+            if not pg_rows:
+                # Partial nm_id match
+                pg_rows = (await db.execute(
+                    text("""
+                        SELECT nm_id, vendor_code, name
+                        FROM dim_products
+                        WHERE shop_id = :sid AND CAST(nm_id AS TEXT) LIKE :pattern
+                        ORDER BY name
+                        LIMIT 20
+                    """),
+                    {"sid": shop_id, "pattern": f"%{search}%"},
+                )).fetchall()
+        except ValueError:
+            pg_rows = (await db.execute(
+                text("""
+                    SELECT nm_id, vendor_code, name
+                    FROM dim_products
+                    WHERE shop_id = :sid
+                      AND (LOWER(name) LIKE :q OR LOWER(vendor_code) LIKE :q)
+                    ORDER BY name
+                    LIMIT 30
+                """),
+                {"sid": shop_id, "q": f"%{search.lower()}%"},
+            )).fetchall()
+
+    result = []
+    for r in pg_rows:
+        result.append({
+            "nm_id": r[0],
+            "vendor_code": r[1] or "",
+            "name": (r[2] or "")[:80],
+        })
+
+    return {"products": result}

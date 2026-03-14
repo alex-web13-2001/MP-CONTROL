@@ -587,6 +587,8 @@ export interface WBGeographyRegion {
   region: string
   orders: number
   revenue: number
+  avg_check: number
+  stability_pct: number
   share_pct: number
 }
 
@@ -594,6 +596,8 @@ export interface WBGeographyOkrug {
   okrug: string
   orders: number
   revenue: number
+  avg_check: number
+  stability_pct: number
   share_pct: number
   regions: WBGeographyRegion[]
 }
@@ -604,26 +608,66 @@ export interface WBGeographyProduct {
   name: string
   orders: number
   revenue: number
+  avg_check: number
   okrug_count: number
+  region_count: number
   share_pct: number
+}
+
+export interface WBGeographySkuInfo {
+  nm_id: number
+  vendor_code: string
+  name: string
 }
 
 export interface WBGeographyResponse {
   total_orders: number
   total_revenue: number
+  avg_check: number
+  total_okrugs: number
+  total_regions: number
   period_days: number
   regions: WBGeographyOkrug[]
   top_products: WBGeographyProduct[]
   okrug_top_products: Record<string, WBGeographyProduct[]>
-  sku_filter: { nm_id: number; vendor_code: string; name: string } | null
+  sku_filter: WBGeographySkuInfo[]
+}
+
+export interface WBRegionProductsResponse {
+  region: string
+  products: {
+    nm_id: number
+    vendor_code: string
+    name: string
+    orders: number
+    revenue: number
+    avg_check: number
+  }[]
 }
 
 export async function getWBGeography(params: {
   shop_id: number
   period?: number
-  nm_id?: number
+  nm_ids?: string
 }): Promise<WBGeographyResponse> {
   const { data } = await apiClient.get<WBGeographyResponse>('/warehouses/wb/geography', { params })
+  return data
+}
+
+export async function getWBGeographyRegionProducts(params: {
+  shop_id: number
+  period?: number
+  region: string
+}): Promise<WBRegionProductsResponse> {
+  const { data } = await apiClient.get<WBRegionProductsResponse>('/warehouses/wb/geography/region-products', { params })
+  return data
+}
+
+export async function searchGeographyProducts(params: {
+  shop_id: number
+  q?: string
+}): Promise<{ products: WBGeographySkuInfo[] }> {
+  const { data } = await apiClient.get<{ products: WBGeographySkuInfo[] }>('/warehouses/wb/geography/products-search', { params })
   return data
 }
 
