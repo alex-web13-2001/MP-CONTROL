@@ -112,6 +112,12 @@ class WBPaidStorageService:
         resp = await self._request_with_retry(
             "get", f"{WB_BASE_URL}/api/v1/paid_storage/tasks/{task_id}/download"
         )
+
+        # WB API returns 204 No Content when there's no data for the period
+        if resp.status_code == 204 or not resp.content:
+            logger.info("WBPaidStorage: no data (204) for task %s", task_id)
+            return []
+
         data = resp.json()
 
         if isinstance(data, list):
