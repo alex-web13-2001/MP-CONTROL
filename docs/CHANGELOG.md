@@ -1,3 +1,71 @@
+## 2026-03-14 (v6)
+
+### feat(warehouses): Полная таблица хранения SKU с поиском и сортировкой
+
+**Backend** (`warehouses.py`):
+- Убран лимит `[:20]` — таблица теперь отдаёт **все SKU** (не TOP-20)
+- KPI и таблица показывают согласованные суммы
+
+**Frontend** (`WBWarehouseAnalyticsContent.tsx`):
+- Переименовано: «ТОП по стоимости хранения» → «Хранение по SKU»
+- **Поиск** по названию, артикулу или nm_id с live-фильтрацией
+- **Сортировка** по всем столбцам (клик на заголовок) с индикаторами ▲▼
+- Артикул под названием выделен **жирным** шрифтом (text-[11px] font-bold)
+- Полное название товара в **2 строки** (line-clamp-2, max-w-300px)
+- Hover-эффект на строках таблицы
+- Удалена колонка «Источник», убрана легенда Факт/Оценка
+- Заголовок: «Хранение за 30д» (left) + «Прогноз 30д» (right)
+- Итого пересчитывается с учётом фильтрации поиска
+
+**Bugfix** (`warehouses.py`):
+- Исправлена аномально большая сумма «Хранение за 30д» (435 844₽ вместо 4 540₽) для магазинов с фактическими данными paid storage
+- Причина: tariff-fallback завышал оценку для SKU без записей в `fact_wb_paid_storage`, хотя магазин уже имел фактические данные
+- Теперь при наличии actual paid storage, SKU без записей получают `est_cost_month=0` вместо тарифной оценки
+- Исправлен `total_penalties`: «Списание за отзыв» (192K) выделено в отдельную категорию расходов, больше не маппится как «Штрафы». Native WB `operation_type='Штраф'` (4 540₽) — единственный источник для KPI штрафов
+
+---
+
+## 2026-03-14 (v5)
+### feat(warehouses): Прогноз хранения WB на 30 дней
+
+**Backend** (`warehouses.py`):
+- Запрос per-SKU daily cost из `fact_wb_paid_storage` (avg за последние 7 дней)
+- Агрегация per-SKU orders и stock для расчёта daily_sales
+- Формула прогноза: `Σ(cost_per_unit_per_day × max(0, stock − daily_sales × i))` для i=0..29
+- Учитывает убывание стока: чем быстрее товар продаётся, тем меньше прогноз
+- Новые поля: `forecast_30d`, `daily_sales`, `daily_cost`, `days_to_sell` для каждого SKU
+- KPI: `forecast_30d` — суммарный прогноз по всем SKU
+
+**Frontend** (`warehouses.ts`, `WBWarehouseAnalyticsContent.tsx`):
+- KPI карточка «Прогноз 30д» со статусом (сравнение с текущим хранением)
+- 3 новых колонки в StorageSkusTable: «Прод/д», «Дней», «Прогноз 30д»
+- Цветовая индикация: дней до распродажи (🟢 <90, 🟡 <180, 🔴 >180, ∞ нет продаж)
+- Суммарный прогноз в заголовке таблицы (amber) рядом с хранением/мес (red)
+
+---
+
+## 2026-03-14 (v4)
+
+### feat(warehouses): WB аналитика складов — фактические данные хранения
+
+**Backend** (`warehouses.py`):
+- Запрос к `fact_wb_paid_storage` для фактической стоимости хранения per-SKU per-warehouse
+- Fallback на тарифную оценку (storBase × vol × qty × коэф) если нет данных paid storage
+- Per-warehouse `storage_cost_actual` и `storage_cost_month` в объекте склада
+- KPI: `total_storage_actual` (факт из paid storage) + `has_actual_storage` флаг
+- `storage_source: "actual" | "estimated"` для каждого SKU и склада
+
+**Bugfix** (`warehouses.py`):
+- Fix `UnboundLocalError: wh_list` в `/wb/ai-analysis` — переменная определялась только в ветке tariff-fallback, но использовалась безусловно
+
+**Frontend** (`warehouses.ts`, `WBWarehouseAnalyticsContent.tsx`):
+- KPI карточка «Хранение (факт)» с подписью «По отчётам WB • за Nд»
+- Новая колонка «Хранение ₽» в таблице складов (фактическая стоимость per-warehouse)
+- Бэйджи 📊 Факт / 📐 Оценка в таблице «ТОП по стоимости хранения»
+- Легенда: «📊 Факт — из отчётов WB API | 📐 Оценка — по тарифам»
+
+---
+
 ## 2026-03-14 (v3)
 
 ### feat(warehouses): WB Paid Storage API — фактические данные хранения по SKU

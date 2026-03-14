@@ -457,10 +457,13 @@ export interface WBAnalyticsKpi {
   avg_turnover_days: number | null
   total_logistics: number
   total_storage: number
+  total_storage_actual: number | null
   total_penalties: number
   cross_pct: number
   total_orders: number
   period_days: number
+  has_actual_storage: boolean
+  forecast_30d: number | null
 }
 
 export interface WBAnalyticsSkuDetail {
@@ -501,6 +504,8 @@ export interface WBAnalyticsWarehouse {
   logistics_cost: number
   logistics_count: number
   storage_coef: number
+  storage_cost_actual: number
+  storage_cost_month: number
   acceptance_coef: number
   acceptance: string
   skus: WBAnalyticsSkuDetail[]
@@ -529,7 +534,12 @@ export interface WBStorageSku {
   vol_liters: number
   total_stock: number
   est_cost_month: number
-  warehouses: { warehouse: string; stock: number; stor_base: number; cost_month: number }[]
+  storage_source: 'actual' | 'estimated'
+  forecast_30d: number | null
+  daily_sales: number
+  daily_cost: number | null
+  days_to_sell: number | null
+  warehouses: { warehouse: string; stock: number; stor_base: number; cost_month: number; source: string }[]
 }
 
 export interface WBRecommendation {

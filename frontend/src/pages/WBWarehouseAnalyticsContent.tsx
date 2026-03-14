@@ -27,6 +27,7 @@ import {
   Zap,
   PackageX,
   ArrowDownToLine,
+  TrendingUp,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -394,6 +395,7 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                 <th className={`${thBase} min-w-[75px]`}>Оборач.</th>
                 <th className={`${thBase} min-w-[90px]`}>Кросс%</th>
                 <th className={`${thBase} min-w-[100px]`}>Логистика ₽</th>
+                <th className={`${thBase} min-w-[100px]`}>Хранение ₽</th>
                 <th className={`${thBase} min-w-[75px]`}>Хр.коэф</th>
                 <th className={`${thBase} min-w-[80px]`}>Приёмка</th>
                 <th className={`${thBase} min-w-[50px]`}>SKU</th>
@@ -453,6 +455,9 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                       <td className={`${tdCls} ${wh.logistics_cost > 10000 ? 'text-amber-400 font-semibold' : 'text-[hsl(var(--muted-foreground))]'}`}>
                         {wh.logistics_cost > 0 ? fmtM(wh.logistics_cost) : '—'}
                       </td>
+                      <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                        {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
+                      </td>
                       <td className={tdCls}>
                         <span className={`text-[12px] ${
                           wh.storage_coef > 300 ? 'text-red-400 font-bold' :
@@ -474,7 +479,7 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                     <AnimatePresence>
                       {isExpanded && (
                         <tr>
-                          <td colSpan={12} className="p-0">
+                          <td colSpan={13} className="p-0">
                             <WarehouseExpandedDetail wh={wh} />
                           </td>
                         </tr>
@@ -658,60 +663,194 @@ function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
 function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
   if (skus.length === 0) return null
 
-  const totalCost = skus.reduce((sum, s) => sum + s.est_cost_month, 0)
-  const totalStock = skus.reduce((sum, s) => sum + s.total_stock, 0)
+  const [search, setSearch] = React.useState('')
+  const [sortKey, setSortKey] = React.useState<string>('est_cost_month')
+  const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>('desc')
+
+  const hasForecast = skus.some(s => s.forecast_30d != null)
+
+  // Filter
+  const q = search.toLowerCase().trim()
+  const filtered = q
+    ? skus.filter(s =>
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.vendor_code || '').toLowerCase().includes(q) ||
+        String(s.nm_id).includes(q)
+      )
+    : skus
+
+  // Sort
+  const sorted = [...filtered].sort((a, b) => {
+    let av: number, bv: number
+    switch (sortKey) {
+      case 'name': {
+        const an = (a.name || a.vendor_code || '').toLowerCase()
+        const bn = (b.name || b.vendor_code || '').toLowerCase()
+        return sortDir === 'asc' ? an.localeCompare(bn) : bn.localeCompare(an)
+      }
+      case 'vol_liters': av = a.vol_liters; bv = b.vol_liters; break
+      case 'total_stock': av = a.total_stock; bv = b.total_stock; break
+      case 'daily_sales': av = a.daily_sales ?? 0; bv = b.daily_sales ?? 0; break
+      case 'days_to_sell': av = a.days_to_sell ?? 99999; bv = b.days_to_sell ?? 99999; break
+      case 'est_cost_month': av = a.est_cost_month; bv = b.est_cost_month; break
+      case 'forecast_30d': av = a.forecast_30d ?? 0; bv = b.forecast_30d ?? 0; break
+      default: av = a.est_cost_month; bv = b.est_cost_month
+    }
+    return sortDir === 'asc' ? av - bv : bv - av
+  })
+
+  // Totals (from filtered)
+  const totalCost = filtered.reduce((sum, s) => sum + s.est_cost_month, 0)
+  const totalStock = filtered.reduce((sum, s) => sum + s.total_stock, 0)
+  const totalForecast = filtered.reduce((sum, s) => sum + (s.forecast_30d ?? 0), 0)
+
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir(key === 'name' ? 'asc' : 'desc')
+    }
+  }
+
+  const SortIcon = ({ col }: { col: string }) => (
+    <span className={`ml-1 inline-flex flex-col text-[8px] leading-none ${sortKey === col ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground)/0.3)]'}`}>
+      <span className={sortKey === col && sortDir === 'asc' ? 'opacity-100' : 'opacity-30'}>▲</span>
+      <span className={sortKey === col && sortDir === 'desc' ? 'opacity-100' : 'opacity-30'}>▼</span>
+    </span>
+  )
+
+  const thCls = "px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.4 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
           <div>
-            <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">ТОП по стоимости хранения</h2>
+            <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Хранение по SKU</h2>
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
-              Расчёт: storBase × объём(л) × кол-во × коэф.склада × 30 дней
+              {filtered.length === skus.length ? `${skus.length} SKU` : `${filtered.length} из ${skus.length} SKU`}
             </p>
           </div>
-          <div className="text-right">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Прогноз на 30 дней</div>
-            <div className="text-lg font-bold text-red-400">{fmtM(totalCost)}</div>
+          <div className="text-right flex gap-6">
+            <div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Хранение за 30д</div>
+              <div className="text-lg font-bold text-red-400">{fmtM(totalCost)}</div>
+              <div className="text-[10px] text-[hsl(var(--muted-foreground))]">при текущих остатках</div>
+            </div>
+            {hasForecast && (
+              <div>
+                <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Прогноз 30д</div>
+                <div className="text-lg font-bold text-amber-400">{fmtM(totalForecast)}</div>
+                <div className="text-[10px] text-[hsl(var(--muted-foreground))]">с учётом продаж</div>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="overflow-auto max-h-[500px]">
+        {/* Search */}
+        <div className="px-6 py-3 border-b border-[hsl(var(--border)/0.5)]">
+          <div className="relative max-w-sm">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Поиск по названию или артикулу..."
+              className="w-full pl-9 pr-4 py-2 text-[13px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
+            />
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="overflow-auto max-h-[600px]">
           <table className="w-full border-collapse text-[13px]">
-            <thead className="sticky top-0 bg-[hsl(var(--card))]">
+            <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
               <tr className="border-b border-[hsl(var(--border))]">
-                <th className="px-4 py-3 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">Товар</th>
-                <th className="px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">Объём</th>
-                <th className="px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">Остаток</th>
-                <th className="px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">~Хранение/мес</th>
+                <th className={`${thCls} !text-left !px-4`} onClick={() => handleSort('name')}>
+                  Товар<SortIcon col="name" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('vol_liters')}>
+                  Объём<SortIcon col="vol_liters" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('total_stock')}>
+                  Остаток<SortIcon col="total_stock" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('daily_sales')}>
+                  Прод/д<SortIcon col="daily_sales" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('days_to_sell')} title="Дней до полной распродажи">
+                  Дней<SortIcon col="days_to_sell" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('est_cost_month')}>
+                  Хранение/30д<SortIcon col="est_cost_month" />
+                </th>
+                {hasForecast && (
+                  <th className={thCls} onClick={() => handleSort('forecast_30d')} title="Прогноз расходов с учётом продаж (остатки убывают)">
+                    Прогноз 30д<SortIcon col="forecast_30d" />
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
-              {skus.map((sku, idx) => (
-                <tr key={sku.nm_id} className={`border-b border-[hsl(var(--border)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}>
-                  <td className="px-4 py-2.5 text-left">
-                    <div className="text-[12px] font-medium truncate max-w-[250px]" title={sku.name}>
-                      {sku.name || sku.vendor_code || `#${sku.nm_id}`}
-                    </div>
-                    <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">{sku.vendor_code}</div>
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{sku.vol_liters.toFixed(1)}л</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums">{fmt(sku.total_stock)}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums font-bold">
-                    <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
-                      {fmtM(sku.est_cost_month)}
-                    </span>
+              {sorted.map((sku, idx) => {
+                const daysColor = sku.days_to_sell == null ? '' :
+                  sku.days_to_sell > 180 ? 'text-red-400' :
+                  sku.days_to_sell > 90 ? 'text-amber-400' : 'text-emerald-400'
+                const forecastColor = sku.forecast_30d == null ? '' :
+                  sku.forecast_30d > 1000 ? 'text-red-400' :
+                  sku.forecast_30d > 300 ? 'text-amber-400' : ''
+                return (
+                  <tr key={sku.nm_id} className={`border-b border-[hsl(var(--border)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''} hover:bg-[hsl(var(--muted)/0.08)] transition-colors`}>
+                    <td className="px-4 py-2.5 text-left">
+                      <div className="text-[12px] font-medium line-clamp-2 max-w-[300px]">
+                        {sku.name || `#${sku.nm_id}`}
+                      </div>
+                      <div className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mt-0.5">{sku.vendor_code}</div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{sku.vol_liters.toFixed(1)}л</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums">{fmt(sku.total_stock)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
+                      {sku.daily_sales > 0 ? sku.daily_sales.toFixed(1) : <span className="text-red-400/70 text-[11px]">нет</span>}
+                    </td>
+                    <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${daysColor}`}>
+                      {sku.days_to_sell != null ? (sku.days_to_sell > 365 ? '365+' : `${sku.days_to_sell}`) : '∞'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold">
+                      <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
+                        {fmtM(sku.est_cost_month)}
+                      </span>
+                    </td>
+                    {hasForecast && (
+                      <td className={`px-3 py-2.5 text-right tabular-nums font-bold ${forecastColor}`}>
+                        {sku.forecast_30d != null ? fmtM(sku.forecast_30d) : '—'}
+                      </td>
+                    )}
+                  </tr>
+                )
+              })}
+              {sorted.length === 0 && (
+                <tr>
+                  <td colSpan={hasForecast ? 7 : 6} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))]">
+                    Ничего не найдено по запросу «{search}»
                   </td>
                 </tr>
-              ))}
+              )}
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.06)]">
-                <td className="px-4 py-3 text-left font-bold text-[13px]">Итого ({skus.length} SKU)</td>
+                <td className="px-4 py-3 text-left font-bold text-[13px]">Итого ({filtered.length} SKU)</td>
                 <td className="px-3 py-3"></td>
                 <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmt(totalStock)}</td>
+                <td className="px-3 py-3"></td>
+                <td className="px-3 py-3"></td>
                 <td className="px-3 py-3 text-right tabular-nums font-bold text-red-400 text-[14px]">{fmtM(totalCost)}</td>
+                {hasForecast && (
+                  <td className="px-3 py-3 text-right tabular-nums font-bold text-amber-400 text-[14px]">{fmtM(totalForecast)}</td>
+                )}
               </tr>
             </tfoot>
           </table>
@@ -1425,14 +1564,29 @@ export default function WBWarehouseAnalyticsContent({ shopId }: { shopId: number
                   statusText={logText}
                 />
                 <KpiCard
-                  title="Хранение"
-                  value={fmtM(kpi.total_storage)}
+                  title={kpi.has_actual_storage ? 'Хранение (факт)' : 'Хранение'}
+                  value={fmtM(kpi.total_storage_actual ?? kpi.total_storage)}
+                  subtitle={kpi.has_actual_storage && kpi.total_storage_actual != null
+                    ? `По отчётам WB • за ${kpi.period_days}д`
+                    : `Из удержаний • за ${kpi.period_days}д`}
                   icon={Boxes}
                   accent="from-purple-600 to-purple-500"
                   delay={0.25}
                   status={storStatus}
                   statusText={storText}
                 />
+                {kpi.forecast_30d != null && (
+                  <KpiCard
+                    title="Прогноз 30д"
+                    value={fmtM(kpi.forecast_30d)}
+                    subtitle="с учётом продаж"
+                    icon={TrendingUp}
+                    accent="from-amber-600 to-amber-500"
+                    delay={0.28}
+                    status={kpi.forecast_30d > kpi.total_storage * 3 ? 'bad' : kpi.forecast_30d > kpi.total_storage * 1.5 ? 'warn' : 'good'}
+                    statusText={kpi.forecast_30d > kpi.total_storage * 3 ? 'Растёт! Сокращать остатки' : kpi.forecast_30d > kpi.total_storage * 1.5 ? 'Проверить продажи' : 'Остатки сгорают'}
+                  />
+                )}
                 <KpiCard
                   title="Кросс-отправки"
                   value={`${crossPct}%`}

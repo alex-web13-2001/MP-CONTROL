@@ -4215,7 +4215,7 @@ async def wb_warehouse_analytics(
                 WHEN operation_type = 'Удержание' AND JSONExtractString(raw_payload, 'bonus_type_name') LIKE '%WB Продвижение%'
                     THEN '__SKIP__'
                 WHEN operation_type = 'Удержание' AND JSONExtractString(raw_payload, 'bonus_type_name') LIKE 'Списание за отзыв%'
-                    THEN 'Штрафы'
+                    THEN 'Списание за отзыв'
                 WHEN operation_type = 'Удержание'
                     THEN 'Удержания'
                 ELSE operation_type
@@ -4478,8 +4478,9 @@ async def wb_warehouse_analytics(
     _type_map = {
         "Логистика": {"icon": "truck", "label": "Логистика"},
         "Хранение": {"icon": "package", "label": "Хранение"},
-        "Штрафы": {"icon": "alert", "label": "Штрафы"},
+        "Штраф": {"icon": "alert", "label": "Штрафы"},
         "Удержания": {"icon": "ban", "label": "Удержания"},
+        "Списание за отзыв": {"icon": "message-circle", "label": "Списание за отзыв"},
         "Обработка товара": {"icon": "factory", "label": "Приёмка"},
         "Возмещение издержек по перевозке/по складским операциям с товаром": {"icon": "circle", "label": "Возмещение"},
         "Возмещение за выдачу и возврат товаров на ПВЗ": {"icon": "circle", "label": "Возмещение ПВЗ"},
@@ -4501,15 +4502,82 @@ async def wb_warehouse_analytics(
             "amount": round(amount, 2),
         })
 
-    # ── 10. Top storage SKUs ─────────────────────────────────
-    #  Calculate estimated storage cost for each SKU across all warehouses
-    #  Formula: storBase × vol × qty × (storage_coef / 100) per day
-    #  Note: 60-day free storage ended 05.01.2026, now paid from day 1
-    sku_storage: dict[int, dict] = {}  # nm_id → {stock, vol, cost_month, warehouses}
+    # ── 10. Actual paid storage from fact_wb_paid_storage ─────
+    #  Fetch REAL per-SKU per-warehouse storage costs from WB API data
+    #  Fallback to tariff-based estimates if no paid storage data available
+
+    # 10a. Query actual paid storage
+    actual_storage_by_nm: dict[int, dict[str, float]] = {}  # nm_id → {warehouse → cost_period}
+    actual_storage_by_wh: dict[str, float] = {}  # warehouse → total cost for period
+    total_storage_actual_all = 0.0
+    try:
+        ps_rows = ch.query("""
+            SELECT nm_id, warehouse,
+                   SUM(warehouse_price) AS cost_period
+            FROM mms_analytics.fact_wb_paid_storage FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {d_start:Date}
+              AND dt < today()
+            GROUP BY nm_id, warehouse
+            HAVING cost_period != 0
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+        for r in ps_rows:
+            nm_id_ps, wh_ps, cost_period = int(r[0]), r[1], float(r[2])
+            actual_storage_by_nm.setdefault(nm_id_ps, {})[wh_ps] = cost_period
+            actual_storage_by_wh[wh_ps] = actual_storage_by_wh.get(wh_ps, 0) + cost_period
+            total_storage_actual_all += cost_period
+        logger.info("WB analytics: loaded actual storage for %d nm_ids, %d warehouses from fact_wb_paid_storage",
+                    len(actual_storage_by_nm), len(actual_storage_by_wh))
+    except Exception as e:
+        logger.warning("Actual paid storage query failed (will use tariff estimates): %s", e)
+
+    has_actual_storage = len(actual_storage_by_nm) > 0
+    month_mult = 30 / period if period > 0 else 1.0  # to extrapolate period → 30 days
+
+    # 10a2. Per-SKU daily cost from last 7 days (for forecast)
+    daily_cost_per_nm: dict[int, float] = {}  # nm_id → avg daily cost (₽/day)
+    try:
+        dc_rows = ch.query("""
+            SELECT nm_id,
+                   SUM(warehouse_price) / 7 AS daily_cost
+            FROM mms_analytics.fact_wb_paid_storage FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= today() - 7
+            GROUP BY nm_id
+            HAVING daily_cost > 0
+        """, parameters={"shop_id": shop_id}).result_rows
+        for r in dc_rows:
+            daily_cost_per_nm[int(r[0])] = float(r[1])
+        logger.info("WB analytics: loaded daily storage cost for %d nm_ids (last 7d)",
+                    len(daily_cost_per_nm))
+    except Exception as e:
+        logger.warning("Daily storage cost query failed: %s", e)
+
+    # 10a3. Per-SKU total orders (for daily_sales in forecast)
+    nm_orders_total: dict[int, int] = {}  # nm_id → total orders in period
+    for wh_name, wh_sku_data in wh_sku_orders.items():
+        for nm_id, sku_data in wh_sku_data.items():
+            nm_orders_total[nm_id] = nm_orders_total.get(nm_id, 0) + sku_data["orders"]
+
+    # 10a4. Per-SKU total stock
+    nm_stock_total: dict[int, int] = {}  # nm_id → total stock
+    for wh_name, stk_data in wh_stocks.items():
+        for nm_id, qty in stk_data["qtys"].items():
+            nm_stock_total[nm_id] = nm_stock_total.get(nm_id, 0) + qty
+
+    # 10b. Add storage_cost_actual to each warehouse result
+    for wh_data in warehouses_result:
+        wh_name = wh_data["warehouse_name"]
+        actual_period = actual_storage_by_wh.get(wh_name, 0)
+        wh_data["storage_cost_actual"] = round(actual_period, 2)
+        wh_data["storage_cost_month"] = round(actual_period * month_mult, 2)
+
+    # 10c. Build storage SKU list with actual data (fallback to tariff estimate)
+    sku_storage: dict[int, dict] = {}
     for wh_name, stk_data in wh_stocks.items():
         t = tariffs.get(wh_name, {})
         stor_base = t.get("storage_base_liter", 0)
-        stor_coef = t.get("storage_coef", 100)  # default 100 = ×1.0
+        stor_coef = t.get("storage_coef", 100)
         coef_mult = stor_coef / 100.0 if stor_coef > 0 else 1.0
         for nm_id in stk_data["nm_ids"]:
             qty = stk_data["qtys"].get(nm_id, 0)
@@ -4517,8 +4585,22 @@ async def wb_warehouse_analytics(
                 continue
             prod = products_map.get(nm_id, {})
             vol = prod.get("vol_liters", 1.0)
-            cost_day = stor_base * vol * qty * coef_mult
-            cost_month = cost_day * 30
+
+            # Actual cost from paid storage (for this nm_id + warehouse)
+            actual_cost_period = actual_storage_by_nm.get(nm_id, {}).get(wh_name)
+            if actual_cost_period is not None:
+                cost_month = actual_cost_period * month_mult
+                source = "actual"
+            elif has_actual_storage:
+                # Shop has actual paid storage data but this SKU/warehouse combo is missing
+                # → likely zero cost (not charged). Don't use tariff fallback.
+                cost_month = 0
+                source = "actual"
+            else:
+                # Tariff-based fallback (no paid storage data at all)
+                cost_day = stor_base * vol * qty * coef_mult
+                cost_month = cost_day * 30
+                source = "estimated"
 
             if nm_id not in sku_storage:
                 sku_storage[nm_id] = {
@@ -4528,18 +4610,54 @@ async def wb_warehouse_analytics(
                     "vol_liters": vol,
                     "total_stock": 0,
                     "est_cost_month": 0,
+                    "storage_source": source,  # "actual" if ANY warehouse has actual data
                     "warehouses": [],
                 }
             sku_storage[nm_id]["total_stock"] += qty
             sku_storage[nm_id]["est_cost_month"] += cost_month
+            if source == "actual":
+                sku_storage[nm_id]["storage_source"] = "actual"  # upgrade to actual
             sku_storage[nm_id]["warehouses"].append({
                 "warehouse": wh_name,
                 "stock": qty,
                 "stor_base": stor_base,
                 "cost_month": round(cost_month, 2),
+                "source": source,
             })
 
-    storage_skus = sorted(sku_storage.values(), key=lambda x: x["est_cost_month"], reverse=True)[:20]
+    # 10d. Calculate forecast_30d for each SKU
+    # Formula: for each day i in 0..29, remaining_stock = max(0, stock - daily_sales * i)
+    # forecast_30d = Σ (cost_per_unit_per_day × remaining_stock)
+    total_forecast_30d = 0.0
+    for nm_id, sku_data in sku_storage.items():
+        stock = sku_data["total_stock"]
+        daily_cost = daily_cost_per_nm.get(nm_id, 0)
+        orders_period = nm_orders_total.get(nm_id, 0)
+        daily_sales = orders_period / period if period > 0 else 0
+
+        if daily_cost > 0 and stock > 0:
+            # cost_per_unit_per_day = daily_cost / current_stock
+            cost_per_unit = daily_cost / stock
+            forecast = 0.0
+            for day in range(30):
+                remaining = max(0, stock - daily_sales * day)
+                if remaining <= 0:
+                    break
+                forecast += cost_per_unit * remaining
+            sku_data["forecast_30d"] = round(forecast, 2)
+            sku_data["daily_sales"] = round(daily_sales, 2)
+            sku_data["daily_cost"] = round(daily_cost, 2)
+            # days_to_sell = how many days until stock runs out
+            sku_data["days_to_sell"] = round(stock / daily_sales) if daily_sales > 0 else None
+            total_forecast_30d += forecast
+        else:
+            # No paid storage data → use est_cost_month as fallback
+            sku_data["forecast_30d"] = None
+            sku_data["daily_sales"] = round((orders_period / period) if period > 0 else 0, 2)
+            sku_data["daily_cost"] = None
+            sku_data["days_to_sell"] = round(stock / (orders_period / period)) if orders_period > 0 and period > 0 else None
+
+    storage_skus = sorted(sku_storage.values(), key=lambda x: x["est_cost_month"], reverse=True)
     for s in storage_skus:
         s["est_cost_month"] = round(s["est_cost_month"], 2)
 
@@ -4549,8 +4667,11 @@ async def wb_warehouse_analytics(
     avg_turnover = total_stock / total_daily if total_daily > 0 else None
     total_logistics = sum(c["amount"] for c in costs_summary if c["operation_type"] == "Логистика")
     total_storage = sum(c["amount"] for c in costs_summary if c["operation_type"] == "Хранение")
-    total_penalties = sum(c["amount"] for c in costs_summary if c["operation_type"] in ("Штрафы", "Удержания"))
+    total_penalties = sum(c["amount"] for c in costs_summary if c["operation_type"] == "Штраф")
     cross_pct_global = round(total_cross_orders / total_orders * 100, 1) if total_orders > 0 else 0
+
+    # Total actual storage: from fact_wb_paid_storage, extrapolated to 30 days
+    total_storage_actual = round(total_storage_actual_all * month_mult, 2) if has_actual_storage else None
 
     kpi = {
         "total_warehouses": len([w for w in warehouses_result if w["stock"] > 0 or w["orders"] > 0]),
@@ -4559,10 +4680,13 @@ async def wb_warehouse_analytics(
         "avg_turnover_days": round(avg_turnover, 1) if avg_turnover is not None else None,
         "total_logistics": round(total_logistics, 2),
         "total_storage": round(total_storage, 2),
+        "total_storage_actual": total_storage_actual,
         "total_penalties": round(total_penalties, 2),
         "cross_pct": cross_pct_global,
         "total_orders": total_orders,
         "period_days": period,
+        "has_actual_storage": has_actual_storage,
+        "forecast_30d": round(total_forecast_30d, 2) if total_forecast_30d > 0 else None,
     }
 
     # ── 12. Recommendations ──────────────────────────────────
@@ -5180,6 +5304,7 @@ async def get_wb_ai_analysis(
 
             # Calculate est_storage_month: prefer ACTUAL data, fallback to tariff estimate
             storage_source = "estimated"
+            wh_list = wh_stock_map.get(nm_id, [])
             if vc in actual_storage_map:
                 est_storage_month = round(actual_storage_map[vc])
                 storage_source = "actual"
