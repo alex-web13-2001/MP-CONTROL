@@ -5814,7 +5814,8 @@ async def get_wb_geography(
                 count() AS orders,
                 sum(toFloat64(price_with_disc)) AS revenue,
                 count(DISTINCT oblast_okrug_name) AS okrug_count,
-                count(DISTINCT region_name) AS region_count
+                count(DISTINCT region_name) AS region_count,
+                uniqExact(toDate(date)) AS active_days
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {{shop_id:UInt32}}
               AND date >= {{d_start:Date}}
@@ -5843,6 +5844,7 @@ async def get_wb_geography(
             prod = prod_map.get(nm, {})
             nm_orders = int(r[1])
             nm_rev = float(r[2])
+            active_days = int(r[5])
             top_products.append({
                 "nm_id": nm,
                 "vendor_code": prod.get("vendor_code", ""),
@@ -5852,6 +5854,7 @@ async def get_wb_geography(
                 "avg_check": round(nm_rev / nm_orders, 2) if nm_orders > 0 else 0,
                 "okrug_count": int(r[3]),
                 "region_count": int(r[4]),
+                "stability_pct": round(active_days / period * 100, 1),
                 "share_pct": round(nm_orders / total_orders * 100, 1) if total_orders > 0 else 0,
             })
 
@@ -5863,7 +5866,8 @@ async def get_wb_geography(
                 oblast_okrug_name AS okrug,
                 nm_id,
                 count() AS orders,
-                sum(toFloat64(price_with_disc)) AS revenue
+                sum(toFloat64(price_with_disc)) AS revenue,
+                uniqExact(toDate(date)) AS active_days
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {{shop_id:UInt32}}
               AND date >= {{d_start:Date}}
@@ -5883,12 +5887,15 @@ async def get_wb_geography(
             if count <= 5:
                 nm = int(r[1])
                 prod = prod_map.get(nm, {})
+                active_days = int(r[4])
                 okrug_top_products.setdefault(okrug, []).append({
                     "nm_id": nm,
                     "vendor_code": prod.get("vendor_code", ""),
                     "name": prod.get("name", ""),
                     "orders": int(r[2]),
                     "revenue": round(float(r[3]), 2),
+                    "avg_check": round(float(r[3]) / int(r[2]), 2) if int(r[2]) > 0 else 0,
+                    "stability_pct": round(active_days / period * 100, 1),
                 })
 
     # ── 4. SKU filter info ──

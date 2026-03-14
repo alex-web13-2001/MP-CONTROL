@@ -611,6 +611,7 @@ export interface WBGeographyProduct {
   avg_check: number
   okrug_count: number
   region_count: number
+  stability_pct?: number
   share_pct: number
 }
 
