@@ -293,10 +293,12 @@ function OkrugsTable({
 
   /* ── Unified Product Table ── */
   const ProductsTable = ({ products, title }: {
-    products: { nm_id: number; vendor_code: string; name: string; orders: number; revenue: number; avg_check?: number }[]
+    products: { nm_id: number; vendor_code: string; name: string; orders: number; revenue: number; avg_check?: number; stability_pct?: number }[]
     title: string
   }) => {
     if (products.length === 0) return null
+    const hasStability = products.some(p => p.stability_pct != null)
+    const gridCols = hasStability ? '28px 1fr 80px 100px 80px 70px' : '28px 1fr 80px 100px 80px'
     return (
       <div>
         <h4 className="text-[13px] font-bold text-[hsl(var(--foreground))] mb-2.5 flex items-center gap-2">
@@ -304,17 +306,19 @@ function OkrugsTable({
           {title}
         </h4>
         <div className="rounded-xl border border-[hsl(var(--border)/0.4)] overflow-hidden">
-          <div className="grid grid-cols-[28px_1fr_80px_100px_80px] items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
+          <div className="grid items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]" style={{ gridTemplateColumns: gridCols }}>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">#</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">ТОВАР</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ЗАКАЗЫ</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ВЫРУЧКА</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">СР. ЧЕК</span>
+            {hasStability && <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right" title="Стабильность спроса: % недель с заказами">СТАБ.</span>}
           </div>
           {products.map((p, i) => (
             <div
               key={p.nm_id}
-              className={`grid grid-cols-[28px_1fr_80px_100px_80px] items-center px-4 py-2.5 border-b border-[hsl(var(--border)/0.08)] last:border-0 ${i % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
+              className={`grid items-center px-4 py-2.5 border-b border-[hsl(var(--border)/0.08)] last:border-0 ${i % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
+              style={{ gridTemplateColumns: gridCols }}
             >
               <span className="text-[13px] font-bold text-[hsl(var(--muted-foreground)/0.4)] tabular-nums self-start pt-0.5">{i + 1}</span>
               <div className="min-w-0 pr-3">
@@ -324,6 +328,11 @@ function OkrugsTable({
               <span className="text-[13px] font-bold text-right tabular-nums">{fmt(p.orders)}</span>
               <span className="text-[13px] text-right tabular-nums">{fmtM(p.revenue)}</span>
               <span className="text-[13px] text-right tabular-nums text-[hsl(var(--muted-foreground))]">{fmtM(p.avg_check ?? (p.orders > 0 ? p.revenue / p.orders : 0))}</span>
+              {hasStability && p.stability_pct != null && (
+                <span className="text-right">
+                  <StabilityBadge pct={p.stability_pct} compact />
+                </span>
+              )}
             </div>
           ))}
         </div>

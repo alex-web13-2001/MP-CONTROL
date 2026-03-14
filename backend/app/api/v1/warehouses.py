@@ -5967,11 +5967,14 @@ async def get_wb_geography_region_products(
         except ValueError:
             pass
 
+    total_weeks = max(1, period // 7)
+
     prod_rows = ch.query(f"""
         SELECT
             nm_id,
             count() AS orders,
-            sum(toFloat64(price_with_disc)) AS revenue
+            sum(toFloat64(price_with_disc)) AS revenue,
+            uniqExact(toMonday(date)) AS active_weeks
         FROM mms_analytics.fact_orders_raw FINAL
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
@@ -6006,6 +6009,8 @@ async def get_wb_geography_region_products(
         prod = prod_map.get(nm, {})
         nm_orders = int(r[1])
         nm_rev = float(r[2])
+        active_weeks = int(r[3])
+        stability_pct = round(active_weeks / total_weeks * 100, 1)
         result.append({
             "nm_id": nm,
             "vendor_code": prod.get("vendor_code", ""),
@@ -6013,9 +6018,11 @@ async def get_wb_geography_region_products(
             "orders": nm_orders,
             "revenue": round(nm_rev, 2),
             "avg_check": round(nm_rev / nm_orders, 2) if nm_orders > 0 else 0,
+            "stability_pct": stability_pct,
         })
 
     return {"region": region, "products": result}
+
 
 
 @router.get("/wb/geography/products-search")

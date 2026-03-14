@@ -642,6 +642,7 @@ export interface WBRegionProductsResponse {
     orders: number
     revenue: number
     avg_check: number
+    stability_pct?: number
   }[]
 }
 
