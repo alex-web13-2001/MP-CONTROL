@@ -237,11 +237,13 @@ function OkrugsTable({
   okrugTopProducts,
   shopId,
   period,
+  selectedNmIds,
 }: {
   okrugs: WBGeographyOkrug[]
   okrugTopProducts: Record<string, WBGeographyProduct[]>
   shopId: number
   period: number
+  selectedNmIds?: string
 }) {
   const [expandedOkrug, setExpandedOkrug] = useState<string | null>(null)
   const [expandedRegion, setExpandedRegion] = useState<string | null>(null)
@@ -263,7 +265,7 @@ function OkrugsTable({
     setExpandedRegion(region)
     setRegionLoading(true)
     try {
-      const res = await getWBGeographyRegionProducts({ shop_id: shopId, period, region })
+      const res = await getWBGeographyRegionProducts({ shop_id: shopId, period, region, nm_ids: selectedNmIds })
       setRegionProducts(res)
     } catch {
       setRegionProducts(null)
@@ -707,6 +709,7 @@ export default function WarehousesGeographyPage() {
             okrugTopProducts={data.okrug_top_products}
             shopId={currentShop!.id}
             period={period}
+            selectedNmIds={selectedProducts.length > 0 ? selectedProducts.map(p => p.nm_id).join(',') : undefined}
           />
 
           {data.top_products.length > 0 && (

@@ -5939,6 +5939,7 @@ async def get_wb_geography_region_products(
     shop_id: int = Query(...),
     period: int = Query(30, ge=7, le=90),
     region: str = Query(..., description="Region name (e.g. Московская область)"),
+    nm_ids: str = Query(None, description="Comma-separated nm_ids to filter by"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -5956,16 +5957,27 @@ async def get_wb_geography_region_products(
     today = date.today()
     d_start = today - timedelta(days=period)
 
-    prod_rows = ch.query("""
+    nm_filter = ""
+    if nm_ids:
+        try:
+            nm_id_list = [int(x.strip()) for x in nm_ids.split(",") if x.strip()]
+            if nm_id_list:
+                id_str = ", ".join(str(x) for x in nm_id_list)
+                nm_filter = f"AND nm_id IN ({id_str})"
+        except ValueError:
+            pass
+
+    prod_rows = ch.query(f"""
         SELECT
             nm_id,
             count() AS orders,
             sum(toFloat64(price_with_disc)) AS revenue
         FROM mms_analytics.fact_orders_raw FINAL
-        WHERE shop_id = {shop_id:UInt32}
-          AND date >= {d_start:Date}
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND date >= {{d_start:Date}}
           AND is_cancel = 0
-          AND region_name = {region:String}
+          AND region_name = {{region:String}}
+          {nm_filter}
         GROUP BY nm_id
         ORDER BY orders DESC
         LIMIT 20

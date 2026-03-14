@@ -658,6 +658,7 @@ export async function getWBGeographyRegionProducts(params: {
   shop_id: number
   period?: number
   region: string
+  nm_ids?: string
 }): Promise<WBRegionProductsResponse> {
   const { data } = await apiClient.get<WBRegionProductsResponse>('/warehouses/wb/geography/region-products', { params })
   return data
