@@ -49,13 +49,23 @@ const PERIOD_OPTIONS = [
 ]
 
 /* ── Stability badge ── */
-function StabilityBadge({ pct }: { pct: number }) {
-  const color = pct >= 90 ? 'bg-emerald-500/15 text-emerald-400' :
-    pct >= 50 ? 'bg-amber-500/15 text-amber-400' :
-    'bg-red-500/15 text-red-400'
+function StabilityBadge({ pct, compact }: { pct: number; compact?: boolean }) {
+  const dotColor = pct >= 90 ? 'bg-emerald-400' : pct >= 50 ? 'bg-amber-400' : 'bg-red-400'
+  const textColor = pct >= 90 ? 'text-emerald-400' : pct >= 50 ? 'text-amber-400' : 'text-red-400'
   const label = pct >= 90 ? 'Стабильный' : pct >= 50 ? 'Средний' : 'Нестабильный'
+
+  if (compact) {
+    return (
+      <span className={`inline-flex items-center gap-1.5 text-[12px] font-semibold tabular-nums ${textColor}`} title={`Стабильность спроса: ${pct.toFixed(0)}% — ${label}`}>
+        <span className={`w-2 h-2 rounded-full shrink-0 ${dotColor}`} />
+        {pct.toFixed(0)}%
+      </span>
+    )
+  }
+
+  const bgColor = pct >= 90 ? 'bg-emerald-500/15' : pct >= 50 ? 'bg-amber-500/15' : 'bg-red-500/15'
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ${color}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ${bgColor} ${textColor}`}>
       <Activity className="h-3 w-3" />
       {pct.toFixed(0)}% · {label}
     </span>
@@ -294,10 +304,9 @@ function OkrugsTable({
           {title}
         </h4>
         <div className="rounded-xl border border-[hsl(var(--border)/0.4)] overflow-hidden">
-          <div className="grid grid-cols-[28px_1fr_150px_80px_100px_80px] items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
+          <div className="grid grid-cols-[28px_1fr_80px_100px_80px] items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">#</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">ТОВАР</span>
-            <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">АРТИКУЛ</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ЗАКАЗЫ</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ВЫРУЧКА</span>
             <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">СР. ЧЕК</span>
@@ -305,11 +314,13 @@ function OkrugsTable({
           {products.map((p, i) => (
             <div
               key={p.nm_id}
-              className={`grid grid-cols-[28px_1fr_150px_80px_100px_80px] items-center px-4 py-2.5 border-b border-[hsl(var(--border)/0.08)] last:border-0 ${i % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
+              className={`grid grid-cols-[28px_1fr_80px_100px_80px] items-center px-4 py-2.5 border-b border-[hsl(var(--border)/0.08)] last:border-0 ${i % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
             >
-              <span className="text-[13px] font-bold text-[hsl(var(--muted-foreground)/0.4)] tabular-nums">{i + 1}</span>
-              <span className="text-[13px] font-medium truncate pr-3">{p.name || `Товар #${p.nm_id}`}</span>
-              <span className="text-[12px] font-semibold text-[hsl(var(--primary))] tabular-nums truncate">{p.vendor_code || `#${p.nm_id}`}</span>
+              <span className="text-[13px] font-bold text-[hsl(var(--muted-foreground)/0.4)] tabular-nums self-start pt-0.5">{i + 1}</span>
+              <div className="min-w-0 pr-3">
+                <div className="text-[13px] font-medium truncate">{p.name || `Товар #${p.nm_id}`}</div>
+                <div className="text-[11px] text-[hsl(var(--primary))] font-semibold tabular-nums truncate">{p.vendor_code || `#${p.nm_id}`}</div>
+              </div>
               <span className="text-[13px] font-bold text-right tabular-nums">{fmt(p.orders)}</span>
               <span className="text-[13px] text-right tabular-nums">{fmtM(p.revenue)}</span>
               <span className="text-[13px] text-right tabular-nums text-[hsl(var(--muted-foreground))]">{fmtM(p.avg_check ?? (p.orders > 0 ? p.revenue / p.orders : 0))}</span>
@@ -407,12 +418,12 @@ function OkrugsTable({
                           </h4>
                           <div className="rounded-xl border border-[hsl(var(--border)/0.4)] overflow-hidden">
                             {/* Header */}
-                            <div className="grid grid-cols-[1fr_80px_100px_80px_120px_60px] items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
+                            <div className="grid grid-cols-[1fr_80px_100px_80px_70px_60px] items-center px-4 py-2.5 bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
                               <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">РЕГИОН</span>
                               <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ЗАКАЗЫ</span>
                               <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ВЫРУЧКА</span>
                               <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">СР. ЧЕК</span>
-                              <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">СТАБИЛЬНОСТЬ</span>
+                              <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right" title="Стабильность спроса">СТАБ.</span>
                               <span className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))] text-right">ДОЛЯ</span>
                             </div>
                             {/* Region rows */}
@@ -422,7 +433,7 @@ function OkrugsTable({
                                 <div key={reg.region}>
                                   <button
                                     onClick={() => handleRegionClick(reg.region)}
-                                    className={`w-full grid grid-cols-[1fr_80px_100px_80px_120px_60px] items-center px-4 py-2.5 text-[13px] border-b border-[hsl(var(--border)/0.08)] last:border-0 transition-colors ${canDrillRegion ? 'cursor-pointer hover:bg-[hsl(var(--muted)/0.06)]' : 'cursor-default'} ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.06)]' : idx % 2 ? 'bg-[hsl(var(--muted)/0.02)]' : ''}`}
+                                    className={`w-full grid grid-cols-[1fr_80px_100px_80px_70px_60px] items-center px-4 py-2.5 text-[13px] border-b border-[hsl(var(--border)/0.08)] last:border-0 transition-colors ${canDrillRegion ? 'cursor-pointer hover:bg-[hsl(var(--muted)/0.06)]' : 'cursor-default'} ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.06)]' : idx % 2 ? 'bg-[hsl(var(--muted)/0.02)]' : ''}`}
                                   >
                                     <span className="flex items-center gap-2 text-left min-w-0">
                                       {canDrillRegion && (
@@ -436,7 +447,7 @@ function OkrugsTable({
                                     <span className="text-right tabular-nums">{fmtM(reg.revenue)}</span>
                                     <span className="text-right tabular-nums">{fmtM(reg.avg_check)}</span>
                                     <span className="text-right">
-                                      <StabilityBadge pct={reg.stability_pct} />
+                                      <StabilityBadge pct={reg.stability_pct} compact />
                                     </span>
                                     <span className="text-right tabular-nums text-[hsl(var(--muted-foreground))]">{reg.share_pct}%</span>
                                   </button>
