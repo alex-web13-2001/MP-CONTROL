@@ -48,8 +48,18 @@ def run_migrations():
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
 
+        # Убираем однострочные комментарии (-- ...) из содержимого,
+        # сохраняя строки, которые содержат SQL код
+        lines = []
+        for line in content.split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("--"):
+                continue  # пропускаем строки-комментарии
+            lines.append(line)
+        clean_content = "\n".join(lines)
+
         # Разбиваем на отдельные команды по ';'
-        statements = [s.strip() for s in content.split(";") if s.strip() and not s.strip().startswith("--")]
+        statements = [s.strip() for s in clean_content.split(";") if s.strip()]
 
         for i, stmt in enumerate(statements):
             if not stmt:
@@ -60,7 +70,8 @@ def run_migrations():
             except Exception as e:
                 err = str(e)
                 # Игнорируем "уже существует" ошибки
-                if any(x in err for x in ["already exists", "DUPLICATE_COLUMN", "Column already exists"]):
+                if any(x in err for x in ["already exists", "DUPLICATE_COLUMN", "Column already exists",
+                                           "TABLE_ALREADY_EXISTS"]):
                     logger.info("  [%d/%d] Skipped (already applied): %.60s", i + 1, len(statements), stmt[:60])
                 else:
                     logger.error("  [%d/%d] FAILED: %s\n  SQL: %s", i + 1, len(statements), err, stmt[:100])
