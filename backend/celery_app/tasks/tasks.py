@@ -195,8 +195,8 @@ def load_historical_data(self, shop_id: int, months: int = 6):
     _ETA_MAP = {
         "wildberries": {
             # step_idx → estimated remaining seconds at START of that step
-            1: 1800, 2: 1700, 3: 1650, 4: 1600,  # finance is step 4, ~15 min
-            5: 300, 6: 120, 7: 30,
+            1: 2100, 2: 2000, 3: 1950, 4: 1900,  # finance is step 4, ~15 min
+            5: 600, 6: 420, 7: 330, 8: 30,  # step 8: paid storage backfill ~5 min
         },
         "ozon": {
             1: 900, 2: 850, 3: 800, 4: 650, 5: 600, 6: 550,
@@ -413,6 +413,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 sync_wb_advert_history,
                 sync_commercial_data,
                 sync_warehouses,
+                backfill_wb_paid_storage,
             )
 
             steps = [
@@ -423,6 +424,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 ("Загрузка рекламной истории", sync_wb_advert_history, dict(shop_id=shop_id, api_key=api_key, days_back=months * 30)),
                 ("Загрузка цен и остатков", sync_commercial_data, dict(shop_id=shop_id, api_key=api_key)),
                 ("Загрузка складов", sync_warehouses, dict(shop_id=shop_id, api_key=api_key)),
+                ("Загрузка платного хранения (90 дней)", backfill_wb_paid_storage, dict(shop_id=shop_id, api_key=api_key, months=3)),
             ]
             total = len(steps)
 
