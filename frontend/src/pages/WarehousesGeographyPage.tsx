@@ -55,7 +55,7 @@ function StabilityBadge({ pct }: { pct: number }) {
     'bg-red-500/15 text-red-400'
   const label = pct >= 90 ? 'Стабильный' : pct >= 50 ? 'Средний' : 'Нестабильный'
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${color}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ${color}`}>
       <Activity className="h-3 w-3" />
       {pct.toFixed(0)}% · {label}
     </span>
@@ -256,7 +256,12 @@ function OkrugsTable({
     setRegionProducts(null)
   }
 
+  // Count how many products are filtered
+  const filteredProductCount = selectedNmIds ? selectedNmIds.split(',').length : 0
+  const canDrillRegion = filteredProductCount !== 1 // drill-down is useless for single product
+
   const handleRegionClick = async (region: string) => {
+    if (!canDrillRegion) return
     if (expandedRegion === region) {
       setExpandedRegion(null)
       setRegionProducts(null)
@@ -344,7 +349,7 @@ function OkrugsTable({
                       <div className="w-[50px] text-right">
                         <span className="text-[12px] font-bold text-[hsl(var(--primary))] tabular-nums">{ok.share_pct}%</span>
                       </div>
-                      <div className="w-[110px]">
+                      <div className="w-[140px] shrink-0">
                         <StabilityBadge pct={ok.stability_pct} />
                       </div>
                     </div>
@@ -384,10 +389,10 @@ function OkrugsTable({
                                 <div key={reg.region}>
                                   <button
                                     onClick={() => handleRegionClick(reg.region)}
-                                    className={`w-full grid grid-cols-[1fr_70px_90px_80px_60px_50px] items-center px-3 py-2 text-[12px] border-b border-[hsl(var(--border)/0.15)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.05)]' : ''}`}
+                                    className={`w-full grid grid-cols-[1fr_70px_90px_80px_60px_50px] items-center px-3 py-2 text-[12px] border-b border-[hsl(var(--border)/0.15)] transition-colors ${canDrillRegion ? 'cursor-pointer hover:bg-[hsl(var(--muted)/0.08)]' : 'cursor-default'} ${isRegExpanded ? 'bg-[hsl(var(--primary)/0.05)]' : ''}`}
                                   >
                                     <span className="flex items-center gap-1.5 font-medium text-left min-w-0">
-                                      {isRegExpanded ? <ChevronDown className="h-3 w-3 shrink-0 text-[hsl(var(--primary))]" /> : <ChevronRight className="h-3 w-3 shrink-0 text-[hsl(var(--muted-foreground)/0.4)]" />}
+                                      {canDrillRegion && (isRegExpanded ? <ChevronDown className="h-3 w-3 shrink-0 text-[hsl(var(--primary))]" /> : <ChevronRight className="h-3 w-3 shrink-0 text-[hsl(var(--muted-foreground)/0.4)]" />)}
                                       <span className="truncate">{reg.region}</span>
                                     </span>
                                     <span className="text-right tabular-nums">{fmt(reg.orders)}</span>
