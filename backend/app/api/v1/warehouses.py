@@ -5726,7 +5726,7 @@ async def get_wb_geography(
             region_name AS region,
             count() AS orders,
             sum(toFloat64(price_with_disc)) AS revenue,
-            sum(toFloat64(final_price)) AS revenue_final
+            sum(toFloat64(total_price)) AS revenue_final
         FROM mms_analytics.fact_orders_raw FINAL
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}

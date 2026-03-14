@@ -1,18 +1,17 @@
 /**
- * Warehouses Storage — расходы + хранение по SKU.
- * WB: CostsSummary + StorageSkusTable + RecommendationsPanel
- * Ozon: redirects to /warehouses/analytics (storage tab).
+ * Warehouses Storage — dedicated page for WB storage analytics.
+ * Uses real CostsSummary, StorageSkusTable, RecommendationsPanel from WBWarehouseAnalyticsContent.
+ * Ozon: redirects to /warehouses/analytics.
  */
-import React, { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Navigate } from 'react-router-dom'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   RefreshCw,
   AlertTriangle,
-  Package,
-  ChevronRight,
-  ShieldAlert,
   Boxes,
+  Package,
+  TrendingUp,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -20,21 +19,12 @@ import { useAppStore } from '@/stores/appStore'
 import {
   getWBWarehouseAnalytics,
   type WBWarehouseAnalyticsResponse,
-  type WBCostSummary,
-  type WBStorageSku,
-  type WBRecommendation,
 } from '@/api/warehouses'
-
-/* ── Cost extraction helper ── */
-function extractCosts(costs: WBCostSummary[]) {
-  const find = (type: string) => costs.find(c => c.operation_type === type)?.amount ?? 0
-  return {
-    storage: Math.abs(find('Хранение')),
-    logistics: Math.abs(find('Логистика')),
-    crossdocking: Math.abs(find('Кросс-докинг')),
-    penalties: Math.abs(find('Штраф')),
-  }
-}
+import {
+  CostsSummary,
+  StorageSkusTable,
+  RecommendationsPanel,
+} from './WBWarehouseAnalyticsContent'
 
 /* ── Helpers ── */
 function fmt(v: number): string { return Math.round(v).toLocaleString('ru-RU') }
@@ -49,305 +39,83 @@ const PERIOD_OPTIONS = [
   { label: '90 дн', value: 90 },
 ]
 
-/* ═══ Costs Summary ═══ */
-function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
-  const c = extractCosts(costs)
-  const items = [
-    { label: '📦 Хранение', value: c.storage, color: 'text-purple-400' },
-    { label: '🚚 Логистика', value: c.logistics, color: 'text-cyan-400' },
-    { label: '🔄 Кросс-лог.', value: c.crossdocking || 0, color: 'text-orange-400' },
-    { label: '⚠️ Штрафы', value: c.penalties, color: 'text-red-400' },
-  ].filter(x => x.value > 0 || x.label === '📦 Хранение')
+/* ═══ KPI Summary for Storage ═══ */
+function StorageKpi({ data }: { data: WBWarehouseAnalyticsResponse }) {
+  const kpi = data.kpi
+  const totalCostMonth = data.storage_skus.reduce((s, sk) => s + sk.est_cost_month, 0)
+  const hasForecast = data.storage_skus.some(s => s.forecast_30d != null)
+  const totalForecast = hasForecast ? data.storage_skus.reduce((s, sk) => s + (sk.forecast_30d ?? 0), 0) : null
 
-  const total = items.reduce((s, x) => s + Math.abs(x.value), 0)
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15, duration: 0.4 }}>
-      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="px-6 py-5 border-b border-[hsl(var(--border))]">
-          <h2 className="text-xl font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
-            <Boxes className="h-5 w-5 text-purple-400" />
-            Расходы за период
-          </h2>
-        </div>
-        <div className="p-6">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {items.map((item) => (
-              <div key={item.label} className="p-4 rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.2)]">
-                <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">{item.label}</p>
-                <p className={`text-xl font-bold tabular-nums mt-1 ${item.color}`}>
-                  {fmtM(Math.abs(item.value))}
-                </p>
-              </div>
-            ))}
-          </div>
-          <div className="mt-4 pt-4 border-t border-[hsl(var(--border)/0.2)] flex items-center justify-between">
-            <span className="text-[14px] font-semibold text-[hsl(var(--muted-foreground))]">Итого расходов</span>
-            <span className="text-xl font-bold text-red-400 tabular-nums">{fmtM(total)}</span>
-          </div>
-        </div>
-      </div>
-    </motion.div>
-  )
-}
-
-/* ═══ Storage SKUs Table ═══ */
-function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
-  const [expanded, setExpanded] = useState<string | null>(null)
-
-  const paidCount = skus.filter(s => s.zone === 'paid').length
-  const warningCount = skus.filter(s => s.zone === 'warning').length
-  const totalMonthlyCost = skus.filter(s => s.zone === 'paid').reduce((s, sk) => s + sk.est_monthly_cost, 0)
+  const overstockCount = data.storage_skus.filter(s => (s.days_to_sell ?? 0) > 120).length
+  const noSalesCount = data.storage_skus.filter(s => s.daily_sales <= 0).length
+  const totalStock = data.storage_skus.reduce((s, sk) => s + sk.total_stock, 0)
 
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2, duration: 0.4 }}>
-      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-orange-600 to-red-500 shadow-lg">
-              <Package className="h-4.5 w-4.5 text-white" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Хранение по SKU</h2>
-              <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
-                {paidCount} SKU в зоне платного хранения{warningCount > 0 && ` • ${warningCount} приближаются`}
-              </p>
-            </div>
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Storage cost */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <Boxes className="h-4 w-4 text-purple-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              {kpi.has_actual_storage ? 'Хранение (факт)' : 'Хранение'}
+            </span>
           </div>
-          {totalMonthlyCost > 0 && (
-            <div className="text-right">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">Прогноз / мес</div>
-              <div className="text-xl font-bold text-red-400 tabular-nums">~{fmtM(totalMonthlyCost)}</div>
-            </div>
-          )}
-        </div>
-
-        <div className="overflow-auto max-h-[600px]">
-          <table className="w-full border-collapse">
-            <thead className="sticky top-0 z-20">
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-1 py-2.5 w-8"></th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">SKU</th>
-                <th className="px-2 py-2.5 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Зона</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Остаток</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Прод/д</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Оборач.</th>
-                <th className="px-2 py-2.5 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">Реклама</th>
-                <th className="px-3 py-2.5 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">~Стоим/мес</th>
-                <th className="px-3 py-2.5 text-left text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Рекомендация</th>
-              </tr>
-            </thead>
-            <tbody>
-              {skus.map((sk, idx) => {
-                const isExp = expanded === sk.vendor_code
-                const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
-                return (
-                  <React.Fragment key={sk.vendor_code}>
-                    <tr
-                      className={`border-b border-[hsl(var(--border)/0.2)] transition-colors cursor-pointer ${
-                        isExp ? 'bg-[hsl(var(--primary)/0.06)]' : `${rowBg} hover:bg-[hsl(var(--muted)/0.15)]`
-                      } group`}
-                      onClick={() => setExpanded(isExp ? null : sk.vendor_code)}
-                    >
-                      <td className="px-2 py-2.5 text-center">
-                        <motion.div animate={{ rotate: isExp ? 90 : 0 }} transition={{ duration: 0.15 }}>
-                          <ChevronRight className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground))]" />
-                        </motion.div>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="text-[13px] font-medium" title={sk.name}>{sk.name || sk.vendor_code}</div>
-                        <div className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">{sk.vendor_code}</div>
-                      </td>
-                      <td className="px-2 py-2.5 text-center">
-                        <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap ${
-                          sk.zone === 'paid'
-                            ? 'bg-red-500/15 text-red-400'
-                            : 'bg-amber-500/15 text-amber-400'
-                        }`}>
-                          {sk.zone === 'paid' ? 'Платное' : 'Скоро'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px] font-semibold">{fmt(sk.total_stock)}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">{sk.daily_sales.toFixed(1)}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">
-                        <span className={`font-semibold ${
-                          sk.turnover_days == null ? 'text-purple-400' :
-                          sk.turnover_days > 160 ? 'text-red-400' :
-                          'text-orange-400'
-                        }`}>
-                          {sk.turnover_days != null ? `${Math.round(sk.turnover_days)} дн` : '∞'}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2.5 text-center">
-                        {sk.ad_info?.has_ads ? (
-                          <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-bold bg-blue-500/15 text-blue-400"
-                                title={`Расход: ${fmtM(sk.ad_info.spend_30d)} за 30д, заказов: ${sk.ad_info.orders_30d}`}>
-                            Да
-                          </span>
-                        ) : (
-                          <span className="text-[10px] text-[hsl(var(--muted-foreground))]">Нет</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-[13px]">
-                        <span className={`font-bold ${sk.zone === 'paid' ? 'text-red-400' : 'text-amber-400'}`}>
-                          {sk.est_monthly_cost > 0 ? `~${fmtM(sk.est_monthly_cost)}` : '—'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        {sk.recommendation && (
-                          <div title={sk.recommendation.reason}>
-                            <div className={`text-[12px] font-semibold ${
-                              sk.recommendation.severity === 'critical' ? 'text-red-500' :
-                              sk.recommendation.severity === 'high' ? 'text-orange-500' :
-                              'text-[hsl(var(--foreground)/0.7)]'
-                            }`}>{sk.recommendation.action}</div>
-                            <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{sk.recommendation.reason}</div>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                    {/* Expanded: warehouses */}
-                    {isExp && (
-                      <tr>
-                        <td colSpan={9} className="p-0">
-                          <div className="bg-[hsl(var(--muted)/0.06)] border-t border-b border-[hsl(var(--border)/0.3)] px-5 py-4">
-                            <div className="flex items-center gap-4 mb-3">
-                              <h4 className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
-                                Распределение по складам ({sk.warehouses.length})
-                              </h4>
-                              {sk.revenue_period > 0 && (
-                                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">
-                                  Выручка за период: <strong className="text-emerald-400">{fmtM(sk.revenue_period)}</strong>
-                                </span>
-                              )}
-                            </div>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2">
-                              {sk.warehouses.map(wh => (
-                                <div
-                                  key={wh.warehouse_name}
-                                  className="flex items-center justify-between p-2.5 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)]"
-                                >
-                                  <div className="min-w-0">
-                                    <div className="text-[11px] font-medium truncate" title={wh.warehouse_name}>
-                                      {wh.warehouse_name}
-                                    </div>
-                                  </div>
-                                  <span className="text-[13px] font-bold tabular-nums ml-2 shrink-0">{wh.stock}</span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="flex items-center justify-between px-6 py-4 border-t border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
-          <span className="text-sm text-[hsl(var(--muted-foreground))]">
-            SKU в зоне риска: <strong className="text-red-400">{paidCount} платных</strong>
-            {warningCount > 0 && <>, <strong className="text-amber-400">{warningCount} приближаются</strong></>}
-          </span>
-        </div>
-      </div>
-    </motion.div>
-  )
-}
-
-/* ═══ Recommendations Panel ═══ */
-function RecommendationsPanel({ recommendations }: { recommendations: WBRecommendation[] }) {
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(0)
-
-  if (recommendations.length === 0) return null
-
-  const severityColor: Record<string, string> = {
-    critical: 'text-red-400 bg-red-500/10 border-red-500/20',
-    high: 'text-orange-400 bg-orange-500/10 border-orange-500/20',
-    medium: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-    low: 'text-blue-400 bg-blue-500/10 border-blue-500/20',
-  }
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25, duration: 0.4 }}>
-      <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="flex items-center gap-3 px-6 py-5 border-b border-[hsl(var(--border))]">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-amber-600 to-orange-500 shadow-lg">
-            <ShieldAlert className="h-4.5 w-4.5 text-white" />
+          <div className="text-2xl font-bold tabular-nums text-red-400">
+            {fmtM(kpi.total_storage_actual ?? kpi.total_storage)}
           </div>
-          <div>
-            <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Рекомендации ({recommendations.length})</h2>
-            <p className="text-[12px] text-[hsl(var(--muted-foreground))]">
-              {recommendations.filter(r => r.severity === 'critical' || r.severity === 'high').length} важных
-            </p>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {kpi.has_actual_storage ? 'По отчётам WB' : 'Из удержаний'} • за {kpi.period_days}д
           </div>
         </div>
 
-        <div className="p-4 space-y-3">
-          {recommendations.map((rec, idx) => {
-            const isOpen = expandedIdx === idx
-            const colors = severityColor[rec.severity] || severityColor.medium
+        {/* Estimated 30d */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <Package className="h-4 w-4 text-amber-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Расчёт за 30д
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-amber-400">{fmtM(totalCostMonth)}</div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            при текущих остатках ({fmt(totalStock)} ед.)
+          </div>
+        </div>
 
-            return (
-              <div key={idx} className={`rounded-xl border overflow-hidden ${colors.split(' ').slice(2).join(' ')}`}>
-                <div
-                  className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors ${colors.split(' ').slice(0, 2).join(' ')} hover:opacity-80`}
-                  onClick={() => setExpandedIdx(isOpen ? null : idx)}
-                >
-                  <motion.div animate={{ rotate: isOpen ? 90 : 0 }} transition={{ duration: 0.15 }}>
-                    <ChevronRight className="h-4 w-4" />
-                  </motion.div>
-                  <span className="text-[13px] font-semibold flex-1">{rec.title}</span>
-                  <span className={`text-[10px] font-bold rounded-full px-2 py-0.5 ${colors.split(' ').slice(0, 1).join(' ')}`}>
-                    {rec.severity === 'critical' ? 'Критично' : rec.severity === 'high' ? 'Важно' : 'Совет'}
-                  </span>
-                </div>
-                <AnimatePresence>
-                  {isOpen && (
-                    <motion.div
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: 'auto', opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden"
-                    >
-                      <div className="px-5 py-4 space-y-3 border-t border-[hsl(var(--border)/0.2)]">
-                        <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed">{rec.reason}</p>
-                        {rec.action_items && rec.action_items.length > 0 && (
-                          <div>
-                            <h5 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">Что делать</h5>
-                            <ul className="space-y-1">
-                              {rec.action_items.map((item, i) => (
-                                <li key={i} className="flex items-start gap-2 text-[13px] text-[hsl(var(--foreground))]">
-                                  <span className="text-[hsl(var(--primary))] font-bold mt-0.5">→</span>
-                                  <span>{item}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        {rec.affected_skus && rec.affected_skus.length > 0 && (
-                          <div>
-                            <h5 className="text-[11px] font-bold uppercase tracking-wider text-[hsl(var(--muted-foreground))] mb-1.5">Затронутые товары</h5>
-                            <div className="flex flex-wrap gap-1.5">
-                              {rec.affected_skus.map((sku, i) => (
-                                <span key={i} className="inline-flex items-center px-2.5 py-1 rounded-lg bg-[hsl(var(--muted)/0.15)] text-[11px] font-medium border border-[hsl(var(--border)/0.2)]">
-                                  {sku}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            )
-          })}
+        {/* Forecast */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <TrendingUp className="h-4 w-4 text-cyan-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Прогноз 30д
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-cyan-400">
+            {totalForecast != null ? fmtM(totalForecast) : '—'}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {totalForecast != null ? 'С учётом продаж (остатки убывают)' : 'Нет данных для прогноза'}
+          </div>
+        </div>
+
+        {/* Problems */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <AlertTriangle className="h-4 w-4 text-red-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Проблемные SKU
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums">
+            {overstockCount + noSalesCount}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {overstockCount > 0 && <span className="text-amber-400">{overstockCount} затоварено</span>}
+            {overstockCount > 0 && noSalesCount > 0 && ' • '}
+            {noSalesCount > 0 && <span className="text-red-400">{noSalesCount} без продаж</span>}
+            {overstockCount === 0 && noSalesCount === 0 && 'Всё в норме ✓'}
+          </div>
         </div>
       </div>
     </motion.div>
@@ -358,12 +126,14 @@ function RecommendationsPanel({ recommendations }: { recommendations: WBRecommen
 function StorageSkeleton() {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <Skeleton key={i} className="h-[100px] rounded-2xl" />
         ))}
       </div>
-      <Skeleton className="h-[400px] rounded-2xl" />
+      <Skeleton className="h-[200px] rounded-2xl" />
+      <Skeleton className="h-[500px] rounded-2xl" />
+      <Skeleton className="h-[200px] rounded-2xl" />
     </div>
   )
 }
@@ -409,11 +179,12 @@ export default function WarehousesStoragePage() {
 
   return (
     <div className="space-y-6 pb-10">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Хранение</h1>
           <p className="text-[hsl(var(--muted-foreground))] mt-1">
-            Расходы на хранение, платное хранение по SKU и рекомендации
+            Расходы на хранение, прогнозы и рекомендации по оптимизации
           </p>
         </div>
         <button
@@ -458,13 +229,16 @@ export default function WarehousesStoragePage() {
         </Card>
       ) : data ? (
         <>
-          {/* Costs Summary */}
+          {/* KPI */}
+          <StorageKpi data={data} />
+
+          {/* Costs Summary — оригинальный компонент с прогресс-барами и иконками */}
           <CostsSummary costs={data.costs} />
 
-          {/* Storage SKUs */}
-          {data.storage_skus.length > 0 && <StorageSkusTable skus={data.storage_skus} />}
+          {/* Storage SKUs Table — оригинальный с сортировкой, поиском, прогнозом 30д, итого */}
+          <StorageSkusTable skus={data.storage_skus} />
 
-          {/* Recommendations */}
+          {/* Recommendations — оригинальный с severity-иконками и action items */}
           <RecommendationsPanel recommendations={data.recommendations} />
         </>
       ) : null}

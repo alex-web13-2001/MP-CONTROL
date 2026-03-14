@@ -574,7 +574,7 @@ function CrossMapTable({ crossMap, okrugList }: { crossMap: WBCrossMapRow[]; okr
    Costs Summary
    ═══════════════════════════════════════════════════════════ */
 
-function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
+export function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
   if (costs.length === 0) return null
 
   const iconMap: Record<string, React.ElementType> = {
@@ -660,7 +660,7 @@ function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
    Storage SKUs Table
    ═══════════════════════════════════════════════════════════ */
 
-function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
+export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
   if (skus.length === 0) return null
 
   const [search, setSearch] = React.useState('')
@@ -864,7 +864,7 @@ function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
    Recommendations
    ═══════════════════════════════════════════════════════════ */
 
-function RecommendationsPanel({ recommendations }: { recommendations: WBRecommendation[] }) {
+export function RecommendationsPanel({ recommendations }: { recommendations: WBRecommendation[] }) {
   if (recommendations.length === 0) return null
 
   const severityStyles: Record<string, string> = {
