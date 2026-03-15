@@ -730,6 +730,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
       case 'total_stock': av = a.total_stock; bv = b.total_stock; break
       case 'daily_sales': av = a.daily_sales ?? 0; bv = b.daily_sales ?? 0; break
       case 'days_to_sell': av = a.days_to_sell ?? 99999; bv = b.days_to_sell ?? 99999; break
+      case 'has_active_ads': av = a.has_active_ads ? 1 : 0; bv = b.has_active_ads ? 1 : 0; break
       case 'est_cost_month': av = a.est_cost_month; bv = b.est_cost_month; break
       case 'forecast_30d': av = a.forecast_30d ?? 0; bv = b.forecast_30d ?? 0; break
       default: av = a.est_cost_month; bv = b.est_cost_month
@@ -760,7 +761,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
 
   const thCls = "px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
 
-  const colCount = hasForecast ? 8 : 7 // +1 for expand chevron
+  const colCount = hasForecast ? 9 : 8 // +1 for expand chevron, +1 for ads
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.4 }}>
@@ -827,6 +828,9 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                 <th className={thCls} onClick={() => handleSort('days_to_sell')} title="Дней до полной распродажи">
                   Дней<SortIcon col="days_to_sell" />
                 </th>
+                <th className={`${thCls} !text-center`} onClick={() => handleSort('has_active_ads')} title="Активная реклама за 3 дня">
+                  Рекл.<SortIcon col="has_active_ads" />
+                </th>
                 <th className={thCls} onClick={() => handleSort('est_cost_month')}>
                   Хранение/30д<SortIcon col="est_cost_month" />
                 </th>
@@ -874,6 +878,13 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                       </td>
                       <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${daysColor}`}>
                         {sku.days_to_sell != null ? (sku.days_to_sell > 365 ? '365+' : `${sku.days_to_sell}`) : '∞'}
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        {sku.has_active_ads ? (
+                          <Megaphone className="h-4 w-4 text-emerald-400 mx-auto" />
+                        ) : (
+                          <Megaphone className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.15)] mx-auto" />
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-bold">
                         <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>

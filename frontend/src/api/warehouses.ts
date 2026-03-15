@@ -543,6 +543,7 @@ export interface WBStorageSku {
   zone: 'paid' | 'warning' | 'free'
   turnover_days: number | null
   revenue_period: number
+  has_active_ads?: boolean
   ad_info: { has_ads: boolean; spend_30d: number; orders_30d: number } | null
   recommendation: { action: string; reason: string; severity: string } | null
   warehouses: { warehouse_name: string; warehouse: string; stock: number; stor_base: number; cost_month: number; source: string }[]

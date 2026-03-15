@@ -4705,6 +4705,24 @@ async def wb_warehouse_analytics(
     for s in storage_skus:
         s["est_cost_month"] = round(s["est_cost_month"], 2)
 
+    # 10e. Active ads in last 3 days (for ad status icon in table)
+    ad_active_nm_ids: set[int] = set()
+    try:
+        ad_3d_rows = ch.query("""
+            SELECT DISTINCT nm_id
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= today() - 3
+              AND spend > 0
+        """, parameters={"shop_id": shop_id}).result_rows
+        ad_active_nm_ids = {int(r[0]) for r in ad_3d_rows}
+        logger.info("WB analytics storage: %d nm_ids with active ads in last 3d", len(ad_active_nm_ids))
+    except Exception as e:
+        logger.warning("Ad active query for storage failed: %s", e)
+
+    for s in storage_skus:
+        s["has_active_ads"] = s["nm_id"] in ad_active_nm_ids
+
     # ── 11. KPI ──────────────────────────────────────────────
     total_stock = sum(w["stock"] for w in warehouses_result)
     total_daily = sum(w["daily_sales"] for w in warehouses_result)
