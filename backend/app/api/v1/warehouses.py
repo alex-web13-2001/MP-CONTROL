@@ -6588,3 +6588,634 @@ async def get_wb_geography_ai_analysis(
     except Exception as e:
         logger.exception("Geography AI analysis failed")
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# AI Storage Analysis
+# ═══════════════════════════════════════════════════════════════
+
+_AI_PROMPT_STORAGE = """Ты — эксперт по ОПТИМИЗАЦИИ ПЛАТНОГО ХРАНЕНИЯ на Wildberries.
+
+ТВОЯ ЗАДАЧА: проанализировать расходы на хранение каждого товара и дать КОНКРЕТНЫЕ рассчитанные рекомендации по оптимизации.
+
+## КОНТЕКСТ: ЭКОНОМИКА ХРАНЕНИЯ WB
+
+### Тарифы хранения (2025):
+- Базовая ставка: ~0.08₽ за 1 литр в день (тип «Короб»)
+- Коэффициент зависит от склада (загруженность): от 0.5 до 5.0
+- Первые 60 дней с момента поставки — БЕСПЛАТНО (с сентября 2025)
+- Формула: стоимость = base_rate × volume_liters × qty × coef × days
+
+### Стоимость ВЫВОЗА товара со склада:
+- Возврат продавцу: ~50₽ за единицу товара
+- Доставка в ПВЗ: базовая стоимость логистики (38₽ за первый литр + 9.5₽ за доп. литр)
+- Доставка в пределах МКАД: +1500₽ за объём до 10 м³
+- Срок обработки заявки: до 45 дней
+- ВАЖНО: вывоз имеет смысл ТОЛЬКО если расходы на хранение за 3-6 месяцев ПРЕВЫШАЮТ стоимость вывоза
+
+### Обратная логистика (возврат от покупателя):
+- 33₽ за единицу для всех категорий
+
+## СТРОГИЕ ГРАНИЦЫ АНАЛИЗА
+
+АНАЛИЗИРУЙ ТОЛЬКО:
+- Расходы на хранение по каждому SKU: факт vs прогноз
+- Оборачиваемость и тренд продаж
+- Маржинальность: покрывает ли прибыль расходы на хранение
+- Влияние рекламы на продажи (запущена реклама → товар может подождать)
+- Экономика вывоза: когда вывозить дешевле, чем хранить
+- Оптимальный запас: сколько реально нужно держать на складе
+
+НЕ АНАЛИЗИРУЙ:
+- ❌ Географию продаж → отдельный раздел
+- ❌ Кросс-логистику → отдельный раздел
+- ❌ Рекламные кампании детально → раздел «Реклама»
+
+## ЛОГИКА ПРИНЯТИЯ РЕШЕНИЙ ПО КАЖДОМУ SKU
+
+### Дерево решений:
+1. **Товар убыточен** (хранение > прибыли за период):
+   - Если DRR разумный (< 30%) и реклама запущена → ПОДОЖДАТЬ, реклама может раскачать
+   - Если нет продаж и нет рекламы → ЛИКВИДАЦИЯ или ГЛУБОКАЯ СКИДКА
+   - Если есть продажи, но медленные → СКИДКА 15-25%
+
+2. **Товар прибыльный, но затоварен** (оборачиваемость > 90д):
+   - Рассчитай оптимальный запас = daily_sales × 60 дней
+   - Избыток = stock - оптимальный запас
+   - Если избыток × стоимость хранения/шт × 6 мес > избыток × 50₽ вывоза → ВЫВЕЗТИ излишки
+   - Иначе → СОКРАТИТЬ ПОСТАВКИ и подождать
+
+3. **Товар прибыльный и быстро продаётся** (оборачиваемость < 60д):
+   - Всё ОК, не трогать
+   - Если рекламы нет и маржа позволяет → рассмотреть запуск рекламы для ускорения
+
+### РАСЧЁТ СТОИМОСТИ ВЫВОЗА:
+Для каждого SKU при рекомендации «вывезти»:
+- withdrawal_cost = qty × 50₽ + логистика (38₽ × объём в литрах × qty для первого литра, 9.5₽ для доп.)
+- Упрощённо: withdrawal_cost ≈ qty × (50 + объём_литры × 15)₽
+- Сравни с: ежемесячное хранение × 6 месяцев
+- Вывоз выгоден если: withdrawal_cost < storage_monthly × 3
+
+## ФОРМАТ ОТВЕТА — СТРОГО JSON:
+{
+  "severity": "critical" | "warning" | "ok",
+  "diagnosis": "Главный вывод 1-2 предложения с цифрами: сколько тратится на хранение, сколько можно сэкономить",
+  "key_metrics": {
+    "total_storage_monthly": 25000,
+    "potential_savings": 8000,
+    "storage_roi_pct": -15,
+    "overstock_skus": 12,
+    "loss_making_skus": 5,
+    "avg_turnover_days": 180
+  },
+  "sku_actions": [
+    {
+      "vendor_code": "АРТИКУЛ",
+      "name": "Название товара",
+      "diagnosis": "Конкретный диагноз с числами: оборачиваемость, хранение, прибыль, почему проблема",
+      "current_storage_cost": 1500,
+      "current_turnover_days": 210,
+      "stock": 28,
+      "options": [
+        {
+          "action": "discount",
+          "label": "Снизить цену на 20%",
+          "detail": "Расчёт: при росте продаж в 1.5× оборачиваемость снизится до ~140д. Экономия на хранении: ~600₽/мес. Потеря в марже: ~200₽/мес. Чистый выигрыш: ~400₽/мес.",
+          "expected_savings": 400,
+          "withdrawal_cost": 0,
+          "risk": "medium"
+        },
+        {
+          "action": "withdraw",
+          "label": "Вывезти 15 шт со склада",
+          "detail": "Стоимость вывоза: 15 × 65₽ = 975₽. Экономия на хранении: ~800₽/мес. Окупится через 1.2 мес. Оставить 13 шт — это на ~130 дней при текущих продажах.",
+          "expected_savings": 800,
+          "withdrawal_cost": 975,
+          "risk": "medium"
+        },
+        {
+          "action": "do_nothing",
+          "label": "Оставить как есть",
+          "detail": "Через 6 месяцев дополнительные расходы на хранение: 9000₽. Но товар продаётся и прибыль покрывает хранение.",
+          "expected_savings": 0,
+          "withdrawal_cost": 0,
+          "risk": "low"
+        }
+      ],
+      "recommended_option": 0
+    }
+  ],
+  "general_tips": [
+    "Конкретный совет с расчётом, 1-3 предложения."
+  ]
+}
+
+## ПРАВИЛА
+- severity: "critical" если > 30% SKU убыточны из-за хранения, "warning" если 10-30%, "ok" если < 10%
+- sku_actions: 5-10 товаров, ВСЕГДА НАЧИНАЯ с самых дорогих по хранению. Для товаров с пометкой ⚠️ — ОБЯЗАТЕЛЬНО включить
+- options: 2-4 варианта для КАЖДОГО SKU. ВСЕГДА включай "do_nothing" с расчётом потерь
+- action: ТОЛЬКО "discount", "withdraw", "launch_ads", "reduce_supply", "liquidate", "do_nothing"
+- При "withdraw": ОБЯЗАТЕЛЬНО указать withdrawal_cost и расчёт окупаемости
+- При "liquidate": указать максимальную скидку для быстрой распродажи
+- expected_savings: ЕЖЕМЕСЯЧНАЯ экономия в рублях
+- withdrawal_cost: разовая стоимость вывоза в рублях (только для "withdraw")
+- risk: "low" (безопасно), "medium" (есть нюансы), "high" (рискованно)
+- general_tips: 3-5 советов по ОПТИМИЗАЦИИ ХРАНЕНИЯ. Конкретные, с расчётами
+- Все числа — из реальных данных, НЕ выдумывай
+- Пиши НА РУССКОМ
+- НАЗЫВАЙ товары по vendor_code + name
+"""
+
+
+@router.post("/wb/storage/ai-analysis")
+async def get_wb_storage_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered storage cost optimization analysis using Gemini 2.5 Flash."""
+
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    cache_key = f"wb_storage_ai_{shop_id}_{period}"
+
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+
+        # ── 1. Per-SKU storage from fact_wb_paid_storage ──
+        actual_storage_rows = ch.query("""
+            SELECT
+                vendor_code,
+                nm_id,
+                round(SUM(warehouse_price), 2) AS storage_total,
+                round(SUM(warehouse_price) * (30 / {period:UInt32}), 2) AS storage_30d
+            FROM mms_analytics.fact_wb_paid_storage FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {d_start:Date} AND dt <= {d_end:Date}
+            GROUP BY vendor_code, nm_id
+            HAVING storage_total != 0
+            ORDER BY storage_total DESC
+        """, parameters={
+            "shop_id": shop_id, "period": max(period, 1),
+            "d_start": d_start.isoformat(), "d_end": today.isoformat(),
+        }).result_rows
+
+        storage_by_vc: dict[str, dict] = {}
+        for r in actual_storage_rows:
+            vc = str(r[0]).strip()
+            if vc:
+                storage_by_vc[vc] = {
+                    "nm_id": int(r[1]),
+                    "storage_period": round(float(r[2])),
+                    "storage_30d": round(float(r[3])),
+                }
+
+        # ── 2. Per-SKU orders, revenue, ad data ──
+        sku_rows = ch.query("""
+            SELECT
+                s.nm_id,
+                s.total_stock,
+                coalesce(o.orders, 0) AS orders,
+                coalesce(o.revenue, 0) AS revenue,
+                coalesce(a.spend, 0) AS ad_spend,
+                coalesce(a.ad_orders, 0) AS ad_orders
+            FROM (
+                SELECT nm_id, sum(qty) AS total_stock
+                FROM (
+                    SELECT nm_id, argMax(quantity, fetched_at) AS qty
+                    FROM mms_analytics.fact_inventory_snapshot
+                    WHERE shop_id = {shop_id:UInt32}
+                    GROUP BY warehouse_name, nm_id
+                    HAVING qty > 0
+                )
+                GROUP BY nm_id
+            ) AS s
+            LEFT JOIN (
+                SELECT nm_id, count() AS orders, sum(toFloat64(price_with_disc)) AS revenue
+                FROM mms_analytics.fact_orders_raw
+                WHERE shop_id = {shop_id:UInt32} AND date >= {d_start:Date} AND is_cancel = 0
+                GROUP BY nm_id
+            ) AS o ON o.nm_id = s.nm_id
+            LEFT JOIN (
+                SELECT nm_id, sum(spend) AS spend, sum(orders) AS ad_orders
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32} AND date >= {d_start:Date}
+                GROUP BY nm_id
+            ) AS a ON a.nm_id = s.nm_id
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+        sku_data: dict[int, dict] = {}
+        for r in sku_rows:
+            nm = int(r[0])
+            sku_data[nm] = {
+                "stock": int(r[1]),
+                "orders": int(r[2]),
+                "revenue": float(r[3]),
+                "ad_spend": float(r[4]),
+                "ad_orders": int(r[5]),
+            }
+
+        # ── 3. Product info from PostgreSQL ──
+        nm_ids = list(sku_data.keys())
+        products_map: dict[int, dict] = {}
+        if nm_ids:
+            nm_list = ", ".join(str(x) for x in nm_ids)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT nm_id, vendor_code, name, current_price, current_discount,
+                           COALESCE(length, 0), COALESCE(width, 0), COALESCE(height, 0)
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({nm_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                l, w, h = float(r[5] or 0), float(r[6] or 0), float(r[7] or 0)
+                vol = (l * w * h) / 1000.0 if (l > 0 and w > 0 and h > 0) else 1.0
+                if vol > 10000:
+                    vol = (l * w * h) / 1_000_000.0
+                vol = max(vol, 0.1)
+                products_map[r[0]] = {
+                    "vendor_code": r[1] or "",
+                    "name": (r[2] or "")[:60],
+                    "price": float(r[3]) if r[3] else 0,
+                    "discount": int(r[4]) if r[4] else 0,
+                    "vol_liters": round(vol, 2),
+                }
+
+        # ── 4. Cost prices ──
+        cost_prices: dict[str, float] = {}
+        try:
+            cost_rows_pg = (await db.execute(
+                text("SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) FROM product_costs WHERE shop_id = :sid AND (cost_price > 0 OR packaging_cost > 0)"),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in cost_rows_pg:
+                cost_prices[r[0]] = float(r[1])
+        except Exception:
+            pass
+
+        # ── 5. Per-SKU P&L from fact_finances ──
+        sku_pnl: dict[str, dict] = {}
+        try:
+            pnl_rows = ch.query("""
+                SELECT
+                    vendor_code,
+                    sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                        operation_type = 'Продажа') AS revenue,
+                    sumIf(payout_amount, operation_type = 'Продажа')
+                        - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                    sum(abs(wb_delivery_rub)) AS logistics,
+                    sum(abs(storage_fee)) AS storage_fact,
+                    sumIf(abs(JSONExtractFloat(raw_payload, 'deduction')), 1) AS deductions,
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS sales_qty,
+                    sumIf(quantity, operation_type = 'Возврат') AS ret_qty
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
+                  AND event_date >= {d_start:Date} AND event_date <= {d_end:Date}
+                  AND vendor_code != ''
+                GROUP BY vendor_code
+            """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": today}).result_rows
+            for r in pnl_rows:
+                vc = str(r[0] or "").strip()
+                if not vc:
+                    continue
+                revenue = float(r[1] or 0)
+                payout = float(r[2] or 0)
+                logistics = float(r[3] or 0)
+                storage_fact = float(r[4] or 0)
+                deductions = float(r[5] or 0)
+                sales_qty = int(r[6] or 0)
+                ret_qty = int(r[7] or 0)
+                cogs_unit = cost_prices.get(vc, 0)
+                cogs_total = cogs_unit * max(sales_qty - abs(ret_qty), 0)
+                net_profit = payout - logistics - storage_fact - deductions - cogs_total
+                sku_pnl[vc] = {
+                    "revenue": round(revenue),
+                    "payout": round(payout),
+                    "logistics": round(logistics),
+                    "storage_fact": round(storage_fact),
+                    "deductions": round(deductions),
+                    "cogs": round(cogs_total),
+                    "net_profit": round(net_profit),
+                    "margin_pct": round(net_profit / revenue * 100, 1) if revenue > 0 else 0,
+                    "sales_qty": sales_qty,
+                }
+        except Exception as e:
+            logger.warning("Storage AI: P&L query failed: %s", e)
+
+        # ── 6. Per-warehouse stock distribution ──
+        ch2 = get_clickhouse_client()
+        wh_stock_map: dict[int, list] = {}
+        if nm_ids:
+            nm_list_ch = ",".join(str(x) for x in nm_ids[:60])
+            wh_stock_rows = ch2.query(f"""
+                SELECT nm_id, warehouse_name, argMax(quantity, fetched_at) AS qty
+                FROM mms_analytics.fact_inventory_snapshot
+                WHERE shop_id = {{shop_id:UInt32}} AND nm_id IN ({nm_list_ch})
+                GROUP BY nm_id, warehouse_name
+                HAVING qty > 0
+                ORDER BY nm_id, qty DESC
+            """, parameters={"shop_id": shop_id}).result_rows
+            for wr in wh_stock_rows:
+                wh_stock_map.setdefault(int(wr[0]), []).append({
+                    "warehouse": wr[1],
+                    "qty": int(wr[2]),
+                })
+        ch2.close()
+        ch.close()
+
+        # ── 7. Build SKU context for AI ──
+        skus_context = []
+        total_storage_30d = 0
+        total_net_profit = 0
+
+        for nm_id, sd in sku_data.items():
+            prod = products_map.get(nm_id, {})
+            vc = prod.get("vendor_code", "")
+            if not vc:
+                continue
+
+            stock = sd["stock"]
+            orders = sd["orders"]
+            revenue = sd["revenue"]
+            ad_spend = sd["ad_spend"]
+            ad_orders = sd["ad_orders"]
+            daily = orders / period if period > 0 else 0
+            turnover = round(stock / daily) if daily > 0 else 9999
+            drr = round(ad_spend / revenue * 100, 1) if revenue > 0 else 0
+            vol = prod.get("vol_liters", 1.0)
+            price = prod.get("price", 0)
+            cost_price = cost_prices.get(vc, 0)
+
+            # Storage cost
+            st = storage_by_vc.get(vc, {})
+            storage_30d = st.get("storage_30d", 0)
+            storage_period = st.get("storage_period", 0)
+            # Fallback: estimate from P&L
+            if not storage_30d:
+                pnl_storage = sku_pnl.get(vc, {}).get("storage_fact", 0)
+                if pnl_storage > 0:
+                    storage_30d = round(pnl_storage / period * 30)
+
+            total_storage_30d += storage_30d
+
+            # P&L
+            pnl = sku_pnl.get(vc, {})
+            net_profit = pnl.get("net_profit", 0)
+            total_net_profit += net_profit
+
+            # Withdrawal cost estimate
+            withdrawal_cost_per_unit = round(50 + vol * 15)  # ~50₽ + logistics
+
+            wh_list = wh_stock_map.get(nm_id, [])
+
+            skus_context.append({
+                "vendor_code": vc,
+                "name": prod.get("name", ""),
+                "nm_id": nm_id,
+                "stock": stock,
+                "orders": orders,
+                "daily": round(daily, 2),
+                "turnover_days": turnover,
+                "revenue": round(revenue),
+                "ad_spend": round(ad_spend),
+                "ad_orders": ad_orders,
+                "drr": drr,
+                "in_ads": ad_spend > 0,
+                "price": price,
+                "cost_price": cost_price,
+                "vol_liters": vol,
+                "storage_30d": storage_30d,
+                "storage_period": storage_period,
+                "net_profit": net_profit,
+                "margin_pct": pnl.get("margin_pct", 0),
+                "pnl_payout": pnl.get("payout", 0),
+                "pnl_logistics": pnl.get("logistics", 0),
+                "pnl_storage_fact": pnl.get("storage_fact", 0),
+                "pnl_deductions": pnl.get("deductions", 0),
+                "pnl_cogs": pnl.get("cogs", 0),
+                "withdrawal_cost_per_unit": withdrawal_cost_per_unit,
+                "warehouses": wh_list[:5],
+            })
+
+        # Sort by storage cost DESC
+        skus_context.sort(key=lambda x: x["storage_30d"], reverse=True)
+
+        # Mark top-5 as must-include
+        for i, s in enumerate(skus_context[:5]):
+            s["must_include"] = True
+            s["storage_rank"] = i + 1
+
+        skus_for_ai = skus_context[:40]
+
+        # ── 8. Build prompt ──
+        total_stock = sum(s["stock"] for s in skus_context)
+        overstock_count = sum(1 for s in skus_context if s["turnover_days"] > 90 and s["storage_30d"] > 50)
+        loss_making = sum(1 for s in skus_context if s["storage_30d"] > 0 and s["net_profit"] < s["storage_30d"])
+        avg_turnover = round(sum(s["turnover_days"] for s in skus_context) / len(skus_context)) if skus_context else 0
+
+        prompt = f"""Магазин: {shop.name} (Wildberries)
+Период анализа: {period} дней (с {d_start} по {today})
+
+## ОБЩИЕ МЕТРИКИ ХРАНЕНИЯ:
+- Общее хранение за 30д: ~{round(total_storage_30d)}₽
+- Общая чистая прибыль за {period}д: {round(total_net_profit)}₽
+- Всего SKU на складе: {len(skus_context)}
+- Общий остаток: {total_stock} шт
+- Затоваренных SKU (оборач > 90д): {overstock_count}
+- Убыточных по хранению: {loss_making}
+- Средняя оборачиваемость: {avg_turnover} дней
+
+## ТОВАРЫ (отсортированы по стоимости хранения, от дорогих к дешёвым):
+"""
+
+        for i, s in enumerate(skus_for_ai):
+            if s.get('must_include'):
+                prompt += f"\n### ⚠️ #{i+1}. {s['vendor_code']} — {s['name']} [ТОП-{s['storage_rank']} ПО ХРАНЕНИЮ — ОБЯЗАТЕЛЬНО ВКЛЮЧИТЬ В sku_actions!]\n"
+            else:
+                prompt += f"\n### {i+1}. {s['vendor_code']} — {s['name']}\n"
+
+            prompt += f"Остаток: {s['stock']} шт | Заказов за {period}д: {s['orders']} ({s['daily']}/день)\n"
+            prompt += f"Оборачиваемость: {s['turnover_days']}д | Объём: {s['vol_liters']}л\n"
+            prompt += f"Хранение: {s['storage_30d']}₽/30д (факт за период: {s['storage_period']}₽)\n"
+            prompt += f"Цена: {s['price']}₽ | Себестоимость: {s['cost_price']}₽\n"
+
+            if s['net_profit']:
+                prompt += f"★ Чистая прибыль за {period}д: {s['net_profit']}₽ (маржа {s['margin_pct']}%)\n"
+                prompt += f"  P&L: payout {s['pnl_payout']}₽ → логистика −{s['pnl_logistics']}₽ → хранение −{s['pnl_storage_fact']}₽ → удержания −{s['pnl_deductions']}₽ → COGS −{s['pnl_cogs']}₽\n"
+
+            prompt += f"Реклама: {'ЗАПУЩЕНА, расход ' + str(s['ad_spend']) + '₽, DRR ' + str(s['drr']) + '%' if s['in_ads'] else 'НЕТ'}\n"
+            prompt += f"Стоимость вывоза 1 шт: ~{s['withdrawal_cost_per_unit']}₽\n"
+
+            if s['warehouses']:
+                wh_str = ", ".join(f"{wh['warehouse']}={wh['qty']}шт" for wh in s['warehouses'])
+                prompt += f"Склады: {wh_str}\n"
+
+        prompt += "\nПроанализируй каждый товар и выдай JSON с sku_actions, key_metrics и general_tips."
+
+        # ── 9. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_STORAGE}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI service unavailable")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Strip markdown code fences
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse AI storage JSON: %s", content[:500])
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # ── 10. Force-inject top-5 storage SKUs that AI missed ──
+        ai_sku_actions = ai_result.get("sku_actions", [])
+        ai_vendor_codes = {sa.get("vendor_code", "") for sa in ai_sku_actions}
+
+        for s in skus_for_ai:
+            if not s.get("must_include"):
+                continue
+            if s["vendor_code"] in ai_vendor_codes:
+                continue
+
+            storage_cost = s["storage_30d"]
+            net_profit = s.get("net_profit", 0)
+            stock = s["stock"]
+            daily = s["daily"]
+            vol = s["vol_liters"]
+            wc = s["withdrawal_cost_per_unit"]
+            turnover = s["turnover_days"]
+
+            options = []
+            # Option: discount
+            if stock > 0:
+                options.append({
+                    "action": "discount",
+                    "label": "Снизить цену на 20-30%",
+                    "detail": f"Остаток {stock} шт, хранение {storage_cost}₽/мес. Скидка ускорит продажи. При росте в 1.5× оборач. снизится до ~{max(turnover // 2, 30)}д.",
+                    "expected_savings": round(storage_cost * 0.3),
+                    "withdrawal_cost": 0,
+                    "risk": "medium",
+                })
+
+            # Option: withdraw
+            if stock > 10 and daily > 0:
+                ideal = round(daily * 60)
+                excess = max(stock - ideal, 0)
+                if excess > 0:
+                    total_wc = excess * wc
+                    monthly_savings = round(storage_cost * excess / stock)
+                    options.append({
+                        "action": "withdraw",
+                        "label": f"Вывезти {excess} шт излишков",
+                        "detail": f"Стоимость вывоза: {excess}×{wc}₽ = {total_wc}₽. Экономия: ~{monthly_savings}₽/мес. Окупится за {round(total_wc / monthly_savings, 1) if monthly_savings > 0 else '∞'} мес.",
+                        "expected_savings": monthly_savings,
+                        "withdrawal_cost": total_wc,
+                        "risk": "medium",
+                    })
+            elif stock > 0 and daily == 0:
+                total_wc = stock * wc
+                options.append({
+                    "action": "withdraw",
+                    "label": f"Вывезти все {stock} шт",
+                    "detail": f"Нет продаж. Стоимость вывоза: {stock}×{wc}₽ = {total_wc}₽. Экономия: {storage_cost}₽/мес. Окупится за {round(total_wc / storage_cost, 1) if storage_cost > 0 else '∞'} мес.",
+                    "expected_savings": storage_cost,
+                    "withdrawal_cost": total_wc,
+                    "risk": "high",
+                })
+
+            # Option: do nothing
+            options.append({
+                "action": "do_nothing",
+                "label": "Оставить как есть",
+                "detail": f"Хранение {storage_cost}₽/мес. Через 6 мес: +{storage_cost * 6}₽ расходов.",
+                "expected_savings": 0,
+                "withdrawal_cost": 0,
+                "risk": "high" if net_profit < storage_cost else "medium",
+            })
+
+            ai_sku_actions.insert(0, {
+                "vendor_code": s["vendor_code"],
+                "name": s["name"],
+                "diagnosis": f"Оборачиваемость {turnover}д, хранение {storage_cost}₽/мес, прибыль {net_profit}₽.",
+                "current_storage_cost": storage_cost,
+                "current_turnover_days": turnover,
+                "stock": stock,
+                "options": options,
+                "recommended_option": 0,
+            })
+
+        ai_result["sku_actions"] = ai_sku_actions
+
+        # Enrich with context
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_storage_30d": round(total_storage_30d),
+            "total_net_profit": round(total_net_profit),
+            "total_skus": len(skus_context),
+            "total_stock": total_stock,
+            "overstock_skus": overstock_count,
+            "loss_making_skus": loss_making,
+            "avg_turnover_days": avg_turnover,
+        }
+
+        # Cache
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return {**ai_result, "cached": False}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Storage AI analysis failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")

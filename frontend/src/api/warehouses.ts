@@ -839,3 +839,67 @@ export async function getGeographyAIAnalysis(params: {
   const { data } = await apiClient.post<GeoAIAnalysis>('/warehouses/wb/geography/ai-analysis', null, { params })
   return data
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Storage AI Analysis
+   ═══════════════════════════════════════════════════════════ */
+
+export interface StorageAIOption {
+  action: 'discount' | 'withdraw' | 'launch_ads' | 'reduce_supply' | 'liquidate' | 'do_nothing'
+  label: string
+  detail: string
+  expected_savings: number
+  withdrawal_cost: number
+  risk: 'low' | 'medium' | 'high'
+}
+
+export interface StorageAISkuAction {
+  vendor_code: string
+  name: string
+  diagnosis: string
+  current_storage_cost: number
+  current_turnover_days: number
+  stock: number
+  options: StorageAIOption[]
+  recommended_option: number
+}
+
+export interface StorageAIKeyMetrics {
+  total_storage_monthly: number
+  potential_savings: number
+  storage_roi_pct: number
+  overstock_skus: number
+  loss_making_skus: number
+  avg_turnover_days: number
+}
+
+export interface StorageAIContext {
+  total_storage_30d: number
+  total_net_profit: number
+  total_skus: number
+  total_stock: number
+  overstock_skus: number
+  loss_making_skus: number
+  avg_turnover_days: number
+}
+
+export interface StorageAIAnalysis {
+  severity: 'critical' | 'warning' | 'ok'
+  diagnosis: string
+  key_metrics: StorageAIKeyMetrics
+  sku_actions: StorageAISkuAction[]
+  general_tips: string[]
+  period_days: number
+  analyzed_at: number
+  context: StorageAIContext
+  cached?: boolean
+}
+
+export async function getStorageAIAnalysis(params: {
+  shop_id: number
+  period?: number
+  force?: boolean
+}): Promise<StorageAIAnalysis> {
+  const { data } = await apiClient.post<StorageAIAnalysis>('/warehouses/wb/storage/ai-analysis', null, { params })
+  return data
+}
