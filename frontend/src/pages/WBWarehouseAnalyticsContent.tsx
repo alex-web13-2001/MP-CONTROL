@@ -657,6 +657,35 @@ export function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Copyable Text (click-to-copy with feedback)
+   ═══════════════════════════════════════════════════════════ */
+
+function CopyableText({ text, prefix, className }: { text: string; prefix?: string; className?: string }) {
+  const [copied, setCopied] = React.useState(false)
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      title={`Копировать ${text}`}
+      className={`inline-flex items-center gap-1 rounded px-1 -mx-1 hover:bg-[hsl(var(--muted)/0.2)] transition-colors cursor-copy ${className || ''}`}
+    >
+      {prefix}{text}
+      {copied ? (
+        <svg className="w-3 h-3 text-emerald-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+      ) : (
+        <svg className="w-3 h-3 opacity-30 hover:opacity-70 shrink-0 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" strokeWidth={2} /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" strokeWidth={2} /></svg>
+      )}
+    </button>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
    Storage SKUs Table
    ═══════════════════════════════════════════════════════════ */
 
@@ -834,8 +863,8 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                           {sku.name || `#${sku.nm_id}`}
                         </div>
                         <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))]">{sku.vendor_code}</span>
-                          <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">ID: {sku.nm_id}</span>
+                          <CopyableText text={sku.vendor_code} className="text-[11px] font-bold text-[hsl(var(--muted-foreground))]" />
+                          <CopyableText text={String(sku.nm_id)} prefix="ID: " className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60" />
                         </div>
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{sku.vol_liters.toFixed(1)}л</td>
