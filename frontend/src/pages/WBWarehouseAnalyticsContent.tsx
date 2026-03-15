@@ -1191,8 +1191,8 @@ function WarehouseAIInsight({ shopId, period }: { shopId: number; period: number
   if (!data) return null
 
   const sev = severityConfig[data.severity] || severityConfig.warning
-  const cachedAgo = data.cached && data.analyzed_at
-    ? `${Math.round((Date.now() / 1000 - data.analyzed_at) / 60)} мин назад`
+  const analyzedAtStr = data.analyzed_at
+    ? `Анализ от ${new Date(data.analyzed_at * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
     : null
 
   return (
@@ -1218,8 +1218,8 @@ function WarehouseAIInsight({ shopId, period }: { shopId: number; period: number
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {cachedAgo && (
-                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">обновлено {cachedAgo}</span>
+              {analyzedAtStr && (
+                <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{analyzedAtStr}</span>
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); fetchAI(true) }}

@@ -4823,7 +4823,7 @@ import httpx
 
 # Simple in-memory cache: key → (timestamp, data)
 _ai_cache: dict[str, tuple[float, dict]] = {}
-_AI_CACHE_TTL = 6 * 3600  # 6 hours
+_AI_CACHE_TTL = 24 * 3600  # 24 hours — analysis once per day
 
 # ═══════════════════════════════════════════════════════════════════
 # PROMPT 1: Проблемные SKU — дерево решений с чистой прибылью

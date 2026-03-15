@@ -331,8 +331,8 @@ function StorageAIInsight({ shopId, period }: { shopId: number; period: number }
   if (!data) return null
 
   const sev = severityConfig[data.severity] || severityConfig.warning
-  const cachedAgo = data.cached && data.analyzed_at
-    ? `${Math.round((Date.now() / 1000 - data.analyzed_at) / 60)} мин назад`
+  const analyzedAtStr = data.analyzed_at
+    ? `Анализ от ${new Date(data.analyzed_at * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
     : null
   const km = data.key_metrics || { total_storage_monthly: 0, potential_savings: 0, storage_roi_pct: 0, overstock_skus: 0, loss_making_skus: 0, avg_turnover_days: 0 }
   const ctx = data.context || { total_storage_30d: 0, total_net_profit: 0, total_skus: 0, total_stock: 0, overstock_skus: 0, loss_making_skus: 0, avg_turnover_days: 0 }
@@ -362,8 +362,8 @@ function StorageAIInsight({ shopId, period }: { shopId: number; period: number }
                 {actionsCount} рекомендаци{actionsCount === 1 ? 'я' : actionsCount < 5 ? 'и' : 'й'}
               </span>
             )}
-            {cachedAgo && (
-              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{cachedAgo}</span>
+            {analyzedAtStr && (
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{analyzedAtStr}</span>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); fetchAI(true) }}

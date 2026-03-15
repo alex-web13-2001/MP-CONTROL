@@ -713,8 +713,8 @@ function GeographyAIInsight({ shopId, period }: { shopId: number; period: number
   if (!data) return null
 
   const sev = severityConfig[data.severity] || severityConfig.warning
-  const cachedAgo = data.cached && data.analyzed_at
-    ? `${Math.round((Date.now() / 1000 - data.analyzed_at) / 60)} мин назад`
+  const analyzedAtStr = data.analyzed_at
+    ? `Анализ от ${new Date(data.analyzed_at * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
     : null
   const km = data.key_metrics || { concentration_pct: 0, top_regions_count: 0, total_regions: 0, regions_with_stable_demand: 0, underserved_okrugs: 0 }
   const ctx = data.context || { total_orders: 0, total_revenue: 0, total_okrugs: 0, total_regions: 0, warehouses_count: 0 }
@@ -744,8 +744,8 @@ function GeographyAIInsight({ shopId, period }: { shopId: number; period: number
                 {insightsCount} инсайт{insightsCount === 1 ? '' : insightsCount < 5 ? 'а' : 'ов'}
               </span>
             )}
-            {cachedAgo && (
-              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{cachedAgo}</span>
+            {analyzedAtStr && (
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{analyzedAtStr}</span>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); fetchAI(true) }}
