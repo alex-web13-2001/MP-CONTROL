@@ -4995,9 +4995,12 @@ async def export_wb_storage_excel(
         ws3.cell(2, 1, f"Статус: {severity_labels.get(ai_data.get('severity', 'ok'), ai_data.get('severity', ''))}").font = Font(size=11, bold=True)
 
         ws3.merge_cells("A3:F3")
-        ws3.cell(3, 1, f"Диагноз: {ai_data.get('diagnosis', '')}").font = Font(size=11)
-        ws3.row_dimensions[3].height = 40
-        ws3.cell(3, 1).alignment = Alignment(wrap_text=True)
+        diag_text = f"Диагноз: {ai_data.get('diagnosis', '')}"
+        ws3.cell(3, 1, diag_text).font = Font(size=11)
+        # Auto-height: ~100 chars per line at merged width, 15px per line
+        diag_lines = max(2, len(diag_text) // 90 + 1)
+        ws3.row_dimensions[3].height = diag_lines * 18
+        ws3.cell(3, 1).alignment = Alignment(wrap_text=True, vertical="top")
 
         analyzed_ts = ai_data.get("analyzed_at", 0)
         if analyzed_ts:
@@ -5029,8 +5032,8 @@ async def export_wb_storage_excel(
             row += 1
 
             act_headers = [
-                ("Артикул", 24), ("Проблема", 50), ("Хранение/мес", 14),
-                ("Оборач., дн", 12), ("Остаток", 10), ("Рекомендация", 50),
+                ("Артикул", 24), ("Проблема", 65), ("Хранение/мес", 14),
+                ("Оборач., дн", 12), ("Остаток", 10), ("Рекомендация", 65),
             ]
             for ci, (name, w) in enumerate(act_headers, 1):
                 c = ws3.cell(row, ci, name)
@@ -5046,16 +5049,22 @@ async def export_wb_storage_excel(
                 recommended = options[recommended_idx] if recommended_idx < len(options) else None
                 rec_text = f"{recommended['label']}: {recommended['detail']}" if recommended else "—"
 
-                ws3.cell(row, 1, action.get("vendor_code", ""))
-                c_diag = ws3.cell(row, 2, action.get("problem", action.get("diagnosis", "")))
-                c_diag.alignment = Alignment(wrap_text=True)
+                ws3.cell(row, 1, action.get("vendor_code", "")).alignment = Alignment(vertical="top")
+                problem_text = action.get("problem", action.get("diagnosis", ""))
+                c_diag = ws3.cell(row, 2, problem_text)
+                c_diag.alignment = Alignment(wrap_text=True, vertical="top")
                 cost_val = action.get("storage_cost_month", action.get("current_storage_cost", 0))
                 ws3.cell(row, 3, round(cost_val)).number_format = money_fmt
-                ws3.cell(row, 4, action.get("current_turnover_days", 0))
+                ws3.cell(row, 3).alignment = Alignment(vertical="top")
+                ws3.cell(row, 4, action.get("current_turnover_days", 0)).alignment = Alignment(vertical="top")
                 ws3.cell(row, 5, action.get("stock", 0)).number_format = num_fmt
+                ws3.cell(row, 5).alignment = Alignment(vertical="top")
                 c_rec = ws3.cell(row, 6, rec_text)
-                c_rec.alignment = Alignment(wrap_text=True)
-                ws3.row_dimensions[row].height = 50
+                c_rec.alignment = Alignment(wrap_text=True, vertical="top")
+                # Dynamic row height: estimate lines needed from longest text
+                max_text = max(len(problem_text), len(rec_text))
+                est_lines = max(3, max_text // 55 + 1)
+                ws3.row_dimensions[row].height = est_lines * 15
 
                 for ci in range(1, 7):
                     ws3.cell(row, ci).border = border
@@ -5068,7 +5077,7 @@ async def export_wb_storage_excel(
             ws3.cell(row, 1, "Все варианты действий по каждому SKU:").font = Font(bold=True, size=11, color="7030A0")
             row += 1
 
-            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 50), ("Экономия/мес", 14), ("Риск", 10), ("✓", 6)]
+            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 65), ("Экономия/мес", 14), ("Риск", 10), ("✓", 6)]
             for ci, (name, w) in enumerate(opt_headers, 1):
                 c = ws3.cell(row, ci, name)
                 c.font = ai_hdr_font
@@ -5081,19 +5090,22 @@ async def export_wb_storage_excel(
                 recommended_idx = action.get("recommended_option", 0)
                 for oi, opt in enumerate(action.get("options", [])):
                     is_rec = oi == recommended_idx
-                    ws3.cell(row, 1, action.get("vendor_code", ""))
-                    ws3.cell(row, 2, opt.get("label", ""))
-                    c_det = ws3.cell(row, 3, opt.get("detail", ""))
-                    c_det.alignment = Alignment(wrap_text=True)
+                    ws3.cell(row, 1, action.get("vendor_code", "")).alignment = Alignment(vertical="top")
+                    ws3.cell(row, 2, opt.get("label", "")).alignment = Alignment(vertical="top")
+                    detail_text = opt.get("detail", "")
+                    c_det = ws3.cell(row, 3, detail_text)
+                    c_det.alignment = Alignment(wrap_text=True, vertical="top")
                     ws3.cell(row, 4, round(opt.get("expected_savings", 0))).number_format = money_fmt
-                    ws3.cell(row, 5, risk_labels.get(opt.get("risk", ""), opt.get("risk", "")))
-                    ws3.cell(row, 6, "✓" if is_rec else "")
+                    ws3.cell(row, 4).alignment = Alignment(vertical="top")
+                    ws3.cell(row, 5, risk_labels.get(opt.get("risk", ""), opt.get("risk", ""))).alignment = Alignment(vertical="top")
+                    ws3.cell(row, 6, "✓" if is_rec else "").alignment = Alignment(horizontal="center", vertical="top")
                     if is_rec:
                         for ci in range(1, 7):
                             ws3.cell(row, ci).font = Font(bold=True, color="006600")
                     for ci in range(1, 7):
                         ws3.cell(row, ci).border = border
-                    ws3.row_dimensions[row].height = 35
+                    det_lines = max(2, len(detail_text) // 55 + 1)
+                    ws3.row_dimensions[row].height = det_lines * 15
                     row += 1
 
         # Transfers
