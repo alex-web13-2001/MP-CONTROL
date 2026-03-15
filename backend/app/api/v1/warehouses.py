@@ -4714,8 +4714,8 @@ async def wb_warehouse_analytics(
     total_penalties = sum(c["amount"] for c in costs_summary if c["operation_type"] == "Штраф")
     cross_pct_global = round(total_cross_orders / total_orders * 100, 1) if total_orders > 0 else 0
 
-    # Total actual storage: from fact_wb_paid_storage, extrapolated to 30 days
-    total_storage_actual = round(total_storage_actual_all * month_mult, 2) if has_actual_storage else None
+    # Total actual storage: from fact_wb_paid_storage, real sum for the selected period
+    total_storage_actual = round(total_storage_actual_all, 2) if has_actual_storage else None
 
     kpi = {
         "total_warehouses": len([w for w in warehouses_result if w["stock"] > 0 or w["orders"] > 0]),
@@ -6107,3 +6107,484 @@ async def get_wb_geography_products_search(
         })
 
     return {"products": result}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# AI Geography Analysis — structured Gemini output
+# ═══════════════════════════════════════════════════════════════════
+
+_AI_PROMPT_GEOGRAPHY = """Ты — эксперт по ГЕОГРАФИИ ПРОДАЖ на Wildberries.
+
+ТВОЯ ЗАДАЧА: проанализировать ГЕОГРАФИЧЕСКОЕ распределение спроса и дать конкретные выводы.
+
+## СТРОГИЕ ГРАНИЦЫ АНАЛИЗА
+
+АНАЛИЗИРУЙ ТОЛЬКО:
+- Географическое распределение заказов по округам и регионам
+- Тренды: какие регионы растут, какие стагнируют (по стабильности спроса)
+- Концентрация: насколько равномерно распределены продажи
+- Недопокрытые регионы: где есть спрос но мало/нет стока
+- Географический охват товаров: в скольких регионах продаётся каждый товар
+- Потенциал роста в новых регионах
+
+НЕ АНАЛИЗИРУЙ (для этого есть ОТДЕЛЬНЫЕ разделы в системе):
+- ❌ Рекламу, DRR, рекламные кампании → раздел "Реклама"
+- ❌ Детали кросс-логистики, оптимизацию складов → раздел "Кросс-логистика"
+- ❌ Финансовые показатели (маржа, прибыль) → раздел "Финансы"
+
+ВАЖНО ПРО WILDBERRIES:
+- На WB реклама НЕ ТАРГЕТИРУЕТСЯ по регионам — нельзя запустить рекламу "только на Сибирь"
+- Единственный способ влиять на географию — РАЗМЕЩЕНИЕ СТОКА на складах ближе к спросу
+- Не давай советов "запустить рекламу в регионе" — это технически невозможно на WB
+
+## ЛОГИКА АНАЛИЗА
+
+### 1. Концентрация (ОБЯЗАТЕЛЬНО)
+- Посчитай: какой % выручки дают топ-3 округа
+- Если > 70% — ВЫСОКАЯ концентрация (risk_level: "high")
+- Если 40-70% — СРЕДНЯЯ (risk_level: "medium")
+- Если < 40% — НИЗКАЯ, хорошая диверсификация (risk_level: "low")
+- НАЗОВИ конкретные округа и их долю
+
+### 2. Инсайты по товарам (2-5 штук) — ТОЛЬКО географические!
+Для каждого товара определи тип:
+- **stable_leader** — высокая стабильность (>30%) + много регионов → лидер, масштабировать географию
+- **unstable_demand** — стабильность <15% → нестабильный спрос, возможны проблемы с наличием
+- **regional_champion** — продаётся хорошо в 1-2 округах, но отсутствует в остальных → потенциал расширения географии
+- **cross_delivery_problem** — товар продаётся в округе, но склад далеко → нужен сток ближе
+- **dead_stock_risk** — есть на складе, но нет заказов из ближайших регионов → нет спроса в этой географии
+
+Для КАЖДОГО инсайта:
+- Укажи vendor_code и name
+- Укажи конкретные числа: заказы, стабильность, в скольких регионах
+- Дай конкретное действие (action): redistribute / increase_supply / monitor
+- Рассчитай expected_effect — экономию или потенциальную выручку в РУБЛЯХ
+
+### 3. Логистическое соответствие (1-3 самых важных)
+Оценка: насколько расположение стока соответствует географии спроса.
+Для каждого округа с высокой кросс-доставкой:
+- Укажи: откуда реально доставляется (serving_warehouse)
+- Укажи ближайший склад и сток на нём
+- Дай рекомендацию по размещению: куда и сколько штук отправить
+
+## ФОРМАТ ОТВЕТА — СТРОГО JSON:
+{
+  "severity": "critical" | "warning" | "ok",
+  "diagnosis": "Краткий главный географический вывод из 1-2 предложений с конкретными числами",
+  "key_metrics": {
+    "concentration_pct": 80,
+    "top_regions_count": 3,
+    "total_regions": 64,
+    "regions_with_stable_demand": 12,
+    "underserved_okrugs": 2
+  },
+  "concentration": {
+    "summary": "80% выручки из Центрального, Южного и Приволжского ФО",
+    "top_regions": [
+      {"region": "Центральный федеральный округ", "orders": 3276, "share_pct": 33.7, "stability_pct": 107}
+    ],
+    "risk_level": "high" | "medium" | "low",
+    "recommendation": "Конкретная рекомендация по диверсификации географии через размещение стока"
+  },
+  "product_insights": [
+    {
+      "vendor_code": "АРТИКУЛ",
+      "name": "Название",
+      "insight_type": "stable_leader",
+      "regions_count": 12,
+      "stability_pct": 47,
+      "orders": 21,
+      "detail": "Географический анализ с числами: где продаётся, где не продаётся, что делать.",
+      "action": "redistribute",
+      "expected_effect": "Потенциальная выручка +50 000₽/мес при расширении на Сибирь"
+    }
+  ],
+  "logistics_match": [
+    {
+      "okrug": "Приволжский ФО",
+      "orders": 50,
+      "nearest_warehouse": "Казань",
+      "warehouse_stock": 0,
+      "serving_warehouse": "Коледино",
+      "cross_pct": 100,
+      "detail": "Описание проблемы: спрос есть, стока нет, доставляется издалека",
+      "recommendation": "Разместить N штук на складе X для покрытия спроса"
+    }
+  ],
+  "general_tips": [
+    "Конкретная географическая рекомендация, 1-2 предложения."
+  ]
+}
+
+## ПРАВИЛА
+- severity: "critical" если концентрация > 70% или есть округа с 100% кросс-доставкой, "warning" если концентрация 50-70%, "ok" если всё сбалансировано
+- product_insights: 2-5 ГЕОГРАФИЧЕСКИХ инсайтов. НАЗЫВАЙ товары по vendor_code + name
+- insight_type: ТОЛЬКО "stable_leader", "unstable_demand", "regional_champion", "cross_delivery_problem", "dead_stock_risk"
+- action: ТОЛЬКО "redistribute", "increase_supply", "monitor" (НЕ "launch_ads" — на WB нельзя таргетировать рекламу по гео!)
+- logistics_match: 1-3 проблемных округа. Если проблем нет — пустой массив
+- general_tips: 2-3 совета ПО ГЕОГРАФИИ. Только про размещение стока и диверсификацию, НЕ про рекламу
+- top_regions в concentration: топ-5 округов по выручке
+- Все числа — из реальных данных, НЕ выдумывай
+- Пиши НА РУССКОМ
+"""
+
+
+# Map WB warehouse names to approximate okrug
+_WH_TO_OKRUG = {
+    "Коледино": "Центральный", "Подольск": "Центральный", "Электросталь": "Центральный",
+    "Котовск": "Центральный", "Тверь": "Центральный", "Белые Столбы": "Центральный",
+    "Казань": "Приволжский", "Набережные Челны": "Приволжский",
+    "Краснодар": "Южный", "Ростов": "Южный",
+    "Екатеринбург": "Уральский",
+    "Новосибирск": "Сибирский",
+    "Хабаровск": "Дальневосточный", "Владивосток": "Дальневосточный",
+    "Санкт-Петербург": "Северо-Западный", "СПб": "Северо-Западный",
+    "Воронеж": "Центральный",
+}
+
+
+def _wh_to_okrug(wh_name: str) -> str:
+    """Map warehouse name to approximate okrug."""
+    for key, okrug in _WH_TO_OKRUG.items():
+        if key.lower() in wh_name.lower():
+            return okrug
+    return "Другой"
+
+
+@router.post("/wb/geography/ai-analysis")
+async def get_wb_geography_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered geography sales analysis using Gemini 2.5 Flash."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    cache_key = f"geo_ai_{shop_id}_{period}"
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        params = {"shop_id": shop_id, "d_start": d_start, "period_days": period}
+
+        # ── 1. Orders by okrug + region with stability ──
+        geo_rows = ch.query("""
+            SELECT
+                oblast_okrug_name AS okrug,
+                region_name AS region,
+                count() AS orders,
+                sum(toFloat64(price_with_disc)) AS revenue,
+                count(DISTINCT toDate(date)) AS active_days
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY okrug, region
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        total_orders = sum(int(r[2]) for r in geo_rows)
+        total_revenue = sum(float(r[3]) for r in geo_rows)
+
+        # Build okrug summary
+        okrug_summary: dict[str, dict] = {}
+        for r in geo_rows:
+            okrug = str(r[0]) or "Не определено"
+            region = str(r[1]) or "Не определено"
+            orders = int(r[2])
+            revenue = float(r[3])
+            active_days = int(r[4])
+
+            if okrug not in okrug_summary:
+                okrug_summary[okrug] = {"orders": 0, "revenue": 0, "regions": []}
+            okrug_summary[okrug]["orders"] += orders
+            okrug_summary[okrug]["revenue"] += revenue
+            okrug_summary[okrug]["regions"].append({
+                "region": region,
+                "orders": orders,
+                "revenue": round(revenue),
+                "stability_pct": round(active_days / period * 100, 1),
+            })
+
+        # Okrug-level stability
+        okrug_stab_rows = ch.query("""
+            SELECT
+                oblast_okrug_name AS okrug,
+                count(DISTINCT toDate(date)) AS active_days
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY okrug
+        """, parameters=params).result_rows
+        for r in okrug_stab_rows:
+            okrug = str(r[0]) or "Не определено"
+            if okrug in okrug_summary:
+                okrug_summary[okrug]["stability_pct"] = round(int(r[1]) / period * 100, 1)
+
+        # ── 2. Top products with geography spread ──
+        prod_rows = ch.query("""
+            SELECT
+                nm_id,
+                count() AS orders,
+                sum(toFloat64(price_with_disc)) AS revenue,
+                count(DISTINCT oblast_okrug_name) AS okrug_count,
+                count(DISTINCT region_name) AS region_count,
+                uniqExact(toDate(date)) AS active_days
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY nm_id
+            ORDER BY orders DESC
+            LIMIT 30
+        """, parameters=params).result_rows
+
+        prod_nm_ids = [int(r[0]) for r in prod_rows]
+        prod_map: dict[int, dict] = {}
+        if prod_nm_ids:
+            nm_list = ", ".join(str(x) for x in prod_nm_ids)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT nm_id, vendor_code, name
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({nm_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"vendor_code": r[1] or "", "name": (r[2] or "")[:60]}
+
+        products_context = []
+        for r in prod_rows:
+            nm = int(r[0])
+            prod = prod_map.get(nm, {})
+            nm_orders = int(r[1])
+            active_days = int(r[5])
+            products_context.append({
+                "nm_id": nm,
+                "vendor_code": prod.get("vendor_code", ""),
+                "name": prod.get("name", f"nm_id {nm}"),
+                "orders": nm_orders,
+                "revenue": round(float(r[2])),
+                "okrug_count": int(r[3]),
+                "region_count": int(r[4]),
+                "stability_pct": round(active_days / period * 100, 1),
+                "share_pct": round(nm_orders / total_orders * 100, 1) if total_orders > 0 else 0,
+            })
+
+        # ── 3. Per-okrug top products ──
+        otop_rows = ch.query("""
+            SELECT
+                oblast_okrug_name AS okrug,
+                nm_id,
+                count() AS orders,
+                uniqExact(toDate(date)) AS active_days
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY okrug, nm_id
+            ORDER BY okrug, orders DESC
+        """, parameters=params).result_rows
+
+        okrug_products: dict[str, list] = {}
+        current_ok = ""
+        cnt = 0
+        for r in otop_rows:
+            ok = str(r[0]) or "?"
+            if ok != current_ok:
+                current_ok = ok
+                cnt = 0
+            cnt += 1
+            if cnt <= 5:
+                nm = int(r[1])
+                prod = prod_map.get(nm, {})
+                okrug_products.setdefault(ok, []).append({
+                    "vendor_code": prod.get("vendor_code", str(nm)),
+                    "name": prod.get("name", ""),
+                    "orders": int(r[2]),
+                    "stability_pct": round(int(r[3]) / period * 100, 1),
+                })
+
+        # ── 4. Warehouse stock + cross-delivery data ──
+        stock_rows = ch.query("""
+            SELECT warehouse_name, sum(qty) AS total_stock
+            FROM (
+                SELECT warehouse_name, nm_id, argMax(quantity, fetched_at) AS qty
+                FROM mms_analytics.fact_inventory_snapshot
+                WHERE shop_id = {shop_id:UInt32}
+                GROUP BY warehouse_name, nm_id
+                HAVING qty > 0
+            )
+            GROUP BY warehouse_name
+            ORDER BY total_stock DESC
+        """, parameters={"shop_id": shop_id}).result_rows
+
+        warehouses_context = []
+        for r in stock_rows:
+            wh_name = str(r[0])
+            warehouses_context.append({
+                "warehouse": wh_name,
+                "stock": int(r[1]),
+                "okrug": _wh_to_okrug(wh_name),
+            })
+
+        # Cross-delivery stats per okrug
+        cross_rows = ch.query("""
+            SELECT
+                oblast_okrug_name AS order_okrug,
+                warehouse_name,
+                count() AS orders
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY order_okrug, warehouse_name
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        # Calculate cross-delivery % per okrug
+        okrug_cross: dict[str, dict] = {}  # okrug → {total, cross, main_wh}
+        for r in cross_rows:
+            order_okrug = str(r[0]) or "?"
+            wh_name = str(r[1])
+            orders = int(r[2])
+            wh_okrug = _wh_to_okrug(wh_name)
+
+            if order_okrug not in okrug_cross:
+                okrug_cross[order_okrug] = {"total": 0, "cross": 0, "main_wh": ""}
+            okrug_cross[order_okrug]["total"] += orders
+            if wh_okrug != order_okrug and order_okrug != "Другой":
+                okrug_cross[order_okrug]["cross"] += orders
+            if not okrug_cross[order_okrug]["main_wh"] or orders > 0:
+                okrug_cross[order_okrug]["main_wh"] = wh_name
+
+        # ── 5. Advertising data removed ──
+        # Реклама НЕ передаётся в географический анализ,
+        # т.к. на WB нельзя таргетировать рекламу по регионам.
+        # Анализ рекламы — отдельный раздел системы.
+
+        ch.close()
+
+        # ── 6. Build prompt ──
+        prompt = f"""Магазин: {shop.name} (Wildberries)
+Период: {period} дней (с {d_start} по {today})
+Всего заказов: {total_orders}
+Всего выручка: {round(total_revenue)}₽
+Регионов с заказами: {len(set(str(r[1]) for r in geo_rows))}
+Округов: {len(okrug_summary)}
+
+## ОКРУГА И РЕГИОНЫ:
+"""
+        for ok_name, ok_data in sorted(okrug_summary.items(), key=lambda x: x[1]["orders"], reverse=True):
+            share = round(ok_data["orders"] / total_orders * 100, 1) if total_orders > 0 else 0
+            stab = ok_data.get("stability_pct", 0)
+            prompt += f"\n### {ok_name}: {ok_data['orders']} заказов ({share}%), выручка {round(ok_data['revenue'])}₽, стабильность {stab}%\n"
+            # Cross info
+            cross = okrug_cross.get(ok_name, {})
+            if cross:
+                cross_pct = round(cross.get("cross", 0) / cross.get("total", 1) * 100)
+                prompt += f"  Кросс-доставка: {cross_pct}%, основной склад: {cross.get('main_wh', '?')}\n"
+            # Regions
+            for reg in sorted(ok_data["regions"], key=lambda x: x["orders"], reverse=True)[:10]:
+                prompt += f"  - {reg['region']}: {reg['orders']} зак, {reg['revenue']}₽, стаб {reg['stability_pct']}%\n"
+            # Top products in okrug
+            ok_prods = okrug_products.get(ok_name, [])
+            if ok_prods:
+                prompt += "  Топ товары в округе:\n"
+                for p in ok_prods[:3]:
+                    prompt += f"    · {p['vendor_code']} ({p['name'][:40]}): {p['orders']} зак, стаб {p['stability_pct']}%\n"
+
+        prompt += "\n## СКЛАДЫ (остатки):\n"
+        for wh in warehouses_context[:10]:
+            prompt += f"- {wh['warehouse']}: {wh['stock']} шт (округ: {wh['okrug']})\n"
+
+        prompt += "\n## ТОП ТОВАРЫ (общие):\n"
+        for p in products_context[:15]:
+            prompt += f"- {p['vendor_code']} ({p['name'][:40]}): {p['orders']} заказов, {p['revenue']}₽, стаб {p['stability_pct']}%, в {p['okrug_count']} округах, {p['region_count']} регионах\n"
+
+        prompt += "\nПроанализируй ГЕОГРАФИЧЕСКОЕ распределение спроса и выдай JSON. Фокусируйся ТОЛЬКО на географии, НЕ анализируй рекламу."
+
+        # ── 7. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_GEOGRAPHY}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI API error")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Strip markdown code fences
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse AI geography JSON: %s", content[:500])
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # Enrich with context
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_orders": total_orders,
+            "total_revenue": round(total_revenue),
+            "total_okrugs": len(okrug_summary),
+            "total_regions": len(set(str(r[1]) for r in geo_rows)),
+            "warehouses_count": len(warehouses_context),
+        }
+
+        # Cache
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return ai_result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Geography AI analysis failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")

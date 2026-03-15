@@ -666,6 +666,15 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
   const [search, setSearch] = React.useState('')
   const [sortKey, setSortKey] = React.useState<string>('est_cost_month')
   const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>('desc')
+  const [expandedSkus, setExpandedSkus] = React.useState<Set<number>>(new Set())
+
+  const toggleExpand = (nmId: number) => {
+    setExpandedSkus(prev => {
+      const next = new Set(prev)
+      next.has(nmId) ? next.delete(nmId) : next.add(nmId)
+      return next
+    })
+  }
 
   const hasForecast = skus.some(s => s.forecast_30d != null)
 
@@ -722,6 +731,8 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
 
   const thCls = "px-3 py-3 text-right text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
 
+  const colCount = hasForecast ? 8 : 7 // +1 for expand chevron
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4, duration: 0.4 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
@@ -731,6 +742,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
             <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Хранение по SKU</h2>
             <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
               {filtered.length === skus.length ? `${skus.length} SKU` : `${filtered.length} из ${skus.length} SKU`}
+              {' • Нажмите на строку для детализации по складам'}
             </p>
           </div>
           <div className="text-right flex gap-6">
@@ -759,7 +771,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Поиск по названию или артикулу..."
+              placeholder="Поиск по названию, артикулу или ID..."
               className="w-full pl-9 pr-4 py-2 text-[13px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
             />
           </div>
@@ -770,6 +782,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
           <table className="w-full border-collapse text-[13px]">
             <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
               <tr className="border-b border-[hsl(var(--border))]">
+                <th className="w-[32px] px-1 py-3"></th>
                 <th className={`${thCls} !text-left !px-4`} onClick={() => handleSort('name')}>
                   Товар<SortIcon col="name" />
                 </th>
@@ -797,44 +810,129 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
             </thead>
             <tbody>
               {sorted.map((sku, idx) => {
+                const isExpanded = expandedSkus.has(sku.nm_id)
                 const daysColor = sku.days_to_sell == null ? '' :
                   sku.days_to_sell > 180 ? 'text-red-400' :
                   sku.days_to_sell > 90 ? 'text-amber-400' : 'text-emerald-400'
                 const forecastColor = sku.forecast_30d == null ? '' :
                   sku.forecast_30d > 1000 ? 'text-red-400' :
                   sku.forecast_30d > 300 ? 'text-amber-400' : ''
+                const whList = (sku.warehouses || []).sort((a, b) => b.cost_month - a.cost_month)
                 return (
-                  <tr key={sku.nm_id} className={`border-b border-[hsl(var(--border)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''} hover:bg-[hsl(var(--muted)/0.08)] transition-colors`}>
-                    <td className="px-4 py-2.5 text-left">
-                      <div className="text-[12px] font-medium line-clamp-2 max-w-[300px]">
-                        {sku.name || `#${sku.nm_id}`}
-                      </div>
-                      <div className="text-[11px] font-bold text-[hsl(var(--muted-foreground))] mt-0.5">{sku.vendor_code}</div>
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{sku.vol_liters.toFixed(1)}л</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{fmt(sku.total_stock)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
-                      {sku.daily_sales > 0 ? sku.daily_sales.toFixed(1) : <span className="text-red-400/70 text-[11px]">нет</span>}
-                    </td>
-                    <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${daysColor}`}>
-                      {sku.days_to_sell != null ? (sku.days_to_sell > 365 ? '365+' : `${sku.days_to_sell}`) : '∞'}
-                    </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-bold">
-                      <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
-                        {fmtM(sku.est_cost_month)}
-                      </span>
-                    </td>
-                    {hasForecast && (
-                      <td className={`px-3 py-2.5 text-right tabular-nums font-bold ${forecastColor}`}>
-                        {sku.forecast_30d != null ? fmtM(sku.forecast_30d) : '—'}
+                  <React.Fragment key={sku.nm_id}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.1)] cursor-pointer transition-colors ${
+                        isExpanded ? 'bg-[hsl(var(--primary)/0.06)]' : `${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''} hover:bg-[hsl(var(--muted)/0.08)]`
+                      }`}
+                      onClick={() => toggleExpand(sku.nm_id)}
+                    >
+                      <td className="px-1 py-2.5 text-center">
+                        <span className={`inline-block transition-transform duration-150 text-[hsl(var(--muted-foreground))] text-[11px] ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                       </td>
+                      <td className="px-4 py-2.5 text-left">
+                        <div className="text-[12px] font-medium line-clamp-2 max-w-[300px]">
+                          {sku.name || `#${sku.nm_id}`}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[11px] font-bold text-[hsl(var(--muted-foreground))]">{sku.vendor_code}</span>
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">ID: {sku.nm_id}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{sku.vol_liters.toFixed(1)}л</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">{fmt(sku.total_stock)}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
+                        {sku.daily_sales > 0 ? sku.daily_sales.toFixed(1) : <span className="text-red-400/70 text-[11px]">нет</span>}
+                      </td>
+                      <td className={`px-3 py-2.5 text-right tabular-nums font-medium ${daysColor}`}>
+                        {sku.days_to_sell != null ? (sku.days_to_sell > 365 ? '365+' : `${sku.days_to_sell}`) : '∞'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-bold">
+                        <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
+                          {fmtM(sku.est_cost_month)}
+                        </span>
+                      </td>
+                      {hasForecast && (
+                        <td className={`px-3 py-2.5 text-right tabular-nums font-bold ${forecastColor}`}>
+                          {sku.forecast_30d != null ? fmtM(sku.forecast_30d) : '—'}
+                        </td>
+                      )}
+                    </tr>
+                    {/* Expanded: warehouse breakdown */}
+                    {isExpanded && whList.length > 0 && (
+                      <tr>
+                        <td colSpan={colCount} className="p-0">
+                          <div className="bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.2)]">
+                            <div className="px-6 py-3">
+                              <div className="flex items-center gap-2 mb-2">
+                                <Warehouse className="h-3.5 w-3.5 text-blue-400" />
+                                <span className="text-[12px] font-bold text-[hsl(var(--foreground))]">
+                                  Хранение по складам ({whList.length})
+                                </span>
+                              </div>
+                              <div className="rounded-lg border border-[hsl(var(--border)/0.3)] overflow-hidden">
+                                <table className="w-full text-[12px]">
+                                  <thead>
+                                    <tr className="bg-[hsl(var(--muted)/0.08)] border-b border-[hsl(var(--border)/0.2)]">
+                                      <th className="px-4 py-2 text-left font-semibold text-[hsl(var(--muted-foreground))]">Склад</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Остаток</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Хранение/30д</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Доля</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Источник</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {whList.map((wh, wi) => {
+                                      const whShare = sku.est_cost_month > 0 ? (wh.cost_month / sku.est_cost_month * 100) : 0
+                                      return (
+                                        <tr key={wh.warehouse} className={`border-b border-[hsl(var(--border)/0.1)] ${wi % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}>
+                                          <td className="px-4 py-2 text-left">
+                                            <div className="flex items-center gap-1.5">
+                                              <Warehouse className="h-3 w-3 text-blue-400/60 shrink-0" />
+                                              <span className="font-medium text-[hsl(var(--foreground))]">{wh.warehouse}</span>
+                                            </div>
+                                          </td>
+                                          <td className="px-3 py-2 text-right tabular-nums">{fmt(wh.stock)} ед.</td>
+                                          <td className="px-3 py-2 text-right tabular-nums font-bold">
+                                            <span className={wh.cost_month > 300 ? 'text-red-400' : wh.cost_month > 50 ? 'text-amber-400' : 'text-[hsl(var(--foreground))]'}>
+                                              {fmtM(wh.cost_month)}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
+                                            {whShare > 0 ? `${whShare.toFixed(0)}%` : '—'}
+                                          </td>
+                                          <td className="px-3 py-2 text-right">
+                                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                              wh.source === 'actual'
+                                                ? 'bg-emerald-500/10 text-emerald-400'
+                                                : 'bg-amber-500/10 text-amber-400'
+                                            }`}>
+                                              {wh.source === 'actual' ? 'Факт' : 'Оценка'}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      )
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
                     )}
-                  </tr>
+                    {isExpanded && whList.length === 0 && (
+                      <tr>
+                        <td colSpan={colCount} className="px-8 py-3 text-[12px] text-[hsl(var(--muted-foreground))] opacity-60 bg-[hsl(var(--muted)/0.06)]">
+                          Нет данных по складам
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 )
               })}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={hasForecast ? 7 : 6} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))]">
+                  <td colSpan={colCount} className="px-4 py-8 text-center text-[hsl(var(--muted-foreground))]">
                     Ничего не найдено по запросу «{search}»
                   </td>
                 </tr>
@@ -842,6 +940,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
             </tbody>
             <tfoot>
               <tr className="border-t-2 border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.06)]">
+                <td className="px-1 py-3"></td>
                 <td className="px-4 py-3 text-left font-bold text-[13px]">Итого ({filtered.length} SKU)</td>
                 <td className="px-3 py-3"></td>
                 <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmt(totalStock)}</td>

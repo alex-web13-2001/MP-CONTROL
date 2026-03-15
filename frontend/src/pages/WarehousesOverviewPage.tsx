@@ -24,6 +24,7 @@ import {
   type WBWarehouseAnalyticsResponse,
   type WBAnalyticsWarehouse,
 } from '@/api/warehouses'
+import { CostsSummary } from './WBWarehouseAnalyticsContent'
 
 /* ── Helpers ── */
 function fmt(v: number): string { return Math.round(v).toLocaleString('ru-RU') }
@@ -384,6 +385,9 @@ export default function WarehousesOverviewPage() {
               </div>
             )
           })()}
+
+          {/* Costs Summary — breakdown by type */}
+          <CostsSummary costs={data.costs} />
 
           {/* Warehouses Table */}
           <WarehousesTable warehouses={data.warehouses} />

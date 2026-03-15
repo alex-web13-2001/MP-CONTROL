@@ -758,3 +758,84 @@ export async function getWBWarehouseAIAnalysis(params: {
   const { data } = await apiClient.get<AIWarehouseAnalysis>('/warehouses/wb/ai-analysis', { params })
   return data
 }
+
+
+// ═══════════════════════════════════════════════════════════
+// AI Geography Analysis
+// ═══════════════════════════════════════════════════════════
+
+export interface GeoAIConcentrationRegion {
+  region: string
+  orders: number
+  share_pct: number
+  stability_pct: number
+}
+
+export interface GeoAIConcentration {
+  summary: string
+  top_regions: GeoAIConcentrationRegion[]
+  risk_level: 'high' | 'medium' | 'low'
+  recommendation: string
+}
+
+export interface GeoAIProductInsight {
+  vendor_code: string
+  name: string
+  insight_type: 'stable_leader' | 'unstable_demand' | 'regional_champion' | 'cross_delivery_problem' | 'dead_stock_risk'
+  regions_count: number
+  stability_pct: number
+  orders: number
+  detail: string
+  action: 'redistribute' | 'launch_ads' | 'increase_supply' | 'discount' | 'monitor'
+  expected_effect: string
+}
+
+export interface GeoAILogisticsMatch {
+  okrug: string
+  orders: number
+  nearest_warehouse: string
+  warehouse_stock: number
+  serving_warehouse: string
+  cross_pct: number
+  detail: string
+  recommendation: string
+}
+
+export interface GeoAIKeyMetrics {
+  concentration_pct: number
+  top_regions_count: number
+  total_regions: number
+  regions_with_stable_demand: number
+  underserved_okrugs: number
+}
+
+export interface GeoAIContext {
+  total_orders: number
+  total_revenue: number
+  total_okrugs: number
+  total_regions: number
+  warehouses_count: number
+}
+
+export interface GeoAIAnalysis {
+  severity: 'critical' | 'warning' | 'ok'
+  diagnosis: string
+  key_metrics: GeoAIKeyMetrics
+  concentration: GeoAIConcentration
+  product_insights: GeoAIProductInsight[]
+  logistics_match: GeoAILogisticsMatch[]
+  general_tips: string[]
+  period_days: number
+  analyzed_at: number
+  context: GeoAIContext
+  cached?: boolean
+}
+
+export async function getGeographyAIAnalysis(params: {
+  shop_id: number
+  period?: number
+  force?: boolean
+}): Promise<GeoAIAnalysis> {
+  const { data } = await apiClient.post<GeoAIAnalysis>('/warehouses/wb/geography/ai-analysis', null, { params })
+  return data
+}

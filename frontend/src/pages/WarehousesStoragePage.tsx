@@ -10,7 +10,6 @@ import {
   RefreshCw,
   AlertTriangle,
   Boxes,
-  Package,
   TrendingUp,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
@@ -21,13 +20,11 @@ import {
   type WBWarehouseAnalyticsResponse,
 } from '@/api/warehouses'
 import {
-  CostsSummary,
   StorageSkusTable,
   RecommendationsPanel,
 } from './WBWarehouseAnalyticsContent'
 
 /* ── Helpers ── */
-function fmt(v: number): string { return Math.round(v).toLocaleString('ru-RU') }
 function fmtM(v: number): string { return Math.round(v).toLocaleString('ru-RU') + ' ₽' }
 
 /* ── Period Options ── */
@@ -42,17 +39,15 @@ const PERIOD_OPTIONS = [
 /* ═══ KPI Summary for Storage ═══ */
 function StorageKpi({ data }: { data: WBWarehouseAnalyticsResponse }) {
   const kpi = data.kpi
-  const totalCostMonth = data.storage_skus.reduce((s, sk) => s + sk.est_cost_month, 0)
   const hasForecast = data.storage_skus.some(s => s.forecast_30d != null)
   const totalForecast = hasForecast ? data.storage_skus.reduce((s, sk) => s + (sk.forecast_30d ?? 0), 0) : null
 
   const overstockCount = data.storage_skus.filter(s => (s.days_to_sell ?? 0) > 120).length
   const noSalesCount = data.storage_skus.filter(s => s.daily_sales <= 0).length
-  const totalStock = data.storage_skus.reduce((s, sk) => s + sk.total_stock, 0)
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         {/* Storage cost */}
         <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
           <div className="flex items-center gap-2 mb-1">
@@ -66,20 +61,6 @@ function StorageKpi({ data }: { data: WBWarehouseAnalyticsResponse }) {
           </div>
           <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
             {kpi.has_actual_storage ? 'По отчётам WB' : 'Из удержаний'} • за {kpi.period_days}д
-          </div>
-        </div>
-
-        {/* Estimated 30d */}
-        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-          <div className="flex items-center gap-2 mb-1">
-            <Package className="h-4 w-4 text-amber-400" />
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-              Расчёт за 30д
-            </span>
-          </div>
-          <div className="text-2xl font-bold tabular-nums text-amber-400">{fmtM(totalCostMonth)}</div>
-          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            при текущих остатках ({fmt(totalStock)} ед.)
           </div>
         </div>
 
@@ -126,8 +107,8 @@ function StorageKpi({ data }: { data: WBWarehouseAnalyticsResponse }) {
 function StorageSkeleton() {
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {Array.from({ length: 4 }).map((_, i) => (
+      <div className="grid grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => (
           <Skeleton key={i} className="h-[100px] rounded-2xl" />
         ))}
       </div>
@@ -231,9 +212,6 @@ export default function WarehousesStoragePage() {
         <>
           {/* KPI */}
           <StorageKpi data={data} />
-
-          {/* Costs Summary — оригинальный компонент с прогресс-барами и иконками */}
-          <CostsSummary costs={data.costs} />
 
           {/* Storage SKUs Table — оригинальный с сортировкой, поиском, прогнозом 30д, итого */}
           <StorageSkusTable skus={data.storage_skus} />
