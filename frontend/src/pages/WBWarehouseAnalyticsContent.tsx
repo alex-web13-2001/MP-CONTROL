@@ -986,6 +986,7 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                 <td className="px-3 py-3 text-right tabular-nums font-semibold">{fmt(totalStock)}</td>
                 <td className="px-3 py-3"></td>
                 <td className="px-3 py-3"></td>
+                <td className="px-3 py-3"></td>
                 <td className="px-3 py-3 text-right tabular-nums font-bold text-red-400 text-[14px]">{fmtM(totalCost)}</td>
                 {hasForecast && (
                   <td className="px-3 py-3 text-right tabular-nums font-bold text-amber-400 text-[14px]">{fmtM(totalForecast)}</td>
