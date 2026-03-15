@@ -7171,7 +7171,7 @@ _AI_PROMPT_STORAGE = """Ты — эксперт по ОПТИМИЗАЦИИ ПЛ
 
 ## ПРАВИЛА
 - severity: "critical" если > 30% SKU убыточны из-за хранения, "warning" если 10-30%, "ok" если < 10%
-- sku_actions: 5-10 товаров, ВСЕГДА НАЧИНАЯ с самых дорогих по хранению. Для товаров с пометкой ⚠️ — ОБЯЗАТЕЛЬНО включить
+- sku_actions: ТЫ ОБЯЗАН ВКЛЮЧИТЬ РОВНО КАЖДЫЙ ТОВАР ИЗ СПИСКА НИЖЕ. Не пропускай ни одного! Для товаров с пометкой ⚠️ — они ОБЯЗАТЕЛЬНЫ.
 - options: 2-4 варианта для КАЖДОГО SKU. ВСЕГДА включай "do_nothing" с расчётом потерь
 - action: ТОЛЬКО "discount", "withdraw", "launch_ads", "reduce_supply", "liquidate", "do_nothing"
 - При "withdraw": ОБЯЗАТЕЛЬНО указать withdrawal_cost и расчёт окупаемости
@@ -7481,12 +7481,40 @@ async def get_wb_storage_ai_analysis(
         # Sort by storage cost DESC
         skus_context.sort(key=lambda x: x["storage_30d"], reverse=True)
 
-        # Mark top-5 as must-include
-        for i, s in enumerate(skus_context[:5]):
+        # Deterministic pre-filter: only SKUs that actually need optimization
+        # Criteria: storage > 30₽/month AND (overstock OR unprofitable OR no sales)
+        skus_needing_action = []
+        for s in skus_context:
+            storage = s["storage_30d"]
+            if storage < 30:  # negligible storage cost
+                continue
+            is_overstock = s["turnover_days"] > 90
+            is_unprofitable = s["net_profit"] < storage  # storage eats profit
+            no_sales = s["daily"] == 0 and s["stock"] > 0
+            if is_overstock or is_unprofitable or no_sales:
+                skus_needing_action.append(s)
+
+        # If too few, add top storage SKUs regardless
+        existing_vcs = {s["vendor_code"] for s in skus_needing_action}
+        for s in skus_context:
+            if len(skus_needing_action) >= 5:
+                break
+            if s["vendor_code"] not in existing_vcs and s["storage_30d"] > 0:
+                skus_needing_action.append(s)
+                existing_vcs.add(s["vendor_code"])
+
+        # Cap at 25 for reasonable AI processing
+        skus_needing_action = skus_needing_action[:25]
+
+        # Sort again by storage cost DESC
+        skus_needing_action.sort(key=lambda x: x["storage_30d"], reverse=True)
+
+        # Mark all as must-include (deterministic)
+        for i, s in enumerate(skus_needing_action):
             s["must_include"] = True
             s["storage_rank"] = i + 1
 
-        skus_for_ai = skus_context[:40]
+        skus_for_ai = skus_needing_action
 
         # ── 8. Build prompt ──
         total_stock = sum(s["stock"] for s in skus_context)
@@ -7531,7 +7559,7 @@ async def get_wb_storage_ai_analysis(
                 wh_str = ", ".join(f"{wh['warehouse']}={wh['qty']}шт" for wh in s['warehouses'])
                 prompt += f"Склады: {wh_str}\n"
 
-        prompt += "\nПроанализируй каждый товар и выдай JSON с sku_actions, key_metrics и general_tips."
+        prompt += f"\nПроанализируй КАЖДЫЙ из {len(skus_for_ai)} товаров выше и выдай JSON с sku_actions (ровно {len(skus_for_ai)} записей — по ОДНОЙ на КАЖДЫЙ товар), key_metrics и general_tips."
 
         # ── 9. Call Gemini ──
         KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
@@ -7550,6 +7578,7 @@ async def get_wb_storage_ai_analysis(
                     ],
                     "stream": False,
                     "include_thoughts": False,
+                    "temperature": 0,
                 },
             )
 
