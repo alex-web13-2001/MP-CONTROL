@@ -579,6 +579,23 @@ export async function getWBWarehouseAnalytics(params: {
   return data
 }
 
+export async function downloadStorageExcel(params: {
+  shop_id: number
+  period?: number
+}): Promise<void> {
+  const response = await apiClient.get('/warehouses/wb/storage/export', {
+    params,
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  link.setAttribute('download', `storage_${params.shop_id}_${params.period ?? 30}d.xlsx`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
 
 // ═══════════════════════════════════════════════════════════
 // WB Sales Geography

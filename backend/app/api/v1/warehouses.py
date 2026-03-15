@@ -4813,6 +4813,310 @@ async def wb_warehouse_analytics(
 
 
 # ═══════════════════════════════════════════════════════════════
+# WB Storage — Excel export (Хранение + ИИ-рекомендации)
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/wb/storage/export")
+async def export_wb_storage_excel(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download WB storage analysis as formatted Excel workbook with AI recommendations."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
+
+    # Verify shop
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    # Get analytics data (reuse existing function)
+    analytics = await wb_warehouse_analytics(
+        shop_id=shop_id, period=period, db=db, current_user=current_user
+    )
+    storage_skus = analytics["storage_skus"]
+    kpi = analytics["kpi"]
+
+    # Try to get AI data from cache
+    ai_data = None
+    cache_key = f"storage_ai_{shop_id}_{period}"
+    if cache_key in _ai_cache:
+        cached_ts, cached_data = _ai_cache[cache_key]
+        ai_data = cached_data
+
+    # ── Styles ──────────────────────────────────────────────
+    hdr_font = Font(bold=True, size=11, color="FFFFFF")
+    hdr_fill = PatternFill("solid", fgColor="2F5496")
+    totals_fill = PatternFill("solid", fgColor="D9E2F3")
+    totals_font = Font(bold=True, size=11)
+    red_font = Font(bold=True, color="CC0000")
+    green_font = Font(bold=True, color="006600")
+    amber_font = Font(bold=True, color="CC6600")
+    thin = Side(style="thin", color="D0D0D0")
+    border = Border(bottom=thin, left=thin, right=thin)
+    num_fmt = "#,##0"
+    money_fmt = '#,##0" ₽"'
+    pct_fmt = "0.0"
+    zone_fills = {
+        "paid": PatternFill("solid", fgColor="FFC7CE"),
+        "warning": PatternFill("solid", fgColor="FFEB9C"),
+        "free": PatternFill("solid", fgColor="C6EFCE"),
+    }
+    zone_labels = {"paid": "Платное", "warning": "Скоро платное", "free": "Бесплатное"}
+
+    wb = openpyxl.Workbook()
+
+    # ═══ Sheet 1: Хранение по SKU ═══
+    ws = wb.active
+    ws.title = "Хранение по SKU"
+
+    headers = [
+        ("Артикул", 24), ("Название", 40), ("Объём, л", 10),
+        ("Остаток", 10), ("Прод/д", 8), ("Дней до распродажи", 16),
+        ("Зона", 14), ("Хранение/30д", 15), ("Прогноз 30д", 14),
+        ("Реклама", 10), ("Выручка", 14), ("Источник", 12),
+    ]
+    for ci, (name, w) in enumerate(headers, 1):
+        c = ws.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = border
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    total_cost = 0
+    total_forecast = 0
+    total_stock = 0
+
+    for ri, sku in enumerate(storage_skus, 2):
+        total_cost += sku.get("est_cost_month", 0)
+        total_forecast += sku.get("forecast_30d", 0) or 0
+        total_stock += sku.get("total_stock", 0)
+
+        zone = sku.get("zone", "free")
+        zone_label = zone_labels.get(zone, zone)
+        has_ads = sku.get("has_active_ads", False)
+
+        vals = [
+            sku.get("vendor_code", ""),
+            sku.get("name", ""),
+            round(sku.get("vol_liters", 0), 1),
+            sku.get("total_stock", 0),
+            round(sku.get("daily_sales", 0), 1),
+            sku.get("days_to_sell"),
+            zone_label,
+            sku.get("est_cost_month", 0),
+            sku.get("forecast_30d"),
+            "Да" if has_ads else "Нет",
+            round(sku.get("revenue_period", 0)),
+            "Факт" if sku.get("storage_source") == "actual" else "Оценка",
+        ]
+        for ci, v in enumerate(vals, 1):
+            c = ws.cell(ri, ci, v if v is not None else "—")
+            c.border = border
+            c.alignment = Alignment(horizontal="center" if ci not in (1, 2) else "left")
+            # Formats
+            if ci == 4:
+                c.number_format = num_fmt
+            if ci in (8, 9, 11):
+                c.number_format = money_fmt
+            if ci == 7:
+                c.fill = zone_fills.get(zone, PatternFill())
+            if ci == 8 and isinstance(v, (int, float)) and v > 500:
+                c.font = red_font
+            if ci == 10:
+                c.font = green_font if has_ads else Font(color="999999")
+
+    # Totals row
+    tr = len(storage_skus) + 2
+    ws.cell(tr, 1, "ИТОГО").font = totals_font
+    ws.cell(tr, 1).fill = totals_fill
+    for ci in range(1, len(headers) + 1):
+        ws.cell(tr, ci).fill = totals_fill
+        ws.cell(tr, ci).font = totals_font
+        ws.cell(tr, ci).border = Border(top=Side(style="medium", color="2F5496"), bottom=thin, left=thin, right=thin)
+    ws.cell(tr, 4, total_stock).number_format = num_fmt
+    ws.cell(tr, 8, round(total_cost)).number_format = money_fmt
+    ws.cell(tr, 9, round(total_forecast)).number_format = money_fmt
+
+    # KPI summary at top-right
+    ws.cell(1, 14, "Период").font = Font(bold=True, size=10)
+    ws.cell(1, 15, f"{kpi['period_days']}д").font = Font(size=10)
+    ws.cell(2, 14, "Склады").font = Font(bold=True, size=10)
+    ws.cell(2, 15, kpi['total_warehouses'])
+    ws.cell(3, 14, "Всего SKU").font = Font(bold=True, size=10)
+    ws.cell(3, 15, kpi['total_sku'])
+    ws.column_dimensions[get_column_letter(14)].width = 14
+    ws.column_dimensions[get_column_letter(15)].width = 12
+
+    # ═══ Sheet 2: Склады (breakdown) ═══
+    ws2 = wb.create_sheet("Детализация по складам")
+    wh_headers = [
+        ("Артикул", 24), ("Название", 36), ("Склад", 28),
+        ("Остаток", 10), ("Баз.тариф", 10), ("Стоим./мес", 14),
+        ("Источник", 12),
+    ]
+    for ci, (name, w) in enumerate(wh_headers, 1):
+        c = ws2.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+    ws2.freeze_panes = "A2"
+
+    r2 = 2
+    for sku in storage_skus:
+        for wh in sku.get("warehouses", []):
+            ws2.cell(r2, 1, sku.get("vendor_code", ""))
+            ws2.cell(r2, 2, sku.get("name", ""))
+            ws2.cell(r2, 3, wh.get("warehouse_name", wh.get("warehouse", "")))
+            ws2.cell(r2, 4, wh.get("stock", 0)).number_format = num_fmt
+            ws2.cell(r2, 5, round(wh.get("stor_base", 0), 2))
+            ws2.cell(r2, 6, round(wh.get("cost_month", 0))).number_format = money_fmt
+            ws2.cell(r2, 7, "Факт" if wh.get("source") == "actual" else "Оценка")
+            for ci in range(1, 8):
+                ws2.cell(r2, ci).border = border
+            r2 += 1
+
+    # ═══ Sheet 3: ИИ-рекомендации ═══
+    if ai_data:
+        ws3 = wb.create_sheet("ИИ-рекомендации")
+        ai_hdr_fill = PatternFill("solid", fgColor="7030A0")
+        ai_hdr_font = Font(bold=True, size=11, color="FFFFFF")
+
+        # Header info
+        ws3.merge_cells("A1:F1")
+        c_title = ws3.cell(1, 1, f"ИИ-Анализ хранения — {shop.name}")
+        c_title.font = Font(bold=True, size=14, color="7030A0")
+        c_title.alignment = Alignment(horizontal="left")
+
+        severity_labels = {"critical": "🔴 Критично", "warning": "🟡 Внимание", "ok": "🟢 Всё ОК"}
+        ws3.merge_cells("A2:F2")
+        ws3.cell(2, 1, f"Статус: {severity_labels.get(ai_data.get('severity', 'ok'), ai_data.get('severity', ''))}").font = Font(size=11, bold=True)
+
+        ws3.merge_cells("A3:F3")
+        ws3.cell(3, 1, f"Диагноз: {ai_data.get('diagnosis', '')}").font = Font(size=11)
+        ws3.row_dimensions[3].height = 40
+        ws3.cell(3, 1).alignment = Alignment(wrap_text=True)
+
+        analyzed_ts = ai_data.get("analyzed_at", 0)
+        if analyzed_ts:
+            ws3.cell(4, 1, f"Дата анализа: {datetime.fromtimestamp(analyzed_ts).strftime('%d.%m.%Y %H:%M')}").font = Font(size=10, color="666666")
+
+        # SKU actions table
+        sku_actions = ai_data.get("sku_actions", [])
+        if sku_actions:
+            row = 6
+            ws3.merge_cells(f"A{row}:F{row}")
+            ws3.cell(row, 1, f"Рекомендации по товарам ({len(sku_actions)})").font = Font(bold=True, size=12, color="7030A0")
+            row += 1
+
+            act_headers = [
+                ("Артикул", 24), ("Диагноз", 50), ("Хранение/мес", 14),
+                ("Оборач., дн", 12), ("Остаток", 10), ("Рекомендация", 50),
+            ]
+            for ci, (name, w) in enumerate(act_headers, 1):
+                c = ws3.cell(row, ci, name)
+                c.font = ai_hdr_font
+                c.fill = ai_hdr_fill
+                c.alignment = Alignment(horizontal="center", wrap_text=True)
+                ws3.column_dimensions[get_column_letter(ci)].width = w
+            row += 1
+
+            for action in sku_actions:
+                recommended_idx = action.get("recommended_option", 0)
+                options = action.get("options", [])
+                recommended = options[recommended_idx] if recommended_idx < len(options) else None
+                rec_text = f"{recommended['label']}: {recommended['detail']}" if recommended else "—"
+
+                ws3.cell(row, 1, action.get("vendor_code", ""))
+                c_diag = ws3.cell(row, 2, action.get("diagnosis", ""))
+                c_diag.alignment = Alignment(wrap_text=True)
+                ws3.cell(row, 3, round(action.get("current_storage_cost", 0))).number_format = money_fmt
+                ws3.cell(row, 4, action.get("current_turnover_days", 0))
+                ws3.cell(row, 5, action.get("stock", 0)).number_format = num_fmt
+                c_rec = ws3.cell(row, 6, rec_text)
+                c_rec.alignment = Alignment(wrap_text=True)
+                ws3.row_dimensions[row].height = 50
+
+                for ci in range(1, 7):
+                    ws3.cell(row, ci).border = border
+
+                row += 1
+
+            # Alternate options sub-table
+            row += 1
+            ws3.merge_cells(f"A{row}:F{row}")
+            ws3.cell(row, 1, "Все варианты действий по каждому SKU:").font = Font(bold=True, size=11, color="7030A0")
+            row += 1
+
+            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 50), ("Экономия/мес", 14), ("Риск", 10), ("Рекоменд.", 10)]
+            for ci, (name, w) in enumerate(opt_headers, 1):
+                c = ws3.cell(row, ci, name)
+                c.font = ai_hdr_font
+                c.fill = ai_hdr_fill
+                c.alignment = Alignment(horizontal="center", wrap_text=True)
+            row += 1
+
+            risk_labels = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
+            for action in sku_actions:
+                recommended_idx = action.get("recommended_option", 0)
+                for oi, opt in enumerate(action.get("options", [])):
+                    is_rec = oi == recommended_idx
+                    ws3.cell(row, 1, action.get("vendor_code", ""))
+                    ws3.cell(row, 2, opt.get("label", ""))
+                    c_det = ws3.cell(row, 3, opt.get("detail", ""))
+                    c_det.alignment = Alignment(wrap_text=True)
+                    ws3.cell(row, 4, round(opt.get("expected_savings", 0))).number_format = money_fmt
+                    ws3.cell(row, 5, risk_labels.get(opt.get("risk", ""), opt.get("risk", "")))
+                    ws3.cell(row, 6, "✓" if is_rec else "")
+                    if is_rec:
+                        for ci in range(1, 7):
+                            ws3.cell(row, ci).font = Font(bold=True, color="006600")
+                    for ci in range(1, 7):
+                        ws3.cell(row, ci).border = border
+                    ws3.row_dimensions[row].height = 35
+                    row += 1
+
+        # General tips
+        general_tips = ai_data.get("general_tips", [])
+        if general_tips:
+            row += 1
+            ws3.merge_cells(f"A{row}:F{row}")
+            ws3.cell(row, 1, "Общие рекомендации").font = Font(bold=True, size=12, color="7030A0")
+            row += 1
+            for tip in general_tips:
+                ws3.merge_cells(f"A{row}:F{row}")
+                c_tip = ws3.cell(row, 1, f"• {tip}")
+                c_tip.alignment = Alignment(wrap_text=True)
+                ws3.row_dimensions[row].height = 40
+                row += 1
+
+    # ── Save & return ────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    fname = f"storage_{shop_id}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
 # AI-powered Warehouse Diagnostics
 # ═══════════════════════════════════════════════════════════════
 

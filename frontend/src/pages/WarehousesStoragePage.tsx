@@ -30,6 +30,7 @@ import {
   DollarSign,
   Package,
   Zap,
+  Download,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -37,6 +38,7 @@ import { useAppStore } from '@/stores/appStore'
 import {
   getWBWarehouseAnalytics,
   getStorageAIAnalysis,
+  downloadStorageExcel,
   type WBWarehouseAnalyticsResponse,
   type StorageAIAnalysis,
   type StorageAISkuAction,
@@ -548,6 +550,7 @@ export default function WarehousesStoragePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [period, setPeriod] = useState(30)
+  const [downloading, setDownloading] = useState(false)
 
   const fetchData = useCallback(async () => {
     if (!currentShop || !isWB) return
@@ -584,14 +587,34 @@ export default function WarehousesStoragePage() {
             Расходы на хранение, прогнозы и ИИ-рекомендации по оптимизации
           </p>
         </div>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Обновить
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              if (!currentShop) return
+              setDownloading(true)
+              try {
+                await downloadStorageExcel({ shop_id: currentShop.id, period })
+              } catch {
+                // ignore
+              } finally {
+                setDownloading(false)
+              }
+            }}
+            disabled={downloading || loading || !data}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
+          >
+            <Download className={`h-4 w-4 ${downloading ? 'animate-bounce' : ''}`} />
+            Excel
+          </button>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Обновить
+          </button>
+        </div>
       </div>
 
       {/* Period */}
