@@ -4847,10 +4847,11 @@ async def export_wb_storage_excel(
 
     # Try to get AI data from cache
     ai_data = None
-    cache_key = f"storage_ai_{shop_id}_{period}"
+    cache_key = f"wb_storage_ai_{shop_id}_{period}"
     if cache_key in _ai_cache:
         cached_ts, cached_data = _ai_cache[cache_key]
         ai_data = cached_data
+    logger.info("Storage export: AI cache_key=%s, found=%s", cache_key, ai_data is not None)
 
     # ── Styles ──────────────────────────────────────────────
     hdr_font = Font(bold=True, size=11, color="FFFFFF")
@@ -4859,18 +4860,10 @@ async def export_wb_storage_excel(
     totals_font = Font(bold=True, size=11)
     red_font = Font(bold=True, color="CC0000")
     green_font = Font(bold=True, color="006600")
-    amber_font = Font(bold=True, color="CC6600")
     thin = Side(style="thin", color="D0D0D0")
     border = Border(bottom=thin, left=thin, right=thin)
     num_fmt = "#,##0"
     money_fmt = '#,##0" ₽"'
-    pct_fmt = "0.0"
-    zone_fills = {
-        "paid": PatternFill("solid", fgColor="FFC7CE"),
-        "warning": PatternFill("solid", fgColor="FFEB9C"),
-        "free": PatternFill("solid", fgColor="C6EFCE"),
-    }
-    zone_labels = {"paid": "Платное", "warning": "Скоро платное", "free": "Бесплатное"}
 
     wb = openpyxl.Workbook()
 
@@ -4879,10 +4872,10 @@ async def export_wb_storage_excel(
     ws.title = "Хранение по SKU"
 
     headers = [
-        ("Артикул", 24), ("Название", 40), ("Объём, л", 10),
+        ("Артикул", 24), ("nm_id", 14), ("Название", 40), ("Объём, л", 10),
         ("Остаток", 10), ("Прод/д", 8), ("Дней до распродажи", 16),
-        ("Зона", 14), ("Хранение/30д", 15), ("Прогноз 30д", 14),
-        ("Реклама", 10), ("Выручка", 14), ("Источник", 12),
+        ("Хранение/30д", 15), ("Прогноз 30д", 14),
+        ("Реклама", 10),
     ]
     for ci, (name, w) in enumerate(headers, 1):
         c = ws.cell(1, ci, name)
@@ -4900,39 +4893,34 @@ async def export_wb_storage_excel(
     total_stock = 0
 
     for ri, sku in enumerate(storage_skus, 2):
-        total_cost += sku.get("est_cost_month", 0)
-        total_forecast += sku.get("forecast_30d", 0) or 0
+        est_cost = sku.get("est_cost_month", 0)
+        forecast = sku.get("forecast_30d", 0) or 0
+        total_cost += est_cost
+        total_forecast += forecast
         total_stock += sku.get("total_stock", 0)
 
-        zone = sku.get("zone", "free")
-        zone_label = zone_labels.get(zone, zone)
         has_ads = sku.get("has_active_ads", False)
 
         vals = [
             sku.get("vendor_code", ""),
+            sku.get("nm_id", ""),
             sku.get("name", ""),
             round(sku.get("vol_liters", 0), 1),
             sku.get("total_stock", 0),
             round(sku.get("daily_sales", 0), 1),
             sku.get("days_to_sell"),
-            zone_label,
-            sku.get("est_cost_month", 0),
-            sku.get("forecast_30d"),
+            est_cost,
+            forecast if forecast else None,
             "Да" if has_ads else "Нет",
-            round(sku.get("revenue_period", 0)),
-            "Факт" if sku.get("storage_source") == "actual" else "Оценка",
         ]
         for ci, v in enumerate(vals, 1):
             c = ws.cell(ri, ci, v if v is not None else "—")
             c.border = border
-            c.alignment = Alignment(horizontal="center" if ci not in (1, 2) else "left")
-            # Formats
-            if ci == 4:
+            c.alignment = Alignment(horizontal="center" if ci not in (1, 3) else "left")
+            if ci == 5:
                 c.number_format = num_fmt
-            if ci in (8, 9, 11):
+            if ci in (8, 9):
                 c.number_format = money_fmt
-            if ci == 7:
-                c.fill = zone_fills.get(zone, PatternFill())
             if ci == 8 and isinstance(v, (int, float)) and v > 500:
                 c.font = red_font
             if ci == 10:
@@ -4946,26 +4934,26 @@ async def export_wb_storage_excel(
         ws.cell(tr, ci).fill = totals_fill
         ws.cell(tr, ci).font = totals_font
         ws.cell(tr, ci).border = Border(top=Side(style="medium", color="2F5496"), bottom=thin, left=thin, right=thin)
-    ws.cell(tr, 4, total_stock).number_format = num_fmt
+    ws.cell(tr, 5, total_stock).number_format = num_fmt
     ws.cell(tr, 8, round(total_cost)).number_format = money_fmt
     ws.cell(tr, 9, round(total_forecast)).number_format = money_fmt
 
     # KPI summary at top-right
-    ws.cell(1, 14, "Период").font = Font(bold=True, size=10)
-    ws.cell(1, 15, f"{kpi['period_days']}д").font = Font(size=10)
-    ws.cell(2, 14, "Склады").font = Font(bold=True, size=10)
-    ws.cell(2, 15, kpi['total_warehouses'])
-    ws.cell(3, 14, "Всего SKU").font = Font(bold=True, size=10)
-    ws.cell(3, 15, kpi['total_sku'])
-    ws.column_dimensions[get_column_letter(14)].width = 14
-    ws.column_dimensions[get_column_letter(15)].width = 12
+    kpi_col = len(headers) + 2
+    ws.cell(1, kpi_col, "Период").font = Font(bold=True, size=10)
+    ws.cell(1, kpi_col + 1, f"{kpi['period_days']}д").font = Font(size=10)
+    ws.cell(2, kpi_col, "Склады").font = Font(bold=True, size=10)
+    ws.cell(2, kpi_col + 1, kpi['total_warehouses'])
+    ws.cell(3, kpi_col, "Всего SKU").font = Font(bold=True, size=10)
+    ws.cell(3, kpi_col + 1, kpi['total_sku'])
+    ws.column_dimensions[get_column_letter(kpi_col)].width = 14
+    ws.column_dimensions[get_column_letter(kpi_col + 1)].width = 12
 
     # ═══ Sheet 2: Склады (breakdown) ═══
     ws2 = wb.create_sheet("Детализация по складам")
     wh_headers = [
-        ("Артикул", 24), ("Название", 36), ("Склад", 28),
+        ("Артикул", 24), ("nm_id", 14), ("Название", 36), ("Склад", 28),
         ("Остаток", 10), ("Баз.тариф", 10), ("Стоим./мес", 14),
-        ("Источник", 12),
     ]
     for ci, (name, w) in enumerate(wh_headers, 1):
         c = ws2.cell(1, ci, name)
@@ -4974,18 +4962,19 @@ async def export_wb_storage_excel(
         c.alignment = Alignment(horizontal="center", wrap_text=True)
         ws2.column_dimensions[get_column_letter(ci)].width = w
     ws2.freeze_panes = "A2"
+    ws2.auto_filter.ref = f"A1:{get_column_letter(len(wh_headers))}1"
 
     r2 = 2
     for sku in storage_skus:
         for wh in sku.get("warehouses", []):
             ws2.cell(r2, 1, sku.get("vendor_code", ""))
-            ws2.cell(r2, 2, sku.get("name", ""))
-            ws2.cell(r2, 3, wh.get("warehouse_name", wh.get("warehouse", "")))
-            ws2.cell(r2, 4, wh.get("stock", 0)).number_format = num_fmt
-            ws2.cell(r2, 5, round(wh.get("stor_base", 0), 2))
-            ws2.cell(r2, 6, round(wh.get("cost_month", 0))).number_format = money_fmt
-            ws2.cell(r2, 7, "Факт" if wh.get("source") == "actual" else "Оценка")
-            for ci in range(1, 8):
+            ws2.cell(r2, 2, sku.get("nm_id", ""))
+            ws2.cell(r2, 3, sku.get("name", ""))
+            ws2.cell(r2, 4, wh.get("warehouse_name", wh.get("warehouse", "")))
+            ws2.cell(r2, 5, wh.get("stock", 0)).number_format = num_fmt
+            ws2.cell(r2, 6, round(wh.get("stor_base", 0), 2))
+            ws2.cell(r2, 7, round(wh.get("cost_month", 0))).number_format = money_fmt
+            for ci in range(1, len(wh_headers) + 1):
                 ws2.cell(r2, ci).border = border
             r2 += 1
 
@@ -5014,16 +5003,33 @@ async def export_wb_storage_excel(
         if analyzed_ts:
             ws3.cell(4, 1, f"Дата анализа: {datetime.fromtimestamp(analyzed_ts).strftime('%d.%m.%Y %H:%M')}").font = Font(size=10, color="666666")
 
+        # Key metrics
+        km = ai_data.get("key_metrics", {})
+        if km:
+            ws3.cell(4, 4, "Избыток хранения:").font = Font(bold=True, size=10)
+            ws3.cell(4, 5, round(km.get("storage_excess", 0))).number_format = money_fmt
+            ws3.cell(5, 4, "Потери кросс-логистики:").font = Font(bold=True, size=10)
+            ws3.cell(5, 5, round(km.get("cross_logistics_loss", 0))).number_format = money_fmt
+            ws3.cell(6, 4, "Убыточных SKU:").font = Font(bold=True, size=10)
+            ws3.cell(6, 5, km.get("unprofitable_skus_count", 0))
+            ws3.column_dimensions["D"].width = 22
+            ws3.column_dimensions["E"].width = 14
+
+        savings = ai_data.get("total_potential_savings", 0)
+        if savings:
+            ws3.merge_cells("A5:C5")
+            ws3.cell(5, 1, f"Потенциальная экономия: {round(savings):,} ₽/мес").font = Font(bold=True, size=11, color="006600")
+
         # SKU actions table
         sku_actions = ai_data.get("sku_actions", [])
         if sku_actions:
-            row = 6
+            row = 8
             ws3.merge_cells(f"A{row}:F{row}")
             ws3.cell(row, 1, f"Рекомендации по товарам ({len(sku_actions)})").font = Font(bold=True, size=12, color="7030A0")
             row += 1
 
             act_headers = [
-                ("Артикул", 24), ("Диагноз", 50), ("Хранение/мес", 14),
+                ("Артикул", 24), ("Проблема", 50), ("Хранение/мес", 14),
                 ("Оборач., дн", 12), ("Остаток", 10), ("Рекомендация", 50),
             ]
             for ci, (name, w) in enumerate(act_headers, 1):
@@ -5041,9 +5047,10 @@ async def export_wb_storage_excel(
                 rec_text = f"{recommended['label']}: {recommended['detail']}" if recommended else "—"
 
                 ws3.cell(row, 1, action.get("vendor_code", ""))
-                c_diag = ws3.cell(row, 2, action.get("diagnosis", ""))
+                c_diag = ws3.cell(row, 2, action.get("problem", action.get("diagnosis", "")))
                 c_diag.alignment = Alignment(wrap_text=True)
-                ws3.cell(row, 3, round(action.get("current_storage_cost", 0))).number_format = money_fmt
+                cost_val = action.get("storage_cost_month", action.get("current_storage_cost", 0))
+                ws3.cell(row, 3, round(cost_val)).number_format = money_fmt
                 ws3.cell(row, 4, action.get("current_turnover_days", 0))
                 ws3.cell(row, 5, action.get("stock", 0)).number_format = num_fmt
                 c_rec = ws3.cell(row, 6, rec_text)
@@ -5055,13 +5062,13 @@ async def export_wb_storage_excel(
 
                 row += 1
 
-            # Alternate options sub-table
+            # All options detail
             row += 1
             ws3.merge_cells(f"A{row}:F{row}")
             ws3.cell(row, 1, "Все варианты действий по каждому SKU:").font = Font(bold=True, size=11, color="7030A0")
             row += 1
 
-            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 50), ("Экономия/мес", 14), ("Риск", 10), ("Рекоменд.", 10)]
+            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 50), ("Экономия/мес", 14), ("Риск", 10), ("✓", 6)]
             for ci, (name, w) in enumerate(opt_headers, 1):
                 c = ws3.cell(row, ci, name)
                 c.font = ai_hdr_font
@@ -5089,13 +5096,48 @@ async def export_wb_storage_excel(
                     ws3.row_dimensions[row].height = 35
                     row += 1
 
+        # Transfers
+        transfers = ai_data.get("transfers", [])
+        if transfers:
+            row += 1
+            ws3.merge_cells(f"A{row}:F{row}")
+            ws3.cell(row, 1, f"Перемещения между складами ({len(transfers)})").font = Font(bold=True, size=12, color="7030A0")
+            row += 1
+            tr_headers = [("Артикул", 24), ("Со склада", 28), ("Остаток", 10), ("Оставить", 10), ("Куда → кол-во", 50), ("Эффект", 40)]
+            for ci, (name, w) in enumerate(tr_headers, 1):
+                c = ws3.cell(row, ci, name)
+                c.font = ai_hdr_font
+                c.fill = ai_hdr_fill
+                c.alignment = Alignment(horizontal="center", wrap_text=True)
+            row += 1
+            for tr_item in transfers:
+                ws3.cell(row, 1, tr_item.get("vendor_code", ""))
+                ws3.cell(row, 2, tr_item.get("from_warehouse", ""))
+                ws3.cell(row, 3, tr_item.get("from_stock", 0)).number_format = num_fmt
+                ws3.cell(row, 4, tr_item.get("keep_at_source", 0)).number_format = num_fmt
+                dests = tr_item.get("destinations", [])
+                dest_text = "; ".join(f'{d["warehouse"]}: {d["qty"]} шт' for d in dests)
+                ws3.cell(row, 5, dest_text).alignment = Alignment(wrap_text=True)
+                ws3.cell(row, 6, tr_item.get("expected_effect", "")).alignment = Alignment(wrap_text=True)
+                ws3.row_dimensions[row].height = 40
+                for ci in range(1, 7):
+                    ws3.cell(row, ci).border = border
+                row += 1
+
         # General tips
         general_tips = ai_data.get("general_tips", [])
-        if general_tips:
+        supply_tip = ai_data.get("supply_tip", "")
+        if general_tips or supply_tip:
             row += 1
             ws3.merge_cells(f"A{row}:F{row}")
             ws3.cell(row, 1, "Общие рекомендации").font = Font(bold=True, size=12, color="7030A0")
             row += 1
+            if supply_tip:
+                ws3.merge_cells(f"A{row}:F{row}")
+                ws3.cell(row, 1, f"📦 Поставки: {supply_tip}").font = Font(bold=True, size=11)
+                ws3.cell(row, 1).alignment = Alignment(wrap_text=True)
+                ws3.row_dimensions[row].height = 40
+                row += 1
             for tip in general_tips:
                 ws3.merge_cells(f"A{row}:F{row}")
                 c_tip = ws3.cell(row, 1, f"• {tip}")
