@@ -5023,90 +5023,173 @@ async def export_wb_storage_excel(
             ws3.merge_cells("A5:C5")
             ws3.cell(5, 1, f"Потенциальная экономия: {round(savings):,} ₽/мес").font = Font(bold=True, size=11, color="006600")
 
-        # SKU actions table
+        # SKU actions — card layout
         sku_actions = ai_data.get("sku_actions", [])
         if sku_actions:
             row = 8
+
+            # Set column widths for card layout
+            ws3.column_dimensions["A"].width = 4    # № / marker
+            ws3.column_dimensions["B"].width = 30   # Label / артикул
+            ws3.column_dimensions["C"].width = 70   # Details / text
+            ws3.column_dimensions["D"].width = 16   # Savings / cost
+            ws3.column_dimensions["E"].width = 12   # Risk
+            ws3.column_dimensions["F"].width = 10   # Recommended mark
+
             ws3.merge_cells(f"A{row}:F{row}")
-            ws3.cell(row, 1, f"Рекомендации по товарам ({len(sku_actions)})").font = Font(bold=True, size=12, color="7030A0")
-            row += 1
-
-            act_headers = [
-                ("Артикул", 24), ("Проблема", 65), ("Хранение/мес", 14),
-                ("Оборач., дн", 12), ("Остаток", 10), ("Рекомендация", 65),
-            ]
-            for ci, (name, w) in enumerate(act_headers, 1):
-                c = ws3.cell(row, ci, name)
-                c.font = ai_hdr_font
-                c.fill = ai_hdr_fill
-                c.alignment = Alignment(horizontal="center", wrap_text=True)
-                ws3.column_dimensions[get_column_letter(ci)].width = w
-            row += 1
-
-            for action in sku_actions:
-                recommended_idx = action.get("recommended_option", 0)
-                options = action.get("options", [])
-                recommended = options[recommended_idx] if recommended_idx < len(options) else None
-                rec_text = f"{recommended['label']}: {recommended['detail']}" if recommended else "—"
-
-                ws3.cell(row, 1, action.get("vendor_code", "")).alignment = Alignment(vertical="top")
-                problem_text = action.get("problem", action.get("diagnosis", ""))
-                c_diag = ws3.cell(row, 2, problem_text)
-                c_diag.alignment = Alignment(wrap_text=True, vertical="top")
-                cost_val = action.get("storage_cost_month", action.get("current_storage_cost", 0))
-                ws3.cell(row, 3, round(cost_val)).number_format = money_fmt
-                ws3.cell(row, 3).alignment = Alignment(vertical="top")
-                ws3.cell(row, 4, action.get("current_turnover_days", 0)).alignment = Alignment(vertical="top")
-                ws3.cell(row, 5, action.get("stock", 0)).number_format = num_fmt
-                ws3.cell(row, 5).alignment = Alignment(vertical="top")
-                c_rec = ws3.cell(row, 6, rec_text)
-                c_rec.alignment = Alignment(wrap_text=True, vertical="top")
-                # Dynamic row height: estimate lines needed from longest text
-                max_text = max(len(problem_text), len(rec_text))
-                est_lines = max(3, max_text // 55 + 1)
-                ws3.row_dimensions[row].height = est_lines * 15
-
-                for ci in range(1, 7):
-                    ws3.cell(row, ci).border = border
-
-                row += 1
-
-            # All options detail
-            row += 1
-            ws3.merge_cells(f"A{row}:F{row}")
-            ws3.cell(row, 1, "Все варианты действий по каждому SKU:").font = Font(bold=True, size=11, color="7030A0")
-            row += 1
-
-            opt_headers = [("Артикул", 24), ("Вариант", 30), ("Детали", 65), ("Экономия/мес", 14), ("Риск", 10), ("✓", 6)]
-            for ci, (name, w) in enumerate(opt_headers, 1):
-                c = ws3.cell(row, ci, name)
-                c.font = ai_hdr_font
-                c.fill = ai_hdr_fill
-                c.alignment = Alignment(horizontal="center", wrap_text=True)
-            row += 1
+            ws3.cell(row, 1, f"Рекомендации по товарам ({len(sku_actions)})").font = Font(bold=True, size=13, color="7030A0")
+            row += 2
 
             risk_labels = {"low": "Низкий", "medium": "Средний", "high": "Высокий"}
-            for action in sku_actions:
+            risk_colors = {"low": "006600", "medium": "CC6600", "high": "CC0000"}
+            card_border = Border(
+                left=Side(style="medium", color="7030A0"),
+                right=Side(style="medium", color="7030A0"),
+            )
+            card_top = Border(
+                top=Side(style="medium", color="7030A0"),
+                left=Side(style="medium", color="7030A0"),
+                right=Side(style="medium", color="7030A0"),
+            )
+            card_bottom = Border(
+                bottom=Side(style="medium", color="7030A0"),
+                left=Side(style="medium", color="7030A0"),
+                right=Side(style="medium", color="7030A0"),
+            )
+            card_top_right = Border(
+                top=Side(style="medium", color="7030A0"),
+                right=Side(style="medium", color="7030A0"),
+            )
+
+            for ai_idx, action in enumerate(sku_actions):
+                vendor = action.get("vendor_code", "")
+                cost_val = action.get("storage_cost_month", action.get("current_storage_cost", 0))
+                turnover = action.get("current_turnover_days", 0)
+                stock = action.get("stock", 0)
+                problem_text = action.get("problem", action.get("diagnosis", ""))
                 recommended_idx = action.get("recommended_option", 0)
-                for oi, opt in enumerate(action.get("options", [])):
+                options = action.get("options", [])
+
+                # ── Card header: артикул + metrics ──
+                ws3.merge_cells(f"A{row}:B{row}")
+                c_vc = ws3.cell(row, 1, f"📦  {vendor}")
+                c_vc.font = Font(bold=True, size=14, color="7030A0")
+                c_vc.alignment = Alignment(vertical="center")
+                c_vc.border = card_top
+
+                ws3.cell(row, 2).border = card_top  # merged but set border
+                ws3.cell(row, 3, f"Хранение: {round(cost_val):,} ₽/мес").font = Font(bold=True, size=11)
+                ws3.cell(row, 3).border = card_top
+                ws3.cell(row, 4, f"Оборач.: {turnover} дн").font = Font(size=11, color="666666")
+                ws3.cell(row, 4).border = card_top
+                ws3.cell(row, 5, f"Остаток: {stock} шт").font = Font(size=11, color="666666")
+                ws3.cell(row, 5).border = card_top
+                ws3.cell(row, 6).border = card_top_right
+                ws3.row_dimensions[row].height = 28
+                # Fill header
+                hdr_card_fill = PatternFill("solid", fgColor="F3E8FF")  # light purple
+                for ci in range(1, 7):
+                    ws3.cell(row, ci).fill = hdr_card_fill
+                row += 1
+
+                # ── Problem description ──
+                ws3.merge_cells(f"B{row}:F{row}")
+                ws3.cell(row, 1, "").border = card_border
+                c_prob = ws3.cell(row, 2, f"⚠️  {problem_text}")
+                c_prob.font = Font(size=10, color="333333")
+                c_prob.alignment = Alignment(wrap_text=True, vertical="top")
+                c_prob.border = card_border
+                # set right border on merged end
+                for ci in [3, 4, 5]:
+                    ws3.cell(row, ci).border = card_border
+                ws3.cell(row, 6).border = Border(right=Side(style="medium", color="7030A0"))
+                prob_lines = max(2, len(problem_text) // 80 + 1)
+                ws3.row_dimensions[row].height = prob_lines * 16
+                row += 1
+
+                # ── Options header ──
+                ws3.cell(row, 1, "").border = card_border
+                ws3.cell(row, 2, "Вариант действий").font = Font(bold=True, size=10, color="666666")
+                ws3.cell(row, 2).border = card_border
+                ws3.cell(row, 3, "Описание").font = Font(bold=True, size=10, color="666666")
+                ws3.cell(row, 3).border = card_border
+                ws3.cell(row, 4, "Экономия").font = Font(bold=True, size=10, color="666666")
+                ws3.cell(row, 4).border = card_border
+                ws3.cell(row, 5, "Риск").font = Font(bold=True, size=10, color="666666")
+                ws3.cell(row, 5).border = card_border
+                ws3.cell(row, 6, "").border = Border(right=Side(style="medium", color="7030A0"))
+                opt_hdr_fill = PatternFill("solid", fgColor="F5F5F5")
+                for ci in range(1, 7):
+                    ws3.cell(row, ci).fill = opt_hdr_fill
+                ws3.row_dimensions[row].height = 20
+                row += 1
+
+                # ── Each option ──
+                for oi, opt in enumerate(options):
                     is_rec = oi == recommended_idx
-                    ws3.cell(row, 1, action.get("vendor_code", "")).alignment = Alignment(vertical="top")
-                    ws3.cell(row, 2, opt.get("label", "")).alignment = Alignment(vertical="top")
+                    is_last_opt = oi == len(options) - 1
+                    opt_label = opt.get("label", "")
                     detail_text = opt.get("detail", "")
+                    savings = opt.get("expected_savings", 0)
+                    risk = opt.get("risk", "")
+
+                    # Marker column
+                    marker = "✅" if is_rec else f"  {oi + 1}."
+                    ws3.cell(row, 1, marker).alignment = Alignment(horizontal="center", vertical="top")
+
+                    # Option label
+                    c_lbl = ws3.cell(row, 2, opt_label)
+                    c_lbl.alignment = Alignment(wrap_text=True, vertical="top")
+
+                    # Detail text
                     c_det = ws3.cell(row, 3, detail_text)
                     c_det.alignment = Alignment(wrap_text=True, vertical="top")
-                    ws3.cell(row, 4, round(opt.get("expected_savings", 0))).number_format = money_fmt
-                    ws3.cell(row, 4).alignment = Alignment(vertical="top")
-                    ws3.cell(row, 5, risk_labels.get(opt.get("risk", ""), opt.get("risk", ""))).alignment = Alignment(vertical="top")
-                    ws3.cell(row, 6, "✓" if is_rec else "").alignment = Alignment(horizontal="center", vertical="top")
+
+                    # Savings
+                    c_sav = ws3.cell(row, 4)
+                    if savings > 0:
+                        c_sav.value = round(savings)
+                        c_sav.number_format = money_fmt
+                    else:
+                        c_sav.value = "—"
+                    c_sav.alignment = Alignment(vertical="top")
+
+                    # Risk
+                    risk_text = risk_labels.get(risk, risk)
+                    c_risk = ws3.cell(row, 5, risk_text)
+                    c_risk.font = Font(color=risk_colors.get(risk, "333333"))
+                    c_risk.alignment = Alignment(vertical="top")
+
+                    # Recommended badge
                     if is_rec:
+                        ws3.cell(row, 6, "Лучший").font = Font(bold=True, size=9, color="006600")
+                        ws3.cell(row, 6).alignment = Alignment(horizontal="center", vertical="top")
+                        # Highlight the recommended row
+                        rec_fill = PatternFill("solid", fgColor="E8F5E9")
+                        rec_font = Font(bold=True, size=11, color="1B5E20")
+                        c_lbl.font = rec_font
                         for ci in range(1, 7):
-                            ws3.cell(row, ci).font = Font(bold=True, color="006600")
-                    for ci in range(1, 7):
-                        ws3.cell(row, ci).border = border
-                    det_lines = max(2, len(detail_text) // 55 + 1)
-                    ws3.row_dimensions[row].height = det_lines * 15
+                            ws3.cell(row, ci).fill = rec_fill
+                    else:
+                        ws3.cell(row, 6, "")
+                        c_lbl.font = Font(size=10)
+
+                    # Borders
+                    opt_border = card_bottom if is_last_opt else card_border
+                    for ci in range(1, 6):
+                        ws3.cell(row, ci).border = opt_border
+                    ws3.cell(row, 6).border = Border(
+                        right=Side(style="medium", color="7030A0"),
+                        bottom=Side(style="medium", color="7030A0") if is_last_opt else None,
+                    )
+
+                    # Row height from detail text
+                    det_lines = max(2, len(detail_text) // 60 + 1)
+                    ws3.row_dimensions[row].height = max(30, det_lines * 16)
                     row += 1
+
+                # Spacer between cards
+                row += 1
 
         # Transfers
         transfers = ai_data.get("transfers", [])
