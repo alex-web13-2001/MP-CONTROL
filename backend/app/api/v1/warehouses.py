@@ -4800,7 +4800,42 @@ async def wb_warehouse_analytics(
     for s in storage_skus:
         s["has_active_ads"] = s["nm_id"] in ad_active_nm_ids
 
-    # ── 11. KPI ──────────────────────────────────────────────
+    # ── 11. Out-of-stock aggregation (across ALL warehouses, no truncation) ──
+    # Aggregate stock + daily_sales per nm_id from full wh_stocks + wh_sku_orders
+    global_sku_agg: dict[int, dict] = {}  # nm_id → {stock, orders, daily}
+    for wh_name, stk_data in wh_stocks.items():
+        wh_sku_data = wh_sku_orders.get(wh_name, {})
+        for nm_id in stk_data["nm_ids"]:
+            qty = stk_data["qtys"].get(nm_id, 0)
+            sku_ords = wh_sku_data.get(nm_id, {"orders": 0})
+            if nm_id not in global_sku_agg:
+                prod = products_map.get(nm_id, {})
+                global_sku_agg[nm_id] = {
+                    "nm_id": nm_id,
+                    "vendor_code": prod.get("vendor_code", ""),
+                    "name": prod.get("name", ""),
+                    "stock": 0,
+                    "orders": 0,
+                }
+            global_sku_agg[nm_id]["stock"] += qty
+            global_sku_agg[nm_id]["orders"] += sku_ords["orders"]
+
+    out_of_stock_skus = []
+    for agg in global_sku_agg.values():
+        daily = agg["orders"] / period if period > 0 else 0
+        if daily > 0 and agg["stock"] > 0 and (agg["stock"] / daily) < 14:
+            days_left = round(agg["stock"] / daily)
+            out_of_stock_skus.append({
+                "vendor_code": agg["vendor_code"],
+                "name": agg["name"],
+                "stock": agg["stock"],
+                "daily": round(daily, 1),
+                "days_left": days_left,
+            })
+    out_of_stock_skus.sort(key=lambda x: x["days_left"])
+    out_of_stock_skus = out_of_stock_skus[:10]  # top 10 most critical
+
+    # ── 12. KPI ──────────────────────────────────────────────
     total_stock = sum(w["stock"] for w in warehouses_result)
     total_daily = sum(w["daily_sales"] for w in warehouses_result)
     avg_turnover = total_stock / total_daily if total_daily > 0 else None
@@ -4826,6 +4861,7 @@ async def wb_warehouse_analytics(
         "period_days": period,
         "has_actual_storage": has_actual_storage,
         "forecast_30d": round(total_forecast_30d, 2) if total_forecast_30d > 0 else None,
+        "out_of_stock_skus": out_of_stock_skus,
         # Previous period comparison
         "prev": {
             "total_logistics": round(prev_cost_by_type.get("Логистика", {}).get("logistics", 0), 2),

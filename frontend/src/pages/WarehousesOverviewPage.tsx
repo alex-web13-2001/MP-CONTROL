@@ -990,21 +990,8 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            // 3. Out-of-stock alert: aggregate SKU across all warehouses
-            const globalSkuMap = new Map<string, { vc: string; name: string; stock: number; daily: number }>()
-            whs.forEach(w => (w.skus || []).forEach(s => {
-              const existing = globalSkuMap.get(s.vendor_code)
-              if (existing) {
-                existing.stock += s.stock
-                existing.daily += s.daily_sales
-              } else {
-                globalSkuMap.set(s.vendor_code, { vc: s.vendor_code, name: s.name, stock: s.stock, daily: s.daily_sales })
-              }
-            }))
-            const outOfStockSkus = Array.from(globalSkuMap.values())
-              .filter(s => s.daily > 0 && s.stock > 0 && (s.stock / s.daily) < 14)
-              .sort((a, b) => (a.stock / a.daily) - (b.stock / b.daily))
-              .slice(0, 5)
+            // 3. Out-of-stock alert: use pre-computed data from backend (full aggregation across ALL warehouses)
+            const outOfStockSkus = (kpi.out_of_stock_skus || []).slice(0, 5)
 
             if (outOfStockSkus.length > 0) {
               problems.push(
@@ -1016,16 +1003,13 @@ export default function WarehousesOverviewPage() {
                   details={
                     <div className="space-y-1">
                       <div>SKU заканчиваются на ВСЕХ складах:</div>
-                      {outOfStockSkus.map((s, i) => {
-                        const daysLeft = Math.round(s.stock / s.daily)
-                        return (
-                          <div key={i} className="flex items-center gap-2 text-[11px]">
-                            <span className="font-semibold text-[hsl(var(--foreground))]">{s.vc}</span>
-                            <span className="ml-auto font-bold text-red-400">{daysLeft} дн</span>
-                            <span className="opacity-40">{fmt(s.stock)} шт / {s.daily.toFixed(1)}/день</span>
-                          </div>
-                        )
-                      })}
+                      {outOfStockSkus.map((s: any, i: number) => (
+                        <div key={i} className="flex items-center gap-2 text-[11px]">
+                          <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
+                          <span className="ml-auto font-bold text-red-400">{s.days_left} дн</span>
+                          <span className="opacity-40">{fmt(s.stock)} шт / {s.daily.toFixed(1)}/день</span>
+                        </div>
+                      ))}
                     </div>
                   }
                   link="/warehouses/supplies"
