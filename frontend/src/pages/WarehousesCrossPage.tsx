@@ -19,13 +19,14 @@ import {
   MapPin,
   Package,
   ChevronRight,
+  ChevronDown,
   Warehouse,
   Copy,
   Check,
   TrendingUp,
   Truck,
   Target,
-  ShoppingCart,
+  PackageX,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -33,10 +34,8 @@ import { useAppStore } from '@/stores/appStore'
 import {
   getWBWarehouseAnalytics,
   type WBWarehouseAnalyticsResponse,
-  type WBCrossMapRow,
   type WBAnalyticsWarehouse,
   type WBAnalyticsSkuDetail,
-  type WBAnalyticsGeography,
 } from '@/api/warehouses'
 
 /* ── Constants ── */
@@ -53,12 +52,6 @@ function pctColor(pct: number): string {
   if (pct > CROSS_BENCHMARK_GOOD) return 'text-amber-400'
   return 'text-emerald-400'
 }
-function pctBg(pct: number): string {
-  if (pct > CROSS_BENCHMARK_BAD) return 'bg-red-500'
-  if (pct > CROSS_BENCHMARK_GOOD) return 'bg-amber-500'
-  return 'bg-emerald-500'
-}
-
 /* ── Period Options ── */
 const PERIOD_OPTIONS = [
   { label: '7 дн', value: 7 },
@@ -130,13 +123,13 @@ function CrossKpiCards({ data }: { data: WBWarehouseAnalyticsResponse }) {
     .filter(w => w.orders >= 10)
     .sort((a, b) => b.cross_pct - a.cross_pct)[0]
 
-  // Find worst SKU across all warehouses
+  // Find problematic SKUs across all warehouses (cross > 40%)
   const allSkus = warehouses.flatMap(w =>
     w.skus.map(s => ({ ...s, warehouse: w.warehouse_name }))
   )
-  const worstSku = allSkus
-    .filter(s => s.orders >= 5)
-    .sort((a, b) => b.cross_pct - a.cross_pct)[0]
+  const problemSkus = allSkus
+    .filter(s => s.orders >= 5 && s.cross_pct > 40)
+    .sort((a, b) => b.cross_pct - a.cross_pct)
 
   // Critical warehouses (cross > 50%)
   const criticalWarehouses = warehouses.filter(w => w.cross_pct > CROSS_BENCHMARK_BAD && w.orders >= 5)
@@ -177,29 +170,20 @@ function CrossKpiCards({ data }: { data: WBWarehouseAnalyticsResponse }) {
           </div>
         </div>
 
-        {/* Worst SKU */}
+        {/* Problem SKUs count */}
         <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
           <div className="flex items-center gap-2 mb-1">
             <Target className="h-4 w-4 text-amber-400" />
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-              Топ-проблема
+              Проблемных SKU
             </span>
           </div>
-          {worstSku ? (
-            <>
-              <div className={`text-2xl font-bold tabular-nums ${pctColor(worstSku.cross_pct)}`}>
-                {worstSku.cross_pct}% кросс
-              </div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))] truncate" title={worstSku.vendor_code || worstSku.name}>
-                {worstSku.vendor_code || `#${worstSku.nm_id}`} • {worstSku.orders} заказов
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="text-2xl font-bold text-emerald-400">—</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Нет проблемных SKU</div>
-            </>
-          )}
+          <div className={`text-2xl font-bold tabular-nums ${problemSkus.length > 5 ? 'text-red-400' : problemSkus.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+            {problemSkus.length}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {problemSkus.length > 0 ? `Кросс > 40%, ≥5 заказов` : 'Все SKU в норме ✓'}
+          </div>
         </div>
 
         {/* Critical warehouses */}
@@ -217,6 +201,108 @@ function CrossKpiCards({ data }: { data: WBWarehouseAnalyticsResponse }) {
             {worstWh ? `Худший: ${worstWh.warehouse_name} (${worstWh.cross_pct}%)` : 'Все в норме'}
           </div>
         </div>
+      </div>
+    </motion.div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Top Problem SKUs Block — shows all SKUs with cross > 40%
+   ═══════════════════════════════════════════════════════════ */
+function TopProblemSkus({ data }: { data: WBWarehouseAnalyticsResponse }) {
+  const allSkus = data.warehouses.flatMap(w =>
+    w.skus.map(s => ({ ...s, warehouse: w.warehouse_name, whOkrug: w.okrug }))
+  )
+  const problemSkus = allSkus
+    .filter(s => s.orders >= 5 && s.cross_pct > 40)
+    .sort((a, b) => b.cross_pct - a.cross_pct)
+
+  const [expanded, setExpanded] = useState(false)
+
+  if (problemSkus.length === 0) return null
+
+  const shown = expanded ? problemSkus : problemSkus.slice(0, 5)
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+      <div className="rounded-2xl border border-amber-500/20 bg-[hsl(var(--card))] overflow-hidden">
+        <div className="px-6 py-4 border-b border-[hsl(var(--border))] flex items-center justify-between">
+          <h2 className="text-lg font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
+            <Target className="h-5 w-5 text-amber-400" />
+            Топ-проблемные SKU
+            <span className="text-[12px] font-medium text-amber-400 px-2 py-0.5 rounded-full bg-amber-500/10">
+              {problemSkus.length}
+            </span>
+          </h2>
+          <span className="text-[12px] text-[hsl(var(--muted-foreground))]">
+            Кросс &gt; 40% • ≥ 5 заказов за период
+          </span>
+        </div>
+
+        <div className="overflow-auto">
+          <table className="w-full border-collapse text-[12px]">
+            <thead>
+              <tr className="border-b border-[hsl(var(--border)/0.2)]">
+                <th className="px-4 py-2.5 text-left font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase">Товар</th>
+                <th className="px-3 py-2.5 text-left font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase w-[140px]">Склад</th>
+                <th className="px-3 py-2.5 text-center font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase w-[70px]">Заказов</th>
+                <th className="px-3 py-2.5 text-center font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase w-[70px]">Кросс%</th>
+                <th className="px-3 py-2.5 text-center font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase w-[90px]">Потери</th>
+                <th className="px-4 py-2.5 text-left font-semibold text-[hsl(var(--muted-foreground))] text-[11px] uppercase">Куда довезти</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((sku, idx) => {
+                const loss = sku.cross_orders * CROSS_COST_PER_ORDER
+                const topCrossOkrugs = sku.geography
+                  .filter(g => !g.is_local)
+                  .slice(0, 2)
+                  .map(g => g.okrug.replace(' федеральный округ', ''))
+                return (
+                  <tr key={`${sku.nm_id}-${sku.warehouse}-${idx}`}
+                    className={`border-b border-[hsl(var(--border)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
+                  >
+                    <td className="px-4 py-2.5">
+                      <ProductCell sku={sku} />
+                    </td>
+                    <td className="px-3 py-2.5 text-[12px] text-[hsl(var(--muted-foreground))]">{sku.warehouse}</td>
+                    <td className="px-3 py-2.5 text-center tabular-nums text-[13px]">{fmt(sku.orders)}</td>
+                    <td className="px-3 py-2.5 text-center">
+                      <span className={`text-[13px] font-bold tabular-nums ${pctColor(sku.cross_pct)}`}>
+                        {sku.cross_pct}%
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center">
+                      <span className="text-[12px] font-semibold text-red-400 tabular-nums">~{fmtM(loss)}</span>
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {topCrossOkrugs.length > 0 ? (
+                        <span className="text-[12px] text-[hsl(var(--foreground)/0.7)]">
+                          {topCrossOkrugs.join(', ')}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-40">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {problemSkus.length > 5 && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="w-full px-6 py-2.5 text-center text-[12px] font-semibold text-[hsl(var(--primary))] hover:bg-[hsl(var(--muted)/0.08)] transition-colors border-t border-[hsl(var(--border)/0.15)] flex items-center justify-center gap-1.5"
+          >
+            {expanded ? (
+              <><ChevronDown className="h-3.5 w-3.5" /> Свернуть</>
+            ) : (
+              <><ChevronRight className="h-3.5 w-3.5" /> Показать все {problemSkus.length} SKU</>
+            )}
+          </button>
+        )}
       </div>
     </motion.div>
   )
@@ -531,10 +617,26 @@ function WarehouseExpandedDetail({ wh }: { wh: WBAnalyticsWarehouse }) {
           <div>
             <h4 className="text-[13px] font-bold text-[hsl(var(--foreground))] mb-3 flex items-center gap-2">
               <Package className="h-4 w-4 text-blue-400" />
-              Товары на складе ({wh.skus.length})
-              <span className="text-[10px] font-normal text-[hsl(var(--muted-foreground))]">• клик — география</span>
+              {wh.skus.length > 0 ? (
+                <>Товары на складе ({wh.skus.length}) <span className="text-[10px] font-normal text-[hsl(var(--muted-foreground))]">• клик — география</span></>
+              ) : (
+                <>Товары на складе</>
+              )}
             </h4>
-            <div className="rounded-lg border border-[hsl(var(--border)/0.2)] overflow-hidden max-h-[500px] overflow-y-auto">
+            {/* Empty state for warehouses with orders but no current stock */}
+            {wh.skus.length === 0 && (
+              <div className="rounded-lg border border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.04)] p-6 text-center">
+                <PackageX className="h-8 w-8 mx-auto text-[hsl(var(--muted-foreground)/0.3)] mb-2" />
+                <p className="text-[13px] font-medium text-[hsl(var(--foreground)/0.7)]">
+                  Остатки на складе закончились
+                </p>
+                <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-1">
+                  За выбранный период с этого склада был{wh.orders === 1 ? '' : 'о'} отгружен{wh.orders === 1 ? '' : 'о'} {fmt(wh.orders)} заказ{wh.orders === 1 ? '' : wh.orders < 5 ? 'а' : 'ов'},
+                  но текущий остаток = 0. Заказы кросс-доставлялись с других складов.
+                </p>
+              </div>
+            )}
+            {wh.skus.length > 0 && <div className="rounded-lg border border-[hsl(var(--border)/0.2)] overflow-hidden max-h-[500px] overflow-y-auto">
               <table className="w-full text-[12px]">
                 <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
                   <tr className="border-b border-[hsl(var(--border)/0.2)]">
@@ -595,7 +697,7 @@ function WarehouseExpandedDetail({ wh }: { wh: WBAnalyticsWarehouse }) {
                   })}
                 </tbody>
               </table>
-            </div>
+            </div>}
           </div>
 
           {/* Overall warehouse geography */}
@@ -862,6 +964,9 @@ export default function WarehousesCrossPage() {
         <>
           {/* KPI summary */}
           <CrossKpiCards data={data} />
+
+          {/* Top Problem SKUs */}
+          <TopProblemSkus data={data} />
 
           {/* Cross-map with toggle */}
           <CrossMapSection data={data} />
