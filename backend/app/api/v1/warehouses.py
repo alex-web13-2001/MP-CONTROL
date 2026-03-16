@@ -7183,6 +7183,7 @@ _AI_PROMPT_STORAGE = """Ты — эксперт по ОПТИМИЗАЦИИ ПЛ
 - Все числа — из реальных данных, НЕ выдумывай
 - Пиши НА РУССКОМ
 - НАЗЫВАЙ товары по vendor_code + name
+- КРИТИЧЕСКИ ВАЖНО: отвечай ТОЛЬКО чистым JSON. Без вводного текста, без markdown, без комментариев до или после JSON. Первый символ ответа ДОЛЖЕН быть {
 """
 
 
@@ -7503,8 +7504,8 @@ async def get_wb_storage_ai_analysis(
                 skus_needing_action.append(s)
                 existing_vcs.add(s["vendor_code"])
 
-        # Cap at 25 for reasonable AI processing
-        skus_needing_action = skus_needing_action[:25]
+        # Cap at 15 for reasonable AI output size
+        skus_needing_action = skus_needing_action[:15]
 
         # Sort again by storage cost DESC
         skus_needing_action.sort(key=lambda x: x["storage_30d"], reverse=True)
@@ -7564,7 +7565,7 @@ async def get_wb_storage_ai_analysis(
         # ── 9. Call Gemini ──
         KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 KIE_AI_URL,
                 headers={
@@ -7579,6 +7580,7 @@ async def get_wb_storage_ai_analysis(
                     "stream": False,
                     "include_thoughts": False,
                     "temperature": 0,
+                    "max_output_tokens": 16384,
                 },
             )
 
@@ -7589,21 +7591,46 @@ async def get_wb_storage_ai_analysis(
         resp_json = resp.json()
         content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-        # Strip markdown code fences
+        # Robust JSON extraction: find outermost { ... } block
+        import re as _re
         content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
+        # Remove markdown code fences
+        content = _re.sub(r'^```(?:json)?\s*', '', content)
+        content = _re.sub(r'\s*```$', '', content)
         content = content.strip()
-        if content.startswith("json"):
-            content = content[4:].strip()
+        # Remove leading non-JSON text (e.g. "Я проанализировала...\n---\n")
+        first_brace = content.find('{')
+        if first_brace > 0:
+            content = content[first_brace:]
+        # Remove trailing non-JSON text after the closing brace
+        # Find matching closing brace by counting
+        depth = 0
+        last_brace = -1
+        for ci_idx, ch in enumerate(content):
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    last_brace = ci_idx
+                    break
+        if last_brace > 0:
+            content = content[:last_brace + 1]
 
         try:
             ai_result = json.loads(content)
         except json.JSONDecodeError:
-            logger.warning("Failed to parse AI storage JSON: %s", content[:500])
-            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+            # Last resort: try to find JSON block with regex
+            json_match = _re.search(r'\{[\s\S]*"sku_actions"[\s\S]*\}', content)
+            if json_match:
+                try:
+                    ai_result = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    logger.warning("Failed to parse AI storage JSON (retry): %s", content[:500])
+                    raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+            else:
+                logger.warning("Failed to parse AI storage JSON: %s", content[:500])
+                raise HTTPException(status_code=502, detail="AI returned invalid JSON")
 
         # ── 10. Force-inject top-5 storage SKUs that AI missed ──
         ai_sku_actions = ai_result.get("sku_actions", [])
