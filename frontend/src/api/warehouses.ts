@@ -969,6 +969,15 @@ export async function searchOzonGeographyProducts(params: {
   return data
 }
 
+export async function getOzonGeographyAIAnalysis(params: {
+  shop_id: number
+  period?: number
+  force?: boolean
+}): Promise<GeoAIAnalysis> {
+  const { data } = await apiClient.post<GeoAIAnalysis>('/warehouses/ozon/geography/ai-analysis', null, { params })
+  return data
+}
+
 /* ═══════════════════════════════════════════════════════════
    Storage AI Analysis
    ═══════════════════════════════════════════════════════════ */

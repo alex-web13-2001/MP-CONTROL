@@ -7669,6 +7669,466 @@ async def get_ozon_geography_products_search(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Ozon Geography AI Analysis
+# ═══════════════════════════════════════════════════════════════
+
+_AI_PROMPT_OZON_GEOGRAPHY = """Ты — эксперт по ГЕОГРАФИИ ПРОДАЖ на Ozon.
+
+ТВОЯ ЗАДАЧА: проанализировать ГЕОГРАФИЧЕСКОЕ распределение спроса по кластерам доставки Ozon и выдать конкретные выводы.
+
+## СТРОГИЕ ГРАНИЦЫ АНАЛИЗА
+
+АНАЛИЗИРУЙ ТОЛЬКО:
+- Географическое распределение заказов по кластерам доставки и городам
+- Тренды: какие кластеры растут, какие стагнируют (по стабильности спроса)
+- Концентрация: насколько равномерно распределены продажи
+- Недопокрытые кластеры: где есть спрос но мало/нет стока на ближайших РФЦ
+- Географический охват товаров: в скольких кластерах продаётся каждый товар
+- Потенциал роста в новых кластерах
+
+НЕ АНАЛИЗИРУЙ (для этого есть ОТДЕЛЬНЫЕ разделы в системе):
+- ❌ Детали рекламы, DRR, рекламные кампании → раздел "Реклама"
+- ❌ Финансовые показатели (маржа, прибыль) → раздел "Финансы"
+
+ВАЖНО ПРО OZON:
+- Ozon использует ~15-25 КЛАСТЕРОВ ДОСТАВКИ (Москва МО и Дальние регионы, Санкт-Петербург и СЗО, Казань, Краснодар и т.д.)
+- Есть ~34 РФЦ (распределительных фулфилмент-центров), они маппятся на кластеры
+- Товар отгружается с ближайшего РФЦ → если на нём нет стока, идёт кросс-доставка с другого РФЦ
+- На Ozon можно частично таргетировать рекламу по регионам, но основной рычаг — РАЗМЕЩЕНИЕ СТОКА на нужных РФЦ
+- offer_id — это артикул продавца (аналог vendor_code на WB)
+
+## ЛОГИКА АНАЛИЗА
+
+### 1. Концентрация (ОБЯЗАТЕЛЬНО)
+- Посчитай: какой % выручки дают топ-3 кластера
+- Если > 70% — ВЫСОКАЯ концентрация (risk_level: "high")
+- Если 40-70% — СРЕДНЯЯ (risk_level: "medium")
+- Если < 40% — НИЗКАЯ, хорошая диверсификация (risk_level: "low")
+- НАЗОВИ конкретные кластеры и их долю
+
+### 2. Инсайты по товарам (2-5 штук) — ТОЛЬКО географические!
+Для каждого товара определи тип:
+- **stable_leader** — высокая стабильность + много кластеров → лидер, масштабировать географию
+- **unstable_demand** — стабильность <15% → нестабильный спрос, возможны проблемы с наличием
+- **regional_champion** — продаётся хорошо в 1-2 кластерах, но отсутствует в остальных → потенциал расширения
+- **cross_delivery_problem** — товар продаётся в кластере, но на его РФЦ нет стока → нужен сток ближе
+- **dead_stock_risk** — есть на складе, но нет заказов из ближайших кластеров → нет спроса
+
+Для КАЖДОГО инсайта:
+- Укажи offer_id и name
+- Укажи конкретные числа: заказы, стабильность, в скольких кластерах
+- Дай конкретное действие (action): redistribute / increase_supply / monitor
+- Рассчитай expected_effect — потенциальную выручку или экономию в РУБЛЯХ
+
+### 3. Логистическое соответствие (1-3 самых важных)
+Оценка: насколько расположение стока на РФЦ соответствует географии спроса.
+Для каждого кластера где сток не на ближайшем РФЦ:
+- Укажи: откуда реально отгружается
+- Укажи ближайший РФЦ и сток на нём
+- Дай рекомендацию: куда и сколько штук разместить
+
+## ФОРМАТ ОТВЕТА — СТРОГО JSON:
+{
+  "severity": "critical" | "warning" | "ok",
+  "diagnosis": "Краткий главный географический вывод из 1-2 предложений с конкретными числами",
+  "key_metrics": {
+    "concentration_pct": 80,
+    "top_clusters_count": 3,
+    "total_clusters": 15,
+    "clusters_with_stable_demand": 8,
+    "underserved_clusters": 2
+  },
+  "concentration": {
+    "summary": "80% выручки из кластеров Москва, СПб и Краснодар",
+    "top_regions": [
+      {"region": "Москва, МО и Дальние регионы", "orders": 200, "share_pct": 33.7, "stability_pct": 95}
+    ],
+    "risk_level": "high" | "medium" | "low",
+    "recommendation": "Конкретная рекомендация по диверсификации географии через размещение стока"
+  },
+  "product_insights": [
+    {
+      "vendor_code": "АРТИКУЛ (offer_id)",
+      "name": "Название",
+      "insight_type": "stable_leader",
+      "regions_count": 12,
+      "stability_pct": 47,
+      "orders": 21,
+      "detail": "Географический анализ с числами",
+      "action": "redistribute",
+      "expected_effect": "Потенциальная выручка +50 000₽/мес при расширении на кластер Екатеринбург"
+    }
+  ],
+  "logistics_match": [
+    {
+      "okrug": "Казань (кластер)",
+      "orders": 50,
+      "nearest_warehouse": "Казань РФЦ",
+      "warehouse_stock": 0,
+      "serving_warehouse": "Тверь РФЦ",
+      "cross_pct": 100,
+      "detail": "Описание проблемы",
+      "recommendation": "Разместить N штук на РФЦ X"
+    }
+  ],
+  "general_tips": [
+    "Конкретная географическая рекомендация, 1-2 предложения."
+  ]
+}
+
+## ПРАВИЛА
+- severity: "critical" если концентрация > 70% или есть кластеры с 100% кросс-доставкой, "warning" если концентрация 50-70%, "ok" если всё сбалансировано
+- product_insights: 2-5 ГЕОГРАФИЧЕСКИХ инсайтов. НАЗЫВАЙ товары по offer_id + name
+- insight_type: ТОЛЬКО "stable_leader", "unstable_demand", "regional_champion", "cross_delivery_problem", "dead_stock_risk"
+- action: ТОЛЬКО "redistribute", "increase_supply", "monitor"
+- logistics_match: 1-3 проблемных кластера. Если проблем нет — пустой массив
+- general_tips: 2-3 совета ПО ГЕОГРАФИИ. Только про размещение стока на РФЦ и диверсификацию
+- top_regions в concentration: топ-5 кластеров по выручке
+- Все числа — из реальных данных, НЕ выдумывай
+- Пиши НА РУССКОМ
+"""
+
+
+@router.post("/ozon/geography/ai-analysis")
+async def get_ozon_geography_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered Ozon geography sales analysis using Gemini 2.5 Flash."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    cache_key = f"ozon_geo_ai_{shop_id}_{period}"
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        params = {"shop_id": shop_id, "d_start": d_start, "period_days": period}
+
+        # ── 1. Orders by cluster_to + city with stability ──
+        geo_rows = ch.query("""
+            SELECT
+                cluster_to AS cluster,
+                city,
+                count() AS orders,
+                sum(toFloat64(price) * quantity) AS revenue,
+                count(DISTINCT toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+            GROUP BY cluster, city
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        total_orders = sum(int(r[2]) for r in geo_rows)
+        total_revenue = sum(float(r[3]) for r in geo_rows)
+
+        # Build cluster summary
+        cluster_summary: dict[str, dict] = {}
+        for r in geo_rows:
+            cluster = str(r[0]) or "Не определено"
+            city = str(r[1]) or "Не определено"
+            orders = int(r[2])
+            revenue = float(r[3])
+            active_days = int(r[4])
+
+            if cluster not in cluster_summary:
+                cluster_summary[cluster] = {"orders": 0, "revenue": 0, "cities": []}
+            cluster_summary[cluster]["orders"] += orders
+            cluster_summary[cluster]["revenue"] += revenue
+            cluster_summary[cluster]["cities"].append({
+                "city": city,
+                "orders": orders,
+                "revenue": round(revenue),
+                "stability_pct": round(active_days / period * 100, 1),
+            })
+
+        # Cluster-level stability
+        cluster_stab_rows = ch.query("""
+            SELECT
+                cluster_to AS cluster,
+                count(DISTINCT toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+            GROUP BY cluster
+        """, parameters=params).result_rows
+        for r in cluster_stab_rows:
+            cluster = str(r[0]) or "Не определено"
+            if cluster in cluster_summary:
+                cluster_summary[cluster]["stability_pct"] = round(int(r[1]) / period * 100, 1)
+
+        # ── 2. Top products with geography spread ──
+        prod_rows = ch.query("""
+            SELECT
+                sku,
+                count() AS orders,
+                sum(toFloat64(price) * quantity) AS revenue,
+                count(DISTINCT cluster_to) AS cluster_count,
+                count(DISTINCT city) AS city_count,
+                uniqExact(toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+            GROUP BY sku
+            ORDER BY orders DESC
+            LIMIT 30
+        """, parameters=params).result_rows
+
+        prod_skus = [int(r[0]) for r in prod_rows]
+        prod_map: dict[int, dict] = {}
+        if prod_skus:
+            sku_list = ", ".join(str(x) for x in prod_skus)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT sku, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({sku_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:60]}
+
+        products_context = []
+        for r in prod_rows:
+            sku = int(r[0])
+            prod = prod_map.get(sku, {})
+            sku_orders = int(r[1])
+            active_days = int(r[5])
+            products_context.append({
+                "sku": sku,
+                "offer_id": prod.get("offer_id", ""),
+                "name": prod.get("name", f"SKU {sku}"),
+                "orders": sku_orders,
+                "revenue": round(float(r[2])),
+                "cluster_count": int(r[3]),
+                "city_count": int(r[4]),
+                "stability_pct": round(active_days / period * 100, 1),
+                "share_pct": round(sku_orders / total_orders * 100, 1) if total_orders > 0 else 0,
+            })
+
+        # ── 3. Per-cluster top products ──
+        ctop_rows = ch.query("""
+            SELECT
+                cluster_to AS cluster,
+                sku,
+                count() AS orders,
+                uniqExact(toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+            GROUP BY cluster, sku
+            ORDER BY cluster, orders DESC
+        """, parameters=params).result_rows
+
+        cluster_products: dict[str, list] = {}
+        current_cl = ""
+        cnt = 0
+        for r in ctop_rows:
+            cl = str(r[0]) or "?"
+            if cl != current_cl:
+                current_cl = cl
+                cnt = 0
+            cnt += 1
+            if cnt <= 5:
+                sku = int(r[1])
+                prod = prod_map.get(sku, {})
+                cluster_products.setdefault(cl, []).append({
+                    "offer_id": prod.get("offer_id", str(sku)),
+                    "name": prod.get("name", ""),
+                    "orders": int(r[2]),
+                    "stability_pct": round(int(r[3]) / period * 100, 1),
+                })
+
+        # ── 4. Warehouse stock per cluster (via WAREHOUSE_TO_CLUSTER) ──
+        stock_rows = ch.query("""
+            SELECT warehouse_name, sum(qty) AS total_stock
+            FROM (
+                SELECT warehouse_name, offer_id, argMax(free_to_sell, updated_at) AS qty
+                FROM mms_analytics.fact_ozon_warehouse_stocks
+                WHERE shop_id = {shop_id:UInt32}
+                GROUP BY warehouse_name, offer_id
+                HAVING qty > 0
+            )
+            GROUP BY warehouse_name
+            ORDER BY total_stock DESC
+        """, parameters={"shop_id": shop_id}).result_rows
+
+        warehouses_context = []
+        for r in stock_rows:
+            wh_name = str(r[0])
+            cluster = WAREHOUSE_TO_CLUSTER.get(wh_name, "Другой")
+            warehouses_context.append({
+                "warehouse": wh_name,
+                "stock": int(r[1]),
+                "cluster": cluster,
+            })
+
+        # ── 5. Cross-delivery stats: orders cluster vs warehouse cluster ──
+        cross_rows = ch.query("""
+            SELECT
+                cluster_to AS order_cluster,
+                warehouse_name,
+                count() AS orders
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+              AND warehouse_name != ''
+            GROUP BY order_cluster, warehouse_name
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        cluster_cross: dict[str, dict] = {}
+        for r in cross_rows:
+            order_cluster = str(r[0]) or "?"
+            wh_name = str(r[1])
+            orders = int(r[2])
+            wh_cluster = WAREHOUSE_TO_CLUSTER.get(wh_name, "Другой")
+
+            if order_cluster not in cluster_cross:
+                cluster_cross[order_cluster] = {"total": 0, "cross": 0, "main_wh": ""}
+            cluster_cross[order_cluster]["total"] += orders
+            if wh_cluster != order_cluster and order_cluster != "Другой":
+                cluster_cross[order_cluster]["cross"] += orders
+            if not cluster_cross[order_cluster]["main_wh"] or orders > 0:
+                cluster_cross[order_cluster]["main_wh"] = wh_name
+
+        ch.close()
+
+        # ── 6. Build prompt ──
+        prompt = f"""Магазин: {shop.name} (Ozon)
+Период: {period} дней (с {d_start} по {today})
+Всего заказов: {total_orders}
+Всего выручка: {round(total_revenue)}₽
+Городов с заказами: {len(set(str(r[1]) for r in geo_rows))}
+Кластеров: {len(cluster_summary)}
+
+## КЛАСТЕРЫ ДОСТАВКИ И ГОРОДА:
+"""
+        for cl_name, cl_data in sorted(cluster_summary.items(), key=lambda x: x[1]["orders"], reverse=True):
+            share = round(cl_data["orders"] / total_orders * 100, 1) if total_orders > 0 else 0
+            stab = cl_data.get("stability_pct", 0)
+            prompt += f"\n### {cl_name}: {cl_data['orders']} заказов ({share}%), выручка {round(cl_data['revenue'])}₽, стабильность {stab}%\n"
+            # Cross info
+            cross = cluster_cross.get(cl_name, {})
+            if cross:
+                cross_pct = round(cross.get("cross", 0) / cross.get("total", 1) * 100)
+                prompt += f"  Кросс-доставка: {cross_pct}%, основной РФЦ: {cross.get('main_wh', '?')}\n"
+            # Cities
+            for city in sorted(cl_data["cities"], key=lambda x: x["orders"], reverse=True)[:10]:
+                prompt += f"  - {city['city']}: {city['orders']} зак, {city['revenue']}₽, стаб {city['stability_pct']}%\n"
+            # Top products
+            cl_prods = cluster_products.get(cl_name, [])
+            if cl_prods:
+                prompt += "  Топ товары в кластере:\n"
+                for p in cl_prods[:3]:
+                    prompt += f"    · {p['offer_id']} ({p['name'][:40]}): {p['orders']} зак, стаб {p['stability_pct']}%\n"
+
+        prompt += "\n## СКЛАДЫ (РФЦ, остатки):\n"
+        for wh in warehouses_context[:15]:
+            prompt += f"- {wh['warehouse']}: {wh['stock']} шт (кластер: {wh['cluster']})\n"
+
+        prompt += "\n## ТОП ТОВАРЫ (общие):\n"
+        for p in products_context[:15]:
+            prompt += f"- {p['offer_id']} ({p['name'][:40]}): {p['orders']} заказов, {p['revenue']}₽, стаб {p['stability_pct']}%, в {p['cluster_count']} кластерах, {p['city_count']} городах\n"
+
+        prompt += "\nПроанализируй ГЕОГРАФИЧЕСКОЕ распределение спроса по кластерам доставки и выдай JSON."
+
+        # ── 7. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_OZON_GEOGRAPHY}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI API error")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Strip markdown code fences
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Ozon geo AI JSON: %s", content[:500])
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # Enrich with context
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_orders": total_orders,
+            "total_revenue": round(total_revenue),
+            "total_okrugs": len(cluster_summary),
+            "total_regions": len(set(str(r[1]) for r in geo_rows)),
+            "warehouses_count": len(warehouses_context),
+        }
+
+        # Cache
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return ai_result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ozon Geography AI analysis failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════
 # AI Storage Analysis
 # ═══════════════════════════════════════════════════════════════
 

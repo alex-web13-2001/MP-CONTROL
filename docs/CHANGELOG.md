@@ -1,3 +1,25 @@
+## 2026-03-16 (v4)
+
+### feat(warehouses): Ozon — ИИ-анализ географии продаж (Gemini 2.5 Flash)
+
+**Backend** (`warehouses.py`):
+- `POST /ozon/geography/ai-analysis` — endpoint ИИ-анализа для Ozon кластеров
+  - Prompt `_AI_PROMPT_GEO_OZON`: 7 шагов сбора данных (кластеры+города, топ товары, per-cluster products, warehouse stocks, cross-delivery stats)
+  - Маппинг `WAREHOUSE_TO_CLUSTER` для привязки стоков РФЦ к кластерам
+  - Кеширование 6ч в Redis, force-refresh параметр
+  - Gemini 2.5 Flash через kie.ai API
+
+**Frontend** (`OzonGeographyPage.tsx`, `warehouses.ts`):
+- Компонент `OzonGeographyAIInsight` (~400 строк):
+  - Баннер: severity 🔴/🟡/🟢 + diagnosis + кнопка «Прочитать»
+  - Модалка: 4 метрики (концентрация, кластеры, недообслуженные, заказы)
+  - Секции: Концентрация продаж, Инсайты по товарам, Логистическое соответствие, Рекомендации
+- API функция `getOzonGeographyAIAnalysis()`
+
+**Bugfix**: `free_to_sell_amount` → `free_to_sell` в запросе к `fact_ozon_warehouse_stocks`
+
+---
+
 ## 2026-03-16 (v3)
 
 ### feat(warehouses): Ozon — география продаж (кластеры → города → товары)

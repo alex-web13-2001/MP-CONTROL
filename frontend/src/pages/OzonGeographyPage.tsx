@@ -20,6 +20,16 @@ import {
   Activity,
   Package,
   Loader2,
+  Brain,
+  Sparkles,
+  Lightbulb,
+  ShieldAlert,
+  Layers,
+  Truck,
+  TrendingUp,
+  Eye,
+  Zap,
+  Target,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -28,11 +38,13 @@ import {
   getOzonGeography,
   getOzonGeographyCityProducts,
   searchOzonGeographyProducts,
+  getOzonGeographyAIAnalysis,
   type OzonGeographyResponse,
   type OzonGeographyCluster,
   type OzonGeographyProduct,
   type OzonGeographySkuInfo,
   type OzonCityProductsResponse,
+  type GeoAIAnalysis,
 } from '@/api/warehouses'
 
 /* ── Helpers ── */
@@ -594,6 +606,418 @@ function TopProductsTable({ products, onSelectProduct }: { products: OzonGeograp
 }
 
 /* ═══════════════════════════════════════════════════════════
+   AI Analysis configs
+   ═══════════════════════════════════════════════════════════ */
+
+const RISK_LEVEL_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
+  high: { label: 'Высокий', bg: 'bg-red-500/10', text: 'text-red-400' },
+  medium: { label: 'Средний', bg: 'bg-amber-500/10', text: 'text-amber-400' },
+  low: { label: 'Низкий', bg: 'bg-emerald-500/10', text: 'text-emerald-400' },
+}
+
+const INSIGHT_TYPE_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
+  stable_leader: { label: 'Лидер', color: 'text-emerald-400', icon: TrendingUp },
+  unstable_demand: { label: 'Нестабильный', color: 'text-red-400', icon: AlertTriangle },
+  regional_champion: { label: 'Региональный', color: 'text-blue-400', icon: Target },
+  cross_delivery_problem: { label: 'Кросс-доставка', color: 'text-amber-400', icon: Truck },
+  dead_stock_risk: { label: 'Мёртвый сток', color: 'text-red-400', icon: Package },
+}
+
+const ACTION_CONFIG: Record<string, { label: string; icon: any }> = {
+  redistribute: { label: 'Перераспределить', icon: Truck },
+  increase_supply: { label: 'Увеличить поставку', icon: Package },
+  monitor: { label: 'Мониторить', icon: Eye },
+}
+
+/* ═══════════════════════════════════════════════════════════
+   AI Analysis Component
+   ═══════════════════════════════════════════════════════════ */
+
+function OzonGeographyAIInsight({ shopId, period }: { shopId: number; period: number }) {
+  const [data, setData] = useState<GeoAIAnalysis | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const fetchAI = useCallback(async (force = false) => {
+    if (force) setRefreshing(true)
+    else setLoading(true)
+    setError(null)
+    try {
+      const result = await getOzonGeographyAIAnalysis({ shop_id: shopId, period, force })
+      setData(result)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Ошибка ИИ-анализа')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }, [shopId, period])
+
+  useEffect(() => { fetchAI() }, [fetchAI])
+
+  useEffect(() => {
+    if (modalOpen) {
+      document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = '' }
+    }
+  }, [modalOpen])
+
+  const severityConfig = {
+    critical: { bg: 'from-red-500/10 to-red-500/5', border: 'border-red-500/30', icon: '🔴', label: 'Критично', bannerBg: 'bg-red-500/8', bannerBorder: 'border-red-500/25' },
+    warning:  { bg: 'from-amber-500/10 to-amber-500/5', border: 'border-amber-500/30', icon: '🟡', label: 'Внимание', bannerBg: 'bg-amber-500/8', bannerBorder: 'border-amber-500/25' },
+    ok:       { bg: 'from-emerald-500/10 to-emerald-500/5', border: 'border-emerald-500/30', icon: '🟢', label: 'Всё ОК', bannerBg: 'bg-emerald-500/8', bannerBorder: 'border-emerald-500/25' },
+  }
+
+  if (loading && !data) {
+    return (
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-600 to-cyan-500 flex items-center justify-center">
+            <Brain className="h-4 w-4 text-white animate-pulse" />
+          </div>
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-4 w-24 ml-auto" />
+        </div>
+      </motion.div>
+    )
+  }
+
+  if (error) {
+    return (
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-red-500/20 bg-[hsl(var(--card))]">
+          <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+          <span className="text-[13px] text-[hsl(var(--muted-foreground))]">{error}</span>
+          <button onClick={() => fetchAI(true)} className="ml-auto text-[13px] font-medium text-[hsl(var(--primary))] hover:underline">
+            Повторить
+          </button>
+        </div>
+      </motion.div>
+    )
+  }
+
+  if (!data) return null
+
+  const sev = severityConfig[data.severity] || severityConfig.warning
+  const analyzedAtStr = data.analyzed_at
+    ? `Анализ от ${new Date(data.analyzed_at * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+    : null
+  const km = data.key_metrics || { concentration_pct: 0, top_regions_count: 0, total_regions: 0, regions_with_stable_demand: 0, underserved_okrugs: 0 }
+  const ctx = data.context || { total_orders: 0, total_revenue: 0, total_okrugs: 0, total_regions: 0, warehouses_count: 0 }
+
+  const insightsCount = (data.product_insights?.length || 0) + (data.logistics_match?.length || 0)
+
+  return (
+    <>
+      {/* ═══ Compact Banner ═══ */}
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${sev.bannerBorder} bg-[hsl(var(--card))] hover:bg-[hsl(var(--muted)/0.08)] transition-colors`}>
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-emerald-600 to-cyan-500 shadow-md shadow-emerald-500/20 flex items-center justify-center shrink-0">
+            <Sparkles className="h-4 w-4 text-white" />
+          </div>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="text-sm">{sev.icon}</span>
+            <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">{sev.label}</span>
+            <span className="text-[13px] text-[hsl(var(--muted-foreground))] truncate hidden sm:inline">
+              · {data.diagnosis?.substring(0, 100)}{(data.diagnosis?.length || 0) > 100 ? '…' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {insightsCount > 0 && (
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]">
+                {insightsCount} инсайт{insightsCount === 1 ? '' : insightsCount < 5 ? 'а' : 'ов'}
+              </span>
+            )}
+            {analyzedAtStr && (
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{analyzedAtStr}</span>
+            )}
+            <button
+              onClick={(e) => { e.stopPropagation(); fetchAI(true) }}
+              disabled={refreshing}
+              className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted)/0.3)] transition-colors"
+              title="Обновить анализ"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground))] ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              onClick={() => setModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[hsl(var(--primary))] text-white text-[12px] font-semibold hover:opacity-90 transition-opacity"
+            >
+              <Brain className="h-3.5 w-3.5" />
+              Прочитать
+            </button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* ═══ Full-screen Modal ═══ */}
+      <AnimatePresence>
+        {modalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setModalOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 40, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 40, scale: 0.97 }}
+              transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="w-full max-w-[1100px] max-h-[90vh] mt-[5vh] mx-4 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div className={`px-8 py-5 bg-gradient-to-r ${sev.bg} border-b border-[hsl(var(--border)/0.3)] shrink-0`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-emerald-600 to-cyan-500 shadow-lg shadow-emerald-500/25 flex items-center justify-center">
+                      <Sparkles className="h-6 w-6 text-white" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-bold text-[hsl(var(--foreground))]">ИИ-Анализ географии (Ozon)</h3>
+                        <span className="text-sm">{sev.icon}</span>
+                        <span className="text-sm font-semibold text-[hsl(var(--muted-foreground))]">{sev.label}</span>
+                      </div>
+                      <p className="text-[15px] text-[hsl(var(--muted-foreground))] mt-1 leading-relaxed max-w-[700px]">{data.diagnosis}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setModalOpen(false)}
+                    className="p-2.5 rounded-xl hover:bg-[hsl(var(--muted)/0.3)] transition-colors"
+                  >
+                    <X className="h-6 w-6 text-[hsl(var(--muted-foreground))]" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Body */}
+              <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
+                {/* 4 metric cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Layers className="h-5 w-5 text-blue-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Концентрация</span>
+                    </div>
+                    <p className={`text-2xl font-bold ${safeNum(km.concentration_pct) > 70 ? 'text-red-400' : safeNum(km.concentration_pct) > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {km.concentration_pct}%
+                    </p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">топ-{(km as any).top_clusters_count || km.top_regions_count} кластеров</p>
+                  </div>
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <MapPin className="h-5 w-5 text-emerald-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Кластеры</span>
+                    </div>
+                    <p className="text-2xl font-bold text-[hsl(var(--foreground))]">{(km as any).total_clusters || km.total_regions}</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">стаб. спрос: {(km as any).clusters_with_stable_demand || km.regions_with_stable_demand}</p>
+                  </div>
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Truck className="h-5 w-5 text-amber-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Недообслуженные</span>
+                    </div>
+                    <p className={`text-2xl font-bold ${safeNum((km as any).underserved_clusters || km.underserved_okrugs) > 2 ? 'text-red-400' : safeNum((km as any).underserved_clusters || km.underserved_okrugs) > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {(km as any).underserved_clusters || km.underserved_okrugs}
+                    </p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">кластеров без стока</p>
+                  </div>
+                  <div className="rounded-xl bg-emerald-500/5 border border-emerald-500/20 p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <ShoppingCart className="h-5 w-5 text-emerald-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-emerald-500/60">Заказы</span>
+                    </div>
+                    <p className="text-2xl font-bold text-emerald-400">{fmt(ctx.total_orders)}</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">{fmtM(ctx.total_revenue)} выручка</p>
+                  </div>
+                </div>
+
+                {/* Concentration */}
+                {data.concentration && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Layers className="h-5 w-5" />
+                      Концентрация продаж
+                      {data.concentration.risk_level && (() => {
+                        const rl = RISK_LEVEL_CONFIG[data.concentration.risk_level] || RISK_LEVEL_CONFIG.medium
+                        return (
+                          <span className={`text-[12px] font-bold px-2.5 py-1 rounded ${rl.bg} ${rl.text}`}>
+                            Риск: {rl.label}
+                          </span>
+                        )
+                      })()}
+                    </h4>
+                    <div className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)] p-6">
+                      <p className="text-[16px] text-[hsl(var(--foreground)/0.85)] leading-relaxed mb-5">
+                        {data.concentration.summary}
+                      </p>
+                      {data.concentration.top_regions?.length > 0 && (
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-[15px]">
+                            <thead>
+                              <tr className="text-left text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.5)]">
+                                <th className="pb-3 pr-6">Кластер</th>
+                                <th className="pb-3 pr-6 text-right">Заказов</th>
+                                <th className="pb-3 pr-6 text-right">Доля</th>
+                                <th className="pb-3 text-right">Стабильность</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {data.concentration.top_regions.map((r, i) => (
+                                <tr key={i} className="border-t border-[hsl(var(--border)/0.1)]">
+                                  <td className="py-3 pr-6 font-medium text-[hsl(var(--foreground))]">{r.region}</td>
+                                  <td className="py-3 pr-6 text-right tabular-nums text-[hsl(var(--muted-foreground))]">{fmt(r.orders)}</td>
+                                  <td className="py-3 pr-6 text-right tabular-nums font-semibold">{r.share_pct}%</td>
+                                  <td className="py-3 text-right"><StabilityBadge pct={r.stability_pct} compact /></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                      {data.concentration.recommendation && (
+                        <div className="mt-5 flex items-start gap-3 px-4 py-3.5 rounded-lg bg-[hsl(var(--muted)/0.1)] border border-[hsl(var(--border)/0.4)]">
+                          <Lightbulb className="h-5 w-5 text-amber-400 shrink-0 mt-0.5" />
+                          <p className="text-[15px] text-[hsl(var(--foreground)/0.9)] leading-relaxed">{data.concentration.recommendation}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Product Insights */}
+                {data.product_insights?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <ShieldAlert className="h-5 w-5" />
+                      Инсайты по товарам ({data.product_insights.length})
+                    </h4>
+                    {data.product_insights.map((pi, idx) => {
+                      const itCfg = INSIGHT_TYPE_CONFIG[pi.insight_type] || INSIGHT_TYPE_CONFIG.stable_leader
+                      const actCfg = ACTION_CONFIG[pi.action] || ACTION_CONFIG.monitor
+                      const ItIcon = itCfg.icon
+                      const ActIcon = actCfg.icon
+                      return (
+                        <div key={idx} className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)] overflow-hidden">
+                          <div className="px-6 py-5">
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${itCfg.color.replace('text-', 'bg-').replace('400', '500/10')}`}>
+                                  <ItIcon className={`h-5 w-5 ${itCfg.color}`} />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-[16px] font-bold text-[hsl(var(--foreground))]">{pi.vendor_code}</span>
+                                    <span className="text-[15px] text-[hsl(var(--muted-foreground))] truncate">{pi.name}</span>
+                                  </div>
+                                  <div className="flex items-center gap-3 mt-1 text-[14px] text-[hsl(var(--muted-foreground)/0.6)]">
+                                    <span>{pi.orders} заказов</span>
+                                    <span>·</span>
+                                    <span>{pi.regions_count} кластеров</span>
+                                    <span>·</span>
+                                    <StabilityBadge pct={pi.stability_pct} compact />
+                                  </div>
+                                </div>
+                              </div>
+                              <span className={`text-[12px] font-bold px-3 py-1.5 rounded-full whitespace-nowrap ${itCfg.color.replace('text-', 'bg-').replace('400', '500/15')} ${itCfg.color}`}>
+                                {itCfg.label}
+                              </span>
+                            </div>
+                            <p className="text-[15px] text-[hsl(var(--foreground)/0.9)] leading-relaxed mb-4">{pi.detail}</p>
+                            <div className="flex items-center gap-4 flex-wrap">
+                              <div className="flex items-center gap-2 text-[14px]">
+                                <ActIcon className={`h-4 w-4 text-[hsl(var(--primary))]`} />
+                                <span className="font-semibold text-[hsl(var(--primary))]">{actCfg.label}</span>
+                              </div>
+                              {pi.expected_effect && (
+                                <div className="flex items-center gap-2 text-[14px]">
+                                  <Zap className="h-4 w-4 text-amber-400" />
+                                  <span className="text-[hsl(var(--foreground)/0.8)]">{pi.expected_effect}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                {/* Logistics Match */}
+                {data.logistics_match?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Truck className="h-5 w-5" />
+                      Логистическое соответствие ({data.logistics_match.length})
+                    </h4>
+                    {data.logistics_match.map((lm, idx) => (
+                      <div key={idx} className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)] p-6">
+                        <div className="flex items-center gap-3 mb-3">
+                          <MapPin className="h-5 w-5 text-amber-400" />
+                          <span className="text-[16px] font-bold text-[hsl(var(--foreground))]">{lm.okrug}</span>
+                          <span className="text-[14px] text-[hsl(var(--muted-foreground))]">{lm.orders} заказов</span>
+                          {safeNum(lm.cross_pct) > 0 && (
+                            <span className={`text-[12px] font-bold px-2 py-0.5 rounded-full ${safeNum(lm.cross_pct) > 80 ? 'bg-red-500/10 text-red-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                              Кросс: {lm.cross_pct}%
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[15px] text-[hsl(var(--foreground)/0.9)] leading-relaxed mb-3">{lm.detail}</p>
+                        <div className="flex flex-wrap gap-4 text-[14px] text-[hsl(var(--muted-foreground))]">
+                          <span>Ближайший РФЦ: <b>{lm.nearest_warehouse}</b></span>
+                          <span>Сток: <b className={safeNum(lm.warehouse_stock) === 0 ? 'text-red-400' : 'text-emerald-400'}>{lm.warehouse_stock} шт</b></span>
+                          <span>Обслуживает: <b>{lm.serving_warehouse}</b></span>
+                        </div>
+                        {lm.recommendation && (
+                          <div className="mt-3 flex items-start gap-3 px-4 py-3 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)]">
+                            <Lightbulb className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                            <p className="text-[14px] text-[hsl(var(--foreground)/0.85)] leading-relaxed">{lm.recommendation}</p>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* General Tips */}
+                {data.general_tips?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Lightbulb className="h-5 w-5" />
+                      Рекомендации
+                    </h4>
+                    <div className="space-y-2">
+                      {data.general_tips.map((tip, i) => (
+                        <div key={i} className="flex items-start gap-3 px-5 py-3.5 rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)]">
+                          <span className="text-sm mt-0.5">💡</span>
+                          <p className="text-[15px] text-[hsl(var(--foreground)/0.9)] leading-relaxed">{tip}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Footer */}
+                <div className="flex items-center justify-between text-[12px] text-[hsl(var(--muted-foreground)/0.4)] pt-4 border-t border-[hsl(var(--border)/0.1)]">
+                  <span>Gemini 2.5 Flash · Кластеры доставки Ozon</span>
+                  <span>{analyzedAtStr} {data.cached ? '(кеш)' : ''}</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
    Skeleton
    ═══════════════════════════════════════════════════════════ */
 
@@ -742,6 +1166,8 @@ export default function OzonGeographyPage() {
       ) : data ? (
         <>
           <GeographyKpiCards data={data} />
+
+          <OzonGeographyAIInsight shopId={currentShop!.id} period={period} />
 
           <ClustersTable
             clusters={data.clusters}
