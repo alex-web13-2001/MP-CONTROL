@@ -1802,6 +1802,11 @@ async def _build_wb_supply_data(
                 # storage_per_day = cost per unit per day
                 storage_per_day = real_cost / stock
                 storage_source = "actual"
+            elif has_actual_storage:
+                # Shop has actual paid storage data but this SKU/warehouse combo is missing
+                # → likely zero cost (not charged). Don't use tariff fallback.
+                storage_per_day = 0
+                storage_source = "actual"
             else:
                 if vol <= 1:
                     storage_per_day = stor_base * vol
