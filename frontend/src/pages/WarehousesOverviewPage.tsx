@@ -1040,29 +1040,34 @@ export default function WarehousesOverviewPage() {
             }
 
             if (criticalWhs.length > 0) {
-              // Include ALL SKUs from critical warehouses, not just those with daily_sales > 0
+              // Only include SKUs that have active sales — they need restocking
+              // SKUs with daily_sales=0 don't need supply (no demand)
               const critSkus = criticalWhs
-                .flatMap(w => (w.skus || []).filter(s => {
-                  // Include if: low days_supply, OR null days_supply with stock (sitting dead), OR just has stock on critical warehouse
-                  if (s.days_supply !== null && s.days_supply < 14) return true
-                  if (s.days_supply === null && s.stock > 0 && s.daily_sales === 0) return true // dead stock on critical wh
-                  return false
-                }).map(s => ({ ...s, wh: w.warehouse_name, needQty: s.daily_sales > 0 ? Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)) : 0 })))
+                .flatMap(w => (w.skus || []).filter(s =>
+                  s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0
+                ).map(s => ({
+                  ...s,
+                  wh: w.warehouse_name,
+                  needQty: Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)),
+                })))
                 .sort((a, b) => (a.days_supply ?? 999) - (b.days_supply ?? 999))
                 .slice(0, 6)
               const totalNeedQty = critSkus.reduce((s, x) => s + x.needQty, 0)
+              // Also count total SKUs on critical warehouses (context)
+              const totalCritSkuCount = criticalWhs.reduce((s, w) => s + (w.skus || []).length, 0)
               problems.push(
                 <ProblemCard
                   key="supply"
                   severity="critical"
                   icon={PackagePlus}
-                  title={`Нужна поставка: ${criticalWhs.length} скл. • ${critSkus.length} SKU`}
+                  title={`Нужна поставка: ${criticalWhs.length} скл.${critSkus.length > 0 ? ` • ${critSkus.length} SKU` : ''}`}
                   details={
                     <div className="space-y-1.5">
                       <div className="text-[11px]">
                         Склады: {criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}
+                        {totalCritSkuCount > 0 && <span className="opacity-50"> • {totalCritSkuCount} SKU на складах</span>}
                       </div>
-                      {critSkus.length > 0 && (
+                      {critSkus.length > 0 ? (
                         <div className="mt-1 space-y-1">
                           <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Что поставлять (до 14 дн. запаса):</span>
                           {critSkus.map((s, i) => (
@@ -1076,6 +1081,10 @@ export default function WarehousesOverviewPage() {
                           {totalNeedQty > 0 && (
                             <div className="text-[10px] opacity-50 mt-0.5">Итого нужно: ~{fmt(totalNeedQty)} шт на 14 дней</div>
                           )}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] opacity-60 mt-1">
+                          На складах низкая оборачиваемость. Перейдите в Поставки для детального анализа.
                         </div>
                       )}
                     </div>
@@ -1153,11 +1162,18 @@ export default function WarehousesOverviewPage() {
 
           {/* ─── Costs Summary (with cross-logistics row) ─── */}
           {(() => {
-            const totalOrders = data.warehouses.reduce((s, w) => s + w.orders, 0)
-            const crossOrders = data.warehouses.reduce((s, w) => s + w.cross_orders, 0)
+            // Calculate cross cost PER-WAREHOUSE: wh.logistics_cost × (wh.cross_orders / wh.orders)
+            // This is accurate because logistics_cost comes from real fact_finances data
+            let crossCost = 0
+            let crossOrders = 0
+            data.warehouses.forEach(w => {
+              crossOrders += w.cross_orders
+              if (w.orders > 0 && w.logistics_cost > 0) {
+                crossCost += w.logistics_cost * (w.cross_orders / w.orders)
+              }
+            })
+            crossCost = Math.round(crossCost)
             const totalLogistics = data.costs.find(c => c.label === 'Логистика')?.amount || 0
-            // Cross cost = proportion of total logistics attributable to cross deliveries
-            const crossCost = totalOrders > 0 ? Math.round(totalLogistics * crossOrders / totalOrders) : 0
             const crossPct = totalLogistics > 0 ? Math.round(crossCost / totalLogistics * 100) : 0
             const cd = crossOrders > 0 ? { crossCost, crossPct, crossOrders } : undefined
             return <CostsSummary costs={data.costs} crossData={cd} />
