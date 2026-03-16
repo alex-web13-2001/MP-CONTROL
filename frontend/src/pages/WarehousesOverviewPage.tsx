@@ -27,6 +27,9 @@ import {
   PackagePlus,
   Loader2,
   Gavel,
+  Copy,
+  Check,
+  Search,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -45,6 +48,29 @@ import { CostsSummary } from './WBWarehouseAnalyticsContent'
 function fmt(v: number): string { return Math.round(v).toLocaleString('ru-RU') }
 function fmtM(v: number): string { return Math.round(v).toLocaleString('ru-RU') + ' ₽' }
 function fmtD(v: number | null): string { return v != null ? `${Math.round(v)} дн` : '—' }
+
+/* ── CopyButton ── */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation()
+        navigator.clipboard.writeText(text)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+      className="inline-flex items-center justify-center h-5 w-5 rounded hover:bg-[hsl(var(--muted)/0.3)] transition-colors shrink-0"
+      title={`Копировать ${text}`}
+    >
+      {copied ? (
+        <Check className="h-3 w-3 text-emerald-400" />
+      ) : (
+        <Copy className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
+      )}
+    </button>
+  )
+}
 
 /* ── Period Options ── */
 const PERIOD_OPTIONS = [
@@ -424,9 +450,10 @@ function CrossPctBar({ pct, orders }: { pct: number; orders: number }) {
   )
 }
 
-/* ═══ Warehouses Table (with expandable SKU rows) ═══ */
+/* ═══ Warehouses Table (with expandable SKU rows + search) ═══ */
 function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [skuSearch, setSkuSearch] = useState('')
   const thBase = 'px-4 py-3 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider whitespace-nowrap'
   const tdCls = 'px-4 py-3 text-center tabular-nums text-[13px] whitespace-nowrap'
 
@@ -438,14 +465,40 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
     })
   }
 
+  // Filter warehouses by SKU search
+  const q = skuSearch.toLowerCase().trim()
+  const filteredWarehouses = q
+    ? warehouses.filter(wh =>
+        (wh.skus || []).some(s =>
+          (s.vendor_code || '').toLowerCase().includes(q) ||
+          (s.name || '').toLowerCase().includes(q) ||
+          String(s.nm_id).includes(q)
+        )
+      )
+    : warehouses
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6, duration: 0.4 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
           <h2 className="text-xl font-bold text-[hsl(var(--foreground))]">Склады</h2>
           <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">
-            {warehouses.length} складов
+            {filteredWarehouses.length === warehouses.length ? `${warehouses.length} складов` : `${filteredWarehouses.length} из ${warehouses.length}`}
           </span>
+        </div>
+
+        {/* SKU Search */}
+        <div className="px-6 py-3 border-b border-[hsl(var(--border)/0.5)]">
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+            <input
+              type="text"
+              value={skuSearch}
+              onChange={e => setSkuSearch(e.target.value)}
+              placeholder="Поиск по артикулу, названию или ID..."
+              className="w-full pl-9 pr-4 py-2 text-[13px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
+            />
+          </div>
         </div>
 
         <div className="overflow-auto max-h-[700px]">
@@ -464,7 +517,7 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
               </tr>
             </thead>
             <tbody>
-              {warehouses.map((wh, idx) => {
+              {filteredWarehouses.map((wh, idx) => {
                 const isExp = expanded.has(wh.warehouse_name)
                 const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.04)]'
                 const hasSkus = (wh.skus || []).length > 0
@@ -525,8 +578,7 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                             <table className="w-full">
                               <thead>
                                 <tr className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">
-                                  <th className="pl-12 pr-2 py-2 text-left">Артикул</th>
-                                  <th className="px-2 py-2 text-left">Наименование</th>
+                                  <th className="pl-12 pr-2 py-2 text-left">Товар</th>
                                   <th className="px-2 py-2 text-center">Остаток</th>
                                   <th className="px-2 py-2 text-center">Заказов</th>
                                   <th className="px-2 py-2 text-center">В день</th>
@@ -535,10 +587,32 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                                 </tr>
                               </thead>
                               <tbody>
-                                {[...wh.skus].sort((a, b) => b.stock - a.stock).map((sku) => (
+                                {(() => {
+                                  const skuQ = skuSearch.toLowerCase().trim()
+                                  const filtSkus = skuQ
+                                    ? wh.skus.filter(s => (s.vendor_code||'').toLowerCase().includes(skuQ) || (s.name||'').toLowerCase().includes(skuQ) || String(s.nm_id).includes(skuQ))
+                                    : [...wh.skus]
+                                  return filtSkus.sort((a, b) => b.stock - a.stock).map((sku) => (
                                   <tr key={sku.nm_id} className="border-t border-[hsl(var(--border)/0.1)] hover:bg-[hsl(var(--muted)/0.08)]">
-                                    <td className="pl-12 pr-2 py-1.5 text-[12px] font-semibold text-[hsl(var(--foreground))]">{sku.vendor_code}</td>
-                                    <td className="px-2 py-1.5 text-[11px] text-[hsl(var(--muted-foreground))] truncate max-w-[200px]">{sku.name}</td>
+                                    <td className="pl-12 pr-2 py-2">
+                                      <div className="min-w-0">
+                                        <div className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-snug truncate max-w-[250px]">
+                                          {sku.name || `Товар #${sku.nm_id}`}
+                                        </div>
+                                        <div className="flex items-center gap-3 mt-0.5">
+                                          {sku.vendor_code && (
+                                            <div className="flex items-center gap-1">
+                                              <span className="text-[11px] font-bold text-[hsl(var(--primary))]">{sku.vendor_code}</span>
+                                              <CopyButton text={sku.vendor_code} />
+                                            </div>
+                                          )}
+                                          <div className="flex items-center gap-1">
+                                            <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">ID: {sku.nm_id}</span>
+                                            <CopyButton text={String(sku.nm_id)} />
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </td>
                                     <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{fmt(sku.stock)}</td>
                                     <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{fmt(sku.orders)}</td>
                                     <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{sku.daily_sales.toFixed(2)}</td>
@@ -551,7 +625,8 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                                     }`}>{fmtD(sku.days_supply)}</td>
                                     <td className="px-2 py-1.5 text-center"><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
                                   </tr>
-                                ))}
+                                  ))
+                                })()}
                               </tbody>
                             </table>
                           </div>
@@ -880,29 +955,35 @@ export default function WarehousesOverviewPage() {
 
             if (criticalWhs.length > 0) {
               const critSkus = criticalWhs
-                .flatMap(w => (w.skus || []).filter(s => s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0).map(s => ({ ...s, wh: w.warehouse_name })))
+                .flatMap(w => (w.skus || []).filter(s => s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0).map(s => ({ ...s, wh: w.warehouse_name, needQty: Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)) })))
                 .sort((a, b) => (a.days_supply ?? 999) - (b.days_supply ?? 999))
-                .slice(0, 4)
+                .slice(0, 5)
+              const totalNeedQty = critSkus.reduce((s, x) => s + x.needQty, 0)
               problems.push(
                 <ProblemCard
                   key="supply"
                   severity="critical"
                   icon={PackagePlus}
-                  title={`Нужна поставка: ${criticalWhs.length} складов`}
+                  title={`Нужна поставка: ${criticalWhs.length} скл. • ${critSkus.length} SKU`}
                   details={
                     <div className="space-y-1.5">
-                      <div>Складs: {criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}</div>
+                      <div className="text-[11px]">
+                        Склады: {criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}
+                      </div>
                       {critSkus.length > 0 && (
                         <div className="mt-1 space-y-1">
-                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Критичные SKU:</span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Что поставлять (до 14 дн. запаса):</span>
                           {critSkus.map((s, i) => (
                             <div key={i} className="flex items-center gap-2 text-[11px]">
                               <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
-                              <span className="opacity-60">{s.wh}</span>
-                              <span className="ml-auto font-bold text-red-400">{fmtD(s.days_supply)}</span>
-                              <span className="opacity-40">{fmt(s.stock)} шт</span>
+                              <span className="text-[10px] opacity-50">{s.wh}</span>
+                              <span className="ml-auto font-bold text-amber-400">+{fmt(s.needQty)} шт</span>
+                              <span className="text-red-400 font-bold">{fmtD(s.days_supply)}</span>
                             </div>
                           ))}
+                          {totalNeedQty > 0 && (
+                            <div className="text-[10px] opacity-50 mt-0.5">Итого нужно: ~{fmt(totalNeedQty)} шт на 14 дней</div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -978,13 +1059,31 @@ export default function WarehousesOverviewPage() {
             )
           })()}
 
-          {/* ─── AI Diagnostics ─── */}
-          {currentShop && (
-            <AIDiagnosticsBlock shopId={currentShop.id} period={period} />
-          )}
-
-          {/* ─── Costs Summary ─── */}
+          {/* ─── Costs Summary + Cross cost ─── */}
           <CostsSummary costs={data.costs} />
+
+          {/* Cross-logistics cost inline */}
+          {(() => {
+            const crossOrders = data.warehouses.reduce((s, w) => s + w.cross_orders, 0)
+            const crossCost = crossOrders * 33
+            const totalLogistics = data.costs.find(c => c.label === 'Логистика')?.amount || 0
+            const crossPct = totalLogistics > 0 ? Math.round(crossCost / totalLogistics * 100) : 0
+            if (crossOrders === 0) return null
+            return (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+                <div className="flex items-center gap-3 px-6 py-2 rounded-xl border border-red-500/20 bg-red-500/5">
+                  <ArrowRightLeft className="h-4 w-4 text-red-400 shrink-0" />
+                  <span className="text-[13px] text-[hsl(var(--foreground))]">
+                    <span className="font-bold text-red-400">Кросс-логистика:</span>{' '}
+                    ~{fmtM(crossCost)} ({crossPct}% от логистики)
+                  </span>
+                  <span className="text-[11px] text-[hsl(var(--muted-foreground))] ml-auto">
+                    {fmt(crossOrders)} кросс-заказов × 33₽
+                  </span>
+                </div>
+              </motion.div>
+            )
+          })()}
 
           {/* ─── Warehouses Table ─── */}
           <WarehousesTable warehouses={data.warehouses} />
