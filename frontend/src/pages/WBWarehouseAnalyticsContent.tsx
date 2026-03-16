@@ -574,7 +574,7 @@ function CrossMapTable({ crossMap, okrugList }: { crossMap: WBCrossMapRow[]; okr
    Costs Summary
    ═══════════════════════════════════════════════════════════ */
 
-export function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
+export function CostsSummary({ costs, crossData }: { costs: WBCostSummary[]; crossData?: { crossCost: number; crossPct: number; crossOrders: number } }) {
   if (costs.length === 0) return null
 
   const iconMap: Record<string, React.ElementType> = {
@@ -623,7 +623,8 @@ export function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
             const pct = Math.abs(cost.amount) / maxAmount * 100
             const sharePct = totalAmount > 0 ? (Math.abs(cost.amount) / totalAmount * 100) : 0
             return (
-              <div key={cost.operation_type} className="flex items-center gap-3 px-6 py-3 hover:bg-[hsl(var(--muted)/0.04)] transition-colors">
+              <React.Fragment key={cost.operation_type}>
+              <div className="flex items-center gap-3 px-6 py-3 hover:bg-[hsl(var(--muted)/0.04)] transition-colors">
                 <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${iconCls}`}>
                   <Icon className="h-3.5 w-3.5" />
                 </div>
@@ -648,6 +649,34 @@ export function CostsSummary({ costs }: { costs: WBCostSummary[] }) {
                   <span className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 tabular-nums">{fmt(cost.count)} оп.</span>
                 </div>
               </div>
+              {cost.label === 'Логистика' && crossData && crossData.crossOrders > 0 && (
+                <div className="flex items-center gap-3 px-6 py-2 bg-red-500/[0.03]">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-red-500/10 text-red-400">
+                    <ArrowRightLeft className="h-3.5 w-3.5" />
+                  </div>
+                  <div className="w-[120px] shrink-0">
+                    <span className="text-[12px] font-medium text-red-400">↳ Кросс</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="h-5 rounded-full bg-[hsl(var(--muted)/0.1)] overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-red-500 opacity-25"
+                        style={{ width: `${Math.min(crossData.crossPct, 100)}%`, transition: 'width 0.6s ease' }}
+                      />
+                    </div>
+                  </div>
+                  <div className="w-[100px] shrink-0 text-right">
+                    <span className="text-[13px] font-bold tabular-nums text-red-400">{fmtM(crossData.crossCost)}</span>
+                  </div>
+                  <div className="w-[50px] shrink-0 text-right">
+                    <span className="text-[11px] text-red-400 font-semibold tabular-nums">{crossData.crossPct}%</span>
+                  </div>
+                  <div className="w-[70px] shrink-0 text-right">
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 tabular-nums">{fmt(crossData.crossOrders)} зак.</span>
+                  </div>
+                </div>
+              )}
+              </React.Fragment>
             )
           })}
         </div>

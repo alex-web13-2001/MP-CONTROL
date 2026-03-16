@@ -3,7 +3,7 @@
  * Shows KPIs with trends, cost breakdown, problem alerts, AI diagnostics, warehouses table.
  * WB only; Ozon redirects to /warehouses/analytics.
  */
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -28,6 +28,7 @@ import {
   Loader2,
   Gavel,
   Copy,
+  X,
   Check,
   Search,
 } from 'lucide-react'
@@ -450,10 +451,95 @@ function CrossPctBar({ pct, orders }: { pct: number; orders: number }) {
   )
 }
 
-/* ═══ Warehouses Table (with expandable SKU rows + search) ═══ */
+/* ═══ SKU Combobox (local multi-select) ═══ */
+interface SkuOption { nm_id: number; vendor_code: string; name: string }
+
+function SkuCombobox({ allSkus, selected, onSelect, onRemove, onClear }: {
+  allSkus: SkuOption[]
+  selected: SkuOption[]
+  onSelect: (s: SkuOption) => void
+  onRemove: (nm: number) => void
+  onClear: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [])
+
+  const selectedIds = new Set(selected.map(s => s.nm_id))
+  const q = search.toLowerCase().trim()
+  const filtered = allSkus.filter(o => !selectedIds.has(o.nm_id) && (
+    !q || (o.vendor_code || '').toLowerCase().includes(q) || (o.name || '').toLowerCase().includes(q) || String(o.nm_id).includes(q)
+  )).slice(0, 30)
+
+  return (
+    <div ref={dropdownRef} className="relative flex-1 min-w-0">
+      <div
+        className="flex flex-wrap items-center gap-1.5 px-3 py-2 min-h-[40px] rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] cursor-text transition-all focus-within:ring-2 focus-within:ring-[hsl(var(--primary)/0.3)]"
+        onClick={() => { inputRef.current?.focus(); setOpen(true) }}
+      >
+        <Search className="h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)]" />
+        {selected.map(s => (
+          <span key={s.nm_id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))] text-[12px] font-medium max-w-[200px] truncate">
+            {s.vendor_code || `#${s.nm_id}`}
+            <X className="h-3 w-3 cursor-pointer hover:text-red-400 shrink-0" onClick={(e) => { e.stopPropagation(); onRemove(s.nm_id) }} />
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setOpen(true) }}
+          onFocus={() => setOpen(true)}
+          placeholder={selected.length === 0 ? 'Поиск по артикулу, названию или ID...' : 'Ещё...'}
+          className="flex-1 min-w-[80px] bg-transparent text-[13px] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] outline-none"
+        />
+        {selected.length > 0 && (
+          <button onClick={(e) => { e.stopPropagation(); onClear() }} className="shrink-0 text-[hsl(var(--muted-foreground)/0.5)] hover:text-red-400 transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }} transition={{ duration: 0.15 }}
+            className="absolute z-50 mt-1 w-full max-h-[280px] overflow-auto rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl"
+          >
+            {filtered.length > 0 ? filtered.map(opt => (
+              <button key={opt.nm_id} onClick={() => { onSelect(opt); setSearch('') }}
+                className="w-full text-left px-4 py-2.5 hover:bg-[hsl(var(--muted)/0.1)] transition-colors border-b border-[hsl(var(--border)/0.2)] last:border-0">
+                <div className="text-[13px] font-medium text-[hsl(var(--foreground))] line-clamp-1">{opt.name || `Товар #${opt.nm_id}`}</div>
+                <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                  {opt.vendor_code && <span className="font-semibold">{opt.vendor_code}</span>}
+                  {opt.vendor_code && ' · '}
+                  ID: {opt.nm_id}
+                </div>
+              </button>
+            )) : (
+              <div className="px-4 py-6 text-center text-[13px] text-[hsl(var(--muted-foreground))]">
+                {search ? 'Ничего не найдено' : 'Нет товаров'}
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+/* ═══ Warehouses Table (with expandable SKU rows + combobox filter) ═══ */
 function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [skuSearch, setSkuSearch] = useState('')
+  const [selectedSkus, setSelectedSkus] = useState<SkuOption[]>([])
   const thBase = 'px-4 py-3 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider whitespace-nowrap'
   const tdCls = 'px-4 py-3 text-center tabular-nums text-[13px] whitespace-nowrap'
 
@@ -465,16 +551,19 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
     })
   }
 
-  // Filter warehouses by SKU search
-  const q = skuSearch.toLowerCase().trim()
-  const filteredWarehouses = q
-    ? warehouses.filter(wh =>
-        (wh.skus || []).some(s =>
-          (s.vendor_code || '').toLowerCase().includes(q) ||
-          (s.name || '').toLowerCase().includes(q) ||
-          String(s.nm_id).includes(q)
-        )
-      )
+  // Collect unique SKUs from all warehouses
+  const allSkus = useMemo(() => {
+    const map = new Map<number, SkuOption>()
+    warehouses.forEach(wh => (wh.skus || []).forEach(s => {
+      if (!map.has(s.nm_id)) map.set(s.nm_id, { nm_id: s.nm_id, vendor_code: s.vendor_code, name: s.name })
+    }))
+    return Array.from(map.values())
+  }, [warehouses])
+
+  // Filter warehouses by selected SKUs
+  const selectedIds = new Set(selectedSkus.map(s => s.nm_id))
+  const filteredWarehouses = selectedIds.size > 0
+    ? warehouses.filter(wh => (wh.skus || []).some(s => selectedIds.has(s.nm_id)))
     : warehouses
 
   return (
@@ -487,18 +576,15 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
           </span>
         </div>
 
-        {/* SKU Search */}
+        {/* SKU Combobox */}
         <div className="px-6 py-3 border-b border-[hsl(var(--border)/0.5)]">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
-            <input
-              type="text"
-              value={skuSearch}
-              onChange={e => setSkuSearch(e.target.value)}
-              placeholder="Поиск по артикулу, названию или ID..."
-              className="w-full pl-9 pr-4 py-2 text-[13px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.5)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
-            />
-          </div>
+          <SkuCombobox
+            allSkus={allSkus}
+            selected={selectedSkus}
+            onSelect={s => setSelectedSkus(prev => [...prev, s])}
+            onRemove={nm => setSelectedSkus(prev => prev.filter(x => x.nm_id !== nm))}
+            onClear={() => setSelectedSkus([])}
+          />
         </div>
 
         <div className="overflow-auto max-h-[700px]">
@@ -518,6 +604,7 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
             </thead>
             <tbody>
               {filteredWarehouses.map((wh, idx) => {
+                const hasSelectedFilter = selectedIds.size > 0
                 const isExp = expanded.has(wh.warehouse_name)
                 const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.04)]'
                 const hasSkus = (wh.skus || []).length > 0
@@ -588,9 +675,8 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
                               </thead>
                               <tbody>
                                 {(() => {
-                                  const skuQ = skuSearch.toLowerCase().trim()
-                                  const filtSkus = skuQ
-                                    ? wh.skus.filter(s => (s.vendor_code||'').toLowerCase().includes(skuQ) || (s.name||'').toLowerCase().includes(skuQ) || String(s.nm_id).includes(skuQ))
+                                  const filtSkus = hasSelectedFilter
+                                    ? wh.skus.filter(s => selectedIds.has(s.nm_id))
                                     : [...wh.skus]
                                   return filtSkus.sort((a, b) => b.stock - a.stock).map((sku) => (
                                   <tr key={sku.nm_id} className="border-t border-[hsl(var(--border)/0.1)] hover:bg-[hsl(var(--muted)/0.08)]">
@@ -954,10 +1040,16 @@ export default function WarehousesOverviewPage() {
             }
 
             if (criticalWhs.length > 0) {
+              // Include ALL SKUs from critical warehouses, not just those with daily_sales > 0
               const critSkus = criticalWhs
-                .flatMap(w => (w.skus || []).filter(s => s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0).map(s => ({ ...s, wh: w.warehouse_name, needQty: Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)) })))
+                .flatMap(w => (w.skus || []).filter(s => {
+                  // Include if: low days_supply, OR null days_supply with stock (sitting dead), OR just has stock on critical warehouse
+                  if (s.days_supply !== null && s.days_supply < 14) return true
+                  if (s.days_supply === null && s.stock > 0 && s.daily_sales === 0) return true // dead stock on critical wh
+                  return false
+                }).map(s => ({ ...s, wh: w.warehouse_name, needQty: s.daily_sales > 0 ? Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)) : 0 })))
                 .sort((a, b) => (a.days_supply ?? 999) - (b.days_supply ?? 999))
-                .slice(0, 5)
+                .slice(0, 6)
               const totalNeedQty = critSkus.reduce((s, x) => s + x.needQty, 0)
               problems.push(
                 <ProblemCard
@@ -1059,30 +1151,16 @@ export default function WarehousesOverviewPage() {
             )
           })()}
 
-          {/* ─── Costs Summary + Cross cost ─── */}
-          <CostsSummary costs={data.costs} />
-
-          {/* Cross-logistics cost inline */}
+          {/* ─── Costs Summary (with cross-logistics row) ─── */}
           {(() => {
+            const totalOrders = data.warehouses.reduce((s, w) => s + w.orders, 0)
             const crossOrders = data.warehouses.reduce((s, w) => s + w.cross_orders, 0)
-            const crossCost = crossOrders * 33
             const totalLogistics = data.costs.find(c => c.label === 'Логистика')?.amount || 0
+            // Cross cost = proportion of total logistics attributable to cross deliveries
+            const crossCost = totalOrders > 0 ? Math.round(totalLogistics * crossOrders / totalOrders) : 0
             const crossPct = totalLogistics > 0 ? Math.round(crossCost / totalLogistics * 100) : 0
-            if (crossOrders === 0) return null
-            return (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
-                <div className="flex items-center gap-3 px-6 py-2 rounded-xl border border-red-500/20 bg-red-500/5">
-                  <ArrowRightLeft className="h-4 w-4 text-red-400 shrink-0" />
-                  <span className="text-[13px] text-[hsl(var(--foreground))]">
-                    <span className="font-bold text-red-400">Кросс-логистика:</span>{' '}
-                    ~{fmtM(crossCost)} ({crossPct}% от логистики)
-                  </span>
-                  <span className="text-[11px] text-[hsl(var(--muted-foreground))] ml-auto">
-                    {fmt(crossOrders)} кросс-заказов × 33₽
-                  </span>
-                </div>
-              </motion.div>
-            )
+            const cd = crossOrders > 0 ? { crossCost, crossPct, crossOrders } : undefined
+            return <CostsSummary costs={data.costs} crossData={cd} />
           })()}
 
           {/* ─── Warehouses Table ─── */}
