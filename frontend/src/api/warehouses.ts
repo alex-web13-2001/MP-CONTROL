@@ -758,11 +758,19 @@ export interface AIAnalysisContext {
   warehouses_count: number
 }
 
+export interface AIAnalysisSection {
+  section: 'cross_logistics' | 'storage' | 'supply' | 'geography'
+  severity: 'critical' | 'warning' | 'ok'
+  summary: string
+  action_text: string
+}
+
 export interface AIWarehouseAnalysis {
   severity: 'critical' | 'warning' | 'ok'
   diagnosis: string
   total_potential_savings: number
   key_metrics: AIKeyMetrics
+  analysis_sections: AIAnalysisSection[]
   sku_actions: AISkuAction[]
   transfers: AITransfer[]
   general_tips: string[]

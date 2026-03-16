@@ -37,6 +37,7 @@ import {
   type WBWarehouseAnalyticsResponse,
   type WBAnalyticsWarehouse,
   type AIWarehouseAnalysis,
+  type AIAnalysisSection,
 } from '@/api/warehouses'
 import { CostsSummary } from './WBWarehouseAnalyticsContent'
 
@@ -88,32 +89,32 @@ function TrendKpiCard({
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay, duration: 0.4 }}>
       <Card className={`relative overflow-hidden h-full ${statusColor ? `border-b-[3px] ${statusColor}` : ''}`}>
-        <CardContent className="p-5 flex flex-col justify-between h-full">
-          <div className="flex items-start justify-between">
+        <CardContent className="p-4 sm:p-5 flex flex-col justify-between h-full">
+          <div className="flex items-start justify-between gap-2">
             <div className="space-y-1 min-w-0 flex-1">
-              <p className="text-[13px] font-medium text-[hsl(var(--muted-foreground))]">{title}</p>
-              <p className="text-2xl font-bold tracking-tight">{value}</p>
+              <p className="text-[11px] sm:text-[13px] font-medium text-[hsl(var(--muted-foreground))] truncate">{title}</p>
+              <p className="text-lg sm:text-2xl font-bold tracking-tight whitespace-nowrap">{value}</p>
             </div>
-            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${accent} shadow-lg`}>
-              <Icon className="h-5 w-5 text-white" />
+            <div className={`flex h-8 w-8 sm:h-10 sm:w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br ${accent} shadow-lg`}>
+              <Icon className="h-4 w-4 sm:h-5 sm:w-5 text-white" />
             </div>
           </div>
-          <div className="mt-3 flex items-center justify-between min-h-[24px]">
+          <div className="mt-2 sm:mt-3 flex items-center justify-between min-h-[20px] gap-1">
             {subtitle && (
-              <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{subtitle}</span>
+              <span className="text-[10px] sm:text-[12px] text-[hsl(var(--muted-foreground))] truncate min-w-0">{subtitle}</span>
             )}
             {trend && trend.direction !== 'flat' && (
-              <div className={`flex items-center gap-1 ml-auto ${getColor()}`}>
-                <TrendIcon className="h-3.5 w-3.5" />
-                <span className="text-[12px] font-bold tabular-nums">
+              <div className={`flex items-center gap-0.5 ml-auto shrink-0 ${getColor()}`}>
+                <TrendIcon className="h-3 w-3 sm:h-3.5 sm:w-3.5" />
+                <span className="text-[10px] sm:text-[12px] font-bold tabular-nums">
                   {trend.direction === 'up' ? '+' : ''}{trend.pct}%
                 </span>
               </div>
             )}
             {trend && trend.direction === 'flat' && (
-              <div className="flex items-center gap-1 ml-auto text-[hsl(var(--muted-foreground))]">
-                <Minus className="h-3.5 w-3.5 opacity-40" />
-                <span className="text-[11px] opacity-50">без изменений</span>
+              <div className="flex items-center gap-0.5 ml-auto shrink-0 text-[hsl(var(--muted-foreground))]">
+                <Minus className="h-3 w-3 opacity-40" />
+                <span className="text-[10px] opacity-50">—</span>
               </div>
             )}
           </div>
@@ -176,6 +177,10 @@ function ProblemCard({
 }
 
 
+/* ═══ AI Frontend Cache ═══ */
+const _aiCache = new Map<string, { ts: number; data: AIWarehouseAnalysis }>()
+const _AI_FE_TTL = 10 * 60 * 1000 // 10 min
+
 /* ═══ AI Diagnostics Block ═══ */
 function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number }) {
   const [data, setData] = useState<AIWarehouseAnalysis | null>(null)
@@ -185,9 +190,21 @@ function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number
 
   useEffect(() => {
     let cancelled = false
+    setData(null) // Reset on shop/period change
+    const cacheKey = `${shopId}_${period}`
+    const cached = _aiCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < _AI_FE_TTL) {
+      setData(cached.data)
+      return
+    }
     setLoading(true)
     getWBWarehouseAIAnalysis({ shop_id: shopId, period })
-      .then(r => { if (!cancelled) setData(r) })
+      .then(r => {
+        if (!cancelled) {
+          setData(r)
+          _aiCache.set(cacheKey, { ts: Date.now(), data: r })
+        }
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -229,6 +246,7 @@ function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number
                 <h3 className="text-[15px] font-bold text-[hsl(var(--foreground))]">ИИ-аналитик складов</h3>
                 <p className="text-[11px] text-[hsl(var(--muted-foreground))]">
                   {sv.label}
+                  {data.shop_name && <> • {data.shop_name}</>}
                   {data.cached && data.cached_at && (
                     <> • Кеш от {new Date(data.cached_at * 1000).toLocaleDateString('ru-RU')}</>
                   )}
@@ -244,11 +262,49 @@ function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number
             </button>
           </div>
 
-          {/* Diagnosis */}
-          <div className="px-6 py-4">
-            <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed whitespace-pre-line">
-              {data.diagnosis}
-            </p>
+          {/* Sections-based diagnosis */}
+          <div className="px-6 py-4 space-y-3">
+            {(data.analysis_sections || []).length > 0 ? (
+              (data.analysis_sections || []).map((sec: AIAnalysisSection) => {
+                const secStyles = {
+                  critical: { dot: 'bg-red-500', text: 'text-red-400' },
+                  warning: { dot: 'bg-amber-500', text: 'text-amber-400' },
+                  ok: { dot: 'bg-emerald-500', text: 'text-emerald-400' },
+                }
+                const sectionLinks: Record<string, string> = {
+                  cross_logistics: '/warehouses/cross',
+                  storage: '/warehouses/storage',
+                  supply: '/warehouses/supplies',
+                  geography: '/warehouses/geography',
+                }
+                const sectionLabels: Record<string, string> = {
+                  cross_logistics: 'Кросс-логистика',
+                  storage: 'Хранение',
+                  supply: 'Поставки',
+                  geography: 'География',
+                }
+                const ss = secStyles[sec.severity] || secStyles.ok
+                return (
+                  <div key={sec.section} className="flex items-start gap-2">
+                    <span className={`mt-1.5 h-2 w-2 rounded-full shrink-0 ${ss.dot}`} />
+                    <div className="flex-1 min-w-0">
+                      <span className={`text-[12px] font-bold ${ss.text}`}>{sectionLabels[sec.section] || sec.section}</span>
+                      <p className="text-[12px] text-[hsl(var(--muted-foreground))] leading-relaxed">{sec.summary}</p>
+                    </div>
+                    <button
+                      onClick={() => navigate(sectionLinks[sec.section] || '/warehouses')}
+                      className="shrink-0 text-[11px] font-medium text-violet-400 hover:text-violet-300 whitespace-nowrap"
+                    >
+                      {sec.action_text || 'Подробнее →'}
+                    </button>
+                  </div>
+                )
+              })
+            ) : (
+              <p className="text-[13px] text-[hsl(var(--foreground))] leading-relaxed whitespace-pre-line">
+                {data.diagnosis}
+              </p>
+            )}
           </div>
 
           {/* Expanded: tips + actions */}
@@ -368,10 +424,19 @@ function CrossPctBar({ pct, orders }: { pct: number; orders: number }) {
   )
 }
 
-/* ═══ Warehouses Table (overview, no expand) ═══ */
+/* ═══ Warehouses Table (with expandable SKU rows) ═══ */
 function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const thBase = 'px-4 py-3 text-center text-[11px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider whitespace-nowrap'
   const tdCls = 'px-4 py-3 text-center tabular-nums text-[13px] whitespace-nowrap'
+
+  const toggle = (name: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(name) ? next.delete(name) : next.add(name)
+      return next
+    })
+  }
 
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6, duration: 0.4 }}>
@@ -400,51 +465,100 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
             </thead>
             <tbody>
               {warehouses.map((wh, idx) => {
+                const isExp = expanded.has(wh.warehouse_name)
                 const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.04)]'
+                const hasSkus = (wh.skus || []).length > 0
                 return (
-                  <tr
-                    key={wh.warehouse_name}
-                    className={`border-b border-[hsl(var(--border)/0.15)] ${rowBg} hover:bg-[hsl(var(--muted)/0.1)] transition-colors`}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <Warehouse className="h-4 w-4 text-blue-400 shrink-0" />
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-semibold text-[hsl(var(--foreground))] flex items-center gap-1.5 flex-wrap">
-                            {wh.warehouse_name}
-                            <TypeBadge type={wh.warehouse_type} />
-                          </div>
-                          {wh.okrug && (
-                            <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60 truncate">
-                              {wh.okrug.replace(' федеральный округ', '')}
-                            </div>
+                  <React.Fragment key={wh.warehouse_name}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.15)] ${rowBg} hover:bg-[hsl(var(--muted)/0.1)] transition-colors ${hasSkus ? 'cursor-pointer' : ''}`}
+                      onClick={() => hasSkus && toggle(wh.warehouse_name)}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          {hasSkus ? (
+                            <ChevronDown className={`h-4 w-4 text-[hsl(var(--muted-foreground))] shrink-0 transition-transform ${isExp ? 'rotate-180' : ''}`} />
+                          ) : (
+                            <Warehouse className="h-4 w-4 text-blue-400 shrink-0" />
                           )}
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-semibold text-[hsl(var(--foreground))] flex items-center gap-1.5 flex-wrap">
+                              {wh.warehouse_name}
+                              <TypeBadge type={wh.warehouse_type} />
+                            </div>
+                            {wh.okrug && (
+                              <div className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-60 truncate">
+                                {wh.okrug.replace(' федеральный округ', '')}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    </td>
-                    <td className={`${tdCls} text-center`}><StatusBadge status={wh.status} /></td>
-                    <td className={tdCls}>{fmt(wh.stock)}</td>
-                    <td className={tdCls}>{fmt(wh.orders)}</td>
-                    <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
-                    <td className={tdCls}>
-                      <span className={`font-semibold ${
-                        wh.turnover_days === null ? '' :
-                        wh.turnover_days < 14 ? 'text-red-400' :
-                        wh.turnover_days < 30 ? 'text-amber-400' :
-                        wh.turnover_days > 120 ? 'text-purple-400' :
-                        'text-emerald-400'
-                      }`}>
-                        {fmtD(wh.turnover_days)}
-                      </span>
-                    </td>
-                    <td className={tdCls}>
-                      <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
-                    </td>
-                    <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
-                      {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
-                    </td>
-                    <td className={`${tdCls} text-[hsl(var(--muted-foreground))]`}>{wh.sku_count}</td>
-                  </tr>
+                      </td>
+                      <td className={`${tdCls} text-center`}><StatusBadge status={wh.status} /></td>
+                      <td className={tdCls}>{fmt(wh.stock)}</td>
+                      <td className={tdCls}>{fmt(wh.orders)}</td>
+                      <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
+                      <td className={tdCls}>
+                        <span className={`font-semibold ${
+                          wh.turnover_days === null ? '' :
+                          wh.turnover_days < 14 ? 'text-red-400' :
+                          wh.turnover_days < 30 ? 'text-amber-400' :
+                          wh.turnover_days > 120 ? 'text-purple-400' :
+                          'text-emerald-400'
+                        }`}>
+                          {fmtD(wh.turnover_days)}
+                        </span>
+                      </td>
+                      <td className={tdCls}>
+                        <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
+                      </td>
+                      <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                        {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
+                      </td>
+                      <td className={`${tdCls} text-[hsl(var(--muted-foreground))]`}>{wh.sku_count}</td>
+                    </tr>
+                    {/* Expanded SKU rows */}
+                    {isExp && (wh.skus || []).length > 0 && (
+                      <tr>
+                        <td colSpan={9} className="p-0">
+                          <div className="bg-[hsl(var(--muted)/0.06)] border-b border-[hsl(var(--border)/0.3)]">
+                            <table className="w-full">
+                              <thead>
+                                <tr className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase">
+                                  <th className="pl-12 pr-2 py-2 text-left">Артикул</th>
+                                  <th className="px-2 py-2 text-left">Наименование</th>
+                                  <th className="px-2 py-2 text-center">Остаток</th>
+                                  <th className="px-2 py-2 text-center">Заказов</th>
+                                  <th className="px-2 py-2 text-center">В день</th>
+                                  <th className="px-2 py-2 text-center">Запас дн</th>
+                                  <th className="px-2 py-2 text-center">Кросс%</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[...wh.skus].sort((a, b) => b.stock - a.stock).map((sku) => (
+                                  <tr key={sku.nm_id} className="border-t border-[hsl(var(--border)/0.1)] hover:bg-[hsl(var(--muted)/0.08)]">
+                                    <td className="pl-12 pr-2 py-1.5 text-[12px] font-semibold text-[hsl(var(--foreground))]">{sku.vendor_code}</td>
+                                    <td className="px-2 py-1.5 text-[11px] text-[hsl(var(--muted-foreground))] truncate max-w-[200px]">{sku.name}</td>
+                                    <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{fmt(sku.stock)}</td>
+                                    <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{fmt(sku.orders)}</td>
+                                    <td className="px-2 py-1.5 text-[12px] text-center tabular-nums">{sku.daily_sales.toFixed(2)}</td>
+                                    <td className={`px-2 py-1.5 text-[12px] text-center tabular-nums font-semibold ${
+                                      sku.days_supply === null ? '' :
+                                      sku.days_supply < 14 ? 'text-red-400' :
+                                      sku.days_supply < 30 ? 'text-amber-400' :
+                                      sku.days_supply > 120 ? 'text-purple-400' :
+                                      'text-emerald-400'
+                                    }`}>{fmtD(sku.days_supply)}</td>
+                                    <td className="px-2 py-1.5 text-center"><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 )
               })}
             </tbody>
@@ -582,7 +696,6 @@ export default function WarehousesOverviewPage() {
             const trendLogistics = prev ? calcTrend(kpi.total_logistics, prev.total_logistics) : undefined
             const trendStorage = prev ? calcTrend(kpi.total_storage_actual ?? kpi.total_storage, prev.total_storage) : undefined
             const trendOrders = prev ? calcTrend(kpi.total_orders, prev.total_orders) : undefined
-            const trendPenalties = prev && kpi.total_penalties > 0 ? calcTrend(kpi.total_penalties, prev.total_penalties) : undefined
 
             // Cross-logistics estimated cost
             const crossCost = data.warehouses.reduce((s, w) => s + w.cross_orders * 33, 0)
@@ -678,16 +791,37 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            // 2. Storage overstock
+            // 2. Storage overstock — with top SKU details
             const overstockedWhs = whs.filter(w => w.status === 'overstocked')
             if (overstockedWhs.length > 0) {
+              const topOverstockSkus = overstockedWhs
+                .flatMap(w => (w.skus || []).filter(s => s.days_supply !== null && s.days_supply > 120).map(s => ({ ...s, wh: w.warehouse_name })))
+                .sort((a, b) => (b.days_supply ?? 0) - (a.days_supply ?? 0))
+                .slice(0, 3)
               problems.push(
                 <ProblemCard
                   key="overstock"
                   severity="warning"
                   icon={Boxes}
                   title={`Затоваривание: ${overstockedWhs.length} складов`}
-                  details={`Оборачиваемость > 120 дн: ${overstockedWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).slice(0, 3).join(', ')}${overstockedWhs.length > 3 ? ` + ещё ${overstockedWhs.length - 3}` : ''}`}
+                  details={
+                    <div className="space-y-1.5">
+                      <div>Склады: {overstockedWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).slice(0, 3).join(', ')}</div>
+                      {topOverstockSkus.length > 0 && (
+                        <div className="mt-1.5 space-y-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Топ SKU:</span>
+                          {topOverstockSkus.map((s, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[11px]">
+                              <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
+                              <span className="opacity-60">{s.wh}</span>
+                              <span className="ml-auto font-bold text-purple-400">{fmtD(s.days_supply)}</span>
+                              <span className="opacity-40">{fmt(s.stock)} шт</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  }
                   link="/warehouses/storage"
                   linkLabel="Хранение"
                   delay={delay}
@@ -696,16 +830,46 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            // 3. Critical supply (< 14 days)
+            // 3. Critical supply (< 14 days) + out-of-stock alert
             const criticalWhs = whs.filter(w => w.status === 'critical')
-            if (criticalWhs.length > 0) {
+            // Global out-of-stock: aggregate SKU across all warehouses
+            const globalSkuMap = new Map<string, { vc: string; name: string; stock: number; daily: number }>()
+            whs.forEach(w => (w.skus || []).forEach(s => {
+              const existing = globalSkuMap.get(s.vendor_code)
+              if (existing) {
+                existing.stock += s.stock
+                existing.daily += s.daily_sales
+              } else {
+                globalSkuMap.set(s.vendor_code, { vc: s.vendor_code, name: s.name, stock: s.stock, daily: s.daily_sales })
+              }
+            }))
+            const outOfStockSkus = Array.from(globalSkuMap.values())
+              .filter(s => s.daily > 0 && s.stock > 0 && (s.stock / s.daily) < 14)
+              .sort((a, b) => (a.stock / a.daily) - (b.stock / b.daily))
+              .slice(0, 5)
+
+            if (outOfStockSkus.length > 0) {
               problems.push(
                 <ProblemCard
-                  key="supply"
+                  key="outofstock"
                   severity="critical"
-                  icon={PackagePlus}
-                  title={`Нужна поставка: ${criticalWhs.length} складов`}
-                  details={`Остаток < 14 дней: ${criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}`}
+                  icon={AlertTriangle}
+                  title={`Скоро out-of-stock: ${outOfStockSkus.length} SKU`}
+                  details={
+                    <div className="space-y-1">
+                      <div>SKU заканчиваются на ВСЕХ складах:</div>
+                      {outOfStockSkus.map((s, i) => {
+                        const daysLeft = Math.round(s.stock / s.daily)
+                        return (
+                          <div key={i} className="flex items-center gap-2 text-[11px]">
+                            <span className="font-semibold text-[hsl(var(--foreground))]">{s.vc}</span>
+                            <span className="ml-auto font-bold text-red-400">{daysLeft} дн</span>
+                            <span className="opacity-40">{fmt(s.stock)} шт / {s.daily.toFixed(1)}/день</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  }
                   link="/warehouses/supplies"
                   linkLabel="Поставки"
                   delay={delay}
@@ -714,7 +878,44 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            // 4. Penalties
+            if (criticalWhs.length > 0) {
+              const critSkus = criticalWhs
+                .flatMap(w => (w.skus || []).filter(s => s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0).map(s => ({ ...s, wh: w.warehouse_name })))
+                .sort((a, b) => (a.days_supply ?? 999) - (b.days_supply ?? 999))
+                .slice(0, 4)
+              problems.push(
+                <ProblemCard
+                  key="supply"
+                  severity="critical"
+                  icon={PackagePlus}
+                  title={`Нужна поставка: ${criticalWhs.length} складов`}
+                  details={
+                    <div className="space-y-1.5">
+                      <div>Складs: {criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}</div>
+                      {critSkus.length > 0 && (
+                        <div className="mt-1 space-y-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Критичные SKU:</span>
+                          {critSkus.map((s, i) => (
+                            <div key={i} className="flex items-center gap-2 text-[11px]">
+                              <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
+                              <span className="opacity-60">{s.wh}</span>
+                              <span className="ml-auto font-bold text-red-400">{fmtD(s.days_supply)}</span>
+                              <span className="opacity-40">{fmt(s.stock)} шт</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  }
+                  link="/warehouses/supplies"
+                  linkLabel="Поставки"
+                  delay={delay}
+                />
+              )
+              delay += 0.08
+            }
+
+            // 4. Penalties — pill badges
             const penalties = kpi.total_penalties
             const penaltyDetails = kpi.penalty_details || []
             if (penalties > 0) {
@@ -726,7 +927,16 @@ export default function WarehousesOverviewPage() {
                   title={`Штрафы за период: ${fmtM(penalties)}`}
                   details={
                     penaltyDetails.length > 0
-                      ? penaltyDetails.map(d => `${d.reason}: ${fmtM(d.amount)} (${d.count} шт)`).join(' • ')
+                      ? (
+                        <div className="flex flex-wrap gap-1.5 mt-1">
+                          {penaltyDetails.map((d, i) => (
+                            <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))]">
+                              {d.reason}: <span className="font-bold">{fmtM(d.amount)}</span>
+                              <span className="opacity-40">({d.count})</span>
+                            </span>
+                          ))}
+                        </div>
+                      )
                       : 'Детализация по типам недоступна'
                   }
                   delay={delay}

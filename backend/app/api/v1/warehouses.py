@@ -5397,6 +5397,32 @@ _AI_PROMPT_SKU_PROBLEMS = """Ты — эксперт по складской л�
     "storage_excess": 0,
     "unprofitable_skus_count": 0
   },
+  "analysis_sections": [
+    {
+      "section": "cross_logistics",
+      "severity": "critical" | "warning" | "ok",
+      "summary": "Кросс-отправки 58% — основная проблема логистики. Потери ~12 000₽/мес",
+      "action_text": "Перейти в Кросс-логистику"
+    },
+    {
+      "section": "storage",
+      "severity": "critical" | "warning" | "ok",
+      "summary": "2 склада затоварены, 5 SKU с хранением > прибыли. Убыток ~8 000₽/мес",
+      "action_text": "Перейти в Хранение"
+    },
+    {
+      "section": "supply",
+      "severity": "critical" | "warning" | "ok",
+      "summary": "3 SKU заканчиваются < 14 дней на всех складах. Риск out-of-stock",
+      "action_text": "Перейти в Поставки"
+    },
+    {
+      "section": "geography",
+      "severity": "critical" | "warning" | "ok",
+      "summary": "Уральский и Сибирский ФО без покрытия — кросс-доставка 100%",
+      "action_text": "Перейти в Географию"
+    }
+  ],
   "sku_actions": [
     {
       "vendor_code": "АРТИКУЛ",
@@ -5410,14 +5436,14 @@ _AI_PROMPT_SKU_PROBLEMS = """Ты — эксперт по складской л�
         {
           "action": "discount",
           "label": "Скидка 25%",
-          "detail": "Снизить цену с 1500₽ до 1125₽. Чистая маржа после всех вычетов: 180₽/шт (было 320₽). При росте продаж в 2× оборачиваемость снизится до ~250д, экономия на хранении 500₽/мес.",
+          "detail": "Снизить цену с 1500₽ до 1125₽.",
           "expected_savings": 500,
           "risk": "medium"
         },
         {
           "action": "do_nothing",
           "label": "Оставить как есть",
-          "detail": "Хранение 987₽/мес. Через 30 дней расходы +987₽, через 60 дней +1974₽. Запас 224 шт при 0.5 продажах/день закончится через 448 дней.",
+          "detail": "Хранение 987₽/мес. Через 30д расходы +987₽.",
           "expected_savings": 0,
           "risk": "high"
         }
@@ -5443,6 +5469,7 @@ _AI_PROMPT_SKU_PROBLEMS = """Ты — эксперт по складской л�
 - recommended_option: индекс лучшего варианта (0-based)
 - СЧИТАЙ ОТ ЧИСТОЙ ПРИБЫЛИ (net_profit), НЕ от маржи price−cost
 - severity: "critical" если есть убыточные SKU, "warning" если оборач > 90д
+- analysis_sections: ОБЯЗАТЕЛЬНО 4 секции (cross_logistics, storage, supply, geography). Каждая с severity + summary (1-2 предложения, конкретно с цифрами)
 - Пиши НА РУССКОМ. Каждый текст — 2-3 предложения, конкретно и понятно
 """
 
@@ -6185,6 +6212,48 @@ async def get_wb_ai_analysis(
             logger.info("Force-injected SKU %s (storage_rank=%s, est_storage=%s₽/мес) into sku_actions",
                         s["vendor_code"], s.get("storage_rank"), storage_cost)
 
+        # ── 11b. Build analysis_sections with Python fallback ──
+        ai_sections = result_skus.get("analysis_sections", [])
+        section_keys = {s.get("section") for s in ai_sections}
+
+        # Fallback: ensure all 4 sections exist
+        if "cross_logistics" not in section_keys:
+            sev = "critical" if total_cross_pct > 50 else "warning" if total_cross_pct > 25 else "ok"
+            ai_sections.append({
+                "section": "cross_logistics",
+                "severity": sev,
+                "summary": f"Кросс-отправки {total_cross_pct}%. Потери ~{cross_logistics_loss}₽/мес" if total_cross_pct > 25 else f"Кросс-отправки {total_cross_pct}% — под контролем",
+                "action_text": "Кросс-логистика →"
+            })
+        if "storage" not in section_keys:
+            sev = "critical" if storage_excess > 5000 else "warning" if storage_excess > 1000 else "ok"
+            ai_sections.append({
+                "section": "storage",
+                "severity": sev,
+                "summary": f"Избыточное хранение: ~{storage_excess}₽/мес. {unprofitable_count} SKU с оборачиваемостью >90д" if storage_excess > 0 else "Хранение в норме",
+                "action_text": "Хранение →"
+            })
+        if "supply" not in section_keys:
+            # Count SKUs near out-of-stock globally
+            oos_count = 0
+            for s in skus_context:
+                if s["daily"] > 0 and s["stock"] > 0 and (s["stock"] / s["daily"]) < 14:
+                    oos_count += 1
+            sev = "critical" if oos_count > 2 else "warning" if oos_count > 0 else "ok"
+            ai_sections.append({
+                "section": "supply",
+                "severity": sev,
+                "summary": f"{oos_count} SKU с запасом <14 дней на всех складах. Риск out-of-stock" if oos_count > 0 else "Запасы в норме",
+                "action_text": "Поставки →"
+            })
+        if "geography" not in section_keys:
+            ai_sections.append({
+                "section": "geography",
+                "severity": "warning" if total_cross_pct > 40 else "ok",
+                "summary": f"Кросс-доставка {total_cross_pct}% указывает на неоптимальное размещение" if total_cross_pct > 40 else "Географическое покрытие в норме",
+                "action_text": "География →"
+            })
+
         ai_result = {
             "severity": result_skus.get("severity", "warning"),
             "diagnosis": result_skus.get("diagnosis", "Анализ недоступен. Попробуйте позже."),
@@ -6194,6 +6263,7 @@ async def get_wb_ai_analysis(
                 "storage_excess": storage_excess,
                 "unprofitable_skus_count": unprofitable_count,
             },
+            "analysis_sections": ai_sections,
             "sku_actions": ai_sku_actions,
             "transfers": result_redistr.get("transfers", []),
             "general_tips": result_redistr.get("general_tips", []),
