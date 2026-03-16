@@ -1,3 +1,29 @@
+## 2026-03-16 (v3)
+
+### feat(warehouses): Ozon — география продаж (кластеры → города → товары)
+
+**Backend** (`warehouses.py`):
+- `GET /ozon/geography` — основной endpoint: кластеры доставки + города + стабильность + топ товары
+  - SQL: `fact_ozon_orders FINAL` GROUP BY `cluster_to`, `city`
+  - Стабильность: `count(DISTINCT toDate(order_date)) / period * 100`
+  - Топ товары per-cluster (top-5) и общие (top-50) с metadata из `dim_ozon_products`
+  - Фильтр по массиву SKU
+- `GET /ozon/geography/city-products` — drill-down товаров по конкретному городу
+  - Стабильность по неделям: `uniqExact(toMonday(order_date)) / total_weeks`
+- `GET /ozon/geography/products-search` — autocomplete для фильтра (по name, offer_id, sku)
+
+**Frontend** (`OzonGeographyPage.tsx` ~530 строк, `warehouses.ts`):
+- `OzonGeographyPage` — полная страница:
+  - 4 KPI: заказы, выручка, ср. чек, охват (X кл. · Y гор.)
+  - `ClustersTable` — 2-уровневая: кластеры → города → товары
+  - `TopProductsTable` — сортируемая таблица с колонками: кластеры, города, доля
+  - `OzonProductCombobox` — мульти-фильтр по SKU (autocomplete с debounce)
+  - Period selector (7/14/30/60/90 дн), skeleton loading, анимации
+- `WarehousesGeographyPage.tsx` — redirect `→ /warehouses/analytics` заменён на `<OzonGeographyPage />`
+- API типы: `OzonGeographyResponse`, `OzonGeographyCluster`, `OzonGeographyProduct`
+
+---
+
 ## 2026-03-16 (v2)
 
 ### fix(supply): синхронизация расчёта хранения между Поставками и Хранением

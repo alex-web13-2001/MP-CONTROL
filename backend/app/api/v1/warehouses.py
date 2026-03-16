@@ -7246,6 +7246,429 @@ async def get_wb_geography_ai_analysis(
 
 
 # ═══════════════════════════════════════════════════════════════
+# Ozon Sales Geography
+# ═══════════════════════════════════════════════════════════════
+
+@router.get("/ozon/geography")
+async def get_ozon_geography(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    skus: str = Query(None, description="Comma-separated SKUs to filter by"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ozon sales geography — clusters with stability, avg check, drill-down by city."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    # Parse multi-SKU filter
+    sku_list: list[int] = []
+    sku_filter = ""
+    params: dict = {"shop_id": shop_id, "d_start": d_start, "period_days": period}
+    if skus:
+        try:
+            sku_list = [int(x.strip()) for x in skus.split(",") if x.strip()]
+        except ValueError:
+            pass
+        if sku_list:
+            id_str = ", ".join(str(x) for x in sku_list)
+            sku_filter = f"AND sku IN ({id_str})"
+
+    # ── 1. Orders by cluster_to + city with stability ──
+    rows = ch.query(f"""
+        SELECT
+            cluster_to AS cluster,
+            city,
+            count() AS orders,
+            sum(toFloat64(price) * quantity) AS revenue,
+            count(DISTINCT toDate(order_date)) AS active_days
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND order_date >= {{d_start:Date}}
+          AND status NOT IN ('cancelled', 'canceled')
+          AND cluster_to != ''
+          {sku_filter}
+        GROUP BY cluster, city
+        ORDER BY orders DESC
+    """, parameters=params).result_rows
+
+    total_orders = sum(int(r[2]) for r in rows)
+    total_revenue = sum(float(r[3]) for r in rows)
+
+    # ── 1b. Stability per cluster (unique days with orders) ──
+    cluster_stability_rows = ch.query(f"""
+        SELECT
+            cluster_to AS cluster,
+            count(DISTINCT toDate(order_date)) AS active_days
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND order_date >= {{d_start:Date}}
+          AND status NOT IN ('cancelled', 'canceled')
+          AND cluster_to != ''
+          {sku_filter}
+        GROUP BY cluster
+    """, parameters=params).result_rows
+    cluster_active_days: dict[str, int] = {}
+    for r in cluster_stability_rows:
+        cluster_active_days[str(r[0]) or "Не определено"] = int(r[1])
+
+    # Group by cluster
+    cluster_data: dict[str, dict] = {}
+    for r in rows:
+        cluster = str(r[0]) or "Не определено"
+        city = str(r[1]) or "Не определено"
+        orders = int(r[2])
+        revenue = float(r[3])
+        active_days = int(r[4])
+
+        if cluster not in cluster_data:
+            cluster_data[cluster] = {
+                "cluster": cluster,
+                "orders": 0,
+                "revenue": 0,
+                "share_pct": 0,
+                "avg_check": 0,
+                "stability_pct": 0,
+                "cities": [],
+            }
+        cluster_data[cluster]["orders"] += orders
+        cluster_data[cluster]["revenue"] += revenue
+        city_avg_check = round(revenue / orders, 2) if orders > 0 else 0
+        city_stability = round(active_days / period * 100, 1)
+        cluster_data[cluster]["cities"].append({
+            "city": city,
+            "orders": orders,
+            "revenue": round(revenue, 2),
+            "avg_check": city_avg_check,
+            "stability_pct": city_stability,
+            "share_pct": round(orders / total_orders * 100, 1) if total_orders > 0 else 0,
+        })
+
+    clusters_result = []
+    for cluster_name, cd in sorted(cluster_data.items(), key=lambda x: x[1]["orders"], reverse=True):
+        cd["share_pct"] = round(cd["orders"] / total_orders * 100, 1) if total_orders > 0 else 0
+        cd["revenue"] = round(cd["revenue"], 2)
+        cd["avg_check"] = round(cd["revenue"] / cd["orders"], 2) if cd["orders"] > 0 else 0
+        active_d = cluster_active_days.get(cluster_name, 0)
+        cd["stability_pct"] = round(active_d / period * 100, 1)
+        cd["cities"] = sorted(cd["cities"], key=lambda x: x["orders"], reverse=True)
+        clusters_result.append(cd)
+
+    # ── 2. Top products ──
+    top_products = []
+    prod_map: dict[int, dict] = {}
+    if not sku_list:
+        prod_rows = ch.query(f"""
+            SELECT
+                sku,
+                count() AS orders,
+                sum(toFloat64(price) * quantity) AS revenue,
+                count(DISTINCT cluster_to) AS cluster_count,
+                count(DISTINCT city) AS city_count,
+                uniqExact(toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND order_date >= {{d_start:Date}}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+            GROUP BY sku
+            ORDER BY orders DESC
+            LIMIT 50
+        """, parameters=params).result_rows
+
+        prod_skus = [int(r[0]) for r in prod_rows]
+        if prod_skus:
+            sku_list_str = ", ".join(str(x) for x in prod_skus)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT sku, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({sku_list_str})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:80]}
+
+        for r in prod_rows:
+            sku_id = int(r[0])
+            prod = prod_map.get(sku_id, {})
+            p_orders = int(r[1])
+            p_rev = float(r[2])
+            active_days = int(r[5])
+            top_products.append({
+                "sku": sku_id,
+                "offer_id": prod.get("offer_id", ""),
+                "name": prod.get("name", ""),
+                "orders": p_orders,
+                "revenue": round(p_rev, 2),
+                "avg_check": round(p_rev / p_orders, 2) if p_orders > 0 else 0,
+                "cluster_count": int(r[3]),
+                "city_count": int(r[4]),
+                "stability_pct": round(active_days / period * 100, 1),
+                "share_pct": round(p_orders / total_orders * 100, 1) if total_orders > 0 else 0,
+            })
+
+    # ── 3. Per-cluster top products ──
+    cluster_top_products: dict[str, list] = {}
+    if not sku_list:
+        ctop_rows = ch.query(f"""
+            SELECT
+                cluster_to AS cluster,
+                sku,
+                count() AS orders,
+                sum(toFloat64(price) * quantity) AS revenue,
+                uniqExact(toDate(order_date)) AS active_days
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND order_date >= {{d_start:Date}}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != ''
+            GROUP BY cluster, sku
+            ORDER BY cluster, orders DESC
+        """, parameters=params).result_rows
+
+        current_cluster = ""
+        count = 0
+        for r in ctop_rows:
+            cluster = str(r[0]) or "Не определено"
+            if cluster != current_cluster:
+                current_cluster = cluster
+                count = 0
+            count += 1
+            if count <= 5:
+                sku_id = int(r[1])
+                prod = prod_map.get(sku_id, {})
+                active_days = int(r[4])
+                cluster_top_products.setdefault(cluster, []).append({
+                    "sku": sku_id,
+                    "offer_id": prod.get("offer_id", ""),
+                    "name": prod.get("name", ""),
+                    "orders": int(r[2]),
+                    "revenue": round(float(r[3]), 2),
+                    "avg_check": round(float(r[3]) / int(r[2]), 2) if int(r[2]) > 0 else 0,
+                    "stability_pct": round(active_days / period * 100, 1),
+                })
+
+    # ── 4. SKU filter info ──
+    sku_filter_info = []
+    if sku_list:
+        sku_list_str = ", ".join(str(x) for x in sku_list)
+        pg_rows = (await db.execute(
+            text(f"""
+                SELECT sku, offer_id, name
+                FROM dim_ozon_products
+                WHERE shop_id = :sid AND sku IN ({sku_list_str})
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+        for r in pg_rows:
+            sku_filter_info.append({
+                "sku": r[0],
+                "offer_id": r[1] or "",
+                "name": (r[2] or "")[:80],
+            })
+
+    # ── 5. Total unique cities count ──
+    total_cities = len(set(
+        str(r[1]) for r in rows if str(r[1])
+    ))
+    total_clusters = len(cluster_data)
+
+    avg_check = round(total_revenue / total_orders, 2) if total_orders > 0 else 0
+
+    ch.close()
+
+    return {
+        "total_orders": total_orders,
+        "total_revenue": round(total_revenue, 2),
+        "avg_check": avg_check,
+        "total_clusters": total_clusters,
+        "total_cities": total_cities,
+        "period_days": period,
+        "clusters": clusters_result,
+        "top_products": top_products,
+        "cluster_top_products": cluster_top_products,
+        "sku_filter": sku_filter_info,
+    }
+
+
+@router.get("/ozon/geography/city-products")
+async def get_ozon_geography_city_products(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    city: str = Query(..., description="City name"),
+    skus: str = Query(None, description="Comma-separated SKUs to filter by"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top products for a specific city (drill-down)."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    sku_filter = ""
+    if skus:
+        try:
+            sku_id_list = [int(x.strip()) for x in skus.split(",") if x.strip()]
+            if sku_id_list:
+                id_str = ", ".join(str(x) for x in sku_id_list)
+                sku_filter = f"AND sku IN ({id_str})"
+        except ValueError:
+            pass
+
+    total_weeks = max(1, period // 7)
+
+    prod_rows = ch.query(f"""
+        SELECT
+            sku,
+            count() AS orders,
+            sum(toFloat64(price) * quantity) AS revenue,
+            uniqExact(toMonday(order_date)) AS active_weeks
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {{shop_id:UInt32}}
+          AND order_date >= {{d_start:Date}}
+          AND status NOT IN ('cancelled', 'canceled')
+          AND city = {{city:String}}
+          {sku_filter}
+        GROUP BY sku
+        ORDER BY orders DESC
+        LIMIT 20
+    """, parameters={"shop_id": shop_id, "d_start": d_start, "city": city}).result_rows
+
+    ch.close()
+
+    sku_ids = [int(r[0]) for r in prod_rows]
+    prod_map: dict[int, dict] = {}
+    if sku_ids:
+        sku_list_str = ", ".join(str(x) for x in sku_ids)
+        pg_rows = (await db.execute(
+            text(f"""
+                SELECT sku, offer_id, name
+                FROM dim_ozon_products
+                WHERE shop_id = :sid AND sku IN ({sku_list_str})
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+        for r in pg_rows:
+            prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:80]}
+
+    result = []
+    for r in prod_rows:
+        sku_id = int(r[0])
+        prod = prod_map.get(sku_id, {})
+        p_orders = int(r[1])
+        p_rev = float(r[2])
+        active_weeks = int(r[3])
+        stability_pct = round(active_weeks / total_weeks * 100, 1)
+        result.append({
+            "sku": sku_id,
+            "offer_id": prod.get("offer_id", ""),
+            "name": prod.get("name", ""),
+            "orders": p_orders,
+            "revenue": round(p_rev, 2),
+            "avg_check": round(p_rev / p_orders, 2) if p_orders > 0 else 0,
+            "stability_pct": stability_pct,
+        })
+
+    return {"city": city, "products": result}
+
+
+@router.get("/ozon/geography/products-search")
+async def get_ozon_geography_products_search(
+    shop_id: int = Query(...),
+    q: str = Query("", description="Search query (name, offer_id, or sku)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search Ozon products for autocomplete in geography filter."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    search = q.strip()
+    if not search:
+        pg_rows = (await db.execute(
+            text("""
+                SELECT sku, offer_id, name
+                FROM dim_ozon_products
+                WHERE shop_id = :sid
+                ORDER BY name
+                LIMIT 100
+            """),
+            {"sid": shop_id},
+        )).fetchall()
+    else:
+        # Try numeric search (sku)
+        try:
+            sku_int = int(search)
+            pg_rows = (await db.execute(
+                text("""
+                    SELECT sku, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku = :sku_val
+                    LIMIT 20
+                """),
+                {"sid": shop_id, "sku_val": sku_int},
+            )).fetchall()
+            if not pg_rows:
+                pg_rows = (await db.execute(
+                    text("""
+                        SELECT sku, offer_id, name
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND CAST(sku AS TEXT) LIKE :pattern
+                        ORDER BY name
+                        LIMIT 20
+                    """),
+                    {"sid": shop_id, "pattern": f"%{search}%"},
+                )).fetchall()
+        except ValueError:
+            pg_rows = (await db.execute(
+                text("""
+                    SELECT sku, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid
+                      AND (LOWER(name) LIKE :q OR LOWER(offer_id) LIKE :q)
+                    ORDER BY name
+                    LIMIT 30
+                """),
+                {"sid": shop_id, "q": f"%{search.lower()}%"},
+            )).fetchall()
+
+    result = []
+    for r in pg_rows:
+        result.append({
+            "sku": r[0],
+            "offer_id": r[1] or "",
+            "name": (r[2] or "")[:80],
+        })
+
+    return {"products": result}
+
+
+# ═══════════════════════════════════════════════════════════════
 # AI Storage Analysis
 # ═══════════════════════════════════════════════════════════════
 

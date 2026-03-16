@@ -3,7 +3,7 @@
  * stability metrics, drill-down by region, top products.
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Navigate } from 'react-router-dom'
+import OzonGeographyPage from './OzonGeographyPage'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Globe,
@@ -1089,7 +1089,7 @@ export default function WarehousesGeographyPage() {
 
   useEffect(() => { if (isWB) fetchData() }, [fetchData, isWB])
 
-  if (isOzon) return <Navigate to="/warehouses/analytics" replace />
+  if (isOzon) return <OzonGeographyPage />
 
   const handleSelectProduct = (p: WBGeographySkuInfo) => {
     if (!selectedProducts.find(s => s.nm_id === p.nm_id)) {

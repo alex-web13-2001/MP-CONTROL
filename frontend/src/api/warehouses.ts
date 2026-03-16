@@ -874,6 +874,101 @@ export async function getGeographyAIAnalysis(params: {
   return data
 }
 
+// ═══════════════════════════════════════════════════════════
+// Ozon Sales Geography
+// ═══════════════════════════════════════════════════════════
+
+export interface OzonGeographyCity {
+  city: string
+  orders: number
+  revenue: number
+  avg_check: number
+  stability_pct: number
+  share_pct: number
+}
+
+export interface OzonGeographyCluster {
+  cluster: string
+  orders: number
+  revenue: number
+  avg_check: number
+  stability_pct: number
+  share_pct: number
+  cities: OzonGeographyCity[]
+}
+
+export interface OzonGeographyProduct {
+  sku: number
+  offer_id: string
+  name: string
+  orders: number
+  revenue: number
+  avg_check: number
+  cluster_count: number
+  city_count: number
+  stability_pct?: number
+  share_pct: number
+}
+
+export interface OzonGeographySkuInfo {
+  sku: number
+  offer_id: string
+  name: string
+}
+
+export interface OzonGeographyResponse {
+  total_orders: number
+  total_revenue: number
+  avg_check: number
+  total_clusters: number
+  total_cities: number
+  period_days: number
+  clusters: OzonGeographyCluster[]
+  top_products: OzonGeographyProduct[]
+  cluster_top_products: Record<string, OzonGeographyProduct[]>
+  sku_filter: OzonGeographySkuInfo[]
+}
+
+export interface OzonCityProductsResponse {
+  city: string
+  products: {
+    sku: number
+    offer_id: string
+    name: string
+    orders: number
+    revenue: number
+    avg_check: number
+    stability_pct?: number
+  }[]
+}
+
+export async function getOzonGeography(params: {
+  shop_id: number
+  period?: number
+  skus?: string
+}): Promise<OzonGeographyResponse> {
+  const { data } = await apiClient.get<OzonGeographyResponse>('/warehouses/ozon/geography', { params })
+  return data
+}
+
+export async function getOzonGeographyCityProducts(params: {
+  shop_id: number
+  period?: number
+  city: string
+  skus?: string
+}): Promise<OzonCityProductsResponse> {
+  const { data } = await apiClient.get<OzonCityProductsResponse>('/warehouses/ozon/geography/city-products', { params })
+  return data
+}
+
+export async function searchOzonGeographyProducts(params: {
+  shop_id: number
+  q?: string
+}): Promise<{ products: OzonGeographySkuInfo[] }> {
+  const { data } = await apiClient.get<{ products: OzonGeographySkuInfo[] }>('/warehouses/ozon/geography/products-search', { params })
+  return data
+}
+
 /* ═══════════════════════════════════════════════════════════
    Storage AI Analysis
    ═══════════════════════════════════════════════════════════ */
