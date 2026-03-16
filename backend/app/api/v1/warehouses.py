@@ -4303,6 +4303,76 @@ async def wb_warehouse_analytics(
             cost_by_wh[wh_name]["logistics"] += logistics
             cost_by_wh[wh_name]["logistics_cnt"] += cnt
 
+    # ── 4a. PREVIOUS period costs (for trend comparison) ─────
+    prev_d_start = d_start - timedelta(days=period)
+    prev_d_end = d_start
+    prev_cost_by_type: dict[str, dict] = {}
+    prev_total_orders = 0
+    try:
+        prev_cost_rows = ch.query(f"""
+            SELECT
+                CASE
+                    WHEN operation_type = 'Удержание' AND JSONExtractString(raw_payload, 'bonus_type_name') LIKE '%WB Продвижение%'
+                        THEN '__SKIP__'
+                    WHEN operation_type = 'Удержание' AND JSONExtractString(raw_payload, 'bonus_type_name') LIKE 'Списание за отзыв%'
+                        THEN 'Списание за отзыв'
+                    WHEN operation_type = 'Удержание'
+                        THEN 'Удержания'
+                    ELSE operation_type
+                END                            AS op_type_key,
+                count()                    AS cnt,
+                sum(logistics_total)       AS logistics,
+                sum(storage_fee)           AS storage,
+                sum(acceptance_fee)        AS acceptance,
+                sum(penalty_total)         AS penalty
+            FROM mms_analytics.fact_finances
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND event_date >= {{prev_d_start:Date}}
+              AND event_date < {{prev_d_end:Date}}
+            GROUP BY op_type_key
+        """, parameters={"shop_id": shop_id, "prev_d_start": prev_d_start, "prev_d_end": prev_d_end}).result_rows
+        for row in prev_cost_rows:
+            op_type = row[0]
+            if op_type == '__SKIP__':
+                continue
+            prev_cost_by_type[op_type] = {
+                "count": row[1], "logistics": row[2], "storage": row[3],
+                "acceptance": row[4], "penalty": row[5],
+            }
+
+        # Previous period orders count
+        prev_orders_row = ch.query(f"""
+            SELECT count() FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND date >= {{prev_d_start:Date}} AND date < {{prev_d_end:Date}}
+              AND is_cancel = 0
+        """, parameters={"shop_id": shop_id, "prev_d_start": prev_d_start, "prev_d_end": prev_d_end}).result_rows
+        prev_total_orders = int(prev_orders_row[0][0]) if prev_orders_row else 0
+    except Exception as e:
+        logger.warning("Prev-period costs query failed: %s", e)
+
+    # ── 4b. Penalty details (breakdown by reason) ────────────
+    penalty_details: list[dict] = []
+    try:
+        pen_rows = ch.query(f"""
+            SELECT
+                JSONExtractString(raw_payload, 'bonus_type_name') AS reason,
+                count()                                           AS cnt,
+                sum(abs(penalty_total))                           AS amount
+            FROM mms_analytics.fact_finances
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND event_date >= {{d_start:Date}}
+              AND operation_type = 'Штраф'
+              AND penalty_total != 0
+            GROUP BY reason
+            ORDER BY amount DESC
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+        for r in pen_rows:
+            reason = r[0] or "Без указания причины"
+            penalty_details.append({"reason": reason, "count": int(r[1]), "amount": round(float(r[2]), 2)})
+    except Exception as e:
+        logger.warning("Penalty details query failed: %s", e)
+
     # ── 5. Tariffs ───────────────────────────────────────────
     tariffs: dict[str, dict] = {}
     try:
@@ -4751,6 +4821,14 @@ async def wb_warehouse_analytics(
         "period_days": period,
         "has_actual_storage": has_actual_storage,
         "forecast_30d": round(total_forecast_30d, 2) if total_forecast_30d > 0 else None,
+        # Previous period comparison
+        "prev": {
+            "total_logistics": round(prev_cost_by_type.get("Логистика", {}).get("logistics", 0), 2),
+            "total_storage": round(prev_cost_by_type.get("Хранение", {}).get("storage", 0), 2),
+            "total_penalties": round(prev_cost_by_type.get("Штраф", {}).get("penalty", 0), 2),
+            "total_orders": prev_total_orders,
+        },
+        "penalty_details": penalty_details,
     }
 
     # ── 12. Recommendations ──────────────────────────────────

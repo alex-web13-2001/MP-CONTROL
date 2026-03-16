@@ -464,6 +464,13 @@ export interface WBAnalyticsKpi {
   period_days: number
   has_actual_storage: boolean
   forecast_30d: number | null
+  prev?: {
+    total_logistics: number
+    total_storage: number
+    total_penalties: number
+    total_orders: number
+  }
+  penalty_details?: { reason: string; amount: number; count: number }[]
 }
 
 export interface WBAnalyticsSkuDetail {
