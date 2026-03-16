@@ -208,7 +208,7 @@ const _aiCache = new Map<string, { ts: number; data: AIWarehouseAnalysis }>()
 const _AI_FE_TTL = 10 * 60 * 1000 // 10 min
 
 /* ═══ AI Diagnostics Block ═══ */
-function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number }) {
+export function AIDiagnosticsBlock({ shopId, period }: { shopId: number; period: number }) {
   const [data, setData] = useState<AIWarehouseAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [expanded, setExpanded] = useState(false)
