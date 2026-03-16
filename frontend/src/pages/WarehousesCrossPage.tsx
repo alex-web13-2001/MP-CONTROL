@@ -39,7 +39,8 @@ import {
 } from '@/api/warehouses'
 
 /* ── Constants ── */
-const CROSS_COST_PER_ORDER = 33 // ₽ WB cross-delivery surcharge
+// Cross cost is calculated per-warehouse: logistics_cost × (cross_orders / orders)
+// WB does NOT split logistics cost into cross/local in financial reports
 const CROSS_BENCHMARK_GOOD = 25
 const CROSS_BENCHMARK_BAD = 50
 
@@ -114,9 +115,17 @@ function CrossKpiCards({ data }: { data: WBWarehouseAnalyticsResponse }) {
   const kpi = data.kpi
   const warehouses = data.warehouses
 
-  // Calculate total cross orders and estimated loss
-  const totalCrossOrders = warehouses.reduce((s, w) => s + w.cross_orders, 0)
-  const crossLoss = totalCrossOrders * CROSS_COST_PER_ORDER
+  // Calculate cross cost per-warehouse: logistics_cost × (cross_orders / orders)
+  // This uses REAL logistics costs from fact_finances
+  let crossCost = 0
+  let totalCrossOrders = 0
+  warehouses.forEach(w => {
+    totalCrossOrders += w.cross_orders
+    if (w.orders > 0 && w.logistics_cost > 0) {
+      crossCost += w.logistics_cost * (w.cross_orders / w.orders)
+    }
+  })
+  crossCost = Math.round(crossCost)
 
   // Find worst warehouse
   const worstWh = warehouses
@@ -142,12 +151,12 @@ function CrossKpiCards({ data }: { data: WBWarehouseAnalyticsResponse }) {
           <div className="flex items-center gap-2 mb-1">
             <Truck className="h-4 w-4 text-red-400" />
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
-              Кросс-потери
+              Кросс-логистика
             </span>
           </div>
-          <div className="text-2xl font-bold tabular-nums text-red-400">{fmtM(crossLoss)}</div>
+          <div className="text-2xl font-bold tabular-nums text-red-400">≈ {fmtM(crossCost)}</div>
           <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-            {fmt(totalCrossOrders)} заказов × {CROSS_COST_PER_ORDER}₽
+            {fmt(totalCrossOrders)} кросс-заказов • доля от логистики
           </div>
         </div>
 
@@ -253,19 +262,23 @@ function TopProblemSkus({ data }: { data: WBWarehouseAnalyticsResponse }) {
             </thead>
             <tbody>
               {shown.map((sku, idx) => {
-                const loss = sku.cross_orders * CROSS_COST_PER_ORDER
+                // Find the warehouse to get its logistics_cost for proportional calc
+                const whData = data.warehouses.find(w => w.warehouse_name === (sku as any).warehouse)
+                const skuLoss = whData && whData.orders > 0 && whData.logistics_cost > 0
+                  ? Math.round(whData.logistics_cost * (sku.cross_orders / whData.orders))
+                  : 0
                 const topCrossOkrugs = sku.geography
                   .filter(g => !g.is_local)
                   .slice(0, 2)
                   .map(g => g.okrug.replace(' федеральный округ', ''))
                 return (
-                  <tr key={`${sku.nm_id}-${sku.warehouse}-${idx}`}
+                  <tr key={`${sku.nm_id}-${(sku as any).warehouse}-${idx}`}
                     className={`border-b border-[hsl(var(--border)/0.1)] ${idx % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}
                   >
                     <td className="px-4 py-2.5">
                       <ProductCell sku={sku} />
                     </td>
-                    <td className="px-3 py-2.5 text-[12px] text-[hsl(var(--muted-foreground))]">{sku.warehouse}</td>
+                    <td className="px-3 py-2.5 text-[12px] text-[hsl(var(--muted-foreground))]">{(sku as any).warehouse}</td>
                     <td className="px-3 py-2.5 text-center tabular-nums text-[13px]">{fmt(sku.orders)}</td>
                     <td className="px-3 py-2.5 text-center">
                       <span className={`text-[13px] font-bold tabular-nums ${pctColor(sku.cross_pct)}`}>
@@ -273,7 +286,11 @@ function TopProblemSkus({ data }: { data: WBWarehouseAnalyticsResponse }) {
                       </span>
                     </td>
                     <td className="px-3 py-2.5 text-center">
-                      <span className="text-[12px] font-semibold text-red-400 tabular-nums">~{fmtM(loss)}</span>
+                      {skuLoss > 0 ? (
+                        <span className="text-[12px] font-semibold text-red-400 tabular-nums" title="Оценка: доля от реальной логистики склада">≈ {fmtM(skuLoss)}</span>
+                      ) : (
+                        <span className="text-[hsl(var(--muted-foreground))] opacity-40">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-2.5">
                       {topCrossOkrugs.length > 0 ? (
@@ -530,7 +547,6 @@ function SkuGeographyPanel({ sku, warehouseName }: { sku: WBAnalyticsSkuDetail; 
   const crossGeo = sku.geography.filter(g => !g.is_local)
   const topCrossOkrugs = crossGeo.slice(0, 3).map(g => g.okrug.replace(' федеральный округ', ''))
   const totalCrossOrders = crossGeo.reduce((s, g) => s + g.orders, 0)
-  const estimatedSavings = totalCrossOrders * CROSS_COST_PER_ORDER
 
   return (
     <motion.div
@@ -586,7 +602,7 @@ function SkuGeographyPanel({ sku, warehouseName }: { sku: WBAnalyticsSkuDetail; 
                   Рекомендация: довезти на {topCrossOkrugs.join(', ')}
                 </p>
                 <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                  {totalCrossOrders} кросс-заказов → потенциальная экономия ~{fmtM(estimatedSavings)}
+                  {totalCrossOrders} кросс-заказов за период
                 </p>
               </div>
             </div>
@@ -750,7 +766,7 @@ function WarehouseExpandedDetail({ wh }: { wh: WBAnalyticsWarehouse }) {
                       Кросс {wh.cross_pct}% — выше нормы
                     </p>
                     <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
-                      ~{fmtM(wh.cross_orders * CROSS_COST_PER_ORDER)} потерь.
+                      {wh.cross_orders} кросс-заказов из {wh.orders}.
                       Рассмотрите довоз товаров в{' '}
                       {wh.geography
                         .filter(g => !g.is_local)
@@ -805,7 +821,9 @@ function CrossWarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse
               {crossWarehouses.map((wh, idx) => {
                 const isExpanded = expandedWh === wh.warehouse_name
                 const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.04)]'
-                const loss = wh.cross_orders * CROSS_COST_PER_ORDER
+                const whCrossCost = wh.orders > 0 && wh.logistics_cost > 0
+                  ? Math.round(wh.logistics_cost * (wh.cross_orders / wh.orders))
+                  : 0
                 return (
                   <React.Fragment key={wh.warehouse_name}>
                     <tr
@@ -830,8 +848,8 @@ function CrossWarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse
                         <span className={`text-[13px] font-bold tabular-nums ${pctColor(wh.cross_pct)}`}>{wh.cross_pct}%</span>
                       </td>
                       <td className="px-3 py-3 text-center">
-                        {loss > 0 ? (
-                          <span className="text-[12px] font-semibold text-red-400 tabular-nums">~{fmtM(loss)}</span>
+                        {whCrossCost > 0 ? (
+                          <span className="text-[12px] font-semibold text-red-400 tabular-nums" title="Доля от реальной логистики склада">≈ {fmtM(whCrossCost)}</span>
                         ) : (
                           <span className="text-[hsl(var(--muted-foreground))] opacity-40">—</span>
                         )}

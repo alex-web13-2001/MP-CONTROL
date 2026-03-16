@@ -24,7 +24,6 @@ import {
   Sparkles,
   ShieldAlert,
   MapPin,
-  PackagePlus,
   Loader2,
   Gavel,
   Copy,
@@ -991,9 +990,7 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            // 3. Critical supply (< 14 days) + out-of-stock alert
-            const criticalWhs = whs.filter(w => w.status === 'critical')
-            // Global out-of-stock: aggregate SKU across all warehouses
+            // 3. Out-of-stock alert: aggregate SKU across all warehouses
             const globalSkuMap = new Map<string, { vc: string; name: string; stock: number; daily: number }>()
             whs.forEach(w => (w.skus || []).forEach(s => {
               const existing = globalSkuMap.get(s.vendor_code)
@@ -1039,63 +1036,8 @@ export default function WarehousesOverviewPage() {
               delay += 0.08
             }
 
-            if (criticalWhs.length > 0) {
-              // Only include SKUs that have active sales — they need restocking
-              // SKUs with daily_sales=0 don't need supply (no demand)
-              const critSkus = criticalWhs
-                .flatMap(w => (w.skus || []).filter(s =>
-                  s.days_supply !== null && s.days_supply < 14 && s.daily_sales > 0
-                ).map(s => ({
-                  ...s,
-                  wh: w.warehouse_name,
-                  needQty: Math.max(0, Math.ceil(s.daily_sales * 14 - s.stock)),
-                })))
-                .sort((a, b) => (a.days_supply ?? 999) - (b.days_supply ?? 999))
-                .slice(0, 6)
-              const totalNeedQty = critSkus.reduce((s, x) => s + x.needQty, 0)
-              // Also count total SKUs on critical warehouses (context)
-              const totalCritSkuCount = criticalWhs.reduce((s, w) => s + (w.skus || []).length, 0)
-              problems.push(
-                <ProblemCard
-                  key="supply"
-                  severity="critical"
-                  icon={PackagePlus}
-                  title={`Нужна поставка: ${criticalWhs.length} скл.${critSkus.length > 0 ? ` • ${critSkus.length} SKU` : ''}`}
-                  details={
-                    <div className="space-y-1.5">
-                      <div className="text-[11px]">
-                        Склады: {criticalWhs.map(w => `${w.warehouse_name} (${fmtD(w.turnover_days)})`).join(', ')}
-                        {totalCritSkuCount > 0 && <span className="opacity-50"> • {totalCritSkuCount} SKU на складах</span>}
-                      </div>
-                      {critSkus.length > 0 ? (
-                        <div className="mt-1 space-y-1">
-                          <span className="text-[10px] font-bold uppercase tracking-wider opacity-60">Что поставлять (до 14 дн. запаса):</span>
-                          {critSkus.map((s, i) => (
-                            <div key={i} className="flex items-center gap-2 text-[11px]">
-                              <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
-                              <span className="text-[10px] opacity-50">{s.wh}</span>
-                              <span className="ml-auto font-bold text-amber-400">+{fmt(s.needQty)} шт</span>
-                              <span className="text-red-400 font-bold">{fmtD(s.days_supply)}</span>
-                            </div>
-                          ))}
-                          {totalNeedQty > 0 && (
-                            <div className="text-[10px] opacity-50 mt-0.5">Итого нужно: ~{fmt(totalNeedQty)} шт на 14 дней</div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="text-[11px] opacity-60 mt-1">
-                          На складах низкая оборачиваемость. Перейдите в Поставки для детального анализа.
-                        </div>
-                      )}
-                    </div>
-                  }
-                  link="/warehouses/supplies"
-                  linkLabel="Поставки"
-                  delay={delay}
-                />
-              )
-              delay += 0.08
-            }
+            // "Нужна поставка" block removed — it duplicated "Скоро out-of-stock" 
+            // and supplies page without adding value (showed "2 скл." without explaining what/why)
 
             // 4. Penalties — pill badges
             const penalties = kpi.total_penalties
