@@ -1411,6 +1411,7 @@ async def _build_wb_supply_data(
             argMax(discount, fetched_at)  AS discount
         FROM mms_analytics.fact_inventory_snapshot
         WHERE shop_id = {shop_id}
+          AND warehouse_name NOT LIKE 'FBS:%'
         GROUP BY nm_id, warehouse_name
         HAVING qty > 0
     """).result_rows
@@ -4183,6 +4184,7 @@ async def wb_warehouse_analytics(
             argMax(quantity, fetched_at)   AS qty
         FROM mms_analytics.fact_inventory_snapshot
         WHERE shop_id = {{shop_id:UInt32}}
+          AND warehouse_name NOT LIKE 'FBS:%'
         GROUP BY warehouse_name, nm_id
         HAVING qty > 0
     """, parameters={"shop_id": shop_id}).result_rows
@@ -5474,6 +5476,7 @@ async def get_wb_ai_analysis(
                 SELECT warehouse_name, nm_id, argMax(quantity, fetched_at) AS qty
                 FROM mms_analytics.fact_inventory_snapshot
                 WHERE shop_id = {shop_id:UInt32}
+                  AND warehouse_name NOT LIKE 'FBS:%'
                 GROUP BY warehouse_name, nm_id
                 HAVING qty > 0
             )
@@ -5519,6 +5522,7 @@ async def get_wb_ai_analysis(
                 SELECT nm_id, argMax(quantity, fetched_at) AS qty
                 FROM mms_analytics.fact_inventory_snapshot
                 WHERE shop_id = {shop_id:UInt32}
+                  AND warehouse_name NOT LIKE 'FBS:%'
                 GROUP BY warehouse_name, nm_id
                 HAVING qty > 0
             )
@@ -5605,6 +5609,7 @@ async def get_wb_ai_analysis(
                     SELECT nm_id, argMax(quantity, fetched_at) AS qty
                     FROM mms_analytics.fact_inventory_snapshot
                     WHERE shop_id = {shop_id:UInt32}
+                      AND warehouse_name NOT LIKE 'FBS:%'
                     GROUP BY warehouse_name, nm_id
                     HAVING qty > 0
                 )
@@ -5726,6 +5731,7 @@ async def get_wb_ai_analysis(
                 SELECT nm_id, warehouse_name, argMax(quantity, fetched_at) AS qty
                 FROM mms_analytics.fact_inventory_snapshot
                 WHERE shop_id = {{shop_id:UInt32}} AND nm_id IN ({nm_list_ch})
+                  AND warehouse_name NOT LIKE 'FBS:%'
                 GROUP BY nm_id, warehouse_name
                 HAVING qty > 0
                 ORDER BY nm_id, qty DESC
@@ -6891,6 +6897,7 @@ async def get_wb_geography_ai_analysis(
                 SELECT warehouse_name, nm_id, argMax(quantity, fetched_at) AS qty
                 FROM mms_analytics.fact_inventory_snapshot
                 WHERE shop_id = {shop_id:UInt32}
+                  AND warehouse_name NOT LIKE 'FBS:%'
                 GROUP BY warehouse_name, nm_id
                 HAVING qty > 0
             )
@@ -7265,6 +7272,7 @@ async def get_wb_storage_ai_analysis(
                     SELECT nm_id, argMax(quantity, fetched_at) AS qty
                     FROM mms_analytics.fact_inventory_snapshot
                     WHERE shop_id = {shop_id:UInt32}
+                      AND warehouse_name NOT LIKE 'FBS:%'
                     GROUP BY warehouse_name, nm_id
                     HAVING qty > 0
                 )
@@ -7393,6 +7401,7 @@ async def get_wb_storage_ai_analysis(
                 SELECT nm_id, warehouse_name, argMax(quantity, fetched_at) AS qty
                 FROM mms_analytics.fact_inventory_snapshot
                 WHERE shop_id = {{shop_id:UInt32}} AND nm_id IN ({nm_list_ch})
+                  AND warehouse_name NOT LIKE 'FBS:%'
                 GROUP BY nm_id, warehouse_name
                 HAVING qty > 0
                 ORDER BY nm_id, qty DESC
