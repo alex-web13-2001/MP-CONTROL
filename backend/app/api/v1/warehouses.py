@@ -2503,6 +2503,476 @@ OZON_STORAGE_TARIFFS = {
 }
 
 
+# ══════════════════════════════════════════════════════════════
+# GET /warehouses/ozon/storage  — Ozon storage analytics
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/ozon/storage")
+async def ozon_storage_analytics(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Storage analytics for Ozon FBO — per-SKU turnover, storage cost estimation,
+    zone classification (free / warning / paid).
+    Format compatible with WB StorageSkusTable for component reuse.
+    """
+    import os
+    import clickhouse_connect
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or shop.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    if shop.marketplace != "ozon":
+        raise HTTPException(status_code=400, detail="Only Ozon shops supported")
+
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+    ch_user = os.getenv("CLICKHOUSE_USER", "default")
+    ch_pass = os.getenv("CLICKHOUSE_PASSWORD", "")
+    ch = clickhouse_connect.get_client(
+        host=ch_host, port=ch_port, username=ch_user, password=ch_pass,
+        database="mms_analytics",
+    )
+
+    try:
+        # ── 1. Current FBO stocks per SKU × warehouse ──
+        stocks_query = ch.query("""
+            SELECT sku, offer_id, product_name, warehouse_name,
+                   free_to_sell, reserved
+            FROM fact_ozon_warehouse_stocks FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt = (SELECT max(dt) FROM fact_ozon_warehouse_stocks WHERE shop_id = {shop_id:UInt32})
+              AND warehouse_type = 'fbo'
+              AND free_to_sell > 0
+        """, parameters={"shop_id": shop_id})
+
+        sku_agg: dict[int, dict] = {}
+        for row in stocks_query.result_rows:
+            sku_id = int(row[0])
+            if sku_id not in sku_agg:
+                sku_agg[sku_id] = {
+                    "sku": sku_id,
+                    "offer_id": row[1],
+                    "name": row[2],
+                    "total_stock": 0,
+                    "total_reserved": 0,
+                    "warehouses": [],
+                }
+            sku_agg[sku_id]["total_stock"] += int(row[4])
+            sku_agg[sku_id]["total_reserved"] += int(row[5])
+            sku_agg[sku_id]["warehouses"].append({
+                "warehouse_name": row[3],
+                "stock": int(row[4]),
+                "reserved": int(row[5]),
+            })
+
+        if not sku_agg:
+            return {
+                "kpi": {
+                    "total_skus": 0, "total_stock": 0,
+                    "total_storage": 0, "avg_turnover_days": None,
+                    "paid_zone_skus": 0, "warning_zone_skus": 0,
+                    "period_days": period,
+                },
+                "storage_skus": [],
+            }
+
+        # ── 2. Orders per SKU (last N days) ──
+        sku_ids = list(sku_agg.keys())
+        orders_query = ch.query("""
+            SELECT sku, sum(quantity) as sold, sum(price * quantity) as revenue
+            FROM fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= today() - {period:UInt32}
+              AND status != 'cancelled'
+              AND sku IN {sku_ids:Array(UInt64)}
+            GROUP BY sku
+        """, parameters={"shop_id": shop_id, "period": period, "sku_ids": sku_ids})
+
+        sales_map: dict[int, dict] = {}
+        for row in orders_query.result_rows:
+            sales_map[int(row[0])] = {"sold": int(row[1]), "revenue": float(row[2])}
+
+        # ── 3. Turnover data from fact_ozon_turnover (Ozon API) ──
+        turnover_map: dict[int, dict] = {}
+        try:
+            tr = ch.query("""
+                SELECT sku, days_of_supply, avg_daily_sales,
+                       stock_fbo, turnover_category
+                FROM fact_ozon_turnover FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt = (SELECT max(dt) FROM fact_ozon_turnover WHERE shop_id = {shop_id:UInt32})
+            """, parameters={"shop_id": shop_id})
+            for row in tr.result_rows:
+                turnover_map[int(row[0])] = {
+                    "days_of_supply": float(row[1]),
+                    "avg_daily_sales": float(row[2]),
+                    "stock_fbo": int(row[3]),
+                    "turnover_category": row[4],
+                }
+        except Exception:
+            pass
+
+        # ── 4. Ad data for SKUs ──
+        ad_map: dict[int, dict] = {}
+        try:
+            ad_query = ch.query("""
+                SELECT sku,
+                       sum(money_spent) AS spend_30d,
+                       sum(orders) AS orders_30d,
+                       sumIf(money_spent, dt >= today() - 7) AS spend_7d
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt >= today() - 30
+                  AND sku IN {sku_ids:Array(UInt64)}
+                GROUP BY sku
+            """, parameters={"shop_id": shop_id, "sku_ids": sku_ids})
+            for r in ad_query.result_rows:
+                ad_map[int(r[0])] = {
+                    "has_ads": float(r[3]) > 0,
+                    "spend_30d": float(r[1]),
+                    "orders_30d": int(r[2]),
+                }
+        except Exception:
+            pass
+
+        # ── 5. Product volume from volume_weight ──
+        # Ozon dim_ozon_products: depth/height/width often = 0
+        # But volume_weight (kg) × 2.87 ≈ volume in liters
+        # (coefficient reverse-engineered from Ozon seller dashboard)
+        VW_TO_LITERS = 2.87
+        dims_map: dict[int, float] = {}  # sku → volume in liters
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        try:
+            vol_rows = await db.execute(
+                text("""SELECT sku, volume_weight, depth, height, width
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND sku IS NOT NULL"""),
+                {"sid": shop_id},
+            )
+            for vr in vol_rows.fetchall():
+                if not vr[0]:
+                    continue
+                d, h, w = float(vr[2] or 0), float(vr[3] or 0), float(vr[4] or 0)
+                vw = float(vr[1] or 0)
+                # Priority: actual dimensions > volume_weight estimate
+                if d > 0 and h > 0 and w > 0:
+                    volume_liters = (d * h * w) / 1_000_000
+                elif vw > 0:
+                    volume_liters = vw * VW_TO_LITERS
+                else:
+                    volume_liters = 0.5  # fallback
+                dims_map[int(vr[0])] = max(round(volume_liters, 2), 0.1)
+        except Exception:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+        # ── 5b. ACTUAL placement costs from Ozon report ──
+        # Data is stored per-day × per-warehouse, aggregate SUM by offer_id
+        actual_costs: dict[str, float] = {}  # offer_id → total placement_cost
+        # Per-warehouse cost: offer_id → {warehouse_name → cost}
+        actual_wh_costs: dict[str, dict[str, float]] = {}
+        actual_period = None
+        try:
+            pc = ch.query("""
+                SELECT offer_id,
+                       sum(placement_cost) AS total_cost,
+                       min(period_from) AS p_from,
+                       max(period_to) AS p_to
+                FROM fact_ozon_placement_cost FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND period_to = (
+                      SELECT max(period_to)
+                      FROM fact_ozon_placement_cost FINAL
+                      WHERE shop_id = {shop_id:UInt32}
+                  )
+                GROUP BY offer_id
+            """, parameters={"shop_id": shop_id})
+            for row in pc.result_rows:
+                actual_costs[str(row[0])] = float(row[1])
+                if actual_period is None:
+                    actual_period = {"from": str(row[2]), "to": str(row[3])}
+
+            # Per-warehouse breakdown for expanded detail view
+            pwc = ch.query("""
+                SELECT offer_id, warehouse_name,
+                       sum(placement_cost) AS wh_cost
+                FROM fact_ozon_placement_cost FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND period_to = (
+                      SELECT max(period_to)
+                      FROM fact_ozon_placement_cost FINAL
+                      WHERE shop_id = {shop_id:UInt32}
+                  )
+                GROUP BY offer_id, warehouse_name
+            """, parameters={"shop_id": shop_id})
+            for row in pwc.result_rows:
+                oid = str(row[0])
+                wh_name = str(row[1])
+                if oid not in actual_wh_costs:
+                    actual_wh_costs[oid] = {}
+                actual_wh_costs[oid][wh_name] = float(row[2])
+        except Exception:
+            pass  # Table may not exist yet
+
+        has_actual_data = len(actual_costs) > 0
+
+        # ── 6. Build per-SKU storage data ──
+        # Ozon tariff: ~0.14 ₽/L/day for turnover > 160 days
+        # (calibrated from Ozon seller dashboard reverse-engineering)
+        TARIFF_PER_LITER_DAY = 0.14
+        storage_skus = []
+        total_est_cost = 0.0
+        total_actual_cost = 0.0
+
+        for sku_id, info in sku_agg.items():
+            sales = sales_map.get(sku_id, {"sold": 0, "revenue": 0})
+            daily_sales = sales["sold"] / period if period > 0 else 0
+
+            # Prefer Ozon turnover data, fallback to calculated
+            tr_data = turnover_map.get(sku_id)
+            if tr_data and tr_data["days_of_supply"] > 0:
+                turnover_days = tr_data["days_of_supply"]
+            else:
+                turnover_days = info["total_stock"] / daily_sales if daily_sales > 0 else 99999
+
+            # Volume and cost estimation
+            vol_liters = dims_map.get(sku_id, 0.5)
+            est_daily_cost = info["total_stock"] * vol_liters * TARIFF_PER_LITER_DAY
+            est_monthly_cost = est_daily_cost * 30
+
+            # Zone classification (Ozon: free < 120d, warning 120-160d, paid > 160d)
+            if turnover_days > 160:
+                zone = "paid"
+            elif turnover_days > 120:
+                zone = "warning"
+            else:
+                zone = "free"
+
+            # Only charge storage for items in paid zone
+            if zone == "free":
+                est_monthly_cost = 0
+                est_daily_cost = 0
+
+            total_est_cost += est_monthly_cost
+
+            # Days to sell out
+            days_to_sell = round(info["total_stock"] / daily_sales) if daily_sales > 0 else None
+
+            # Forecast 30d: stock decreases with sales
+            forecast_30d = None
+            if est_daily_cost > 0 and info["total_stock"] > 0:
+                cost_per_unit = est_daily_cost / info["total_stock"]
+                forecast = 0.0
+                for day in range(30):
+                    remaining = max(0, info["total_stock"] - daily_sales * day)
+                    if remaining <= 0:
+                        break
+                    forecast += cost_per_unit * remaining
+                forecast_30d = round(forecast, 2)
+
+            # Ad info
+            ad_info = ad_map.get(sku_id, {"has_ads": False, "spend_30d": 0, "orders_30d": 0})
+
+            # Check for actual placement cost from Ozon report
+            offer_id = info["offer_id"]
+            actual_cost = actual_costs.get(offer_id)
+            if actual_cost is not None:
+                storage_source = "actual"
+                display_cost = actual_cost
+                total_actual_cost += actual_cost
+            else:
+                storage_source = "estimated"
+                display_cost = est_monthly_cost
+
+            # Build per-warehouse breakdown with cost_month + forecast
+            wh_cost_map = actual_wh_costs.get(offer_id, {})
+            wh_list = []
+            for wh_info in info["warehouses"]:
+                wh_name = wh_info["warehouse_name"]
+                wh_stock = wh_info["stock"]
+                # Try actual warehouse cost first; fallback to proportional estimate
+                wh_actual_cost = wh_cost_map.get(wh_name)
+                if wh_actual_cost is not None:
+                    wh_cost_month = round(wh_actual_cost, 2)
+                elif est_daily_cost > 0 and info["total_stock"] > 0:
+                    wh_cost_month = round(est_daily_cost / info["total_stock"] * wh_stock * 30, 2)
+                else:
+                    wh_cost_month = 0.0
+
+                # Per-warehouse forecast: proportional to stock share
+                wh_forecast = None
+                if forecast_30d is not None and info["total_stock"] > 0 and wh_stock > 0:
+                    stock_share = wh_stock / info["total_stock"]
+                    wh_forecast = round(forecast_30d * stock_share, 2)
+
+                wh_list.append({
+                    "warehouse": wh_name,
+                    "stock": wh_stock,
+                    "reserved": wh_info.get("reserved", 0),
+                    "cost_month": wh_cost_month,
+                    "forecast_30d": wh_forecast,
+                })
+
+            storage_skus.append({
+                # WB-compatible fields for StorageSkusTable
+                "nm_id": sku_id,
+                "vendor_code": info["offer_id"],
+                "name": info["name"],
+                "vol_liters": vol_liters,
+                "total_stock": info["total_stock"],
+                "est_cost_month": round(display_cost, 2),
+                "storage_source": storage_source,
+                "daily_sales": round(daily_sales, 2),
+                "daily_cost": round(est_daily_cost, 2) if est_daily_cost > 0 else None,
+                "days_to_sell": days_to_sell,
+                "forecast_30d": forecast_30d,
+                "has_active_ads": ad_info["has_ads"],
+                # Ozon-specific
+                "offer_id": info["offer_id"],
+                "turnover_days": round(turnover_days, 1) if turnover_days < 99999 else None,
+                "zone": zone,
+                "turnover_category": tr_data["turnover_category"] if tr_data else "",
+                "warehouses": sorted(wh_list, key=lambda w: w["cost_month"], reverse=True),
+            })
+
+        # Sort: paid first, then warning, then by est_cost desc
+        zone_order = {"paid": 0, "warning": 1, "free": 2}
+        storage_skus.sort(key=lambda s: (zone_order.get(s["zone"], 2), -s["est_cost_month"]))
+
+        # ── 7. KPI ──
+        total_stock = sum(s["total_stock"] for s in storage_skus)
+        total_daily = sum(s["daily_sales"] for s in storage_skus)
+        avg_turnover = total_stock / total_daily if total_daily > 0 else None
+        paid_count = sum(1 for s in storage_skus if s["zone"] == "paid")
+        warning_count = sum(1 for s in storage_skus if s["zone"] == "warning")
+        total_forecast = sum(s["forecast_30d"] or 0 for s in storage_skus)
+
+        return {
+            "kpi": {
+                "total_skus": len(storage_skus),
+                "total_stock": total_stock,
+                "total_storage": round(total_actual_cost if has_actual_data else total_est_cost, 2),
+                "avg_turnover_days": round(avg_turnover, 1) if avg_turnover else None,
+                "paid_zone_skus": paid_count,
+                "warning_zone_skus": warning_count,
+                "period_days": period,
+                "forecast_30d": round(total_forecast, 2) if total_forecast > 0 else None,
+                "has_actual_data": has_actual_data,
+                "actual_period": actual_period,
+            },
+            "storage_skus": storage_skus,
+        }
+
+    finally:
+        ch.close()
+
+
+@router.post("/ozon/sync-placement-cost")
+async def trigger_ozon_placement_sync(
+    shop_id: int = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Trigger Ozon placement cost report sync.
+
+    Creates a Celery task that:
+    1. Requests placement cost Excel report from Ozon API
+    2. Polls until ready, downloads, parses
+    3. Inserts per-SKU costs into ClickHouse
+
+    Limits: 5 reports per day per seller, max 31-day period.
+    """
+    from celery_app.tasks.tasks import sync_ozon_placement_cost
+    from app.core.encryption import decrypt_api_key
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or shop.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    if shop.marketplace != "ozon":
+        raise HTTPException(status_code=400, detail="Only Ozon shops supported")
+
+    api_key = decrypt_api_key(shop.api_key_encrypted)
+    client_id = shop.client_id
+
+    if not api_key or not client_id:
+        raise HTTPException(status_code=400, detail="Shop API key or Client ID not configured")
+
+    task = sync_ozon_placement_cost.apply_async(
+        kwargs={
+            "shop_id": shop_id,
+            "api_key": api_key,
+            "client_id": client_id,
+        },
+        queue="heavy",
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "queued",
+        "message": "Placement cost sync started. Report generation may take 30-60 seconds.",
+    }
+
+
+@router.post("/ozon/backfill-placement-cost")
+async def trigger_ozon_placement_backfill(
+    shop_id: int = Query(...),
+    months: int = Query(3, ge=1, le=6),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Trigger Ozon placement cost backfill for last N months.
+
+    Creates a Celery task that:
+    1. Splits the period into 30-day chunks (Ozon API limit: 31 days/report)
+    2. For each chunk: creates report → polls → downloads → parses → inserts
+    3. 3 months = 3 chunks = 3 reports (within 5 reports/day limit)
+
+    Can take up to 10-15 minutes depending on Ozon API response time.
+    """
+    from celery_app.tasks.tasks import backfill_ozon_placement_cost
+    from app.core.encryption import decrypt_api_key
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or shop.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    if shop.marketplace != "ozon":
+        raise HTTPException(status_code=400, detail="Only Ozon shops supported")
+
+    api_key = decrypt_api_key(shop.api_key_encrypted)
+    client_id = shop.client_id
+
+    if not api_key or not client_id:
+        raise HTTPException(status_code=400, detail="Shop API key or Client ID not configured")
+
+    task = backfill_ozon_placement_cost.apply_async(
+        kwargs={
+            "shop_id": shop_id,
+            "api_key": api_key,
+            "client_id": client_id,
+            "months": months,
+        },
+        queue="heavy",
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "queued",
+        "months": months,
+        "message": f"Backfill placement cost started for {months} months. May take 10-15 minutes.",
+    }
+
+
 @router.get("/ozon/analytics")
 async def ozon_warehouse_analytics(
     shop_id: int = Query(...),
@@ -8521,6 +8991,19 @@ async def get_wb_storage_ai_analysis(
 
             total_storage_30d += storage_30d
 
+            # Forecast 30d: accounts for stock decreasing with sales
+            forecast_30d = storage_30d  # fallback = flat
+            if storage_30d > 0 and stock > 0:
+                daily_cost = storage_30d / 30.0
+                cost_per_unit = daily_cost / stock
+                forecast = 0.0
+                for day in range(30):
+                    remaining = max(0, stock - daily * day)
+                    if remaining <= 0:
+                        break
+                    forecast += cost_per_unit * remaining
+                forecast_30d = round(forecast)
+
             # P&L
             pnl = sku_pnl.get(vc, {})
             net_profit = pnl.get("net_profit", 0)
@@ -8549,6 +9032,7 @@ async def get_wb_storage_ai_analysis(
                 "vol_liters": vol,
                 "storage_30d": storage_30d,
                 "storage_period": storage_period,
+                "forecast_30d": forecast_30d,
                 "net_profit": net_profit,
                 "margin_pct": pnl.get("margin_pct", 0),
                 "pnl_payout": pnl.get("payout", 0),
@@ -8561,17 +9045,17 @@ async def get_wb_storage_ai_analysis(
             })
 
         # Sort by storage cost DESC
-        skus_context.sort(key=lambda x: x["storage_30d"], reverse=True)
+        skus_context.sort(key=lambda x: x["forecast_30d"], reverse=True)
 
         # Deterministic pre-filter: only SKUs that actually need optimization
         # Criteria: storage > 30₽/month AND (overstock OR unprofitable OR no sales)
         skus_needing_action = []
         for s in skus_context:
-            storage = s["storage_30d"]
-            if storage < 30:  # negligible storage cost
+            forecast = s["forecast_30d"]
+            if forecast < 30:  # negligible storage cost
                 continue
             is_overstock = s["turnover_days"] > 90
-            is_unprofitable = s["net_profit"] < storage  # storage eats profit
+            is_unprofitable = s["net_profit"] < forecast  # storage eats profit
             no_sales = s["daily"] == 0 and s["stock"] > 0
             if is_overstock or is_unprofitable or no_sales:
                 skus_needing_action.append(s)
@@ -8581,7 +9065,7 @@ async def get_wb_storage_ai_analysis(
         for s in skus_context:
             if len(skus_needing_action) >= 5:
                 break
-            if s["vendor_code"] not in existing_vcs and s["storage_30d"] > 0:
+            if s["vendor_code"] not in existing_vcs and s["forecast_30d"] > 0:
                 skus_needing_action.append(s)
                 existing_vcs.add(s["vendor_code"])
 
@@ -8589,7 +9073,7 @@ async def get_wb_storage_ai_analysis(
         skus_needing_action = skus_needing_action[:15]
 
         # Sort again by storage cost DESC
-        skus_needing_action.sort(key=lambda x: x["storage_30d"], reverse=True)
+        skus_needing_action.sort(key=lambda x: x["forecast_30d"], reverse=True)
 
         # Mark all as must-include (deterministic)
         for i, s in enumerate(skus_needing_action):
@@ -8600,15 +9084,17 @@ async def get_wb_storage_ai_analysis(
 
         # ── 8. Build prompt ──
         total_stock = sum(s["stock"] for s in skus_context)
-        overstock_count = sum(1 for s in skus_context if s["turnover_days"] > 90 and s["storage_30d"] > 50)
-        loss_making = sum(1 for s in skus_context if s["storage_30d"] > 0 and s["net_profit"] < s["storage_30d"])
+        total_forecast_30d = sum(s["forecast_30d"] for s in skus_context)
+        overstock_count = sum(1 for s in skus_context if s["turnover_days"] > 90 and s["forecast_30d"] > 50)
+        loss_making = sum(1 for s in skus_context if s["forecast_30d"] > 0 and s["net_profit"] < s["forecast_30d"])
         avg_turnover = round(sum(s["turnover_days"] for s in skus_context) / len(skus_context)) if skus_context else 0
 
         prompt = f"""Магазин: {shop.name} (Wildberries)
 Период анализа: {period} дней (с {d_start} по {today})
 
 ## ОБЩИЕ МЕТРИКИ ХРАНЕНИЯ:
-- Общее хранение за 30д: ~{round(total_storage_30d)}₽
+- Общее хранение (факт) за 30д: ~{round(total_storage_30d)}₽
+- ПРОГНОЗ хранения на 30д (с учётом продаж): ~{round(total_forecast_30d)}₽
 - Общая чистая прибыль за {period}д: {round(total_net_profit)}₽
 - Всего SKU на складе: {len(skus_context)}
 - Общий остаток: {total_stock} шт
@@ -8627,7 +9113,8 @@ async def get_wb_storage_ai_analysis(
 
             prompt += f"Остаток: {s['stock']} шт | Заказов за {period}д: {s['orders']} ({s['daily']}/день)\n"
             prompt += f"Оборачиваемость: {s['turnover_days']}д | Объём: {s['vol_liters']}л\n"
-            prompt += f"Хранение: {s['storage_30d']}₽/30д (факт за период: {s['storage_period']}₽)\n"
+            prompt += f"Хранение (факт): {s['storage_30d']}₽/30д | ★ ПРОГНОЗ 30д (с учётом продаж): {s['forecast_30d']}₽\n"
+            prompt += f"Факт за период: {s['storage_period']}₽\n"
             prompt += f"Цена: {s['price']}₽ | Себестоимость: {s['cost_price']}₽\n"
 
             if s['net_profit']:
@@ -8814,4 +9301,548 @@ async def get_wb_storage_ai_analysis(
         raise
     except Exception as e:
         logger.exception("Storage AI analysis failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════
+#  OZON  Storage AI Analysis
+# ═══════════════════════════════════════════════════════════
+
+@router.post("/ozon/storage/ai-analysis")
+async def get_ozon_storage_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered storage cost optimization analysis for Ozon shops."""
+
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+    shop_name = shop.name or f"Shop {shop_id}"
+
+    cache_key = f"ozon_storage_ai_{shop_id}_{period}"
+
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+
+        # ── 1. Per-SKU storage from fact_ozon_placement_cost ──
+        actual_storage_rows = ch.query("""
+            SELECT
+                offer_id,
+                round(SUM(placement_cost), 2) AS storage_total,
+                round(SUM(placement_cost) * (30 / {period:UInt32}), 2) AS storage_30d
+            FROM mms_analytics.fact_ozon_placement_cost FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND period_to = (
+                  SELECT max(period_to) FROM mms_analytics.fact_ozon_placement_cost FINAL
+                  WHERE shop_id = {shop_id:UInt32}
+              )
+            GROUP BY offer_id
+            HAVING storage_total != 0
+            ORDER BY storage_total DESC
+        """, parameters={
+            "shop_id": shop_id, "period": max(period, 1),
+        }).result_rows
+
+        storage_by_offer: dict[str, dict] = {}
+        for r in actual_storage_rows:
+            oid = str(r[0]).strip()
+            if oid:
+                storage_by_offer[oid] = {
+                    "storage_period": round(float(r[1])),
+                    "storage_30d": round(float(r[2])),
+                }
+
+        # ── 2. Per-SKU orders, revenue ──
+        sku_rows = ch.query("""
+            SELECT
+                s.sku,
+                s.total_stock,
+                coalesce(o.orders, 0) AS orders,
+                coalesce(o.revenue, 0) AS revenue,
+                coalesce(a.spend, 0) AS ad_spend,
+                coalesce(a.ad_orders, 0) AS ad_orders
+            FROM (
+                SELECT sku, sum(free_to_sell) AS total_stock
+                FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND dt = (SELECT max(dt) FROM mms_analytics.fact_ozon_warehouse_stocks WHERE shop_id = {shop_id:UInt32})
+                  AND warehouse_type = 'fbo'
+                  AND free_to_sell > 0
+                GROUP BY sku
+            ) AS s
+            LEFT JOIN (
+                SELECT sku, sum(quantity) AS orders,
+                       sum(price * quantity) AS revenue
+                FROM mms_analytics.fact_ozon_orders
+                WHERE shop_id = {shop_id:UInt32} AND order_date >= {d_start:Date}
+                  AND status NOT IN ('cancelled')
+                GROUP BY sku
+            ) AS o ON o.sku = s.sku
+            LEFT JOIN (
+                SELECT sku, sum(money_spent) AS spend, sum(orders) AS ad_orders
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32} AND dt >= {d_start:Date}
+                GROUP BY sku
+            ) AS a ON a.sku = s.sku
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+        sku_data: dict[int, dict] = {}
+        for r in sku_rows:
+            nm = int(r[0])
+            sku_data[nm] = {
+                "stock": int(r[1]),
+                "orders": int(r[2]),
+                "revenue": float(r[3]),
+                "ad_spend": float(r[4]),
+                "ad_orders": int(r[5]),
+            }
+
+        # ── 3. Product info from dim_ozon_products ──
+        sku_ids = list(sku_data.keys())
+        products_map: dict[int, dict] = {}
+        if sku_ids:
+            sku_list = ", ".join(str(x) for x in sku_ids)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT sku, offer_id, name, marketing_price, old_price,
+                           COALESCE(depth, 0), COALESCE(height, 0), COALESCE(width, 0),
+                           COALESCE(volume_weight, 0)
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({sku_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                d, h, w = float(r[5] or 0), float(r[6] or 0), float(r[7] or 0)
+                vw = float(r[8] or 0)
+                if d > 0 and h > 0 and w > 0:
+                    vol = (d * h * w) / 1_000_000
+                elif vw > 0:
+                    vol = vw * 2.87
+                else:
+                    vol = 0.5
+                vol = max(round(vol, 2), 0.1)
+                price = float(r[3]) if r[3] else 0
+                products_map[int(r[0])] = {
+                    "offer_id": r[1] or "",
+                    "name": (r[2] or "")[:60],
+                    "price": price,
+                    "vol_liters": vol,
+                }
+
+        # ── 4. Cost prices ──
+        cost_prices: dict[str, float] = {}
+        try:
+            cost_rows_pg = (await db.execute(
+                text("SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) FROM product_costs WHERE shop_id = :sid AND (cost_price > 0 OR packaging_cost > 0)"),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in cost_rows_pg:
+                cost_prices[r[0]] = float(r[1])
+        except Exception:
+            pass
+
+        # ── 5. Per-SKU P&L from fact_ozon_transactions ──
+        sku_pnl: dict[str, dict] = {}
+        try:
+            pnl_rows = ch.query("""
+                SELECT
+                    offer_id,
+                    sumIf(accruals_for_sale, type_name = 'Доставка и обработка покупателю' OR type_name = 'Доставка возврата покупателю') AS payout,
+                    sumIf(abs(sale_commission), 1) AS commission,
+                    sumIf(abs(amount), type_name = 'Услуги доставки относительно других продавцов') AS logistics,
+                    sumIf(abs(amount), type_name LIKE '%размещени%' OR type_name LIKE '%хранени%') AS storage_fact,
+                    sumIf(amount, type_name = 'Доставка и обработка покупателю') AS sale_amount
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND operation_date >= {d_start:Date} AND operation_date <= {d_end:Date}
+                  AND offer_id != ''
+                GROUP BY offer_id
+            """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": today}).result_rows
+            for r in pnl_rows:
+                oid = str(r[0] or "").strip()
+                if not oid:
+                    continue
+                payout = float(r[1] or 0)
+                commission = float(r[2] or 0)
+                logistics = float(r[3] or 0)
+                storage_fact = float(r[4] or 0)
+                sale_amount = float(r[5] or 0)
+                revenue = sale_amount if sale_amount > 0 else payout + commission
+                cogs_unit = cost_prices.get(oid, 0)
+                net_profit = payout - logistics - storage_fact - cogs_unit
+                sku_pnl[oid] = {
+                    "revenue": round(revenue),
+                    "payout": round(payout),
+                    "logistics": round(logistics),
+                    "storage_fact": round(storage_fact),
+                    "commission": round(commission),
+                    "net_profit": round(net_profit),
+                    "margin_pct": round(net_profit / revenue * 100, 1) if revenue > 0 else 0,
+                }
+        except Exception as e:
+            logger.warning("Ozon Storage AI: P&L query failed: %s", e)
+
+        # ── 6. Per-warehouse stock ──
+        ch2 = get_clickhouse_client()
+        wh_stock_map: dict[int, list] = {}
+        if sku_ids:
+            sku_list_ch = ",".join(str(x) for x in sku_ids[:60])
+            wh_rows = ch2.query(f"""
+                SELECT sku, warehouse_name, free_to_sell
+                FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND dt = (SELECT max(dt) FROM mms_analytics.fact_ozon_warehouse_stocks WHERE shop_id = {{shop_id:UInt32}})
+                  AND warehouse_type = 'fbo'
+                  AND sku IN ({sku_list_ch})
+                  AND free_to_sell > 0
+                ORDER BY sku, free_to_sell DESC
+            """, parameters={"shop_id": shop_id}).result_rows
+            for wr in wh_rows:
+                wh_stock_map.setdefault(int(wr[0]), []).append({
+                    "warehouse": wr[1],
+                    "qty": int(wr[2]),
+                })
+        ch2.close()
+        ch.close()
+
+        # ── 7. Build SKU context for AI ──
+        skus_context = []
+        total_storage_30d = 0
+        total_net_profit = 0
+
+        for sku_id, sd in sku_data.items():
+            prod = products_map.get(sku_id, {})
+            offer_id = prod.get("offer_id", "")
+            if not offer_id:
+                continue
+
+            stock = sd["stock"]
+            orders = sd["orders"]
+            revenue = sd["revenue"]
+            ad_spend = sd["ad_spend"]
+            ad_orders = sd["ad_orders"]
+            daily = orders / period if period > 0 else 0
+            turnover = round(stock / daily) if daily > 0 else 9999
+            drr = round(ad_spend / revenue * 100, 1) if revenue > 0 else 0
+            vol = prod.get("vol_liters", 1.0)
+            price = prod.get("price", 0)
+            cost_price = cost_prices.get(offer_id, 0)
+
+            # Storage cost
+            st = storage_by_offer.get(offer_id, {})
+            storage_30d = st.get("storage_30d", 0)
+            storage_period = st.get("storage_period", 0)
+            if not storage_30d:
+                # Estimate: ~0.14 ₽/liter/day
+                storage_30d = round(vol * 0.14 * stock * 30 / max(stock, 1))
+
+            total_storage_30d += storage_30d
+
+            # Forecast 30d: accounts for stock decreasing with sales
+            forecast_30d = storage_30d  # fallback = flat
+            if storage_30d > 0 and stock > 0:
+                daily_cost = storage_30d / 30.0
+                cost_per_unit = daily_cost / stock
+                forecast = 0.0
+                for day in range(30):
+                    remaining = max(0, stock - daily * day)
+                    if remaining <= 0:
+                        break
+                    forecast += cost_per_unit * remaining
+                forecast_30d = round(forecast)
+
+            pnl = sku_pnl.get(offer_id, {})
+            net_profit = pnl.get("net_profit", 0)
+            total_net_profit += net_profit
+
+            withdrawal_cost_per_unit = round(50 + vol * 15)
+
+            wh_list = wh_stock_map.get(sku_id, [])
+
+            skus_context.append({
+                "vendor_code": offer_id,
+                "name": prod.get("name", ""),
+                "sku": sku_id,
+                "stock": stock,
+                "orders": orders,
+                "daily": round(daily, 2),
+                "turnover_days": turnover,
+                "revenue": round(revenue),
+                "ad_spend": round(ad_spend),
+                "ad_orders": ad_orders,
+                "drr": drr,
+                "in_ads": ad_spend > 0,
+                "price": price,
+                "cost_price": cost_price,
+                "vol_liters": vol,
+                "storage_30d": storage_30d,
+                "storage_period": storage_period,
+                "forecast_30d": forecast_30d,
+                "net_profit": net_profit,
+                "margin_pct": pnl.get("margin_pct", 0),
+                "pnl_payout": pnl.get("payout", 0),
+                "pnl_logistics": pnl.get("logistics", 0),
+                "pnl_storage_fact": pnl.get("storage_fact", 0),
+                "pnl_commission": pnl.get("commission", 0),
+                "withdrawal_cost_per_unit": withdrawal_cost_per_unit,
+                "warehouses": wh_list[:5],
+            })
+
+        skus_context.sort(key=lambda x: x["forecast_30d"], reverse=True)
+
+        # Pre-filter: SKUs needing optimization
+        skus_needing_action = []
+        for s in skus_context:
+            forecast = s["forecast_30d"]
+            if forecast < 30:
+                continue
+            is_overstock = s["turnover_days"] > 90
+            is_unprofitable = s["net_profit"] < forecast
+            no_sales = s["daily"] == 0 and s["stock"] > 0
+            if is_overstock or is_unprofitable or no_sales:
+                skus_needing_action.append(s)
+
+        existing_vcs = {s["vendor_code"] for s in skus_needing_action}
+        for s in skus_context:
+            if len(skus_needing_action) >= 5:
+                break
+            if s["vendor_code"] not in existing_vcs and s["forecast_30d"] > 0:
+                skus_needing_action.append(s)
+                existing_vcs.add(s["vendor_code"])
+
+        skus_needing_action = skus_needing_action[:15]
+        skus_needing_action.sort(key=lambda x: x["forecast_30d"], reverse=True)
+
+        for i, s in enumerate(skus_needing_action):
+            s["must_include"] = True
+            s["storage_rank"] = i + 1
+
+        skus_for_ai = skus_needing_action
+
+        # ── 8. Build prompt ──
+        total_stock = sum(s["stock"] for s in skus_context)
+        total_forecast_30d = sum(s["forecast_30d"] for s in skus_context)
+        overstock_count = sum(1 for s in skus_context if s["turnover_days"] > 90 and s["forecast_30d"] > 50)
+        loss_making = sum(1 for s in skus_context if s["forecast_30d"] > 0 and s["net_profit"] < s["forecast_30d"])
+        avg_turnover = round(sum(s["turnover_days"] for s in skus_context) / len(skus_context)) if skus_context else 0
+
+        prompt = f"""Магазин: {shop_name} (Ozon)
+Период анализа: {period} дней (с {d_start} по {today})
+
+## ОБЩИЕ МЕТРИКИ ХРАНЕНИЯ:
+- Общее хранение (факт) за 30д: ~{round(total_storage_30d)}₽
+- ПРОГНОЗ хранения на 30д (с учётом продаж): ~{round(total_forecast_30d)}₽
+- Общая чистая прибыль за {period}д: {round(total_net_profit)}₽
+- Всего SKU на складе: {len(skus_context)}
+- Общий остаток: {total_stock} шт
+- Затоваренных SKU (оборач > 90д): {overstock_count}
+- Убыточных по хранению: {loss_making}
+- Средняя оборачиваемость: {avg_turnover} дней
+
+## ТОВАРЫ (отсортированы по стоимости хранения, от дорогих к дешёвым):
+"""
+
+        for i, s in enumerate(skus_for_ai):
+            if s.get('must_include'):
+                prompt += f"\n### ⚠️ #{i+1}. {s['vendor_code']} — {s['name']} [ТОП-{s['storage_rank']} ПО ХРАНЕНИЮ — ОБЯЗАТЕЛЬНО ВКЛЮЧИТЬ В sku_actions!]\n"
+            else:
+                prompt += f"\n### {i+1}. {s['vendor_code']} — {s['name']}\n"
+
+            prompt += f"Остаток: {s['stock']} шт | Заказов за {period}д: {s['orders']} ({s['daily']}/день)\n"
+            prompt += f"Оборачиваемость: {s['turnover_days']}д | Объём: {s['vol_liters']}л\n"
+            prompt += f"Хранение (факт): {s['storage_30d']}₽/30д | ★ ПРОГНОЗ 30д (с учётом продаж): {s['forecast_30d']}₽\n"
+            prompt += f"Факт за период: {s['storage_period']}₽\n"
+            prompt += f"Цена: {s['price']}₽ | Себестоимость: {s['cost_price']}₽\n"
+
+            if s['net_profit']:
+                prompt += f"★ Чистая прибыль за {period}д: {s['net_profit']}₽ (маржа {s['margin_pct']}%)\n"
+                prompt += f"  P&L: payout {s['pnl_payout']}₽ → логистика −{s['pnl_logistics']}₽ → хранение −{s['pnl_storage_fact']}₽ → комиссия −{s['pnl_commission']}₽\n"
+
+            prompt += f"Реклама: {'ЗАПУЩЕНА, расход ' + str(s['ad_spend']) + '₽, DRR ' + str(s['drr']) + '%' if s['in_ads'] else 'НЕТ'}\n"
+            prompt += f"Стоимость вывоза 1 шт: ~{s['withdrawal_cost_per_unit']}₽\n"
+
+            if s['warehouses']:
+                wh_str = ", ".join(f"{wh['warehouse']}={wh['qty']}шт" for wh in s['warehouses'])
+                prompt += f"Склады: {wh_str}\n"
+
+        prompt += f"\nПроанализируй КАЖДЫЙ из {len(skus_for_ai)} товаров выше и выдай JSON с sku_actions (ровно {len(skus_for_ai)} записей — по ОДНОЙ на КАЖДЫЙ товар), key_metrics и general_tips."
+
+        # ── 9. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_STORAGE}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                    "temperature": 0,
+                    "max_output_tokens": 16384,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI service unavailable")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        import re as _re
+        content = content.strip()
+        content = _re.sub(r'^```(?:json)?\s*', '', content)
+        content = _re.sub(r'\s*```$', '', content)
+        content = content.strip()
+        first_brace = content.find('{')
+        if first_brace > 0:
+            content = content[first_brace:]
+        depth = 0
+        last_brace = -1
+        for ci_idx, ci_ch in enumerate(content):
+            if ci_ch == '{':
+                depth += 1
+            elif ci_ch == '}':
+                depth -= 1
+                if depth == 0:
+                    last_brace = ci_idx
+                    break
+        if last_brace > 0:
+            content = content[:last_brace + 1]
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            json_match = _re.search(r'\{[\s\S]*"sku_actions"[\s\S]*\}', content)
+            if json_match:
+                try:
+                    ai_result = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+            else:
+                raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # ── 10. Force-inject missing SKUs ──
+        ai_sku_actions = ai_result.get("sku_actions", [])
+        ai_vendor_codes = {sa.get("vendor_code", "") for sa in ai_sku_actions}
+
+        for s in skus_for_ai:
+            if not s.get("must_include") or s["vendor_code"] in ai_vendor_codes:
+                continue
+
+            storage_cost = s["storage_30d"]
+            net_profit = s.get("net_profit", 0)
+            stock = s["stock"]
+            daily = s["daily"]
+            vol = s["vol_liters"]
+            wc = s["withdrawal_cost_per_unit"]
+            turnover = s["turnover_days"]
+
+            options = []
+            if stock > 0:
+                options.append({
+                    "action": "discount",
+                    "label": "Снизить цену на 20-30%",
+                    "detail": f"Остаток {stock} шт, хранение {storage_cost}₽/мес. Скидка ускорит продажи.",
+                    "expected_savings": round(storage_cost * 0.3),
+                    "withdrawal_cost": 0,
+                    "risk": "medium",
+                })
+            if stock > 10 and daily > 0:
+                ideal = round(daily * 60)
+                excess = max(stock - ideal, 0)
+                if excess > 0:
+                    total_wc = excess * wc
+                    monthly_savings = round(storage_cost * excess / stock)
+                    options.append({
+                        "action": "withdraw",
+                        "label": f"Вывезти {excess} шт излишков",
+                        "detail": f"Стоимость вывоза: {total_wc}₽. Экономия: ~{monthly_savings}₽/мес.",
+                        "expected_savings": monthly_savings,
+                        "withdrawal_cost": total_wc,
+                        "risk": "medium",
+                    })
+            elif stock > 0 and daily == 0:
+                total_wc = stock * wc
+                options.append({
+                    "action": "withdraw",
+                    "label": f"Вывезти все {stock} шт",
+                    "detail": f"Нет продаж. Стоимость вывоза: {total_wc}₽. Экономия: {storage_cost}₽/мес.",
+                    "expected_savings": storage_cost,
+                    "withdrawal_cost": total_wc,
+                    "risk": "high",
+                })
+            options.append({
+                "action": "do_nothing",
+                "label": "Оставить как есть",
+                "detail": f"Хранение {storage_cost}₽/мес.",
+                "expected_savings": 0,
+                "withdrawal_cost": 0,
+                "risk": "high" if net_profit < storage_cost else "medium",
+            })
+
+            ai_sku_actions.insert(0, {
+                "vendor_code": s["vendor_code"],
+                "name": s["name"],
+                "diagnosis": f"Оборачиваемость {turnover}д, хранение {storage_cost}₽/мес, прибыль {net_profit}₽.",
+                "current_storage_cost": storage_cost,
+                "current_turnover_days": turnover,
+                "stock": stock,
+                "options": options,
+                "recommended_option": 0,
+            })
+
+        ai_result["sku_actions"] = ai_sku_actions
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_storage_30d": round(total_storage_30d),
+            "total_net_profit": round(total_net_profit),
+            "total_skus": len(skus_context),
+            "total_stock": total_stock,
+            "overstock_skus": overstock_count,
+            "loss_making_skus": loss_making,
+            "avg_turnover_days": avg_turnover,
+        }
+
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return {**ai_result, "cached": False}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ozon Storage AI analysis failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")

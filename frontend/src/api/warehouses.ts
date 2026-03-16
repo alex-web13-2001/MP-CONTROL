@@ -447,6 +447,73 @@ export async function downloadDistributionPlanExcel(params: {
   window.URL.revokeObjectURL(url)
 }
 
+// ── Ozon Storage Analytics ───────────────────────────────────
+
+export interface OzonStorageKpi {
+  total_skus: number
+  total_stock: number
+  total_storage: number
+  avg_turnover_days: number | null
+  paid_zone_skus: number
+  warning_zone_skus: number
+  period_days: number
+  forecast_30d: number | null
+  has_actual_data?: boolean
+  actual_period?: { from: string; to: string } | null
+}
+
+export interface OzonStorageSku {
+  nm_id: number
+  vendor_code: string
+  offer_id: string
+  name: string
+  vol_liters: number
+  total_stock: number
+  est_cost_month: number
+  storage_source: 'actual' | 'estimated'
+  daily_sales: number
+  daily_cost: number | null
+  days_to_sell: number | null
+  forecast_30d: number | null
+  has_active_ads: boolean
+  turnover_days: number | null
+  zone: 'paid' | 'warning' | 'free'
+  turnover_category: string
+  warehouses: { warehouse_name: string; stock: number; reserved: number }[]
+}
+
+export interface OzonStorageResponse {
+  kpi: OzonStorageKpi
+  storage_skus: OzonStorageSku[]
+}
+
+export async function getOzonStorage(params: {
+  shop_id: number
+  period?: number
+}): Promise<OzonStorageResponse> {
+  const { data } = await apiClient.get<OzonStorageResponse>('/warehouses/ozon/storage', { params })
+  return data
+}
+
+export async function syncOzonPlacementCost(params: {
+  shop_id: number
+}): Promise<{ task_id: string; status: string; message: string }> {
+  const { data } = await apiClient.post<{ task_id: string; status: string; message: string }>(
+    '/warehouses/ozon/sync-placement-cost', null, { params }
+  )
+  return data
+}
+
+export async function backfillOzonPlacementCost(params: {
+  shop_id: number
+  months?: number
+}): Promise<{ task_id: string; status: string; months: number; message: string }> {
+  const { data } = await apiClient.post<{ task_id: string; status: string; months: number; message: string }>(
+    '/warehouses/ozon/backfill-placement-cost', null, { params }
+  )
+  return data
+}
+
 
 // ── WB Warehouse Analytics ──────────────────────────────────
 
@@ -1037,7 +1104,12 @@ export async function getStorageAIAnalysis(params: {
   shop_id: number
   period?: number
   force?: boolean
+  marketplace?: string
 }): Promise<StorageAIAnalysis> {
-  const { data } = await apiClient.post<StorageAIAnalysis>('/warehouses/wb/storage/ai-analysis', null, { params })
+  const { marketplace, ...apiParams } = params
+  const endpoint = marketplace === 'ozon'
+    ? '/warehouses/ozon/storage/ai-analysis'
+    : '/warehouses/wb/storage/ai-analysis'
+  const { data } = await apiClient.post<StorageAIAnalysis>(endpoint, null, { params: apiParams })
   return data
 }

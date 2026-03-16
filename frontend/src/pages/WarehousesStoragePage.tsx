@@ -1,11 +1,9 @@
 /**
- * Warehouses Storage — dedicated page for WB storage analytics.
+ * Warehouses Storage — dedicated page for WB + Ozon storage analytics.
  * Uses real StorageSkusTable from WBWarehouseAnalyticsContent.
  * AI-powered storage analysis replaces static recommendations.
- * Ozon: redirects to /warehouses/analytics.
  */
 import { useState, useEffect, useCallback } from 'react'
-import { Navigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   RefreshCw,
@@ -31,6 +29,8 @@ import {
   Package,
   Zap,
   Download,
+  Clock,
+  ShieldAlert,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -39,7 +39,9 @@ import {
   getWBWarehouseAnalytics,
   getStorageAIAnalysis,
   downloadStorageExcel,
+  getOzonStorage,
   type WBWarehouseAnalyticsResponse,
+  type OzonStorageResponse,
   type StorageAIAnalysis,
   type StorageAISkuAction,
 } from '@/api/warehouses'
@@ -262,7 +264,7 @@ function SkuActionCard({ action }: { action: StorageAISkuAction }) {
   )
 }
 
-function StorageAIInsight({ shopId, period }: { shopId: number; period: number }) {
+function StorageAIInsight({ shopId, period, marketplace }: { shopId: number; period: number; marketplace?: string }) {
   const [data, setData] = useState<StorageAIAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -274,7 +276,7 @@ function StorageAIInsight({ shopId, period }: { shopId: number; period: number }
     else setLoading(true)
     setError(null)
     try {
-      const result = await getStorageAIAnalysis({ shop_id: shopId, period, force })
+      const result = await getStorageAIAnalysis({ shop_id: shopId, period, force, marketplace })
       setData(result)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка ИИ-анализа')
@@ -282,7 +284,7 @@ function StorageAIInsight({ shopId, period }: { shopId: number; period: number }
       setLoading(false)
       setRefreshing(false)
     }
-  }, [shopId, period])
+  }, [shopId, period, marketplace])
 
   useEffect(() => { fetchAI() }, [fetchAI])
 
@@ -521,6 +523,97 @@ function StorageAIInsight({ shopId, period }: { shopId: number; period: number }
   )
 }
 
+/* ═══ Ozon Storage KPIs ═══ */
+function OzonStorageKpi({ data }: { data: OzonStorageResponse }) {
+  const kpi = data.kpi
+  const hasActual = kpi.has_actual_data ?? false
+
+  // Forecast
+  const hasForecast = data.storage_skus.some((s: any) => s.forecast_30d != null)
+  const totalForecast = hasForecast ? data.storage_skus.reduce((sum: number, sk: any) => sum + (sk.forecast_30d ?? 0), 0) : null
+
+  // Count SKUs by zone
+  const paidSkus = data.storage_skus.filter((s: any) => s.zone === 'paid')
+  const warningSkus = data.storage_skus.filter((s: any) => s.zone === 'warning')
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+      <div className="grid grid-cols-4 gap-4">
+        {/* Storage cost */}
+        <div className={`p-4 rounded-xl border ${hasActual ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-[hsl(var(--border))] bg-[hsl(var(--card))]'}`}>
+          <div className="flex items-center gap-2 mb-1">
+            <Boxes className={`h-4 w-4 ${hasActual ? 'text-emerald-400' : 'text-purple-400'}`} />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              {hasActual ? 'Хранение (факт)' : 'Хранение (расчёт)'}
+            </span>
+          </div>
+          <div className={`text-2xl font-bold tabular-nums ${hasActual ? 'text-emerald-400' : 'text-red-400'}`}>
+            {fmtM(kpi.total_storage)}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {hasActual && kpi.actual_period
+              ? `Отчёт Ozon: ${kpi.actual_period.from} — ${kpi.actual_period.to}`
+              : `Расчёт ~0.14 ₽/л/день • за ${kpi.period_days}д`}
+          </div>
+        </div>
+
+        {/* Turnover */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <Clock className="h-4 w-4 text-cyan-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Ср. оборачиваемость
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-cyan-400">
+            {kpi.avg_turnover_days != null ? `${Math.round(kpi.avg_turnover_days)} дн` : '—'}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {kpi.total_skus} SKU • {fmt(kpi.total_stock)} шт на FBO
+          </div>
+        </div>
+
+        {/* Forecast 30d */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <TrendingUp className="h-4 w-4 text-cyan-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Прогноз 30д
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums text-cyan-400">
+            {totalForecast != null ? fmtM(totalForecast) : '—'}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {totalForecast != null ? 'С учётом продаж' : 'Нет данных'}
+          </div>
+        </div>
+
+        {/* Risk SKUs */}
+        <div className="p-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="flex items-center gap-2 mb-1">
+            <ShieldAlert className="h-4 w-4 text-red-400" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground))]">
+              Риск платного хранения
+            </span>
+          </div>
+          <div className="text-2xl font-bold tabular-nums">
+            {paidSkus.length + warningSkus.length}
+          </div>
+          <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+            {paidSkus.length > 0 && <span className="text-red-400">{paidSkus.length} обор. &gt; 160д</span>}
+            {paidSkus.length > 0 && warningSkus.length > 0 && ' • '}
+            {warningSkus.length > 0 && <span className="text-amber-400">{warningSkus.length} обор. 120–160д</span>}
+            {paidSkus.length === 0 && warningSkus.length === 0 && 'Всё в норме ✓'}
+          </div>
+        </div>
+      </div>
+
+
+    </motion.div>
+  )
+}
+
 /* ═══ Skeleton ═══ */
 function StorageSkeleton() {
   return (
@@ -546,29 +639,40 @@ export default function WarehousesStoragePage() {
   const isWB = currentShop?.marketplace === 'wildberries'
   const isOzon = currentShop?.marketplace === 'ozon'
 
-  const [data, setData] = useState<WBWarehouseAnalyticsResponse | null>(null)
+  // WB state
+  const [wbData, setWbData] = useState<WBWarehouseAnalyticsResponse | null>(null)
+  // Ozon state
+  const [ozonData, setOzonData] = useState<OzonStorageResponse | null>(null)
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [period, setPeriod] = useState(30)
   const [downloading, setDownloading] = useState(false)
 
   const fetchData = useCallback(async () => {
-    if (!currentShop || !isWB) return
+    if (!currentShop) return
     setLoading(true)
     setError(null)
     try {
-      const result = await getWBWarehouseAnalytics({ shop_id: currentShop.id, period })
-      setData(result)
+      if (isWB) {
+        const result = await getWBWarehouseAnalytics({ shop_id: currentShop.id, period })
+        setWbData(result)
+        setOzonData(null)
+      } else if (isOzon) {
+        const result = await getOzonStorage({ shop_id: currentShop.id, period })
+        setOzonData(result)
+        setWbData(null)
+      }
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
       setLoading(false)
     }
-  }, [currentShop, isWB, period])
+  }, [currentShop, isWB, isOzon, period])
 
-  useEffect(() => { if (isWB) fetchData() }, [fetchData, isWB])
+  useEffect(() => { fetchData() }, [fetchData])
 
-  if (isOzon) return <Navigate to="/warehouses/analytics" replace />
+  const hasData = isWB ? !!wbData : !!ozonData
 
   const periodSelCls = (active: boolean) =>
     `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
@@ -584,28 +688,32 @@ export default function WarehousesStoragePage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Хранение</h1>
           <p className="text-[hsl(var(--muted-foreground))] mt-1">
-            Расходы на хранение, прогнозы и ИИ-рекомендации по оптимизации
+            {isOzon
+              ? 'Оборачиваемость FBO, зоны хранения и прогноз расходов'
+              : 'Расходы на хранение, прогнозы и ИИ-рекомендации по оптимизации'}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={async () => {
-              if (!currentShop) return
-              setDownloading(true)
-              try {
-                await downloadStorageExcel({ shop_id: currentShop.id, period })
-              } catch {
-                // ignore
-              } finally {
-                setDownloading(false)
-              }
-            }}
-            disabled={downloading || loading || !data}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
-          >
-            <Download className={`h-4 w-4 ${downloading ? 'animate-bounce' : ''}`} />
-            Excel
-          </button>
+          {isWB && (
+            <button
+              onClick={async () => {
+                if (!currentShop) return
+                setDownloading(true)
+                try {
+                  await downloadStorageExcel({ shop_id: currentShop.id, period })
+                } catch {
+                  // ignore
+                } finally {
+                  setDownloading(false)
+                }
+              }}
+              disabled={downloading || loading || !hasData}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
+            >
+              <Download className={`h-4 w-4 ${downloading ? 'animate-bounce' : ''}`} />
+              Excel
+            </button>
+          )}
           <button
             onClick={fetchData}
             disabled={loading}
@@ -635,7 +743,7 @@ export default function WarehousesStoragePage() {
         </Card>
       </motion.div>
 
-      {loading && !data ? (
+      {loading && !hasData ? (
         <StorageSkeleton />
       ) : error ? (
         <Card>
@@ -647,18 +755,30 @@ export default function WarehousesStoragePage() {
             </button>
           </CardContent>
         </Card>
-      ) : data ? (
+      ) : isWB && wbData ? (
         <>
-          {/* KPI */}
-          <StorageKpi data={data} />
+          {/* WB KPI */}
+          <StorageKpi data={wbData} />
 
           {/* AI Storage Analysis — replaces static RecommendationsPanel */}
-          {currentShop && <StorageAIInsight shopId={currentShop.id} period={period} />}
+          {currentShop && <StorageAIInsight shopId={currentShop.id} period={period} marketplace="wildberries" />}
 
           {/* Storage SKUs Table — оригинальный с сортировкой, поиском, прогнозом 30д, итого */}
-          <StorageSkusTable skus={data.storage_skus} />
+          <StorageSkusTable skus={wbData.storage_skus} />
+        </>
+      ) : isOzon && ozonData ? (
+        <>
+          {/* Ozon KPI */}
+          <OzonStorageKpi data={ozonData} />
+
+          {/* AI Storage Analysis */}
+          {currentShop && <StorageAIInsight shopId={currentShop.id} period={period} marketplace="ozon" />}
+
+          {/* Storage SKUs Table — reusing WB component, data format is compatible */}
+          <StorageSkusTable skus={ozonData.storage_skus as any} isEstimate={!(ozonData.kpi.has_actual_data)} />
         </>
       ) : null}
     </div>
   )
 }
+

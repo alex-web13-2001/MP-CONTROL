@@ -358,6 +358,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 sync_ozon_content,
                 backfill_ozon_ads,
                 sync_ozon_turnover,
+                backfill_ozon_placement_cost,
             )
 
             seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
@@ -375,6 +376,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 ("Загрузка рейтинга контента",         sync_ozon_content_rating,    seller_kwargs),
                 ("Синхронизация контента (хэши)",       sync_ozon_content,           seller_kwargs),
                 ("Оборачиваемость товаров FBO",         sync_ozon_turnover,          seller_kwargs),
+                ("Загрузка хранения (90 дней)",          backfill_ozon_placement_cost, {**seller_kwargs, "months": 3}),
             ]
 
             # Add ads backfill only if Performance API credentials exist
@@ -4613,3 +4615,307 @@ def sync_ozon_turnover(
             raise e
 
     return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+def sync_ozon_placement_cost(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    days_back: int = 31,
+):
+    """
+    Sync Ozon placement (storage) costs per SKU from Excel report.
+
+    API: POST /v1/report/placement/by-products/create
+    Generates Excel report with per-SKU storage costs, then parses and
+    inserts into ClickHouse fact_ozon_placement_cost.
+
+    Limits: max 31-day period, 5 reports per day per seller.
+
+    Pipeline:
+        1. Build offer_id → sku mapping from PostgreSQL
+        2. Create report via Ozon API
+        3. Poll until ready (~10-60 sec)
+        4. Download Excel, parse with openpyxl
+        5. Insert into ClickHouse
+
+    Queue: HEAVY.
+    """
+    import asyncio
+    import os
+    from datetime import datetime, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import text
+    from app.config import get_settings
+    from app.services.ozon_placement_service import (
+        OzonPlacementService, OzonPlacementLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    now = datetime.utcnow()
+    date_to = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    date_from = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+    async def run_sync():
+        engine = create_async_engine(settings.database_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Build offer_id → sku mapping from PostgreSQL
+            self.update_state(state='PROGRESS', meta={
+                'status': 'Building offer_id → SKU mapping...',
+            })
+            offer_to_sku = {}
+            async with sf() as db:
+                result = await db.execute(
+                    text("""
+                        SELECT offer_id, sku
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND sku IS NOT NULL AND offer_id IS NOT NULL
+                    """),
+                    {"sid": shop_id},
+                )
+                for row in result.fetchall():
+                    if row[0] and row[1]:
+                        offer_to_sku[str(row[0])] = int(row[1])
+
+            logger.info(
+                "Offer→SKU mapping: %d products for shop %d",
+                len(offer_to_sku), shop_id,
+            )
+
+            # 2. Fetch placement costs from Ozon report
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Creating placement report ({date_from} → {date_to})...',
+            })
+
+            async with sf() as db:
+                service = OzonPlacementService(
+                    db=db, shop_id=shop_id,
+                    api_key=api_key, client_id=client_id,
+                )
+                rows = await service.fetch_placement_costs(
+                    date_from, date_to,
+                    offer_to_sku=offer_to_sku,
+                )
+
+            if not rows:
+                await engine.dispose()
+                return {
+                    "status": "completed",
+                    "shop_id": shop_id,
+                    "rows_inserted": 0,
+                    "message": "No data in report or report generation failed",
+                }
+
+            logger.info(
+                "Placement costs: %d rows for shop %d (%s → %s)",
+                len(rows), shop_id, date_from, date_to,
+            )
+
+            # 3. Insert into ClickHouse
+            self.update_state(state='PROGRESS', meta={
+                'status': f'Inserting {len(rows)} placement cost rows...',
+            })
+
+            with OzonPlacementLoader(
+                host=ch_host, port=ch_port,
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+            ) as loader:
+                inserted = loader.insert_costs(
+                    shop_id, rows, date_from, date_to,
+                )
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "period": f"{date_from} → {date_to}",
+                "rows_inserted": inserted,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1700)
+def backfill_ozon_placement_cost(
+    self,
+    shop_id: int,
+    api_key: str,
+    client_id: str,
+    months: int = 3,
+):
+    """
+    One-time backfill: load Ozon placement cost history for last N months.
+
+    Splits into 30-day chunks (Ozon API limit: 31 days per report).
+    3 months = 3 chunks = 3 reports (within 5 reports/day limit).
+    Each chunk: create report → poll → download Excel → parse → insert.
+
+    Queue: HEAVY. Can run up to 30 minutes due to polling delays.
+    """
+    import asyncio
+    import os
+    from datetime import date, timedelta
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import text
+    from app.config import get_settings
+    from app.services.ozon_placement_service import (
+        OzonPlacementService, OzonPlacementLoader,
+    )
+    import logging
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    ch_host = os.getenv("CLICKHOUSE_HOST", "clickhouse")
+    ch_port = int(os.getenv("CLICKHOUSE_PORT", 8123))
+
+    async def run_backfill():
+        engine = create_async_engine(settings.database_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        try:
+            # 1. Build offer_id → sku mapping
+            self.update_state(state='PROGRESS', meta={
+                'status': 'Building offer_id → SKU mapping...',
+                'shop_id': shop_id,
+            })
+            offer_to_sku = {}
+            async with sf() as db:
+                result = await db.execute(
+                    text("""
+                        SELECT offer_id, sku
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND sku IS NOT NULL AND offer_id IS NOT NULL
+                    """),
+                    {"sid": shop_id},
+                )
+                for row in result.fetchall():
+                    if row[0] and row[1]:
+                        offer_to_sku[str(row[0])] = int(row[1])
+
+            logger.info(
+                "backfill_ozon_placement: shop=%s mapping %d products, months=%d",
+                shop_id, len(offer_to_sku), months,
+            )
+
+            # 2. Split into 30-day chunks (Ozon limit: 31 days per report)
+            today = date.today()
+            end_date = today - timedelta(days=1)  # yesterday
+            start_date = today - timedelta(days=months * 30)
+
+            chunks = []
+            chunk_end = end_date
+            while chunk_end > start_date:
+                chunk_start = max(chunk_end - timedelta(days=29), start_date)
+                chunks.append((chunk_start, chunk_end))
+                chunk_end = chunk_start - timedelta(days=1)
+
+            total_chunks = len(chunks)
+            total_inserted = 0
+            chunk_results = []
+
+            logger.info(
+                "backfill_ozon_placement: shop=%s %d chunks (%s → %s)",
+                shop_id, total_chunks, start_date, end_date,
+            )
+
+            # 3. Process each chunk
+            for i, (c_start, c_end) in enumerate(chunks, 1):
+                date_from_str = c_start.strftime("%Y-%m-%d")
+                date_to_str = c_end.strftime("%Y-%m-%d")
+
+                self.update_state(state='PROGRESS', meta={
+                    'status': f'Chunk {i}/{total_chunks}: {date_from_str} → {date_to_str}...',
+                    'shop_id': shop_id,
+                    'chunk': i,
+                    'total_chunks': total_chunks,
+                })
+
+                async with sf() as db:
+                    service = OzonPlacementService(
+                        db=db, shop_id=shop_id,
+                        api_key=api_key, client_id=client_id,
+                    )
+                    rows = await service.fetch_placement_costs(
+                        date_from_str, date_to_str,
+                        offer_to_sku=offer_to_sku,
+                    )
+
+                if not rows:
+                    logger.warning(
+                        "backfill_ozon_placement: shop=%s chunk %d/%d empty (%s → %s)",
+                        shop_id, i, total_chunks, date_from_str, date_to_str,
+                    )
+                    chunk_results.append({
+                        "chunk": i, "period": f"{date_from_str} → {date_to_str}",
+                        "rows": 0,
+                    })
+                    continue
+
+                # Insert into ClickHouse
+                with OzonPlacementLoader(
+                    host=ch_host, port=ch_port,
+                    username=os.getenv("CLICKHOUSE_USER", "default"),
+                    password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+                ) as loader:
+                    inserted = loader.insert_costs(
+                        shop_id, rows, date_from_str, date_to_str,
+                    )
+
+                total_inserted += inserted
+                chunk_results.append({
+                    "chunk": i, "period": f"{date_from_str} → {date_to_str}",
+                    "rows": inserted,
+                })
+
+                logger.info(
+                    "backfill_ozon_placement: shop=%s chunk %d/%d done: %d rows (%s → %s)",
+                    shop_id, i, total_chunks, inserted, date_from_str, date_to_str,
+                )
+
+                # Pause between chunks to avoid Ozon API rate limits (429)
+                if i < total_chunks:
+                    await asyncio.sleep(10)
+
+            # 4. Final stats
+            with OzonPlacementLoader(
+                host=ch_host, port=ch_port,
+                username=os.getenv("CLICKHOUSE_USER", "default"),
+                password=os.getenv("CLICKHOUSE_PASSWORD", ""),
+            ) as loader:
+                stats = loader.get_stats(shop_id)
+
+            await engine.dispose()
+            return {
+                "status": "completed",
+                "shop_id": shop_id,
+                "months": months,
+                "total_chunks": total_chunks,
+                "total_rows_inserted": total_inserted,
+                "chunks": chunk_results,
+                **stats,
+            }
+        except Exception as e:
+            await engine.dispose()
+            raise e
+
+    try:
+        return asyncio.run(run_backfill())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=300, max_retries=2)

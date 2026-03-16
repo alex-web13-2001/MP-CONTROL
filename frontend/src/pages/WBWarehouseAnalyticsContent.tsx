@@ -718,7 +718,7 @@ function CopyableText({ text, prefix, className }: { text: string; prefix?: stri
    Storage SKUs Table
    ═══════════════════════════════════════════════════════════ */
 
-export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
+export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; isEstimate?: boolean }) {
   if (skus.length === 0) return null
 
   const [search, setSearch] = React.useState('')
@@ -806,15 +806,15 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
           </div>
           <div className="text-right flex gap-6">
             <div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Хранение за 30д</div>
-              <div className="text-lg font-bold text-red-400">{fmtM(totalCost)}</div>
-              <div className="text-[10px] text-[hsl(var(--muted-foreground))]">при текущих остатках</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">{isEstimate ? 'Расч. хранение/30д' : 'Хранение за 30д'}</div>
+              <div className={`text-lg font-bold ${isEstimate ? 'text-[hsl(var(--muted-foreground))]' : 'text-red-400'}`}>{fmtM(totalCost)}</div>
+              <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{isEstimate ? 'оценка рисков' : 'при текущих остатках'}</div>
             </div>
             {hasForecast && (
               <div>
-                <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Прогноз 30д</div>
-                <div className="text-lg font-bold text-amber-400">{fmtM(totalForecast)}</div>
-                <div className="text-[10px] text-[hsl(var(--muted-foreground))]">с учётом продаж</div>
+                <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">{isEstimate ? 'Расч. прогноз 30д' : 'Прогноз 30д'}</div>
+                <div className={`text-lg font-bold ${isEstimate ? 'text-[hsl(var(--muted-foreground))]' : 'text-amber-400'}`}>{fmtM(totalForecast)}</div>
+                <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{isEstimate ? 'оценка рисков' : 'с учётом продаж'}</div>
               </div>
             )}
           </div>
@@ -916,9 +916,14 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-bold">
-                        <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
-                          {fmtM(sku.est_cost_month)}
-                        </span>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
+                            {fmtM(sku.est_cost_month)}
+                          </span>
+                          {(sku as any).storage_source === 'actual' && (
+                            <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/15 text-emerald-400">факт</span>
+                          )}
+                        </div>
                       </td>
                       {hasForecast && (
                         <td className={`px-3 py-2.5 text-right tabular-nums font-bold ${forecastColor}`}>
@@ -946,12 +951,16 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                                       <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Остаток</th>
                                       <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Хранение/30д</th>
                                       <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Доля</th>
-                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Источник</th>
+                                      <th className="px-3 py-2 text-right font-semibold text-[hsl(var(--muted-foreground))]">Прогноз 30д</th>
                                     </tr>
                                   </thead>
                                   <tbody>
                                     {whList.map((wh, wi) => {
                                       const whShare = sku.est_cost_month > 0 ? (wh.cost_month / sku.est_cost_month * 100) : 0
+                                      const whForecast = (wh as any).forecast_30d
+                                      const forecastColor = whForecast == null ? '' :
+                                        whForecast > 500 ? 'text-red-400' :
+                                        whForecast > 100 ? 'text-amber-400' : 'text-[hsl(var(--foreground))]'
                                       return (
                                         <tr key={wh.warehouse} className={`border-b border-[hsl(var(--border)/0.1)] ${wi % 2 ? 'bg-[hsl(var(--muted)/0.03)]' : ''}`}>
                                           <td className="px-4 py-2 text-left">
@@ -969,14 +978,8 @@ export function StorageSkusTable({ skus }: { skus: WBStorageSku[] }) {
                                           <td className="px-3 py-2 text-right tabular-nums text-[hsl(var(--muted-foreground))]">
                                             {whShare > 0 ? `${whShare.toFixed(0)}%` : '—'}
                                           </td>
-                                          <td className="px-3 py-2 text-right">
-                                            <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                                              wh.source === 'actual'
-                                                ? 'bg-emerald-500/10 text-emerald-400'
-                                                : 'bg-amber-500/10 text-amber-400'
-                                            }`}>
-                                              {wh.source === 'actual' ? 'Факт' : 'Оценка'}
-                                            </span>
+                                          <td className={`px-3 py-2 text-right tabular-nums font-medium ${forecastColor}`}>
+                                            {whForecast != null ? fmtM(whForecast) : '—'}
                                           </td>
                                         </tr>
                                       )

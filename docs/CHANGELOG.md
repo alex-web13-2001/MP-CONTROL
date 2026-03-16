@@ -1,3 +1,71 @@
+## 2026-03-16 (v6)
+
+### feat(warehouses): Ozon — фактические данные хранения по SKU (Placement Cost API)
+
+**ClickHouse** (`docker/clickhouse/migrations/005_add_ozon_placement_cost.sql`):
+- Новая таблица `fact_ozon_placement_cost` — фактическая стоимость размещения per-SKU
+- Поля: offer_id, sku, product_id, name, volume, avg_stock, placement_cost, dt, period_end
+- `ReplacingMergeTree ORDER BY (shop_id, dt, offer_id)` — дедупликация по дню и товару
+
+**Backend** (`ozon_placement_service.py`):
+- `OzonPlacementService` — полный pipeline: create report → poll status → download Excel → parse
+- Использует Ozon API `/v1/report/placement/by-products/create` + `/v1/report/info`
+- `OzonPlacementLoader` — вставка parsed данных в ClickHouse
+- Лимит: 5 отчётов/день, макс. 31 день в периоде
+
+**Celery** (`tasks.py`):
+- `sync_ozon_placement_cost` — задача с offer_id→sku маппингом из PostgreSQL
+  - Queue: `heavy`, time_limit: 300с (отчёт генерируется 30-60 сек)
+- `backfill_ozon_placement_cost` — бэкфилл за N месяцев (по аналогии с WB)
+  - Разбивка на 30-дневные чанки (Ozon API лимит: 31 день/отчёт)
+  - 3 месяца = 3 чанка = 3 отчёта (в рамках 5 отчётов/день)
+  - Queue: `heavy`, time_limit: 1800с
+  - Добавлен в Ozon startup pipeline (dispatch_initial_sync)
+
+**Backend API** (`warehouses.py`):
+- `POST /ozon/sync-placement-cost` — trigger endpoint для запуска sync из UI
+- `POST /ozon/backfill-placement-cost` — trigger бэкфилла за N месяцев (параметр `months`, default=3)
+- `GET /ozon/storage` обогащён: запрос `fact_ozon_placement_cost` для actual costs
+  - `storage_source: "actual" | "estimated"` per-SKU
+  - KPI: `has_actual_data`, `actual_period` (from/to)
+  - `total_storage` берёт actual если есть, иначе estimated
+
+**Frontend** (`WarehousesStoragePage.tsx`, `WBWarehouseAnalyticsContent.tsx`, `warehouses.ts`):
+- `OzonStorageKpi` → 4 карточки (было 3): Хранение факт/расчёт, Оборачиваемость, Бесплатное, Риск
+- Кнопка «Обновить данные» → запускает sync через Celery
+- Кнопка «Загрузить за 3 мес» → backfill 90 дней (показывается если нет фактических данных)
+- Динамический disclaimer: ✅ факт / ⚠️ расчёт
+- Badge «факт» (зелёный) в StorageSkusTable рядом с суммой хранения
+- `isEstimate` теперь динамический: `!(kpi.has_actual_data)`
+- API типы: `has_actual_data`, `actual_period` в `OzonStorageKpi`
+- API функции: `syncOzonPlacementCost()`, `backfillOzonPlacementCost()`
+
+---
+
+## 2026-03-16 (v5)
+
+### feat(warehouses): Ozon — раздел «Хранение» (по аналогии с WB)
+
+**Backend** (`warehouses.py`):
+- `GET /ozon/storage` — endpoint аналитики хранения FBO (~270 строк):
+  - Per-SKU оборачиваемость: приоритетно из `fact_ozon_turnover` (Ozon API), fallback на расчёт stock/daily_sales
+  - Зонирование: free (<120д), warning (120-160д), paid (>160д) — тарифы Ozon
+  - **Объём**: `volume_weight × 2.87` (коэффициент из реверс-инжиниринга Ozon кабинета), fallback на `depth×height×width`
+  - **Тариф**: 0.14 ₽/л/день (медиана из реверс-инжиниринга Ozon seller dashboard, было 0.07)
+  - Прогноз 30д: с учётом убывания стока при продажах
+  - Данные рекламы из `fact_ozon_ad_daily` (has_active_ads)
+  - Формат ответа совместим с WB `StorageSkusTable`
+
+**Frontend** (`WarehousesStoragePage.tsx`, `warehouses.ts`):
+- Убран redirect Ozon → /warehouses/analytics
+- `OzonStorageKpi` — 3 KPI карточки: Хранение (оценка), Ср. оборачиваемость, Проблемные зоны
+- Переиспользование `StorageSkusTable` компонента (WB → Ozon)
+- Подпись «Тариф ~0.14 ₽/л/день» (исправлена с 0.07)
+- API типы: `OzonStorageKpi`, `OzonStorageSku`, `OzonStorageResponse`
+- API функция `getOzonStorage()`
+
+---
+
 ## 2026-03-16 (v4)
 
 ### feat(warehouses): Ozon — ИИ-анализ географии продаж (Gemini 2.5 Flash)
