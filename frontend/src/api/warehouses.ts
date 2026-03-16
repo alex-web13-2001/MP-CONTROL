@@ -464,6 +464,7 @@ export interface WBAnalyticsKpi {
   period_days: number
   has_actual_storage: boolean
   forecast_30d: number | null
+  out_of_stock_skus?: { vendor_code: string; name: string; stock: number; daily: number; days_left: number }[]
   prev?: {
     total_logistics: number
     total_storage: number
