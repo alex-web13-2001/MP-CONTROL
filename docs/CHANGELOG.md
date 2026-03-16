@@ -1,3 +1,48 @@
+## 2026-03-16
+
+### feat(warehouses): реструктуризация раздела «Склады» — 5 подстраниц
+
+**Frontend** (новые страницы + рефакторинг навигации):
+- **`WarehousesOverviewPage`** (~1130 строк) — единый дашборд складов WB:
+  - 4 KPI: оборачиваемость, заказы/день, остатки, SKU
+  - Блок «Диагностика проблем»: кросс, хранение, out-of-stock, штрафы (ProblemCard)
+  - Блок «Расходы за период»: горизонтальные бары (логистика, ↳кросс, хранение, возмещение, приёмка, удержания)
+  - Таблица 20+ складов с сортировкой (статус, кросс%, оборач., хранение₽)
+  - ИИ-анализ (AIDiagnosticsBlock): сценарии по SKU + перераспределение через Gemini
+- **`WarehousesCrossPage`** (~980 строк) — кросс-логистика WB:
+  - 4 KPI: кросс-стоимость (≈), средний кросс%, проблемных SKU, складов с кроссом
+  - Топ-проблемные SKU с потерями и рекомендациями «куда довезти»
+  - Кросс-карта: матрица «склад × округ» (зелёный=свой, красный=кросс)
+  - Кросс-анализ по складам: раскрываемые строки → SKU детализация
+  - SkuGeographyPanel: «где лежит» + «куда продаётся» при клике на SKU
+- **`WarehousesStoragePage`** — хранение WB (WBWarehouseAnalyticsContent)
+- **`WarehousesGeographyPage`** — география продаж WB с ИИ-анализом
+- Sidebar: «Склады» → 5 подпунктов (Обзор, Кросс-логистика, Хранение, География, Поставки)
+- Routing: `/warehouses/overview`, `/cross`, `/storage`, `/geography`, `/supply`
+
+### fix(warehouses): унификация расчёта кросс-стоимости
+
+**Frontend** (`WarehousesCrossPage.tsx`):
+- Убрана фиктивная константа `CROSS_COST_PER_ORDER = 33₽` — выдуманная цифра
+- Формула: `Σ(wh.logistics_cost × wh.cross_orders / wh.orders)` — из `fact_finances`
+- Пометка `≈` — WB не разделяет логистику на кросс/обычную в отчётах
+- Единый расчёт на Overview (↳ Кросс) и Cross (KPI) — цифры совпадают
+- Обновлены: KPI, TopProblemSkus, SkuGeographyPanel, CrossWarehousesTable
+
+### fix(warehouses): удалён блок «Нужна поставка» из Overview
+
+**Frontend** (`WarehousesOverviewPage.tsx`):
+- Удалена карточка ProblemCard key="supply" — дублировала «Скоро out-of-stock» и страницу Поставки
+- Показывала бессмысленные «2 скл.» без объяснения что и зачем поставлять
+- SKU с `daily_sales=0` получали `+0 шт` — вводило в заблуждение
+- Очищены unused: import PackagePlus, переменная criticalWhs
+
+### docs: обновление архитектурной документации
+
+- `06_FRONTEND.md`: добавлены секции WarehousesOverviewPage и WarehousesCrossPage, обновлены Routing (5 складских маршрутов) и Sidebar (5 подпунктов)
+
+---
+
 ## 2026-03-15
 
 ### feat(warehouses): ИИ-анализ географии продаж

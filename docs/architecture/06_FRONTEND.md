@@ -42,11 +42,15 @@ graph TB
         LTV["/customers/ltv → LtvPage"]
         Finances["/finances → FinancesPage"]
         Settings["/settings → SettingsPage"]
+        WhOverview["/warehouses/overview → WarehousesOverviewPage"]
+        WhCross["/warehouses/cross → WarehousesCrossPage"]
+        WhStorage["/warehouses/storage → WarehousesStoragePage"]
+        WhGeo["/warehouses/geography → WarehousesGeographyPage"]
+        WhSupply["/warehouses/supply → WarehouseSupplyPage"]
     end
 
     subgraph "Placeholder (в App.tsx)"
         Funnel["/funnel → FunnelPage"]
-        Warehouses["/warehouses/supply → WarehouseSupplyPage"]
         Advertising["/advertising → AdvertisingPage"]
         Events["/events → EventsPage"]
     end
@@ -471,6 +475,98 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Marketplace badge (WB/Ozon с разными цветами)
 - Status badge: active (зелёный), syncing (синий), auth_error (красный), paused (жёлтый)
 
+### `WarehousesOverviewPage` (~1130 строк)
+
+Страница «Обзор складов» — единый дашборд аналитики по складам WB. Диагностика проблем, расходы, таблица складов.
+
+- API: `GET /api/v1/warehouses/wb/analytics?shop_id=X`
+- Только WB (Ozon — другая страница аналитики)
+
+**4 KPI-карточки** (Framer Motion анимация, тренды):
+
+| KPI | Описание |
+| --- | --- |
+| Оборачиваемость | Средневзвешенная оборачиваемость по складам (дни) |
+| Заказы / день | Средние дневные продажи |
+| Остатки | Суммарные остатки на всех складах |
+| SKU на складах | Общее количество уникальных артикулов |
+
+**Блок «Диагностика проблем»** — автоматический анализ:
+
+| Карточка | Severity | Условие |
+| --- | --- | --- |
+| Высокий кросс | warning/critical | Склады с кросс% > 40% |
+| Дорогое хранение | warning | storage_cost > порог |
+| Скоро out-of-stock | critical | SKU с запасом < 7 дней на ВСЕХ складах |
+| Штрафы | info | Штрафы за период > 0 |
+
+> Блок «Нужна поставка» удалён (2026-03-16) — дублировал «Скоро out-of-stock» и страницу «Поставки».
+
+**Блок «Расходы за период»** — горизонтальные бары:
+
+- Логистика (+ ↳ Кросс как подстрока, `logistics_cost × cross_orders / orders`)
+- Хранение, Возмещение, Списание за отзыв, Приёмка, Удержания
+
+**Таблица «Склады»** — 20+ складов с сортировкой:
+
+| Столбец | Описание |
+| --- | --- |
+| Склад | Название + регион (кластер) + фуд-иконка |
+| Статус | Бейдж: Норма / Критич. / Перезат. / Пусто |
+| Остаток | Суммарный сток |
+| Заказов | За период |
+| В день | Среднедневные продажи |
+| Оборач. | Дни оборачиваемости (цвет: 🟢<60, 🟡<120, 🔴>120) |
+| Кросс% | Доля кросс-заказов (цвет: 🟢<30%, 🟡<50%, 🔴>50%) |
+| Хранение ₽ | Расход хранения |
+| SKU | Количество артикулов |
+
+**Компоненты:**
+
+| Компонент | Описание |
+| --- | --- |
+| `ProblemCard` | Карточка проблемы: severity badge, icon, title, details, link |
+| `KpiCard` | Анимированная KPI: value, trend, subtitle |
+| `ProductCell` | Фото + название + артикул товара (combobox-select в SKU фильтрах) |
+| `AIDiagnosticsBlock` | ИИ-анализ (Gemini): проблемные SKU, перераспределение, советы |
+
+---
+
+### `WarehousesCrossPage` (~980 строк)
+
+Страница «Кросс-логистика» — анализ кросс-отправок, потерь и рекомендаций по оптимизации размещения товаров.
+
+- API: `GET /api/v1/warehouses/wb/analytics?shop_id=X`
+- Период: 7 / 14 / 30 / 60 / 90 дн (дефолт: 30)
+- Только WB
+
+**4 KPI-карточки:**
+
+| KPI | Описание |
+| --- | --- |
+| Кросс-логистика | `≈ Σ(wh.logistics_cost × wh.cross_orders / wh.orders)` — оценочная стоимость кросс-доставки |
+| Средний кросс% | Средний % кросс-заказов по всем складам |
+| Проблемных SKU | SKU с кросс% > 40% и ≥5 заказов |
+| Склады с кроссом | Количество складов с высоким кросс% |
+
+> **Расчёт кросс-стоимости:** WB не разделяет логистику на кросс/обычную в отчётах. Стоимость рассчитывается пропорционально: для каждого склада `logistics_cost × (cross_orders / total_orders)`. Пометка `≈` указывает на оценочный характер. Идентична цифре на WarehousesOverviewPage.
+
+**Секции:**
+
+| Секция | Компонент | Описание |
+| --- | --- | --- |
+| Топ-проблемные SKU | `TopProblemSkus` | Таблица SKU: склад, заказов, кросс%, потери (≈), куда довезти |
+| Кросс-карта | `CrossWarehouseMatrix` | Матрица «склад × округ» — откуда/куда, зелёный=свой, красный=кросс |
+| Кросс-анализ по складам | `CrossWarehousesTable` | Раскрываемые строки: склад → SKU детализация |
+| ИИ-рекомендации | `AICrossRecommendations` | Gemini анализ с действиями |
+
+**Компонент `SkuGeographyPanel`** — при клике на SKU:
+
+- Где лежит (stock по складам) и куда продаётся (заказы по округам)
+- Рекомендации: «Перераспределить на склад X» / «Поставить ещё на склад Y»
+
+---
+
 ### `WarehouseSupplyPage` (~1250 строк)
 
 Страница «Поставки». **Единый интерфейс** — автоматически переключается по `currentShop.marketplace`:
@@ -584,7 +680,11 @@ Bоковая панель с вложенной навигацией (collapse 
 |                | └ Прогноз        | `/sales/forecast`    | LineChart       | ✅ Активен     |
 |                | Воронка          | `/funnel`            | BarChart3       | 🚧 Placeholder |
 |                | Склады ▾         |                      | Warehouse       | ✅ Группа      |
-|                | └ Поставки       | `/warehouses/supply` | TrendingUp      | ✅ Активен     |
+|                | └ Обзор          | `/warehouses/overview`   | BarChart3   | ✅ Активен     |
+|                | └ Кросс-логистика| `/warehouses/cross`      | ArrowLeftRight | ✅ Активен    |
+|                | └ Хранение       | `/warehouses/storage`    | Archive     | ✅ Активен     |
+|                | └ География      | `/warehouses/geography`  | MapPin      | ✅ Активен     |
+|                | └ Поставки       | `/warehouses/supply`     | TrendingUp  | ✅ Активен     |
 |                | Финансы          | `/finances`          | DollarSign      | ✅ Активен     |
 | **УПРАВЛЕНИЕ** | Реклама          | `/advertising`       | Megaphone       | 🚧 Placeholder |
 |                | События          | `/events`            | Activity        | 🚧 Placeholder |
@@ -820,3 +920,18 @@ Bоковая панель с вложенной навигацией (collapse 
   - `SupplyCluster` тип: добавлены поля `wh_stock`, `warehouses: string[]`
   - `HubItem` тип: добавлено поле `wh_stock`
   - Колонка кластерной таблицы: «Оц. стока» → «Сток РФЦ» (реальные остатки по складам)
+
+### 2026-03-16
+
+- **Добавлена секция `WarehousesOverviewPage`** (~1130 строк): обзор складов WB — 4 KPI, диагностика проблем, расходы, таблица 20+ складов
+- **Добавлена секция `WarehousesCrossPage`** (~980 строк): кросс-логистика — 4 KPI, топ-проблемные SKU, кросс-карта, анализ по складам
+- **Sidebar:** обновлена навигация «Склады» — 5 подпунктов (Обзор, Кросс, Хранение, География, Поставки)
+- **Routing:** добавлены маршруты `/warehouses/overview`, `/warehouses/cross`, `/warehouses/storage`, `/warehouses/geography`
+- **WarehousesCrossPage — унификация расчёта кросс-стоимости:**
+  - Убрана константа `CROSS_COST_PER_ORDER = 33₽` (фиктивная)
+  - Формула: `logistics_cost × (cross_orders / orders)` per-warehouse — из реальных данных `fact_finances`
+  - Пометка `≈` — WB не разделяет логистику на кросс/обычную
+  - Единая цифра на Overview и Cross (≈ 65 268 ₽ для ПФ ВБ)
+- **WarehousesOverviewPage — удалён блок «Нужна поставка»:**
+  - Дублировал «Скоро out-of-stock» и страницу «Поставки»
+  - Показывал бессмысленные «2 скл.» без указания что/зачем поставлять
