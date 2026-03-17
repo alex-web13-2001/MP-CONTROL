@@ -16,6 +16,15 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.shop import Shop
 from app.models.user import User
+from app.services.ozon_finance_queries import (
+    get_sku_to_offer_map,
+    get_cost_map,
+    build_sku_cost_map,
+    calc_cogs_from_ch,
+    get_daily_category_breakdown,
+    get_placement_costs_by_sku,
+    get_ad_costs_by_sku,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +140,6 @@ async def get_ozon_finances(
         "marketing": 0.0,
         "other": 0.0,
     }
-    txn_daily = {}
-
     CAT_MAP = {
         "Logistics": "logistics",
         "Storage": "storage",
@@ -254,25 +261,8 @@ async def get_ozon_finances(
     except Exception as e:
         logger.warning("CH bulk categories query failed: %s", e)
 
-    try:
-        # 2c. Daily payout (excl Marketing) for dynamics chart
-        txn_daily_result = ch.query("""
-            SELECT
-                toDate(operation_date) AS dt,
-                sum(amount) AS payout
-            FROM mms_analytics.fact_ozon_transactions FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND toDate(operation_date) >= {d_start:Date}
-              AND toDate(operation_date) <= {d_end:Date}
-            GROUP BY dt
-            ORDER BY dt
-        """, parameters={
-            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
-        })
-        for r in txn_daily_result.result_rows:
-            txn_daily[str(r[0])] = float(r[1] or 0)
-    except Exception as e:
-        logger.warning("CH txn daily query failed: %s", e)
+    # 2c. Daily category breakdown for precise dynamics chart
+    daily_breakdown = get_daily_category_breakdown(ch, shop_id, d_start, d_end)
 
     # ══════════════════════════════════════════════════════
     # 3. ADS: taken directly from transactions (Marketing) to match balance
@@ -302,79 +292,19 @@ async def get_ozon_finances(
 
     # ══════════════════════════════════════════════════════
     # 4. COGS: cost_price × qty from Revenue TRANSACTIONS
-    #    (same items as revenue/commission/logistics)
-    #
-    #    Revenue txn has SKU → map to offer_id via dim_ozon_products
-    #    → then get cost from product_costs
-    #    This ensures COGS counts the same delivered items as revenue
+    #    Uses shared module with count() (switch to sum(items_count) after migration 007)
     # ══════════════════════════════════════════════════════
     cogs_cur = 0.0
     cogs_prev = 0.0
     cogs_daily = {}
 
     try:
-        # Get SKU→offer_id from dim_ozon_products
-        sku_map_result = await db.execute(
-            text("""
-                SELECT sku, offer_id
-                FROM dim_ozon_products
-                WHERE shop_id = :shop_id AND sku > 0
-            """),
-            {"shop_id": shop_id},
+        sku_to_offer = await get_sku_to_offer_map(db, shop_id)
+        cost_map = await get_cost_map(db, shop_id)
+        sku_cost_map = build_sku_cost_map(sku_to_offer, cost_map)
+        cogs_cur, cogs_prev, cogs_daily = calc_cogs_from_ch(
+            ch, shop_id, sku_cost_map, d_start, d_end, d_prev_start, d_prev_end
         )
-        sku_to_offer = {int(r[0]): r[1] for r in sku_map_result.fetchall()}
-
-        # Get cost prices from product_costs
-        cost_result = await db.execute(
-            text("""
-                SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
-                FROM product_costs
-                WHERE shop_id = :shop_id AND (cost_price > 0 OR packaging_cost > 0)
-            """),
-            {"shop_id": shop_id},
-        )
-        cost_map = {r[0]: float(r[1]) for r in cost_result.fetchall()}
-
-        if cost_map and sku_to_offer:
-            # Build SKU→cost map
-            sku_cost_map = {}
-            for sku, offer_id in sku_to_offer.items():
-                cost = cost_map.get(offer_id, 0)
-                if cost > 0:
-                    sku_cost_map[sku] = cost
-
-            if sku_cost_map:
-                sku_list = list(sku_cost_map.keys())
-                # Get qty per SKU per day from Revenue transactions
-                cogs_ch = ch.query("""
-                    SELECT
-                        toDate(operation_date) AS dt,
-                        sku,
-                        count() AS qty
-                    FROM mms_analytics.fact_ozon_transactions FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(operation_date) >= {d_prev_start:Date}
-                      AND toDate(operation_date) <= {d_end:Date}
-                      AND category = 'Revenue'
-                      AND sku IN {skus:Array(UInt64)}
-                    GROUP BY dt, sku
-                """, parameters={
-                    "shop_id": shop_id,
-                    "d_prev_start": d_prev_start, "d_end": d_end,
-                    "skus": sku_list,
-                })
-                for r in cogs_ch.result_rows:
-                    row_date = r[0]
-                    sku = int(r[1])
-                    qty = int(r[2] or 0)
-                    cost = sku_cost_map.get(sku, 0)
-                    cogs_val = cost * qty
-                    if d_start <= row_date <= d_end:
-                        cogs_cur += cogs_val
-                        key = str(row_date)
-                        cogs_daily[key] = cogs_daily.get(key, 0) + cogs_val
-                    elif d_prev_start <= row_date <= d_prev_end:
-                        cogs_prev += cogs_val
     except Exception as e:
         logger.warning("COGS calculation failed: %s", e)
 
@@ -450,7 +380,7 @@ async def get_ozon_finances(
         "profit": round(profit_cur, 2),
     }
 
-    # ── Build daily dynamics ──
+    # ── Build daily dynamics (precise category breakdown) ──
     all_dates = set()
     d = d_start
     while d <= d_end:
@@ -459,14 +389,26 @@ async def get_ozon_finances(
 
     daily_raw = []
     for ds in sorted(all_dates):
-        rev = orders_daily.get(ds, {}).get("revenue", 0)
+        bd = daily_breakdown.get(ds, {})
+        rev = bd.get("revenue", 0)
         ords = orders_daily.get(ds, {}).get("orders", 0)
-        txn_d = txn_daily.get(ds, 0)  # sum(txn excl Marketing) for day
-        ads_d = ads_daily.get(ds, 0)
+        # Precise mp_fees from category breakdown
+        commission_d = bd.get("commission", 0)
+        services_d = bd.get("services", 0)
+        logistics_d = bd.get("logistics", 0)
+        storage_d = bd.get("storage", 0)
+        acquiring_d = bd.get("acquiring", 0)
+        refunds_d = bd.get("refunds", 0)
+        penalties_d = bd.get("penalties", 0)
+        compensation_d = bd.get("compensation", 0)
+        other_d = bd.get("other", 0)
+        ads_d = bd.get("marketing", 0)
         cogs_d = cogs_daily.get(ds, 0)
-        # mp_d is operating + commission (mp_fees)
-        mp_d = max(0, rev - txn_d - ads_d) if rev > 0 else 0
-        payout_d = txn_d
+        payout_d = bd.get("payout", 0)
+
+        # mp_fees = commission + services + all bulk charges (excl marketing)
+        bulk_d = logistics_d + storage_d + acquiring_d + refunds_d + penalties_d + compensation_d + other_d
+        mp_d = commission_d + services_d + bulk_d
         profit_d = rev - mp_d - ads_d - cogs_d
 
         daily_raw.append({
@@ -1662,7 +1604,7 @@ async def get_ozon_products_finance(
     Sources:
       - fact_ozon_orders FINAL: revenue, quantity (by offer_id)
       - fact_ozon_finances: transactions breakdown (by offer_id/sku)
-      - fact_ozon_ad_daily: ad spend (by sku_id → offer_id)
+      - fact_ozon_transactions (category='Marketing'): ad spend (by sku → offer_id)
       - product_costs (PG): cost_price + packaging_cost
     """
 
@@ -1830,8 +1772,10 @@ async def get_ozon_products_finance(
         logger.warning("CH Ozon bulk charges query failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # 3. Ad spend from fact_ozon_ad_daily
-    #    Fields: sku (not sku_id!), money_spent (not spend!)
+    # 3. Ad spend from fact_ozon_ad_daily (Ozon Performance API)
+    #    fact_ozon_transactions Marketing has sku=0 — Ozon API does
+    #    NOT link ad spend to SKU in transaction stream.
+    #    Real per-SKU data comes from Performance API.
     # ══════════════════════════════════════════════════════
     try:
         ads_result = ch.query("""
@@ -1843,6 +1787,7 @@ async def get_ozon_products_finance(
             WHERE shop_id = {shop_id:UInt32}
               AND dt >= {d_prev_start:Date}
               AND dt <= {d_end:Date}
+              AND sku > 0
             GROUP BY sku
         """, parameters={
             "shop_id": shop_id,
@@ -1942,6 +1887,19 @@ async def get_ozon_products_finance(
     except Exception as e:
         logger.warning("PG product_costs query failed: %s", e)
 
+    # ══════════════════════════════════════════════════════
+    # 4b. Per-SKU storage from fact_ozon_placement_cost
+    #     Returns {offer_id: cost} — products dict keys are offer_id too
+    # ══════════════════════════════════════════════════════
+    try:
+        placement_costs = get_placement_costs_by_sku(ch, shop_id, d_start, d_end)
+        if placement_costs:
+            for oid, cost in placement_costs.items():
+                if oid in products:
+                    products[oid]["cur"]["storage"] = round(cost, 2)
+    except Exception as e:
+        logger.warning("Placement cost integration failed: %s", e)
+
     names_map = {}
     try:
         name_result = await db.execute(
@@ -1966,9 +1924,12 @@ async def get_ozon_products_finance(
         cur = p["cur"]
         prev = p["prev"]
 
-        # Ozon profit = payout - cogs - ad_spend (same formula as Excel)
-        cur_profit = cur["payout"] - cur["cogs"] - cur["ad_spend"]
-        prev_profit = prev["payout"] - prev["cogs"] - prev["ad_spend"]
+        # Unified profit formula: revenue - commission - logistics - storage - ad_spend - cogs
+        # (consistent with main P&L endpoint)
+        cur_mp_fees = cur["commission"] + cur["logistics"] + cur.get("storage", 0) + cur.get("acquiring", 0)
+        prev_mp_fees = prev["commission"] + prev["logistics"] + prev.get("storage", 0) + prev.get("acquiring", 0)
+        cur_profit = cur["revenue"] - cur_mp_fees - cur["ad_spend"] - cur["cogs"]
+        prev_profit = prev["revenue"] - prev_mp_fees - prev["ad_spend"] - prev["cogs"]
 
         current = {
             "sales": cur["sales"],
@@ -2061,7 +2022,7 @@ async def get_ozon_weekly_report(
 
     Sources:
       - fact_ozon_transactions FINAL: all financial metrics
-      - fact_ozon_ad_daily FINAL: ad spend per week
+      - fact_ozon_transactions (category='Marketing'): ad spend per week
       - product_costs (PG): cost_price + packaging_cost for COGS
     """
 
@@ -2173,15 +2134,16 @@ async def get_ozon_weekly_report(
         return {"shop_id": shop_id, "weeks": [], "totals": {}}
 
     # ══════════════════════════════════════════════════════
-    # 2. Ad spend from fact_ozon_ad_daily (weekly)
+    # 2. Ad spend from Marketing transactions (consistent with KPI)
     # ══════════════════════════════════════════════════════
     try:
         ads_weekly = ch.query("""
             SELECT
-                toMonday(dt) AS week_start,
-                sum(money_spent) AS ad_spend
-            FROM mms_analytics.fact_ozon_ad_daily FINAL
+                toMonday(toDate(operation_date)) AS week_start,
+                sum(abs(amount)) AS ad_spend
+            FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
+              AND category = 'Marketing'
             GROUP BY week_start
             ORDER BY week_start
         """, parameters={"shop_id": shop_id})

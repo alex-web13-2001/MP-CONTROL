@@ -1,3 +1,130 @@
+## 2026-03-18 (v13)
+
+### fix(finances): Ozon Excel — % логистики, дельта-столбцы, фильтр пустых SKU
+
+**Понедельный лист «По неделям»** (`finances_export.py`):
+- Добавлен **Дост%** — доля логистики от продаж (ранее отсутствовал)
+- Теперь 6 процентных столбцов: Комис%, **Дост%**, Рекл%, Приём%, С/С%, Приб%
+- **Δ-столбцы** рядом с каждым %: серая заливка, показывают изменение в п.п. vs предыдущая неделя
+- Цветовая индикация дельт: 🟢 улучшение (расходы ↓ / прибыль ↑), 🔴 ухудшение, серый при нулевом изменении
+- «—» для первой недели (нет предыдущего периода)
+- 30 столбцов (было 23)
+
+**Помесячный лист «По месяцам»** (`finances_export.py`):
+- Добавлены 6 процентных столбцов: Комис%, Дост%, Рекл%, Приём%, С/С%, Приб% (ранее были только Δ Выручка% и Δ Прибыль%)
+- **Δ-столбцы** рядом с каждым % — аналогично понедельному
+- 29 столбцов (было 19)
+
+**Лист «По товарам (SKU)»** (`finances_export.py`):
+- **Фикс пустого SKU**: отфильтрованы записи с qty=0 (SKU без Revenue-транзакций, только возвраты/прочее)
+- Итоговая строка корректно считает только отфильтрованные SKU
+
+**Стили** (`finances_export.py`):
+- Новые константы: `DELTA_FILL` (серый-200), `DELTA_FILL_ALT` (серый-300), `DELTA_HDR_FILL` (серый-600)
+- Шрифты для дельт: `GREEN_FONT_SM`, `RED_FONT_SM`, `GREY_FONT_SM` (размер 9)
+
+---
+
+## 2026-03-18 (v12)
+
+### refactor(finances): Ozon Excel — полный редизайн сводного листа (P&L формат)
+
+**Root cause проблем**: `services_total` (Revenue) = стоимость доставки покупателям, `category=Logistics` = FBO-услуги (кроссдокинг/приёмка). Старый отчёт путал эти понятия.
+
+**Новый SQL** (`finances_export.py`):
+- Добавлен запрос `detail_breakdown` — per-operation_type breakdown для обоих периодов
+- Парсинг в именованные бакеты: FBO (crossdocking, intake), Marketing (CPC, reviews), Other (cashback, fines, packaging)
+
+**Сводный лист переписан** — P&L формат с 6 секциями:
+1. **ВЫРУЧКА И ЗАКАЗЫ**: + средний чек
+2. **КОМИССИЯ OZON**: отдельная секция
+3. **ДОСТАВКА И ЛОГИСТИКА**: «Доставка покупателям» (services_total) + sub-items FBO (кроссдокинг, приёмка). Итого логистика = delivery + FBO
+4. **ОПЕРАЦИОННЫЕ РАСХОДЫ**: эквайринг, возвраты, хранение, штрафы, кэшбек, упаковка — каждая статья отдельно
+5. **РЕКЛАМА**: CPC + баллы за отзывы + ДРР%
+6. **ИТОГИ**: всего удержано, к перечислению, COGS, всего расходов, чистая прибыль, маржинальность
+
+**Убраны** непонятные агрегации: «Сервисные услуги», «Расходы МП (ОПЕКС)», «Удержания МП (всё)»
+
+**Структура расходов** — теперь с обоими периодами (тек. + пред.) и % от выручки
+
+**5-я колонка** «% выр.» добавлена в основную таблицу KPI
+
+---
+
+## 2026-03-18 (v11)
+
+### fix(finances): Ozon Excel — per-SKU поля + корректная логистика
+
+**Per-SKU лист «По товарам (SKU)»** (`finances_export.py`):
+- Новая колонка **«Артикул»** — `offer_id` из `dim_ozon_products`
+- Новая колонка **«Штрих-код»** — `barcode` (EAN-13) из `dim_ozon_products`
+- Новая колонка **«ДРР %»** — доля рекламных расходов от выручки (`ad_spend / revenue × 100`), цветовая индикация: 🟢 <15%, ⚪ 15-30%, 🔴 >30%
+- Загрузка barcode через новый SQL запрос к `dim_ozon_products`
+
+**Понедельный + помесячный отчёты** — исправлена разбивка логистики:
+- **Root cause**: Ozon транзакции category=`Logistics` содержат только FBO-сервисы (кроссдокинг, приёмка). Реальная логистика (доставка) скрыта в `services_total` у Revenue-записей (`OperationAgentDeliveredToCustomer`). Колонка «Доставка» ≈ 0 (единичные `SellerReturnsDeliveryToPickupPoint`)
+- **«Сервисы» → «Доставка»** — переименовано, показывает реальную стоимость доставки
+- **«FBO» → «Приёмка/FBO»** — переименовано для ясности, включает merged `delivery_services`
+- **Убрана бесполезная колонка «Доставка»** (была ≈ 0₽) и «Дост%»
+- Формулы прибыли и процентные колонки пересчитаны
+
+---
+
+## 2026-03-17 (v10)
+
+### fix(finances): Ozon — пустая колонка «Хранение» в Per-SKU финансах
+
+**Проблема**: `get_placement_costs_by_sku()` возвращала пустой словарь для ~95% товаров.
+- SQL-запрос использовал `period_end` (переименован в `period_to` миграцией 006)
+- GROUP BY `sku` + фильтр `sku > 0` отбрасывал данные (`fact_ozon_placement_cost` хранит `sku=0` для большинства записей — Ozon Placement Report привязывает данные к `offer_id`)
+
+**Backend** (`ozon_finance_queries.py`):
+- `get_placement_costs_by_sku()`: возвращает `Dict[str, float]` (offer_id → cost) вместо `Dict[int, float]` (sku → cost)
+- SQL: `GROUP BY offer_id`, фильтр по `max(period_to)`, убран `sku > 0`
+
+**Backend** (`finances.py`):
+- `placement_costs` теперь по `offer_id` → напрямую обновляет `products[oid]` (products dict тоже по offer_id)
+
+**Backend** (`finances_export.py`):
+- `offer_storage_map` (было `sku_storage_map`) → маппинг через `sku_to_offer.get(sku)` для получения offer_id
+
+---
+
+## 2026-03-17 (v9)
+
+### refactor(finances): Ozon — 6 улучшений финансовых отчётов
+
+**Новый модуль** (`ozon_finance_queries.py`):
+- Shared SQL модуль для переиспользования между API и Excel
+- Функции: `get_sku_to_offer_map`, `get_cost_map`, `build_sku_cost_map`, `calc_cogs_from_ch`, `get_daily_category_breakdown`, `get_placement_costs_by_sku`, `get_ad_costs_by_sku`
+
+**ClickHouse** (`007_add_items_count_to_transactions.sql`):
+- Новая колонка `items_count UInt32 DEFAULT 1` в `fact_ozon_transactions` — защита от multi-item транзакций
+
+**Backend** (`ozon_finance_service.py`):
+- `_normalize_transaction`: добавлен `items_count = max(len(items), 1)`
+- `CH_COLUMNS` и loader обновлены для `items_count`
+
+**Backend** (`finances.py`):
+- **Формула прибыли**: unified `revenue - mp_fees - ads - cogs` (было `payout - cogs`)
+- **Ad spend per-SKU**: `fact_ozon_ad_daily` (Ozon Performance API) вместо `fact_ozon_transactions` Marketing (где `sku=0`)
+  - `GET /finances/ozon/products` — ad spend из `fact_ozon_ad_daily FINAL` с группировкой по SKU
+- **Daily dynamics**: точный breakdown по категориям через `get_daily_category_breakdown()` (было `mp_d = max(0, rev - txn_d - ads_d)`)
+- **COGS**: `sum(items_count)` вместо `count()` через shared модуль
+- **Per-product storage**: данные из `fact_ozon_placement_cost` через `get_placement_costs_by_sku()`
+- **Per-product profit**: `revenue - commission - logistics - storage - acquiring - ads - cogs`
+
+**Backend** (`finances_export.py`):
+- Weekly profit: `sales - |all expenses| - cogs` (было `payout - cogs`)
+- Monthly profit: аналогичное обновление
+- **Per-SKU лист «По товарам (SKU)»** — исправлены нулевые значения:
+  - **Реклама**: из `fact_ozon_ad_daily` через `get_ad_costs_by_sku()` (было: `fact_ozon_transactions` Marketing с `sku=0` → всегда 0)
+  - **Хранение**: новая колонка, из `fact_ozon_placement_cost` через `get_placement_costs_by_sku()` (было: отсутствовала)
+  - **Логистика**: пропорциональное распределение по выручке SKU (было: `fact_ozon_transactions` Logistics с `sku=0` → всегда 0)
+  - **Прибыль**: `revenue - |comm| - |svcs| - logistics - ads - storage - cogs`
+
+---
+
 ## 2026-03-17 (v8)
 
 ### fix(supply): WB — cross-drain re-balance, Excel нули, Риск перезатаривания

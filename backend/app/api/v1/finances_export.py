@@ -48,8 +48,14 @@ THIN_BORDER = Border(
     bottom=Side(style='thin', color='D1D5DB'),
 )
 ALT_ROW_FILL = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
+DELTA_FILL = PatternFill(start_color="E5E7EB", end_color="E5E7EB", fill_type="solid")  # grey-200 for delta columns
+DELTA_FILL_ALT = PatternFill(start_color="D1D5DB", end_color="D1D5DB", fill_type="solid")  # grey-300 for alt rows in delta columns
+DELTA_HDR_FILL = PatternFill(start_color="4B5563", end_color="4B5563", fill_type="solid")  # grey-600 header
 GREEN_FONT = Font(name="Calibri", bold=True, color="16A34A", size=10)
 RED_FONT = Font(name="Calibri", bold=True, color="DC2626", size=10)
+GREEN_FONT_SM = Font(name="Calibri", bold=True, color="16A34A", size=9)
+RED_FONT_SM = Font(name="Calibri", bold=True, color="DC2626", size=9)
+GREY_FONT_SM = Font(name="Calibri", color="6B7280", size=9)
 PROFIT_GREEN = Font(name="Calibri", bold=True, color="16A34A", size=11)
 PROFIT_RED = Font(name="Calibri", bold=True, color="DC2626", size=11)
 
@@ -250,6 +256,85 @@ async def export_ozon_excel(
             bulk_cur["other"] += float(r[1] or 0)
             bulk_prev["other"] += float(r[2] or 0)
 
+    # 2b. Detailed per-operation_type breakdown (for summary P&L)
+    detail_breakdown = ch.query("""
+        SELECT
+            operation_type,
+            category,
+            sumIf(abs(amount), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS cur_amount,
+            sumIf(abs(amount), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS prev_amount
+        FROM mms_analytics.fact_ozon_transactions FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND toDate(operation_date) >= {d_prev_start:Date}
+          AND toDate(operation_date) <= {d_end:Date}
+          AND category NOT IN ('Revenue')
+        GROUP BY operation_type, category
+        ORDER BY cur_amount DESC
+    """, parameters={
+        "shop_id": shop_id,
+        "d_start": d_start, "d_end": d_end,
+        "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+    })
+
+    # Parse detailed breakdown into named buckets
+    # FBO/logistics sub-items
+    fbo_crossdocking_cur, fbo_crossdocking_prev = 0.0, 0.0
+    fbo_intake_cur, fbo_intake_prev = 0.0, 0.0
+    fbo_other_cur, fbo_other_prev = 0.0, 0.0
+    # Marketing sub-items
+    ads_cpc_cur, ads_cpc_prev = 0.0, 0.0
+    ads_review_cur, ads_review_prev = 0.0, 0.0
+    ads_other_cur, ads_other_prev = 0.0, 0.0
+    # Other sub-items
+    cashback_cur, cashback_prev = 0.0, 0.0
+    fines_cur, fines_prev = 0.0, 0.0
+    packaging_cur, packaging_prev = 0.0, 0.0
+    other_misc_cur, other_misc_prev = 0.0, 0.0
+
+    FBO_CROSSDOCKING_OPS = {'MarketplaceServiceItemCrossdocking'}
+    FBO_INTAKE_OPS = {
+        'OperationMarketplaceSupplyAdditional',
+        'OperationMarketplaceSupplyExpirationDateProcessing',
+        'OperationMarketplaceServiceSupplyInboundCargoShortage',
+        'OperationMarketplaceServiceSupplyInboundSupplyShortage',
+        'OperationMarketplaceServiceSupplyInboundCargoSurplus',
+    }
+    ADS_CPC_OPS = {'OperationMarketplaceCostPerClick'}
+    ADS_REVIEW_OPS = {'OperationPointsForReviews'}
+    CASHBACK_OPS = {'OperationMarketplaceServicePremiumCashbackIndividualPoints'}
+    FINE_OPS = {'DefectFineShipmentDelay', 'DefectFineShipmentDelayRated', 'DefectFineCancellation'}
+    PACKAGING_OPS = {'OperationMarketplacePackageMaterialsProvision', 'OperationMarketplacePackageRedistribution'}
+
+    for r in detail_breakdown.result_rows:
+        op_type = r[0]
+        cat = r[1]
+        c_val = float(r[2] or 0)
+        p_val = float(r[3] or 0)
+
+        if cat == 'Logistics':
+            if op_type in FBO_CROSSDOCKING_OPS:
+                fbo_crossdocking_cur += c_val; fbo_crossdocking_prev += p_val
+            elif op_type in FBO_INTAKE_OPS:
+                fbo_intake_cur += c_val; fbo_intake_prev += p_val
+            else:
+                fbo_other_cur += c_val; fbo_other_prev += p_val
+        elif cat == 'Marketing':
+            if op_type in ADS_CPC_OPS:
+                ads_cpc_cur += c_val; ads_cpc_prev += p_val
+            elif op_type in ADS_REVIEW_OPS:
+                ads_review_cur += c_val; ads_review_prev += p_val
+            else:
+                ads_other_cur += c_val; ads_other_prev += p_val
+        elif cat in ('Other', 'Penalty'):
+            if op_type in CASHBACK_OPS:
+                cashback_cur += c_val; cashback_prev += p_val
+            elif op_type in FINE_OPS:
+                fines_cur += c_val; fines_prev += p_val
+            elif op_type in PACKAGING_OPS:
+                packaging_cur += c_val; packaging_prev += p_val
+            else:
+                other_misc_cur += c_val; other_misc_prev += p_val
+
     # 3. Ad spend
     ad_spend_cur = abs(bulk_cur.get("marketing", 0))
     ad_spend_prev = abs(bulk_prev.get("marketing", 0))
@@ -263,6 +348,13 @@ async def export_ozon_excel(
             {"shop_id": shop_id},
         )
         sku_to_offer = {int(r[0]): r[1] for r in sku_map_result.fetchall()}
+
+        # Load barcodes for per-SKU sheet
+        barcode_result = await db.execute(
+            text("SELECT sku, barcode FROM dim_ozon_products WHERE shop_id = :shop_id AND sku > 0 AND barcode IS NOT NULL AND barcode != ''"),
+            {"shop_id": shop_id},
+        )
+        sku_to_barcode = {int(r[0]): r[1] for r in barcode_result.fetchall()}
 
         cost_result = await db.execute(
             text("""SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
@@ -307,12 +399,17 @@ async def export_ozon_excel(
         logger.warning("COGS calc failed: %s", e)
 
     # Derived metrics
-    bulk_charges_cur = sum(abs(v) for k, v in bulk_cur.items() if k != "marketing")
-    bulk_charges_prev = sum(abs(v) for k, v in bulk_prev.items() if k != "marketing")
-    mp_fees_cur = commission_cur + services_cur + bulk_charges_cur
-    mp_fees_prev = commission_prev + services_prev + bulk_charges_prev
-    operating_cur = services_cur + bulk_charges_cur
-    operating_prev = services_prev + bulk_charges_prev
+    # Logistics total = delivery to customers (services_total) + FBO (crossdocking + intake + other)
+    fbo_total_cur = fbo_crossdocking_cur + fbo_intake_cur + fbo_other_cur
+    fbo_total_prev = fbo_crossdocking_prev + fbo_intake_prev + fbo_other_prev
+    logistics_total_cur = services_cur + fbo_total_cur
+    logistics_total_prev = services_prev + fbo_total_prev
+    # Operating expenses = acquiring + refunds + storage + other/fines/cashback/packaging
+    opex_cur = abs(bulk_cur["acquiring"]) + abs(bulk_cur["refunds"]) + abs(bulk_cur["storage"]) + abs(bulk_cur["other"]) + abs(bulk_cur["penalties"]) + abs(bulk_cur["compensation"])
+    opex_prev = abs(bulk_prev["acquiring"]) + abs(bulk_prev["refunds"]) + abs(bulk_prev["storage"]) + abs(bulk_prev["other"]) + abs(bulk_prev["penalties"]) + abs(bulk_prev["compensation"])
+    # Total MP fees = commission + logistics + opex
+    mp_fees_cur = commission_cur + logistics_total_cur + opex_cur
+    mp_fees_prev = commission_prev + logistics_total_prev + opex_prev
     profit_cur = revenue_cur - mp_fees_cur - ad_spend_cur - cogs_cur
     profit_prev = revenue_prev - mp_fees_prev - ad_spend_prev - cogs_prev
 
@@ -444,101 +541,236 @@ async def export_ozon_excel(
 
     wb = Workbook()
 
-    # ── Sheet 1: Сводка ──────────────────────────────────────
+    # ── Sheet 1: Сводка (P&L) ──────────────────────────────────
     ws1 = wb.active
     ws1.title = "Сводка"
     ws1.sheet_properties.tabColor = "2563EB"
 
-    # Title
-    ws1.merge_cells('A1:D1')
-    ws1['A1'] = f"Финансовый отчёт Ozon — {shop.name}"
-    ws1['A1'].font = Font(name="Calibri", bold=True, size=16, color="2563EB")
-    ws1.merge_cells('A2:D2')
-    ws1['A2'] = f"Период: {d_start.strftime('%d.%m.%Y')} — {d_end.strftime('%d.%m.%Y')} ({span} дн.)"
-    ws1['A2'].font = Font(name="Calibri", size=11, color="6B7280")
+    # Additional styles for sections
+    SECTION_HDR_FILL = PatternFill(start_color="1E40AF", end_color="1E40AF", fill_type="solid")
+    SECTION_HDR_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    SUBTOTAL_FILL = PatternFill(start_color="E0E7FF", end_color="E0E7FF", fill_type="solid")
+    SUBTOTAL_FONT = Font(name="Calibri", bold=True, size=10)
+    SUB_ITEM_FONT = Font(name="Calibri", size=10, color="4B5563")
+    INDENT = "    "  # visual indent for sub-items
 
-    # KPI section
-    row = 4
-    ws1.cell(row=row, column=1, value="Показатель").font = SECTION_FONT
-    ws1.cell(row=row, column=2, value="Текущий период").font = SECTION_FONT
-    ws1.cell(row=row, column=3, value="Предыдущий период").font = SECTION_FONT
-    ws1.cell(row=row, column=4, value="Изменение %").font = SECTION_FONT
-    _style_header_row(ws1, row, 4)
+    def _write_section_header(ws, row, label, cols=5):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=cols)
+        ws.cell(row=row, column=1, value=label).font = SECTION_HDR_FONT
+        for c in range(1, cols + 1):
+            ws.cell(row=row, column=c).fill = SECTION_HDR_FILL
+            ws.cell(row=row, column=c).border = THIN_BORDER
 
-    kpi_rows = [
-        ("Выручка (продажи)", revenue_cur, revenue_prev, True),
-        ("Заказы", orders_cur, orders_prev, False),
-        ("Комиссия", commission_cur, commission_prev, True),
-        ("Сервисные услуги", services_cur, services_prev, True),
-        ("Логистика", abs(bulk_cur["logistics"]), abs(bulk_prev["logistics"]), True),
-        ("Хранение", abs(bulk_cur["storage"]), abs(bulk_prev["storage"]), True),
-        ("Эквайринг", abs(bulk_cur["acquiring"]), abs(bulk_prev["acquiring"]), True),
-        ("Возвраты", abs(bulk_cur["refunds"]), abs(bulk_prev["refunds"]), True),
-        ("Штрафы", abs(bulk_cur["penalties"]), abs(bulk_prev["penalties"]), True),
-        ("Компенсации", abs(bulk_cur["compensation"]), abs(bulk_prev["compensation"]), True),
-        ("Прочее", abs(bulk_cur["other"]), abs(bulk_prev["other"]), True),
-        ("Реклама (маркетинг)", ad_spend_cur, ad_spend_prev, True),
-        ("Расходы МП (ОПЕКС)", operating_cur, operating_prev, True),
-        ("Удержания МП (всего)", mp_fees_cur, mp_fees_prev, True),
-        ("К перечислению", payout_cur, payout_prev, True),
-        ("Себестоимость (COGS)", cogs_cur, cogs_prev, True),
-        ("Чистая прибыль", profit_cur, profit_prev, True),
-    ]
-
-    for i, (label, cur, prev, is_money) in enumerate(kpi_rows):
-        row = 5 + i
-        ws1.cell(row=row, column=1, value=label)
-        c2 = ws1.cell(row=row, column=2, value=round(cur, 2) if is_money else cur)
-        c3 = ws1.cell(row=row, column=3, value=round(prev, 2) if is_money else prev)
+    def _write_kpi_row(ws, row, label, cur, prev, is_money=True, is_sub=False, is_total=False, is_profit=False, cols=5):
+        c1 = ws.cell(row=row, column=1, value=label)
+        c2 = ws.cell(row=row, column=2, value=round(cur, 2) if is_money else cur)
+        c3 = ws.cell(row=row, column=3, value=round(prev, 2) if is_money else prev)
         delta = _safe_delta(cur, prev)
-        c4 = ws1.cell(row=row, column=4, value=f"{'+' if delta > 0 else ''}{delta}%")
+        c4 = ws.cell(row=row, column=4, value=f"{'+' if delta > 0 else ''}{delta}%")
+        # % of revenue
+        pct_cur = cur / revenue_cur * 100 if revenue_cur > 0 else 0
+        c5 = ws.cell(row=row, column=5, value=round(pct_cur, 1) if is_money else "")
+
         if is_money:
             c2.number_format = MONEY_FMT
             c3.number_format = MONEY_FMT
-        c2.alignment = Alignment(horizontal='right')
-        c3.alignment = Alignment(horizontal='right')
-        c4.alignment = Alignment(horizontal='right')
+        if is_money and c5.value != "":
+            c5.number_format = '0.0"%"'
+        for c in [c2, c3, c4, c5]:
+            c.alignment = Alignment(horizontal='right')
+
         if delta > 0:
             c4.font = GREEN_FONT
         elif delta < 0:
             c4.font = RED_FONT
-        _style_data_row(ws1, row, 4, is_alt=(i % 2 == 1))
 
-        # Highlight profit row
-        if label == "Чистая прибыль":
-            _style_total_row(ws1, row, 4)
+        if is_sub:
+            c1.font = SUB_ITEM_FONT
+        elif is_total:
+            _style_total_row(ws, row, cols)
+        elif is_profit:
+            _style_total_row(ws, row, cols)
             c2.font = PROFIT_GREEN if cur >= 0 else PROFIT_RED
+            c3.font = PROFIT_GREEN if prev >= 0 else PROFIT_RED
+        else:
+            c1.font = NORMAL_FONT
 
-    # Revenue % breakdown
-    row = 5 + len(kpi_rows) + 2
-    ws1.cell(row=row, column=1, value="Структура расходов (% от выручки)").font = SECTION_FONT
-    ws1.cell(row=row, column=1).fill = SECTION_FILL
-    ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        if not is_total and not is_profit:
+            _style_data_row(ws, row, cols)
+
+    # Title
+    ws1.merge_cells('A1:E1')
+    ws1['A1'] = f"Финансовый отчёт Ozon — {shop.name}"
+    ws1['A1'].font = Font(name="Calibri", bold=True, size=16, color="2563EB")
+    ws1.merge_cells('A2:E2')
+    ws1['A2'] = f"Период: {d_start.strftime('%d.%m.%Y')} — {d_end.strftime('%d.%m.%Y')} ({span} дн.)"
+    ws1['A2'].font = Font(name="Calibri", size=11, color="6B7280")
+
+    # Column headers
+    row = 4
+    for ci, hdr in enumerate(["Показатель", "Текущий период", "Предыдущий период", "Изм. %", "% выр."], 1):
+        ws1.cell(row=row, column=ci, value=hdr)
+    _style_header_row(ws1, row, 5)
+
+    row = 5
+
+    # ═══ ВЫРУЧКА И ЗАКАЗЫ ═══
+    _write_section_header(ws1, row, "ВЫРУЧКА И ЗАКАЗЫ")
+    row += 1
+    avg_check_cur = revenue_cur / orders_cur if orders_cur > 0 else 0
+    avg_check_prev = revenue_prev / orders_prev if orders_prev > 0 else 0
+    _write_kpi_row(ws1, row, "Выручка (продажи)", revenue_cur, revenue_prev); row += 1
+    _write_kpi_row(ws1, row, "Заказы", orders_cur, orders_prev, is_money=False); row += 1
+    _write_kpi_row(ws1, row, "Средний чек", avg_check_cur, avg_check_prev); row += 1
+
+    # ═══ КОМИССИЯ OZON ═══
+    row += 1
+    _write_section_header(ws1, row, "КОМИССИЯ OZON")
+    row += 1
+    _write_kpi_row(ws1, row, "Комиссия с продаж", commission_cur, commission_prev); row += 1
+
+    # ═══ ДОСТАВКА И ЛОГИСТИКА ═══
+    row += 1
+    _write_section_header(ws1, row, "ДОСТАВКА И ЛОГИСТИКА")
+    row += 1
+    _write_kpi_row(ws1, row, "Доставка покупателям", services_cur, services_prev); row += 1
+    if fbo_crossdocking_cur > 0 or fbo_crossdocking_prev > 0:
+        _write_kpi_row(ws1, row, f"{INDENT}Кроссдокинг", fbo_crossdocking_cur, fbo_crossdocking_prev, is_sub=True); row += 1
+    if fbo_intake_cur > 0 or fbo_intake_prev > 0:
+        _write_kpi_row(ws1, row, f"{INDENT}Приёмка товаров", fbo_intake_cur, fbo_intake_prev, is_sub=True); row += 1
+    if fbo_other_cur > 0 or fbo_other_prev > 0:
+        _write_kpi_row(ws1, row, f"{INDENT}Прочие FBO-услуги", fbo_other_cur, fbo_other_prev, is_sub=True); row += 1
+    _write_kpi_row(ws1, row, "Итого логистика", logistics_total_cur, logistics_total_prev, is_total=True); row += 1
+
+    # ═══ ОПЕРАЦИОННЫЕ РАСХОДЫ ═══
+    row += 1
+    _write_section_header(ws1, row, "ОПЕРАЦИОННЫЕ РАСХОДЫ")
+    row += 1
+    _write_kpi_row(ws1, row, "Эквайринг", abs(bulk_cur["acquiring"]), abs(bulk_prev["acquiring"])); row += 1
+    _write_kpi_row(ws1, row, "Возвраты и отмены", abs(bulk_cur["refunds"]), abs(bulk_prev["refunds"])); row += 1
+    _write_kpi_row(ws1, row, "Хранение", abs(bulk_cur["storage"]), abs(bulk_prev["storage"])); row += 1
+    if fines_cur > 0 or fines_prev > 0:
+        _write_kpi_row(ws1, row, "Штрафы (задержки, отмены)", fines_cur, fines_prev); row += 1
+    if cashback_cur > 0 or cashback_prev > 0:
+        _write_kpi_row(ws1, row, "Баллы покупателям / кэшбек", cashback_cur, cashback_prev); row += 1
+    if packaging_cur > 0 or packaging_prev > 0:
+        _write_kpi_row(ws1, row, "Упаковка", packaging_cur, packaging_prev); row += 1
+    if abs(bulk_cur["compensation"]) > 0 or abs(bulk_prev["compensation"]) > 0:
+        _write_kpi_row(ws1, row, "Компенсации", abs(bulk_cur["compensation"]), abs(bulk_prev["compensation"])); row += 1
+    if other_misc_cur > 0 or other_misc_prev > 0:
+        _write_kpi_row(ws1, row, "Прочее", other_misc_cur, other_misc_prev); row += 1
+    _write_kpi_row(ws1, row, "Итого операционные", opex_cur, opex_prev, is_total=True); row += 1
+
+    # ═══ РЕКЛАМА ═══
+    row += 1
+    _write_section_header(ws1, row, "РЕКЛАМА")
+    row += 1
+    if ads_cpc_cur > 0 or ads_cpc_prev > 0:
+        _write_kpi_row(ws1, row, "Продвижение (CPC)", ads_cpc_cur, ads_cpc_prev); row += 1
+    if ads_review_cur > 0 or ads_review_prev > 0:
+        _write_kpi_row(ws1, row, "Баллы за отзывы", ads_review_cur, ads_review_prev); row += 1
+    if ads_other_cur > 0 or ads_other_prev > 0:
+        _write_kpi_row(ws1, row, "Прочая реклама", ads_other_cur, ads_other_prev); row += 1
+    _write_kpi_row(ws1, row, "Итого реклама", ad_spend_cur, ad_spend_prev, is_total=True); row += 1
+    drr_cur = ad_spend_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    drr_prev = ad_spend_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value=f"{INDENT}ДРР (доля рекл. расх.)").font = SUB_ITEM_FONT
+    ws1.cell(row=row, column=2, value=f"{round(drr_cur, 1)}%").alignment = Alignment(horizontal='right')
+    ws1.cell(row=row, column=3, value=f"{round(drr_prev, 1)}%").alignment = Alignment(horizontal='right')
+    _style_data_row(ws1, row, 5)
+    row += 1
+
+    # ═══ ИТОГИ ═══
+    row += 1
+    _write_section_header(ws1, row, "ИТОГИ")
+    row += 1
+    _write_kpi_row(ws1, row, "Всего удержано Ozon", mp_fees_cur, mp_fees_prev, is_total=True); row += 1
+    _write_kpi_row(ws1, row, "К перечислению", payout_cur, payout_prev); row += 1
+    _write_kpi_row(ws1, row, "Реклама", ad_spend_cur, ad_spend_prev); row += 1
+    _write_kpi_row(ws1, row, "Себестоимость (COGS)", cogs_cur, cogs_prev); row += 1
+    total_expenses_cur = mp_fees_cur + ad_spend_cur + cogs_cur
+    total_expenses_prev = mp_fees_prev + ad_spend_prev + cogs_prev
+    _write_kpi_row(ws1, row, "Всего расходов", total_expenses_cur, total_expenses_prev, is_total=True); row += 1
+    _write_kpi_row(ws1, row, "ЧИСТАЯ ПРИБЫЛЬ", profit_cur, profit_prev, is_profit=True); row += 1
+    margin_cur = profit_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    margin_prev = profit_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value=f"{INDENT}Маржинальность").font = SUB_ITEM_FONT
+    ws1.cell(row=row, column=2, value=f"{round(margin_cur, 1)}%").alignment = Alignment(horizontal='right')
+    ws1.cell(row=row, column=3, value=f"{round(margin_prev, 1)}%").alignment = Alignment(horizontal='right')
+    _style_data_row(ws1, row, 5)
+    row += 2
+
+    # ═══ СТРУКТУРА РАСХОДОВ (% от выручки) — с обоими периодами ═══
+    ws1.cell(row=row, column=1, value="СТРУКТУРА РАСХОДОВ (% от выручки)").font = SECTION_HDR_FONT
+    ws1.cell(row=row, column=1).fill = SECTION_HDR_FILL
+    for ci, hdr in enumerate(["", "Тек. период", "% выр.", "Пред. период", "% выр."], 1):
+        ws1.cell(row=row, column=ci, value=hdr if ci > 1 else "СТРУКТУРА РАСХОДОВ (% от выручки)")
+    _style_header_row(ws1, row, 5)
+    row += 1
 
     pct_rows = [
-        ("Комиссия", commission_cur),
-        ("Сервисные услуги", services_cur),
-        ("Логистика", abs(bulk_cur["logistics"])),
-        ("Хранение", abs(bulk_cur["storage"])),
-        ("Эквайринг", abs(bulk_cur["acquiring"])),
-        ("Возвраты", abs(bulk_cur["refunds"])),
-        ("Штрафы", abs(bulk_cur["penalties"])),
-        ("Прочее", abs(bulk_cur["other"])),
-        ("Реклама", ad_spend_cur),
-        ("Себестоимость", cogs_cur),
-        ("Прибыль", profit_cur),
+        ("Комиссия", commission_cur, commission_prev),
+        ("Доставка покупателям", services_cur, services_prev),
+        ("Кроссдокинг / приёмка (FBO)", fbo_total_cur, fbo_total_prev),
+        ("Эквайринг", abs(bulk_cur["acquiring"]), abs(bulk_prev["acquiring"])),
+        ("Возвраты", abs(bulk_cur["refunds"]), abs(bulk_prev["refunds"])),
+        ("Хранение", abs(bulk_cur["storage"]), abs(bulk_prev["storage"])),
+        ("Штрафы / кэшбек / прочее", fines_cur + cashback_cur + packaging_cur + other_misc_cur,
+                                      fines_prev + cashback_prev + packaging_prev + other_misc_prev),
+        ("Реклама", ad_spend_cur, ad_spend_prev),
+        ("Себестоимость", cogs_cur, cogs_prev),
     ]
-    for i, (label, val) in enumerate(pct_rows):
-        r = row + 1 + i
-        ws1.cell(row=r, column=1, value=label)
-        ws1.cell(row=r, column=2, value=round(val, 2)).number_format = MONEY_FMT
-        pct = val / revenue_cur if revenue_cur > 0 else 0
-        ws1.cell(row=r, column=3, value=round(pct * 100, 1))
-        ws1.cell(row=r, column=3).number_format = '0.0"%"'
-        ws1.cell(row=r, column=3).alignment = Alignment(horizontal='right')
-        _style_data_row(ws1, r, 4, is_alt=(i % 2 == 1))
+
+    # Total row at end
+    total_exp_cur = sum(v[1] for v in pct_rows)
+    total_exp_prev = sum(v[2] for v in pct_rows)
+
+    for i, (label, cur_val, prev_val) in enumerate(pct_rows):
+        pct_c = cur_val / revenue_cur * 100 if revenue_cur > 0 else 0
+        pct_p = prev_val / revenue_prev * 100 if revenue_prev > 0 else 0
+        ws1.cell(row=row, column=1, value=label).font = NORMAL_FONT
+        ws1.cell(row=row, column=2, value=round(cur_val, 2)).number_format = MONEY_FMT
+        ws1.cell(row=row, column=3, value=round(pct_c, 1))
+        ws1.cell(row=row, column=3).number_format = '0.0"%"'
+        ws1.cell(row=row, column=4, value=round(prev_val, 2)).number_format = MONEY_FMT
+        ws1.cell(row=row, column=5, value=round(pct_p, 1))
+        ws1.cell(row=row, column=5).number_format = '0.0"%"'
+        for c in range(2, 6):
+            ws1.cell(row=row, column=c).alignment = Alignment(horizontal='right')
+        _style_data_row(ws1, row, 5, is_alt=(i % 2 == 1))
+        row += 1
+
+    # Total expenses row
+    pct_tc = total_exp_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    pct_tp = total_exp_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value="Итого расходов").font = TOTAL_FONT
+    ws1.cell(row=row, column=2, value=round(total_exp_cur, 2)).number_format = MONEY_FMT
+    ws1.cell(row=row, column=3, value=round(pct_tc, 1))
+    ws1.cell(row=row, column=3).number_format = '0.0"%"'
+    ws1.cell(row=row, column=4, value=round(total_exp_prev, 2)).number_format = MONEY_FMT
+    ws1.cell(row=row, column=5, value=round(pct_tp, 1))
+    ws1.cell(row=row, column=5).number_format = '0.0"%"'
+    _style_total_row(ws1, row, 5)
+    row += 1
+
+    # Profit row
+    pct_prof_c = profit_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    pct_prof_p = profit_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value="Прибыль").font = TOTAL_FONT
+    c2 = ws1.cell(row=row, column=2, value=round(profit_cur, 2))
+    c2.number_format = MONEY_FMT
+    c2.font = PROFIT_GREEN if profit_cur >= 0 else PROFIT_RED
+    ws1.cell(row=row, column=3, value=round(pct_prof_c, 1))
+    ws1.cell(row=row, column=3).number_format = '0.0"%"'
+    c4 = ws1.cell(row=row, column=4, value=round(profit_prev, 2))
+    c4.number_format = MONEY_FMT
+    c4.font = PROFIT_GREEN if profit_prev >= 0 else PROFIT_RED
+    ws1.cell(row=row, column=5, value=round(pct_prof_p, 1))
+    ws1.cell(row=row, column=5).number_format = '0.0"%"'
+    _style_total_row(ws1, row, 5)
 
     _auto_width(ws1)
+    ws1.column_dimensions['A'].width = 32
     ws1.freeze_panes = 'A5'
 
     # ── Sheet 2: Все транзакции ───────────────────────────────
@@ -591,17 +823,30 @@ async def export_ozon_excel(
     ws3 = wb.create_sheet("По неделям")
     ws3.sheet_properties.tabColor = "EA580C"
 
-    wk_headers = [
+    # Headers: money columns + paired (%, Δ%) columns
+    # Each % column is followed by a grey Δ column showing change vs previous week
+    wk_base_headers = [
         "Год", "Нед.", "Начало", "Конец", "Кол-во",
         "Продажи", "Возвраты", "Комиссия", "Компенсации",
-        "Сервисы", "Реклама", "Прочее",
-        "FBO", "Эквайринг", "Доставка", "Хранение",
+        "Доставка", "Реклама", "Прочее",
+        "Приёмка/FBO", "Эквайринг", "Хранение",
         "К перечисл.", "С/С", "Прибыль",
-        "Комис%", "Рекл%", "FBO%", "Дост%", "С/С%", "Приб%"
-    ]
+    ]  # cols 1..18
+    # Percentage pairs: (label, Δlabel) — each pair = 2 columns
+    wk_pct_pairs = [
+        ("Комис%", "Δ"), ("Дост%", "Δ"), ("Рекл%", "Δ"),
+        ("Приём%", "Δ"), ("С/С%", "Δ"), ("Приб%", "Δ"),
+    ]  # 6 pairs = 12 columns → cols 19..30
+    wk_headers = wk_base_headers + [h for pair in wk_pct_pairs for h in pair]
     for col, h in enumerate(wk_headers, 1):
-        ws3.cell(row=1, column=col, value=h)
+        c = ws3.cell(row=1, column=col, value=h)
     _style_header_row(ws3, 1, len(wk_headers))
+    # Style Δ headers with grey fill
+    for pi in range(len(wk_pct_pairs)):
+        delta_col = 19 + pi * 2 + 1  # 20, 22, 24, 26, 28, 30
+        c = ws3.cell(row=1, column=delta_col)
+        c.fill = DELTA_HDR_FILL
+        c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
 
     # Build COGS per week
     weekly_cogs = {}
@@ -625,15 +870,18 @@ async def export_ozon_excel(
             logger.warning("Weekly COGS query failed: %s", e)
 
     wk_totals = {k: 0.0 for k in [
-        "sales", "returns", "commission", "compensations", "other_services",
+        "sales", "returns", "commission", "compensations", "delivery",
         "marketing", "other_charges", "fbo_services", "acquiring",
-        "delivery_services", "storage", "payout", "cogs", "profit"
+        "storage", "payout", "cogs", "profit"
     ]}
     wk_totals["qty"] = 0
 
+    # Track previous week percentages for delta calculation
+    prev_wk_pcts = None  # list of 6 pct values from previous row
+
     # weekly_data columns: 0=week_start, 1=week_end, 2=qty, 3=sales, 4=returns,
-    # 5=commission, 6=compensations, 7=other_services, 8=marketing, 9=other_charges,
-    # 10=fbo_services, 11=acquiring, 12=delivery_services, 13=storage, 14=payout
+    # 5=commission, 6=compensations, 7=other_services(=delivery), 8=marketing, 9=other_charges,
+    # 10=fbo_services, 11=acquiring, 12=delivery_services(≈0, merged into fbo), 13=storage, 14=payout
     for i, r in enumerate(weekly_data.result_rows):
         row_num = i + 2
         ws_date = r[0]
@@ -645,16 +893,15 @@ async def export_ozon_excel(
         returns_ = float(r[4] or 0)
         commission_ = float(r[5] or 0)
         compensations_ = float(r[6] or 0)
-        other_services_ = float(r[7] or 0)
+        delivery_ = float(r[7] or 0)
         marketing_ = float(r[8] or 0)
         other_charges_ = float(r[9] or 0)
-        fbo_ = float(r[10] or 0)
+        fbo_ = float(r[10] or 0) + float(r[12] or 0)
         acquiring_ = float(r[11] or 0)
-        delivery_ = float(r[12] or 0)
         storage_ = float(r[13] or 0)
         payout_ = float(r[14] or 0)
         cogs_wk = weekly_cogs.get(str(ws_date), 0)
-        profit_wk = payout_ - cogs_wk
+        profit_wk = sales - abs(commission_) - abs(fbo_) - abs(delivery_) - abs(acquiring_) - abs(storage_) - abs(marketing_) - abs(other_charges_) - abs(returns_) - abs(compensations_) - cogs_wk
 
         ws3.cell(row=row_num, column=1, value=iso_cal[0])
         ws3.cell(row=row_num, column=2, value=iso_cal[1])
@@ -662,12 +909,12 @@ async def export_ozon_excel(
         ws3.cell(row=row_num, column=4, value=_fmt_date_ru(we_date))
         ws3.cell(row=row_num, column=5, value=qty)
 
-        money_vals = [sales, returns_, commission_, compensations_, other_services_,
-                      marketing_, other_charges_, fbo_, acquiring_, delivery_, storage_,
+        money_vals = [sales, returns_, commission_, compensations_, delivery_,
+                      marketing_, other_charges_, fbo_, acquiring_, storage_,
                       payout_, cogs_wk, profit_wk]
-        money_keys = ["sales", "returns", "commission", "compensations", "other_services",
+        money_keys = ["sales", "returns", "commission", "compensations", "delivery",
                        "marketing", "other_charges", "fbo_services", "acquiring",
-                       "delivery_services", "storage", "payout", "cogs", "profit"]
+                       "storage", "payout", "cogs", "profit"]
 
         for j, v in enumerate(money_vals):
             c = ws3.cell(row=row_num, column=6 + j, value=round(v, 2))
@@ -677,31 +924,53 @@ async def export_ozon_excel(
         wk_totals["qty"] += qty
 
         # Profit coloring
-        ws3.cell(row=row_num, column=19).font = GREEN_FONT if profit_wk >= 0 else RED_FONT
+        ws3.cell(row=row_num, column=18).font = GREEN_FONT if profit_wk >= 0 else RED_FONT
 
-        # Percentage columns (% of sales) — colored green/red
+        # Percentage columns: Комис%, Дост%, Рекл%, Приём%, С/С%, Приб%
+        # Each followed by delta column (grey fill)
+        is_alt = (i % 2 == 1)
         if sales > 0:
-            pct_vals = [
-                (20, round(commission_ / sales * 100, 1)),
-                (21, round(marketing_ / sales * 100, 1)),
-                (22, round(fbo_ / sales * 100, 1)),
-                (23, round(delivery_ / sales * 100, 1)),
-                (24, round(cogs_wk / sales * 100, 1)),
-                (25, round(profit_wk / sales * 100, 1)),
+            cur_pcts = [
+                round(commission_ / sales * 100, 1),
+                round(delivery_ / sales * 100, 1),
+                round(marketing_ / sales * 100, 1),
+                round(fbo_ / sales * 100, 1),
+                round(cogs_wk / sales * 100, 1),
+                round(profit_wk / sales * 100, 1),
             ]
-            for col_idx, pct_val in pct_vals:
-                pc = ws3.cell(row=row_num, column=col_idx, value=pct_val)
-                pc.number_format = '0.0"%"'
-                # Expenses: lower is better (green); Profit: higher is better (green)
-                if col_idx == 25:
-                    pc.font = GREEN_FONT if pct_val >= 0 else RED_FONT
-                else:
-                    pc.font = RED_FONT if pct_val > 35 else (GREEN_FONT if pct_val < 20 else NORMAL_FONT)
         else:
-            for cc in range(20, 26):
-                ws3.cell(row=row_num, column=cc, value=0)
+            cur_pcts = [0, 0, 0, 0, 0, 0]
 
-        _style_data_row(ws3, row_num, len(wk_headers), is_alt=(i % 2 == 1))
+        for pi, pct_val in enumerate(cur_pcts):
+            pct_col = 19 + pi * 2       # % column: 19, 21, 23, 25, 27, 29
+            delta_col = 19 + pi * 2 + 1 # Δ column: 20, 22, 24, 26, 28, 30
+
+            # Write % value
+            pc = ws3.cell(row=row_num, column=pct_col, value=pct_val)
+            pc.number_format = '0.0"%"'
+            if pi == 5:  # Profit%: higher is better
+                pc.font = GREEN_FONT if pct_val >= 0 else RED_FONT
+            else:  # Expense%: lower is better
+                pc.font = RED_FONT if pct_val > 35 else (GREEN_FONT if pct_val < 20 else NORMAL_FONT)
+
+            # Write Δ value (change vs previous week in pp)
+            dc = ws3.cell(row=row_num, column=delta_col)
+            dc.fill = DELTA_FILL_ALT if is_alt else DELTA_FILL
+            if prev_wk_pcts is not None:
+                delta_pp = round(pct_val - prev_wk_pcts[pi], 1)
+                dc.value = delta_pp
+                dc.number_format = '+0.0;-0.0;0.0'
+                if pi == 5:  # Profit: increase is good
+                    dc.font = GREEN_FONT_SM if delta_pp > 0 else (RED_FONT_SM if delta_pp < 0 else GREY_FONT_SM)
+                else:  # Expenses: decrease is good
+                    dc.font = GREEN_FONT_SM if delta_pp < 0 else (RED_FONT_SM if delta_pp > 0 else GREY_FONT_SM)
+            else:
+                dc.value = "—"
+                dc.font = GREY_FONT_SM
+
+        prev_wk_pcts = cur_pcts
+
+        _style_data_row(ws3, row_num, 18, is_alt=is_alt)  # style only money part
 
     # Totals
     total_row = len(weekly_data.result_rows) + 2
@@ -711,12 +980,17 @@ async def export_ozon_excel(
         ws3.cell(row=total_row, column=6 + j, value=round(wk_totals[k], 2)).number_format = MONEY_FMT
 
     ts = wk_totals["sales"] or 1
-    ws3.cell(row=total_row, column=20, value=round(wk_totals["commission"] / ts * 100, 1)).number_format = '0.0"%"'
-    ws3.cell(row=total_row, column=21, value=round(wk_totals["marketing"] / ts * 100, 1)).number_format = '0.0"%"'
-    ws3.cell(row=total_row, column=22, value=round(wk_totals["fbo_services"] / ts * 100, 1)).number_format = '0.0"%"'
-    ws3.cell(row=total_row, column=23, value=round(wk_totals["delivery_services"] / ts * 100, 1)).number_format = '0.0"%"'
-    ws3.cell(row=total_row, column=24, value=round(wk_totals["cogs"] / ts * 100, 1)).number_format = '0.0"%"'
-    ws3.cell(row=total_row, column=25, value=round(wk_totals["profit"] / ts * 100, 1)).number_format = '0.0"%"'
+    total_pcts_wk = [
+        round(wk_totals["commission"] / ts * 100, 1),
+        round(wk_totals["delivery"] / ts * 100, 1),
+        round(wk_totals["marketing"] / ts * 100, 1),
+        round(wk_totals["fbo_services"] / ts * 100, 1),
+        round(wk_totals["cogs"] / ts * 100, 1),
+        round(wk_totals["profit"] / ts * 100, 1),
+    ]
+    for pi, pv in enumerate(total_pcts_wk):
+        pct_col = 19 + pi * 2
+        ws3.cell(row=total_row, column=pct_col, value=pv).number_format = '0.0"%"'
     _style_total_row(ws3, total_row, len(wk_headers))
 
     _auto_width(ws3)
@@ -729,17 +1003,28 @@ async def export_ozon_excel(
     MONTHS_RU = {1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 5: "Май", 6: "Июнь",
                  7: "Июль", 8: "Август", 9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"}
 
-    mo_headers = [
+    # Headers: money columns + paired (%, Δ%) columns — same structure as weekly
+    mo_base_headers = [
         "Месяц", "Начало", "Конец", "Кол-во",
         "Продажи", "Возвраты", "Комиссия", "Компенсации",
-        "Сервисы", "Реклама", "Прочее",
-        "FBO", "Эквайринг", "Доставка", "Хранение",
+        "Доставка", "Реклама", "Прочее",
+        "Приёмка/FBO", "Эквайринг", "Хранение",
         "К перечисл.", "С/С", "Прибыль",
-        "Δ Выручка%", "Δ Прибыль%"
-    ]
+    ]  # cols 1..17
+    mo_pct_pairs = [
+        ("Комис%", "Δ"), ("Дост%", "Δ"), ("Рекл%", "Δ"),
+        ("Приём%", "Δ"), ("С/С%", "Δ"), ("Приб%", "Δ"),
+    ]  # 6 pairs = 12 columns → cols 18..29
+    mo_headers = mo_base_headers + [h for pair in mo_pct_pairs for h in pair]
     for col, h in enumerate(mo_headers, 1):
         ws4.cell(row=1, column=col, value=h)
     _style_header_row(ws4, 1, len(mo_headers))
+    # Style Δ headers with grey fill
+    for pi in range(len(mo_pct_pairs)):
+        delta_col = 18 + pi * 2 + 1  # 19, 21, 23, 25, 27, 29
+        c = ws4.cell(row=1, column=delta_col)
+        c.fill = DELTA_HDR_FILL
+        c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
 
     # Build COGS per month
     monthly_cogs = {}
@@ -762,12 +1047,11 @@ async def export_ozon_excel(
         except Exception as e:
             logger.warning("Monthly COGS query failed: %s", e)
 
-    prev_revenue_mo = None
-    prev_profit_mo = None
+    prev_mo_pcts = None  # list of 6 pct values from previous month
 
     # monthly_data columns: 0=ym, 1=m_start, 2=m_end, 3=qty, 4=sales, 5=returns,
-    # 6=commission, 7=compensations, 8=other_services, 9=marketing, 10=other_charges,
-    # 11=fbo_services, 12=acquiring, 13=delivery_services, 14=storage, 15=payout
+    # 6=commission, 7=compensations, 8=other_services(=delivery), 9=marketing, 10=other_charges,
+    # 11=fbo_services, 12=acquiring, 13=delivery_services(≈0, merged into fbo), 14=storage, 15=payout
     for i, r in enumerate(monthly_data.result_rows):
         row_num = i + 2
         ym = int(r[0])
@@ -780,24 +1064,23 @@ async def export_ozon_excel(
         returns_mo = float(r[5] or 0)
         commission_mo = float(r[6] or 0)
         compensations_mo = float(r[7] or 0)
-        other_services_mo = float(r[8] or 0)
+        delivery_mo = float(r[8] or 0)
         marketing_mo = float(r[9] or 0)
         other_charges_mo = float(r[10] or 0)
-        fbo_mo = float(r[11] or 0)
+        fbo_mo = float(r[11] or 0) + float(r[13] or 0)
         acquiring_mo = float(r[12] or 0)
-        delivery_mo = float(r[13] or 0)
         storage_mo = float(r[14] or 0)
         payout_mo = float(r[15] or 0)
         cogs_mo = monthly_cogs.get(ym, 0)
-        profit_mo = payout_mo - cogs_mo
+        profit_mo = sales_mo - abs(commission_mo) - abs(fbo_mo) - abs(delivery_mo) - abs(acquiring_mo) - abs(storage_mo) - abs(marketing_mo) - abs(other_charges_mo) - abs(returns_mo) - abs(compensations_mo) - cogs_mo
 
         ws4.cell(row=row_num, column=1, value=month_name)
         ws4.cell(row=row_num, column=2, value=str(r[1]))
         ws4.cell(row=row_num, column=3, value=str(r[2]))
         ws4.cell(row=row_num, column=4, value=qty)
 
-        money_vals_mo = [sales_mo, returns_mo, commission_mo, compensations_mo, other_services_mo,
-                         marketing_mo, other_charges_mo, fbo_mo, acquiring_mo, delivery_mo, storage_mo,
+        money_vals_mo = [sales_mo, returns_mo, commission_mo, compensations_mo, delivery_mo,
+                         marketing_mo, other_charges_mo, fbo_mo, acquiring_mo, storage_mo,
                          payout_mo, cogs_mo, profit_mo]
 
         for j, v in enumerate(money_vals_mo):
@@ -805,24 +1088,53 @@ async def export_ozon_excel(
             c.number_format = MONEY_FMT
 
         # Profit coloring
-        ws4.cell(row=row_num, column=18).font = GREEN_FONT if profit_mo >= 0 else RED_FONT
+        ws4.cell(row=row_num, column=17).font = GREEN_FONT if profit_mo >= 0 else RED_FONT
 
-        # Delta vs previous month
-        if prev_revenue_mo is not None:
-            d_rev = _safe_delta(sales_mo, prev_revenue_mo)
-            d_prof = _safe_delta(profit_mo, prev_profit_mo)
-            dc1 = ws4.cell(row=row_num, column=19, value=f"{'+' if d_rev > 0 else ''}{d_rev}%")
-            dc2 = ws4.cell(row=row_num, column=20, value=f"{'+' if d_prof > 0 else ''}{d_prof}%")
-            dc1.font = GREEN_FONT if d_rev > 0 else RED_FONT
-            dc2.font = GREEN_FONT if d_prof > 0 else RED_FONT
+        # Percentage columns: Комис%, Дост%, Рекл%, Приём%, С/С%, Приб%
+        # Each followed by delta column (grey fill)
+        is_alt = (i % 2 == 1)
+        if sales_mo > 0:
+            cur_mo_pcts = [
+                round(commission_mo / sales_mo * 100, 1),
+                round(delivery_mo / sales_mo * 100, 1),
+                round(marketing_mo / sales_mo * 100, 1),
+                round(fbo_mo / sales_mo * 100, 1),
+                round(cogs_mo / sales_mo * 100, 1),
+                round(profit_mo / sales_mo * 100, 1),
+            ]
         else:
-            ws4.cell(row=row_num, column=19, value="—")
-            ws4.cell(row=row_num, column=20, value="—")
+            cur_mo_pcts = [0, 0, 0, 0, 0, 0]
 
-        prev_revenue_mo = sales_mo
-        prev_profit_mo = profit_mo
+        for pi, pct_val in enumerate(cur_mo_pcts):
+            pct_col = 18 + pi * 2       # % column: 18, 20, 22, 24, 26, 28
+            delta_col = 18 + pi * 2 + 1 # Δ column: 19, 21, 23, 25, 27, 29
 
-        _style_data_row(ws4, row_num, len(mo_headers), is_alt=(i % 2 == 1))
+            # Write % value
+            pc = ws4.cell(row=row_num, column=pct_col, value=pct_val)
+            pc.number_format = '0.0"%"'
+            if pi == 5:  # Profit%: higher is better
+                pc.font = GREEN_FONT if pct_val >= 0 else RED_FONT
+            else:  # Expense%: lower is better
+                pc.font = RED_FONT if pct_val > 35 else (GREEN_FONT if pct_val < 20 else NORMAL_FONT)
+
+            # Write Δ value (change vs previous month in pp)
+            dc = ws4.cell(row=row_num, column=delta_col)
+            dc.fill = DELTA_FILL_ALT if is_alt else DELTA_FILL
+            if prev_mo_pcts is not None:
+                delta_pp = round(pct_val - prev_mo_pcts[pi], 1)
+                dc.value = delta_pp
+                dc.number_format = '+0.0;-0.0;0.0'
+                if pi == 5:  # Profit: increase is good
+                    dc.font = GREEN_FONT_SM if delta_pp > 0 else (RED_FONT_SM if delta_pp < 0 else GREY_FONT_SM)
+                else:  # Expenses: decrease is good
+                    dc.font = GREEN_FONT_SM if delta_pp < 0 else (RED_FONT_SM if delta_pp > 0 else GREY_FONT_SM)
+            else:
+                dc.value = "—"
+                dc.font = GREY_FONT_SM
+
+        prev_mo_pcts = cur_mo_pcts
+
+        _style_data_row(ws4, row_num, 17, is_alt=is_alt)  # style only money part
 
     _auto_width(ws4)
     ws4.freeze_panes = 'A2'
@@ -832,9 +1144,9 @@ async def export_ozon_excel(
     ws5.sheet_properties.tabColor = "DB2777"
 
     sku_headers = [
-        "SKU", "Название", "Кол-во", "Выручка",
-        "Комиссия", "Сервисы", "Логистика", "Реклама",
-        "Нетто (к перечисл.)",
+        "SKU", "Артикул", "Штрих-код", "Название", "Кол-во", "Выручка",
+        "Комиссия", "Сервисы", "Логистика", "Реклама", "ДРР %",
+        "Хранение", "Нетто (к перечисл.)",
         "С/С", "Прибыль", "Маржа %"
     ]
     for col, h in enumerate(sku_headers, 1):
@@ -852,43 +1164,58 @@ async def export_ozon_excel(
     except Exception:
         pass
 
-    # Fetch per-SKU logistics from transactions
+    # ── Per-SKU logistics: proportional distribution ──────────
+    # Ozon API does NOT link logistics to SKU (sku=0 for all Logistics
+    # transactions). We distribute total logistics proportionally by revenue.
     sku_logistics_map = {}
+    total_logistics_period = 0.0
     try:
-        sku_logistics_ch = ch.query("""
-            SELECT sku, abs(sum(amount)) AS logistics
+        log_ch = ch.query("""
+            SELECT abs(sum(amount)) AS total_logistics
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(operation_date) >= {d_start:Date}
               AND toDate(operation_date) <= {d_end:Date}
-              AND category = 'Logistics' AND sku > 0
-            GROUP BY sku
+              AND category = 'Logistics'
         """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
-        for r in sku_logistics_ch.result_rows:
-            sku_logistics_map[int(r[0])] = float(r[1] or 0)
+        if log_ch.result_rows:
+            total_logistics_period = float(log_ch.result_rows[0][0] or 0)
     except Exception:
         pass
 
-    # Fetch per-SKU ad spend from fact_ozon_ad_daily
-    sku_ad_map = {}
-    try:
-        sku_ad_ch = ch.query("""
-            SELECT sku, sum(money_spent) AS ad_spend
-            FROM mms_analytics.fact_ozon_ad_daily FINAL
-            WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {d_start:Date} AND dt <= {d_end:Date}
-              AND sku > 0
-            GROUP BY sku
-        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
-        for r in sku_ad_ch.result_rows:
-            sku_ad_map[int(r[0])] = float(r[1] or 0)
-    except Exception:
-        pass
+    # Build revenue map for proportional logistics distribution
+    sku_revenue_for_logistics = {}
+    total_sku_revenue = 0.0
+    for r in sku_data.result_rows:
+        sku = int(r[0] or 0)
+        rev = float(r[2] or 0)
+        if rev > 0:
+            sku_revenue_for_logistics[sku] = rev
+            total_sku_revenue += rev
+
+    if total_logistics_period > 0 and total_sku_revenue > 0:
+        for sku, rev in sku_revenue_for_logistics.items():
+            sku_logistics_map[sku] = total_logistics_period * (rev / total_sku_revenue)
+
+    # ── Per-SKU ad spend from fact_ozon_ad_daily ──────────────
+    # Ozon transaction API has sku=0 for Marketing. Real per-SKU ad
+    # data comes from Ozon Performance API → fact_ozon_ad_daily.
+    from app.services.ozon_finance_queries import get_ad_costs_by_sku, get_placement_costs_by_sku
+    sku_ad_map = get_ad_costs_by_sku(ch, shop_id, d_start, d_end)
+
+    # ── Per-SKU storage from fact_ozon_placement_cost ─────────
+    # Ozon transaction API has sku=0 for Storage. Real per-SKU storage
+    # data comes from Ozon placement report → fact_ozon_placement_cost.
+    offer_storage_map = get_placement_costs_by_sku(ch, shop_id, d_start, d_end)
 
     sku_totals = {"qty": 0, "revenue": 0, "commission": 0, "services": 0,
-                  "logistics": 0, "ad_spend": 0, "payout": 0, "cogs": 0, "profit": 0}
+                  "logistics": 0, "ad_spend": 0, "storage": 0, "payout": 0,
+                  "cogs": 0, "profit": 0}
 
-    for i, r in enumerate(sku_data.result_rows):
+    # Filter out SKUs with zero quantity (no Revenue transactions — only refunds/other)
+    sku_rows = [(r_idx, r) for r_idx, r in enumerate(sku_data.result_rows) if int(r[3] or 0) > 0]
+
+    for i, (r_idx, r) in enumerate(sku_rows):
         row_num = i + 2
         sku = int(r[0] or 0)
         name = r[1] or ""
@@ -899,24 +1226,35 @@ async def export_ozon_excel(
         payout_sku = float(r[6] or 0)
         logistics_sku = sku_logistics_map.get(sku, 0)
         ad_sku = sku_ad_map.get(sku, 0)
+        offer_id_for_sku = sku_to_offer.get(sku, "")
+        barcode_for_sku = sku_to_barcode.get(sku, "")
+        storage_sku = offer_storage_map.get(offer_id_for_sku, 0) if offer_id_for_sku else 0
         cogs_sku = sku_cost_map_all.get(sku, 0) * qty
-        profit_sku = payout_sku - cogs_sku - ad_sku
+        drr_pct = round(ad_sku / revenue_sku * 100, 1) if revenue_sku > 0 else 0
+        # Unified profit formula: revenue - all expenses - cogs
+        profit_sku = revenue_sku - abs(comm) - abs(svcs) - logistics_sku - ad_sku - storage_sku - cogs_sku
 
         ws5.cell(row=row_num, column=1, value=sku)
-        ws5.cell(row=row_num, column=2, value=name)
-        ws5.cell(row=row_num, column=3, value=qty)
-        ws5.cell(row=row_num, column=4, value=round(revenue_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=5, value=round(comm, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=6, value=round(svcs, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=7, value=round(logistics_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=8, value=round(ad_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=9, value=round(payout_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=10, value=round(cogs_sku, 2)).number_format = MONEY_FMT
-        pc = ws5.cell(row=row_num, column=11, value=round(profit_sku, 2))
+        ws5.cell(row=row_num, column=2, value=offer_id_for_sku)
+        ws5.cell(row=row_num, column=3, value=barcode_for_sku)
+        ws5.cell(row=row_num, column=4, value=name)
+        ws5.cell(row=row_num, column=5, value=qty)
+        ws5.cell(row=row_num, column=6, value=round(revenue_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=7, value=round(comm, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=8, value=round(svcs, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=9, value=round(logistics_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=10, value=round(ad_sku, 2)).number_format = MONEY_FMT
+        drr_c = ws5.cell(row=row_num, column=11, value=drr_pct)
+        drr_c.number_format = '0.0"%"'
+        drr_c.font = RED_FONT if drr_pct > 30 else (GREEN_FONT if drr_pct < 15 else NORMAL_FONT)
+        ws5.cell(row=row_num, column=12, value=round(storage_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=13, value=round(payout_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=14, value=round(cogs_sku, 2)).number_format = MONEY_FMT
+        pc = ws5.cell(row=row_num, column=15, value=round(profit_sku, 2))
         pc.number_format = MONEY_FMT
         pc.font = GREEN_FONT if profit_sku >= 0 else RED_FONT
         margin = profit_sku / revenue_sku * 100 if revenue_sku > 0 else 0
-        mc = ws5.cell(row=row_num, column=12, value=round(margin, 1))
+        mc = ws5.cell(row=row_num, column=16, value=round(margin, 1))
         mc.number_format = '0.0"%"'
         mc.font = GREEN_FONT if margin >= 15 else (RED_FONT if margin < 5 else NORMAL_FONT)
 
@@ -926,6 +1264,7 @@ async def export_ozon_excel(
         sku_totals["services"] += svcs
         sku_totals["logistics"] += logistics_sku
         sku_totals["ad_spend"] += ad_sku
+        sku_totals["storage"] += storage_sku
         sku_totals["payout"] += payout_sku
         sku_totals["cogs"] += cogs_sku
         sku_totals["profit"] += profit_sku
@@ -933,20 +1272,24 @@ async def export_ozon_excel(
         _style_data_row(ws5, row_num, len(sku_headers), is_alt=(i % 2 == 1))
 
     # Totals
-    total_row = len(sku_data.result_rows) + 2
+    total_row = len(sku_rows) + 2
     ws5.cell(row=total_row, column=1, value="ИТОГО")
-    ws5.cell(row=total_row, column=2, value=f"{len(sku_data.result_rows)} товаров")
-    ws5.cell(row=total_row, column=3, value=sku_totals["qty"])
-    ws5.cell(row=total_row, column=4, value=round(sku_totals["revenue"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=5, value=round(sku_totals["commission"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=6, value=round(sku_totals["services"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=7, value=round(sku_totals["logistics"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=8, value=round(sku_totals["ad_spend"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=9, value=round(sku_totals["payout"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=10, value=round(sku_totals["cogs"], 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=11, value=round(sku_totals["profit"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=4, value=f"{len(sku_rows)} товаров")
+    ws5.cell(row=total_row, column=5, value=sku_totals["qty"])
+    ws5.cell(row=total_row, column=6, value=round(sku_totals["revenue"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=7, value=round(sku_totals["commission"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=8, value=round(sku_totals["services"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=9, value=round(sku_totals["logistics"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=10, value=round(sku_totals["ad_spend"], 2)).number_format = MONEY_FMT
+    # DRR% total
+    total_drr = round(sku_totals["ad_spend"] / sku_totals["revenue"] * 100, 1) if sku_totals["revenue"] > 0 else 0
+    ws5.cell(row=total_row, column=11, value=total_drr).number_format = '0.0"%"'
+    ws5.cell(row=total_row, column=12, value=round(sku_totals["storage"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=13, value=round(sku_totals["payout"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=14, value=round(sku_totals["cogs"], 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=15, value=round(sku_totals["profit"], 2)).number_format = MONEY_FMT
     tm = sku_totals["profit"] / sku_totals["revenue"] * 100 if sku_totals["revenue"] > 0 else 0
-    ws5.cell(row=total_row, column=12, value=round(tm, 1)).number_format = '0.0"%"'
+    ws5.cell(row=total_row, column=16, value=round(tm, 1)).number_format = '0.0"%"'
     _style_total_row(ws5, total_row, len(sku_headers))
 
     _auto_width(ws5)

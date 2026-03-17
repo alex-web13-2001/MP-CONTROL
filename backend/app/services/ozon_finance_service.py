@@ -267,6 +267,9 @@ def _normalize_transaction(op: dict) -> dict:
     item = items[0] if items else {}
     sku = item.get("sku", 0) or 0
     item_name = item.get("name", "") or ""
+    # items_count: protection against multi-item transactions
+    # Ozon currently sends 1 item per transaction, but this future-proofs the logic
+    items_count = max(len(items), 1)
 
     # Sum all service prices
     services_total = sum(s.get("price", 0) or 0 for s in services)
@@ -287,6 +290,7 @@ def _normalize_transaction(op: dict) -> dict:
         "accruals_for_sale": _safe_decimal(op.get("accruals_for_sale", 0)),
         "sale_commission": _safe_decimal(op.get("sale_commission", 0)),
         "services_total": _safe_decimal(services_total),
+        "items_count": items_count,
         "type": op.get("type", ""),
     }
 
@@ -304,7 +308,7 @@ CH_COLUMNS = [
     "category", "posting_number", "delivery_schema",
     "sku", "item_name",
     "amount", "accruals_for_sale", "sale_commission", "services_total",
-    "type", "shop_id", "updated_at",
+    "items_count", "type", "shop_id", "updated_at",
 ]
 
 
@@ -379,6 +383,7 @@ class OzonTransactionsLoader:
                 t["accruals_for_sale"],
                 t["sale_commission"],
                 t["services_total"],
+                t.get("items_count", 1),
                 t["type"],
                 shop_id,
                 now,
