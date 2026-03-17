@@ -1,6 +1,6 @@
 # MP-CONTROL — Services Layer
 
-> Полное описание всех 23 сервисов: API endpoints, трансформация данных, целевые таблицы.  
+> Полное описание всех 25 сервисов: API endpoints, трансформация данных, целевые таблицы.  
 > Директория: `backend/app/services/`
 
 ---
@@ -402,6 +402,61 @@ FBO + FBS возвраты Ozon.
 
 ---
 
+### `ozon_placement_service.py` (503 строки)
+
+Фактическая стоимость размещения (хранения) per-SKU на Ozon.
+
+| Компонент                | Описание                                           |
+| ------------------------ | -------------------------------------------------- |
+| **OzonPlacementService** | 3-step async report: create → poll → download/parse |
+| **OzonPlacementLoader**  | INSERT → `fact_ozon_placement_cost` (ClickHouse)    |
+
+**API endpoints:** Ozon Seller API
+
+- `POST /v1/report/placement/by-products/create` → report code
+- `POST /v1/report/info` → status + download URL  
+- `GET <download_url>` → Excel file (xlsx)
+
+**Ключевые методы:**
+
+| Метод                    | Описание                                                     |
+| ------------------------ | ------------------------------------------------------------ |
+| `create_report()`        | Создание отчёта за период (max 31 день)                       |
+| `wait_for_report()`      | Поллинг статуса (5 сек интервал, max 60 попыток = 5 мин)      |
+| `download_and_parse()`   | Скачивание Excel + парсинг per-SKU × per-day × per-warehouse  |
+| `prepare_ch_rows()`      | Агрегация daily rows в per-period rows (AVG stock, SUM cost)   |
+
+**Лимиты:** 5 отчётов/день, max 31 день/отчёт  
+**Выход:** ClickHouse `fact_ozon_placement_cost` (ReplacingMergeTree)  
+**Данные:** offer_id, sku, volume_liters, avg_daily_stock, placement_cost (₽)
+
+---
+
+### `ozon_turnover_service.py` (256 строк)
+
+Оборачиваемость FBO товаров Ozon.
+
+| Компонент                | Описание                                        |
+| ------------------------ | ----------------------------------------------- |
+| **OzonTurnoverService**  | Fetch item turnover через Seller API            |
+| **OzonTurnoverLoader**   | INSERT → `fact_ozon_turnover` (ClickHouse)       |
+
+**API endpoint:** `POST /v1/analytics/item_turnover`
+
+**Ключевые поля ответа:**
+
+| Поле             | Описание                            |
+| ---------------- | ----------------------------------- |
+| `days_on_site`   | Сколько дней товар на Ozon          |
+| `stock_fbo`      | Текущий FBO сток                    |
+| `avg_daily_sales`| Среднедневные продажи (Ozon расчёт) |
+| `days_of_supply` | Запас в днях                        |
+
+**Лимиты:** max 500 SKU/запрос, max 31 день/период  
+**Выход:** ClickHouse `fact_ozon_turnover` (ReplacingMergeTree, TTL 1 год)
+
+---
+
 ## Сводная таблица: Service → API → Storage
 
 | Service                         | Marketplace | API Domain      | Target Storage                                     |
@@ -423,11 +478,13 @@ FBO + FBS возвраты Ozon.
 | `ozon_finance_service`          | Ozon        | Seller API      | CH: `fact_ozon_transactions`                       |
 | `ozon_ads_service`              | Ozon        | Performance API | CH: `fact_ozon_ad_daily`, `log_ozon_bids`          |
 | `ozon_ads_event_detector`       | Ozon        | — (stateful)    | PG: `event_log`, Redis                             |
-| `ozon_funnel_service`           | Ozon        | Seller API      | CH: funnel tables                                  |
-| `ozon_returns_service`          | Ozon        | Seller API      | CH: returns tables                                 |
-| `ozon_warehouse_stocks_service` | Ozon        | Seller API      | CH: stock tables                                   |
-| `ozon_price_service`            | Ozon        | Seller API      | CH: price snapshots                                |
-| `ozon_seller_rating_service`    | Ozon        | Seller API      | CH: rating snapshots                               |
+| `ozon_funnel_service`           | Ozon        | Seller API      | CH: `fact_ozon_funnel`                             |
+| `ozon_returns_service`          | Ozon        | Seller API      | CH: `fact_ozon_returns`                            |
+| `ozon_warehouse_stocks_service` | Ozon        | Seller API      | CH: `fact_ozon_warehouse_stocks`                   |
+| `ozon_price_service`            | Ozon        | Seller API      | CH: `fact_ozon_prices`                             |
+| `ozon_seller_rating_service`    | Ozon        | Seller API      | CH: `fact_ozon_seller_rating`                      |
+| `ozon_placement_service`        | Ozon        | Seller API      | CH: `fact_ozon_placement_cost`                     |
+| `ozon_turnover_service`         | Ozon        | Seller API      | CH: `fact_ozon_turnover`                           |
 
 ---
 
@@ -474,3 +531,14 @@ FBO + FBS возвраты Ozon.
 - 3-step async report API: create → poll → download, 7-дневные чанки
 - Retry: exponential backoff (10→120 сек) при 429 + ConnectError/ReadTimeout
 - Обновлена сводная таблица Service → API → Storage (23 сервиса)
+
+### 2026-03-16
+
+- **Новый сервис:** `ozon_placement_service.py` (503 строки) — фактическая стоимость хранения per-SKU из Ozon Report API
+  - 3-step async: create report → poll status → download Excel → parse
+  - API: `/v1/report/placement/by-products/create` + `/v1/report/info`
+  - Лимит: 5 отчётов/день, max 31 день/отчёт
+- **Новый сервис:** `ozon_turnover_service.py` (256 строк) — оборачиваемость FBO товаров
+  - API: `POST /v1/analytics/item_turnover`
+  - Данные: days_on_site, stock_fbo, avg_daily_sales, days_of_supply
+- Обновлена сводная таблица Service → API → Storage (25 сервисов)

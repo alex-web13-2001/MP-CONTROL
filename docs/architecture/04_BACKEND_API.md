@@ -1,7 +1,7 @@
 # MP-CONTROL — Backend API
 
 > REST API на FastAPI. Все endpoints начинаются с `/api/v1/`.  
-> Файлы: `backend/app/api/v1/` (12 роутеров), `backend/app/schemas/auth.py`
+> Файлы: `backend/app/api/v1/` (14 роутеров), `backend/app/schemas/auth.py`
 
 ---
 
@@ -570,9 +570,9 @@ get_current_user()  → User (JWT decode → SELECT user + shops)
 
 ---
 
-## Склады (Поставки FBO) — `/api/v1/warehouses`
+## Склады — `/api/v1/warehouses`
 
-### Endpoints
+### Ozon Supply — `/api/v1/warehouses/ozon/supply`
 
 | Метод | Path                           | Описание                        | Auth   |
 | ----- | ------------------------------ | ------------------------------- | ------ |
@@ -661,7 +661,7 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
 | Калининград  | Калининград                                |
 | Астана       | Астана, Алматы                             |
 
-### Excel-экспорт (5 листов)
+### Ozon Excel-экспорт (5 листов)
 
 | Лист | Название              | Содержимое                                                                    |
 | ---- | --------------------- | ----------------------------------------------------------------------------- |
@@ -682,6 +682,230 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
 7. `boost = (views > 0) ? max(1.0, min(5.0, (ad_carts × 3) / daily)) : 1.0`
 
 > **Важно:** до v2026-03-12 использовалась пропорциональная оценка `est_stock = fbo_total × share%`. Теперь сток берётся реальный по складам РФЦ, обслуживающим кластер.
+
+---
+
+### Ozon Geography — `/api/v1/warehouses/ozon/geography`
+
+| Метод  | Path                                    | Описание                                        | Auth   |
+| ------ | --------------------------------------- | ----------------------------------------------- | ------ |
+| `GET`  | `/warehouses/ozon/geography`            | Кластеры доставки + города + стабильность + топ | Bearer |
+| `GET`  | `/warehouses/ozon/geography/city-products` | Drill-down товаров по городу                  | Bearer |
+| `GET`  | `/warehouses/ozon/geography/products-search` | Autocomplete для фильтра по SKU             | Bearer |
+| `POST` | `/warehouses/ozon/geography/ai-analysis`    | ИИ-анализ географии (Gemini 2.5 Flash)       | Bearer |
+
+#### Query Parameters (GET /geography)
+
+```
+shop_id: int (required)
+period: int (default: 30)            — период анализа (дни)
+sku_filter: int[] (optional)         — массив SKU для фильтрации
+```
+
+#### Ключевая логика
+
+- SQL: `fact_ozon_orders FINAL` GROUP BY `cluster_to`, `city`
+- Стабильность: `count(DISTINCT toDate(order_date)) / period * 100`
+- Топ товары per-cluster (top-5) и общие (top-50) с metadata из `dim_ozon_products`
+- **AI-анализ**: 7 шагов сбора данных (кластеры+города, товары, стоки, кросс-доставки), Gemini 2.5 Flash, кеш 6ч
+
+---
+
+### Ozon Storage — `/api/v1/warehouses/ozon/storage`
+
+| Метод  | Path                                        | Описание                          | Auth   |
+| ------ | ------------------------------------------- | --------------------------------- | ------ |
+| `GET`  | `/warehouses/ozon/storage`                  | Аналитика хранения FBO per-SKU    | Bearer |
+| `POST` | `/warehouses/ozon/sync-placement-cost`      | Trigger синхронизации факт. данных| Bearer |
+| `POST` | `/warehouses/ozon/backfill-placement-cost`  | Бэкфилл факт. данных за N месяцев | Bearer |
+
+#### Ключевая логика
+
+- Per-SKU оборачиваемость: приоритетно из `fact_ozon_turnover`, fallback на `stock/daily_sales`
+- Зонирование: free (<120д), warning (120-160д), paid (>160д) — тарифы Ozon
+- **Объём**: `volume_weight × 2.87` (коэффициент из реверс-инжиниринга Ozon кабинета)
+- **Тариф**: 0.14 ₽/л/день (медиана из реверс-инжиниринга)
+- Прогноз 30д: убывание стока при продажах
+- **Фактические данные**: `fact_ozon_placement_cost` (приоритет над расчётным)
+  - `storage_source: "actual" | "estimated"` per-SKU
+  - KPI: `has_actual_data`, `actual_period` (from/to)
+
+---
+
+### Ozon Overview — `/api/v1/warehouses/ozon/overview`
+
+| Метод | Path                             | Описание                    | Auth   |
+| ----- | -------------------------------- | --------------------------- | ------ |
+| `GET` | `/warehouses/ozon/overview`      | Обзорный дашборд складов    | Bearer |
+
+#### Query Parameters
+
+```
+shop_id: int (required)
+period: int (default: 30)            — период анализа (дни)
+```
+
+#### Ключевая логика (~380 строк)
+
+- Стоки по `fact_ozon_warehouse_stocks` (warehouse_name × offer_id)
+- Заказы из `fact_ozon_orders` (текущий + предыдущий период для трендов)
+- Расходы: 9 типов из `fact_ozon_transactions` (логистика, эквайринг, возвраты, штрафы, хранение, FBO, кроссдокинг)
+- Фактическое хранение из `fact_ozon_placement_cost` (приоритет над расчётным)
+- Out-of-stock SKU: агрегация по всем складам, top-10 с `days_left < 14`
+- KPI с трендами vs prev period: `total_expenses`, `total_logistics`, `total_crossdocking`, `total_storage`, `total_returns`, `total_orders`, `cross_pct`
+- Per-warehouse: status (critical/empty/attention/overstocked/ok), daily_sales, turnover_days, cross_pct, top-50 SKU
+
+---
+
+### Ozon Cross — `/api/v1/warehouses/ozon/cross`
+
+Отдельный endpoint не создан — кросс-анализ Ozon включён в `GET /ozon/analytics` и визуализируется фронтендом через адаптер `normalizeOzonToCrossData()`.
+
+| Метод  | Path                                        | Описание                                    | Auth   |
+| ------ | ------------------------------------------- | ------------------------------------------- | ------ |
+| `POST` | `/warehouses/ozon/cross/ai-analysis`        | ИИ-анализ кросс-логистики (Gemini 2.5 Flash)| Bearer |
+
+#### Кросс-анализ логика
+
+- SQL: `sku × warehouse_name × cluster_to` из `fact_ozon_orders`
+- Per-warehouse: `cross_pct`, `cross_orders`, `local_orders` через `_get_cluster_for_warehouse`
+- Per-SKU: `cross_pct`, `cross_orders`, `geography[]` с `is_local` флагом
+- `cross_map`: матрица `warehouse × cluster`
+
+#### AI-анализ кросс-логистики
+
+- **Промпт V4**: обзорный формат — `warehouse_assessments` (оценка каждого склада: status, cross_pct, main_cross_destinations) + `priority_actions` (текстовые действия с impact и link_to_supply)
+- Данные: кросс-маршруты per-SKU, стоки per-warehouse, общая статистика
+- ИИ запрещено считать конкретные qty, давать формулы перемещений
+- Кеширование 6ч в Redis, force-refresh параметр
+
+---
+
+### WB Supply — `/api/v1/warehouses/wb/supply`
+
+| Метод | Path                         | Описание                        | Auth   |
+| ----- | ---------------------------- | ------------------------------- | ------ |
+| `GET` | `/warehouses/wb/supply`      | Рекомендации по поставке (JSON) | Bearer |
+| `GET` | `/warehouses/wb/supply/xlsx` | Excel-экспорт (5 листов)        | Bearer |
+
+### Query Parameters
+
+```
+shop_id: int (required)
+sales_period: int (default: 30)      — период анализа продаж (дни)
+target_days: int (default: 45)       — на сколько дней формировать запас
+safety: float (default: 1.15)        — коэффициент безопасности
+```
+
+> **Важно**: WB не поддерживает Ad Boost (в отличие от Ozon).
+
+### Response Schema (GET /wb/supply)
+
+```
+{
+  kpi: {
+    total_need, critical_count, attention_count, overstock_count,
+    avg_days_supply, total_stock, total_sku, total_storage_month
+  },
+  items: [{
+    nm_id, vendor_code, name, image_url, vol_liters,
+    total_sold, total_stock, daily_avg, turnover_days,
+    effective_days,              // реальный запас с учётом кросс-складского расхода (null если нет данных)
+    total_need,
+    status: "critical" | "attention" | "ok" | "overstock",
+    storage_cost_month,
+    product_type: "food" | "sgt" | "normal",
+    warehouses: [{
+      warehouse, stock, orders, daily, turnover_days,
+      effective_days,            // реальный запас на этом складе (с учётом кросс-расхода)
+      cross_daily,               // чужих заказов/день (из других округов)
+      cross_okrugs: [{           // детализация кросс-расхода
+        okrug, qty, daily
+      }],
+      need, storage_per_day, storage_per_month,
+      storage_coef, storage_source,  // "actual" (fact_wb_paid_storage) или "tariff"
+      acceptance_coef, acceptance, revenue,
+      regional_orders, regional_daily, demand_regions,
+      daily_boosted,
+      paired_orders, paired_revenue  // для food/SGT: заказы/выручка парного обычного склада
+    }]
+  }],
+  warehouse_summary: [{
+    warehouse, items_count, total_stock, total_orders,
+    total_need, total_revenue, storage_coef, acceptance
+  }]
+}
+```
+
+### Маппинг складов → округа (WAREHOUSE_TO_OKRUG)
+
+50+ складов WB привязаны к 8 федеральным округам (включая варианты `:Питание` и `СГТ`):
+
+| Склад (warehouse_name)                | Федеральный округ   |
+| -------------------------------------- | ------------------- |
+| Котовск, Подольск 4, Домодедово 2      | Центральный         |
+| Шушары, СПб Шушары                     | Северо-Западный     |
+| Казань, Самара (Новосемейкино)         | Приволжский         |
+| Екатеринбург, Челябинск                | Уральский           |
+| Краснодар (Тихорецкая), Волгоград      | Южный               |
+| Новосибирск                            | Сибирский           |
+| Хабаровск                              | Дальневосточный     |
+| Ростов, Минеральные Воды               | Северо-Кавказский   |
+
+### Кросс-складской анализ
+
+Анализ фактического расхода стока по `warehouse_name × nm_id × oblast_okrug_name`:
+
+1. SQL: `GROUP BY nm_id, warehouse_name, oblast_okrug_name` из `fact_orders_raw`
+2. Если `oblast_okrug_name != WAREHOUSE_TO_OKRUG[warehouse_name]` → **кросс-слив**
+3. `effective_days = stock / actual_daily` (включая кросс-заказы)
+4. Пересчёт статуса: `effective_days < 14` → `critical`, `< target_days` → `attention`
+
+### Cross-drain Re-balance (v8)
+
+После начального расчёта `need` по складам, но **перед** global cap:
+
+1. Если `need > 0` у регионального склада → уменьшаем `effective_daily` центрального склада на долю кросс-drain в этот регион
+2. Пересчёт `need` центрального с уменьшенным `effective_daily`
+3. **Food/SGT**: кросс-drain НЕ вычитается если в целевом регионе нет food-совместимого склада (кросс неизбежен)
+
+### Food / SGT логика
+
+- **Классификация**: категория `Товары для животных`, `Продукты питания` и т.д. → тип `food`
+- **Ограничение**: food-товары принимают ТОЛЬКО склады с суффиксом `: Питание`
+- **Парные склады**: «Котовск» и «Котовск: Питание» — одна физическая локация
+- **need = 0** на обычном складе для food-товара (поставка только на `:Питание`)
+- **paired_stock**: food-вариант учитывает stock парного обычного склада
+- **paired_daily**: food-вариант агрегирует продажи парного склада (WB записывает под обычным именем)
+
+### WB Excel-экспорт (5 листов)
+
+| Лист | Название              | Содержимое                                                                                    |
+| ---- | --------------------- | --------------------------------------------------------------------------------------------- |
+| 1    | Рекомендации по складам | SKU × склад: status, sold, daily, need, хранение руб/день и руб/мес, коэфф приёмки         |
+| 2    | Сводка по товарам     | 1 строка на SKU: оборачиваемость, прогноз хранения, текстовая рекомендация                    |
+| 3    | Тарифы складов WB     | 144+ склада: коэффициенты хранения/логистики/приёмки, тарифы                                  |
+| 4    | Поставка по складам   | Склад → SKU с need > 0, paired_orders/revenue для food/SGT, итоги                            |
+| 5    | Риск перезатаривания  | SKU с `turnover_days > target_days`, excess_qty, storage_per_month, рекомендация              |
+
+### WB-специфика
+
+- **Хранение платное с 1-го дня** — нет бесплатного периода
+- **Фиксация коэффициентов**: 60 дней (большинство категорий), 90 дней (одежда/обувь)
+- **Overstock**: `turnover_days > target_days` (настраиваемый порог)
+- **Acceptance**: коэффициент приёмки склада (`"Без коэфф."` или `"x{N}"`)
+- **storage_cost_month**: приоритет — реальные данные из `fact_wb_paid_storage` (avg 14д), fallback — тариф `vol_liters × tariff_per_liter × storage_coef × stock × 30`
+- **storage_source**: `"actual"` (fact_wb_paid_storage) или `"tariff"` — источник расчёта хранения для каждого склада
+- **helper**: `_build_wb_supply_data()` — общая логика для JSON и Excel endpoints
+
+### Источники данных
+
+1. `fact_inventory_snapshot` (ClickHouse) → остатки по складам
+2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period` (включая `warehouse_name`, `oblast_okrug_name`)
+3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
+4. `fact_wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
+5. `fact_wb_paid_storage` (ClickHouse) → реальная стоимость хранения per-SKU per-warehouse (avg 14д)
+6. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
 
 ---
 
@@ -1160,3 +1384,20 @@ data: [DONE]
   - `need = 0` на обычных складах для food-товаров (поставка только на `:Питание`)
   - `paired_stock`: food-вариант учитывает stock парного обычного склада
   - `paired_daily`: food-вариант агрегирует продажи парного склада
+
+### 2026-03-16
+
+- **Ozon Geography** (3 JSON endpoints + AI): кластеры, города, стабильность, товары, drill-down
+- **Ozon Storage**: аналитика хранения FBO, зонирование free/warning/paid, placement cost sync/backfill
+- **Ozon Cross**: кросс-матрица `warehouse × cluster`, per-SKU cross_pct, AI-анализ V4 (обзорный формат)
+- **Ozon Overview**: обзорный дашборд складов (~380 строк), 9 типов расходов, KPI с трендами, OOS, per-warehouse status
+- **Ozon Placement Cost**: `fact_ozon_placement_cost`, Celery tasks `sync/backfill_ozon_placement_cost`
+- **WB Supply — global cap**: `sum(needs)` ≤ `boosted_daily × target_days × safety − total_stock`
+
+### 2026-03-17
+
+- **WB Supply — cross-drain re-balance**: при поставке в регион → уменьшение `effective_daily` центрального склада на долю кросс-drain; food/SGT: не вычитается если нет food-совместимого склада в регионе
+- **WB Excel «Поставка по складам»**: `paired_orders`/`paired_revenue` для food/SGT
+- **WB Excel «Риск перезатаривания»**: фильтр `turnover_days > target_days` (не хардкод 45), `storage_per_month`, `excess_qty`
+- **Ozon Overview — расширение расходов**: 9 типов вместо 5, `cross_problem_warehouses[]`
+- Обновлена документация всех Ozon warehouse endpoints

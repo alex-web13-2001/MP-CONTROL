@@ -565,6 +565,7 @@ def sync_all_daily(self):
                 sync_ozon_seller_rating,
                 sync_ozon_content_rating,
                 sync_ozon_content,
+                sync_ozon_placement_cost,
             )
 
             kwargs = dict(api_key=api_key, client_id=client_id)
@@ -573,6 +574,7 @@ def sync_all_daily(self):
                 sync_ozon_products, sync_ozon_product_snapshots,
                 sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns,
                 sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content,
+                sync_ozon_placement_cost,
             ]:
                 if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, **kwargs):  # 23h TTL for daily
                     dispatched += 1

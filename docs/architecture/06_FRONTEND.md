@@ -935,3 +935,38 @@ Bоковая панель с вложенной навигацией (collapse 
 - **WarehousesOverviewPage — удалён блок «Нужна поставка»:**
   - Дублировал «Скоро out-of-stock» и страницу «Поставки»
   - Показывал бессмысленные «2 скл.» без указания что/зачем поставлять
+
+### 2026-03-16 (v2)
+
+- **Ozon Geography** — `OzonGeographyPage` (~530 строк):
+  - 4 KPI: заказы, выручка, ср. чек, охват (X кл. · Y гор.)
+  - `ClustersTable` — 2-уровневая: кластеры → города → товары
+  - `OzonProductCombobox` — мульти-фильтр по SKU (autocomplete с debounce)
+  - `OzonGeographyAIInsight` (~400 строк): severity 🔴/🟡/🟢, модалка с 4 метриками и секциями анализа
+  - API типы: `OzonGeographyResponse`, `OzonGeographyCluster`, `OzonGeographyProduct`
+- **Ozon Storage** — `WarehousesStoragePage` обновлена:
+  - Убран redirect Ozon → /warehouses/analytics
+  - `OzonStorageKpi` → 4 карточки: Хранение факт/расчёт, Оборачиваемость, Бесплатное, Риск
+  - Кнопки «Обновить данные» / «Загрузить за 3 мес» → sync/backfill placement cost через Celery
+  - Динамический disclaimer: ✅ факт / ⚠️ расчёт, badge «факт» в таблице
+  - API типы: `OzonStorageKpi`, `OzonStorageSku`, `OzonStorageResponse`
+  - API функции: `syncOzonPlacementCost()`, `backfillOzonPlacementCost()`, `getOzonStorage()`
+
+### 2026-03-17
+
+- **Ozon Cross-логистика** — `WarehousesCrossPage` обновлена:
+  - Убран redirect Ozon → /warehouses/analytics
+  - Adapter `normalizeOzonToCrossData()`: нормализует Ozon ответ в WB формат
+  - `OzonCrossAIInsight` (~450 строк): баннер severity + модалка 4 метрики
+  - AI v4: обзорный формат — `warehouse_assessments[]`, `priority_actions[]`, кнопки «Поставки»
+  - API типы: `OzonCrossMapRow`, `OzonCrossAIAnalysis`, `OzonCrossAIWarehouseAssessment`, `OzonCrossAIPriorityAction`
+- **Ozon Overview** — `WarehousesOverviewPage` обновлена:
+  - Убран redirect Ozon → /warehouses/analytics
+  - Ozon KPI: 6 карточек (Расходы, Логистика, Кроссдокинг, Хранение, Заказы, Кросс-кластер)
+  - Диагностика: кросс-кластер, затоваривание, out-of-stock, возвраты, география
+  - `OzonWarehousesTable` (~150 строк): раскрываемые строки → per-SKU (offer_id, sku, stock, orders, days_supply, cross%)
+  - API типы: `OzonOverviewKpi`, `OzonOverviewWarehouse`, `OzonOverviewSku`, `OzonOverviewCostItem`, `OzonOverviewResponse`
+- **WB Supply** — `WarehouseSupplyPage` обновлена:
+  - Отображение global cap на поставки (sum needs ≤ target − stock)
+  - Cross-drain re-balance: `need` центрального склада уменьшается на долю кросс-drain
+  - Excel «Риск перезатаривания»: динамический `target_days` фильтр

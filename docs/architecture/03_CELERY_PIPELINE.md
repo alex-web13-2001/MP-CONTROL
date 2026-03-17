@@ -319,17 +319,19 @@ Retry: 3 attempts, 60 сек пауза
 
 ### Прочие Ozon задачи
 
-| Задача                        | Частота | Что делает                                                    | Куда пишет            |
-| ----------------------------- | ------- | ------------------------------------------------------------- | --------------------- |
-| `sync_ozon_product_snapshots` | Daily   | 1 API call → promotions, availability, commissions, inventory | 4 CH таблицы          |
-| `sync_ozon_funnel`            | Daily   | POST /v1/analytics/data (14 метрик per SKU)                   | CH                    |
-| `sync_ozon_returns`           | Daily   | FBO + FBS returns (30 дней)                                   | CH                    |
-| `sync_ozon_warehouse_stocks`  | 30 мин  | FBO + FBS stock levels                                        | CH                    |
-| `sync_ozon_prices`            | Daily   | Prices + commissions                                          | CH                    |
-| `sync_ozon_seller_rating`     | Daily   | Seller rating metrics                                         | CH                    |
-| `sync_ozon_inventory`         | 30 мин  | Prices + stocks snapshot                                      | `fact_ozon_inventory` |
-| `sync_ozon_commissions`       | Daily   | Commission rates per product                                  | CH                    |
-| `sync_ozon_content_rating`    | Daily   | Content quality scores per SKU                                | CH                    |
+| Задача                        | Частота | Что делает                                                    | Куда пишет                    |
+| ----------------------------- | ------- | ------------------------------------------------------------- | ----------------------------- |
+| `sync_ozon_product_snapshots` | Daily   | 1 API call → promotions, availability, commissions, inventory | 4 CH таблицы                  |
+| `sync_ozon_funnel`            | Daily   | POST /v1/analytics/data (14 метрик per SKU)                   | CH                            |
+| `sync_ozon_returns`           | Daily   | FBO + FBS returns (30 дней)                                   | CH                            |
+| `sync_ozon_warehouse_stocks`  | 30 мин  | FBO + FBS stock levels                                        | CH: `fact_ozon_warehouse_stocks` |
+| `sync_ozon_prices`            | Daily   | Prices + commissions                                          | CH                            |
+| `sync_ozon_seller_rating`     | Daily   | Seller rating metrics                                         | CH                            |
+| `sync_ozon_inventory`         | 30 мин  | Prices + stocks snapshot                                      | CH: `fact_ozon_inventory`     |
+| `sync_ozon_commissions`       | Daily   | Commission rates per product                                  | CH                            |
+| `sync_ozon_content_rating`    | Daily   | Content quality scores per SKU                                | CH                            |
+| `sync_ozon_turnover`          | Daily   | FBO turnover per SKU (days_of_supply, avg_daily_sales)        | CH: `fact_ozon_turnover`      |
+| `sync_ozon_placement_cost`    | Daily   | Фактическая стоимость хранения per SKU (async Excel report)   | CH: `fact_ozon_placement_cost`|
 
 ---
 
@@ -359,7 +361,9 @@ graph TB
     OZ5 --> OZ6["6. backfill_ozon_returns<br/>(180 дней)"]
     OZ6 --> OZ7["7. backfill_ozon_ads<br/>(180 дней)"]
     OZ7 --> OZ8["8. sync_ozon_content"]
-    OZ8 --> Done
+    OZ8 --> OZ9["9. sync_ozon_turnover"]
+    OZ9 --> OZ10["10. backfill_ozon_placement_cost<br/>(3 мес)"]
+    OZ10 --> Done
 
     Done["✅ Done<br/>Redis: status=done"]
 
@@ -440,6 +444,8 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 | `backfill_ozon_returns`   | 180 дней | Standard                                                                  | standard                   |
 | `backfill_ozon_ads`       | 180 дней | 30-day chunks (newest first), CSV report, early exit after 5 empty chunks | 60с retry, 15с batch pause |
 | `backfill_wb_paid_storage` | 3 мес    | 7-day chunks, 3-step async report (create→poll→download)                  | 429 retry: 10→20→40→80→120 сек |
+| `backfill_ozon_placement_cost` | 3 мес | 30-day chunks (Ozon лимит: 31 день/отчёт), async Excel report            | 5 отчётов/день max             |
+| `sync_ozon_turnover`      | Daily    | POST /v1/analytics/item_turnover, max 500 SKU/запрос                     | standard                   |
 
 ---
 
@@ -493,3 +499,20 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
 - Сервис: `WBPaidStorageService` → `fact_wb_paid_storage` (ClickHouse)
 - 3-step async report API с 7-дневными чанками
 - Retry: exponential backoff (10→120 сек) при 429 + ConnectError
+
+### 2026-03-16
+
+- **Новая задача:** `sync_ozon_placement_cost` — ежедневная синхронизация фактических данных хранения Ozon per SKU
+  - Сервис: `OzonPlacementService` → `fact_ozon_placement_cost` (ClickHouse)
+  - Queue: `heavy`, time_limit: 300с (Excel отчёт генерируется 30-60 сек)
+  - Требует маппинг offer_id→sku из PostgreSQL
+- **Новая задача:** `backfill_ozon_placement_cost` — бэкфилл за N месяцев (default: 3)
+  - 30-дневные чанки (Ozon лимит: 31 день/отчёт)
+  - Queue: `heavy`, time_limit: 1800с
+  - Добавлен в Ozon startup pipeline (dispatch_initial_sync, шаг 10)
+- **Новая задача:** `sync_ozon_turnover` — ежедневная синхронизация оборачиваемости FBO
+  - Сервис: `OzonTurnoverService` → `fact_ozon_turnover` (ClickHouse)
+  - API: `POST /v1/analytics/item_turnover`
+  - Интеграция в `sync_all_daily` для Ozon магазинов
+- Обновлён Ozon startup pipeline: 8 → 10 шагов
+- Обновлена таблица backfill стратегий: добавлен `backfill_ozon_placement_cost`

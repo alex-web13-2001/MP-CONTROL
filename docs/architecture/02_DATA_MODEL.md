@@ -44,6 +44,9 @@ graph LR
         CH_OzBids["log_ozon_bids"]
         CH_OzAdDaily["fact_ozon_ad_daily"]
         CH_PaidStorage["fact_wb_paid_storage"]
+        CH_OzWhStocks["fact_ozon_warehouse_stocks"]
+        CH_OzTurnover["fact_ozon_turnover"]
+        CH_OzPlacement["fact_ozon_placement_cost"]
     end
 
     PG_Users -->|"1:N"| PG_Shops
@@ -278,7 +281,7 @@ SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
 
 ---
 
-## ClickHouse — 17 таблиц + views
+## ClickHouse — 20 таблиц + views
 
 ### Паттерны движков
 
@@ -583,3 +586,18 @@ alembic revision --autogenerate -m "описание"
 - Источник: WB API `GET /api/v1/paid_storage` (3-step async report)
 - ReplacingMergeTree(updated_at), ORDER BY (shop_id, dt, nm_id, office_id, calc_type), TTL 1 год
 - `warehouse_price` может быть отрицательным (скидки WB: 76–94%)
+
+### 2026-03-16
+
+- **Новая таблица ClickHouse:** `fact_ozon_warehouse_stocks` — FBO/FBS остатки Ozon per warehouse×SKU×день
+  - ORDER BY: (shop_id, sku, warehouse_name, dt)
+  - Поля: warehouse_name, warehouse_type, free_to_sell, promised, reserved
+- **Новая таблица ClickHouse:** `fact_ozon_turnover` — оборачиваемость FBO per SKU
+  - ORDER BY: (shop_id, sku, dt), TTL 1 год
+  - Поля: days_on_site, stock_fbo, avg_daily_sales, days_of_supply, turnover_category, revenue_30d, sold_30d
+- **Новая таблица ClickHouse:** `fact_ozon_placement_cost` — фактическая стоимость хранения per SKU
+  - Миграция: `005_add_ozon_placement_cost.sql` + `006_fix_ozon_placement_cost.sql`
+  - ORDER BY: (shop_id, sku, dt)
+  - Поля: dt, period_end, offer_id, sku, product_id, volume_liters, avg_daily_stock, placement_cost
+  - Источник: Ozon API `/v1/report/placement/by-products/create` (Excel отчёт)
+- Счётчик таблиц ClickHouse обновлён: 17 → 20
