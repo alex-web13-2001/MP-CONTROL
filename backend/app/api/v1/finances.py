@@ -411,11 +411,13 @@ async def get_ozon_finances(
         mp_d = commission_d + services_d + bulk_d
         profit_d = rev - mp_d - ads_d - cogs_d
 
+        operating_d = services_d + bulk_d  # operating = services + bulk charges (excl marketing)
         daily_raw.append({
             "date": ds,
             "revenue": round(rev, 2),
             "payout": round(payout_d, 2),
             "mp_fees": round(mp_d, 2),
+            "operating": round(operating_d, 2),
             "ad_spend": round(ads_d, 2),
             "cogs": round(cogs_d, 2),
             "orders": ords,
@@ -426,7 +428,7 @@ async def get_ozon_finances(
     if group_by in ("week", "month"):
         from collections import defaultdict
         grouped = defaultdict(lambda: {
-            "revenue": 0, "payout": 0, "mp_fees": 0, "ad_spend": 0,
+            "revenue": 0, "payout": 0, "mp_fees": 0, "operating": 0, "ad_spend": 0,
             "cogs": 0, "orders": 0, "profit": 0,
         })
         for pt in daily_raw:
@@ -435,13 +437,13 @@ async def get_ozon_finances(
                 key = str(d_obj - timedelta(days=d_obj.weekday()))
             else:
                 key = str(d_obj.replace(day=1))
-            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
+            for field in ("revenue", "payout", "mp_fees", "operating", "ad_spend", "cogs", "orders", "profit"):
                 grouped[key][field] += pt[field]
 
         daily_final = []
         for k in sorted(grouped.keys()):
             entry = {"date": k}
-            for field in ("revenue", "payout", "mp_fees", "ad_spend", "cogs", "orders", "profit"):
+            for field in ("revenue", "payout", "mp_fees", "operating", "ad_spend", "cogs", "orders", "profit"):
                 val = grouped[k][field]
                 entry[field] = round(val, 2) if isinstance(val, float) else val
             daily_final.append(entry)
@@ -457,6 +459,8 @@ async def get_ozon_finances(
             "mp_fees": round(mp_fees_cur, 2),
             "commission": round(commission_cur, 2),
             "operating": round(operating_cur, 2),
+            "delivery": round(services_cur, 2),
+            "fbo": round(abs(bulk_cur.get("logistics", 0)), 2),
             "logistics": round(services_cur + abs(bulk_cur.get("logistics", 0)), 2),
             "storage": round(abs(bulk_cur.get("storage", 0)), 2),
             "acquiring": round(abs(bulk_cur.get("acquiring", 0)), 2),
@@ -473,6 +477,8 @@ async def get_ozon_finances(
             "mp_fees": round(mp_fees_prev, 2),
             "commission": round(commission_prev, 2),
             "operating": round(operating_prev, 2),
+            "delivery": round(services_prev, 2),
+            "fbo": round(abs(bulk_prev.get("logistics", 0)), 2),
             "logistics": round(services_prev + abs(bulk_prev.get("logistics", 0)), 2),
             "storage": round(abs(bulk_prev.get("storage", 0)), 2),
             "acquiring": round(abs(bulk_prev.get("acquiring", 0)), 2),
@@ -497,6 +503,8 @@ async def get_ozon_finances(
         "period": period,
         "date_from": str(d_start),
         "date_to": str(d_end),
+        "prev_date_from": str(d_prev_start),
+        "prev_date_to": str(d_prev_end),
         "group_by": group_by,
         "kpi": kpi,
         "breakdown": breakdown_resp,
@@ -1079,6 +1087,8 @@ async def get_wb_finances(
         "period": period,
         "date_from": str(d_start),
         "date_to": str(d_end),
+        "prev_date_from": str(d_prev_start),
+        "prev_date_to": str(d_prev_end),
         "group_by": group_by,
         "kpi": kpi,
         "breakdown": breakdown_resp,

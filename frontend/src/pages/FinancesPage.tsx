@@ -486,9 +486,13 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
     })
   }
 
-  const hasRightAxis = DYNAMICS_METRICS.some(
-    m => activeMetrics.has(m.key) && m.yAxis === 'right'
-  )
+  // Build list of active metrics info
+  const activeList = DYNAMICS_METRICS.filter(m => activeMetrics.has(m.key))
+
+  // First money metric gets visible Y labels; orders always on right if active
+  const hasOrders = activeMetrics.has('orders')
+  const moneyMetrics = activeList.filter(m => m.key !== 'orders')
+  const visibleLeftMetric = moneyMetrics[0]?.key // first active money metric shows labels
 
   if (!data.length) {
     return (
@@ -527,7 +531,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
 
       {/* Chart */}
       <ResponsiveContainer width="100%" height={320}>
-        <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
+        <ComposedChart data={data} margin={{ top: 5, right: hasOrders ? 50 : 10, left: 0, bottom: 40 }}>
           <defs>
             <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#10b981" stopOpacity={0.4} />
@@ -550,26 +554,39 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
             axisLine={false}
             tickLine={false}
           />
-          <YAxis
-            yAxisId="left"
-            tick={{ fontSize: 12, fill: 'hsl(var(--muted-foreground))' }}
-            tickFormatter={(v: number) =>
-              v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()
-            }
-            axisLine={false}
-            tickLine={false}
-            width={55}
-          />
-          {hasRightAxis && (
+
+          {/* Each money metric gets its own Y-axis with independent domain.
+              Only the first one shows tick labels. */}
+          {moneyMetrics.map((m) => (
             <YAxis
-              yAxisId="right"
+              key={`y-${m.key}`}
+              yAxisId={m.key}
+              orientation="left"
+              domain={['auto', 'auto']}
+              hide={m.key !== visibleLeftMetric}
+              tick={m.key === visibleLeftMetric ? { fontSize: 12, fill: 'hsl(var(--muted-foreground))' } : false}
+              tickFormatter={(v: number) =>
+                v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()
+              }
+              axisLine={false}
+              tickLine={false}
+              width={m.key === visibleLeftMetric ? 55 : 0}
+            />
+          ))}
+
+          {/* Orders axis — always on right */}
+          {hasOrders && (
+            <YAxis
+              yAxisId="orders"
               orientation="right"
+              domain={['auto', 'auto']}
               tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
               axisLine={false}
               tickLine={false}
               width={40}
             />
           )}
+
           <Tooltip
             contentStyle={{
               background: 'hsl(var(--card))',
@@ -593,7 +610,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Revenue — area */}
           {activeMetrics.has('revenue') && (
             <Area
-              yAxisId="left"
+              yAxisId="revenue"
               type="monotone"
               dataKey="revenue"
               fill="url(#revenueGrad)"
@@ -607,7 +624,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Profit — bar */}
           {activeMetrics.has('profit') && (
             <Bar
-              yAxisId="left"
+              yAxisId="profit"
               dataKey="profit"
               fill="url(#profitGrad)"
               radius={[3, 3, 0, 0]}
@@ -618,7 +635,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Payout — line */}
           {activeMetrics.has('payout') && (
             <Line
-              yAxisId="left"
+              yAxisId="payout"
               type="monotone"
               dataKey="payout"
               stroke="#3b82f6"
@@ -631,7 +648,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Operating expenses — line */}
           {activeMetrics.has('operating') && (
             <Line
-              yAxisId="left"
+              yAxisId="operating"
               type="monotone"
               dataKey="operating"
               stroke="#f97316"
@@ -644,7 +661,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* MP fees — line */}
           {activeMetrics.has('mp_fees') && (
             <Line
-              yAxisId="left"
+              yAxisId="mp_fees"
               type="monotone"
               dataKey="mp_fees"
               stroke="#fca5a5"
@@ -658,7 +675,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Ad spend — line dashed */}
           {activeMetrics.has('ad_spend') && (
             <Line
-              yAxisId="left"
+              yAxisId="ad_spend"
               type="monotone"
               dataKey="ad_spend"
               stroke="#ef4444"
@@ -672,7 +689,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* COGS — line dashed */}
           {activeMetrics.has('cogs') && (
             <Line
-              yAxisId="left"
+              yAxisId="cogs"
               type="monotone"
               dataKey="cogs"
               stroke="#64748b"
@@ -686,7 +703,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
           {/* Orders — line on right axis */}
           {activeMetrics.has('orders') && (
             <Line
-              yAxisId={hasRightAxis ? 'right' : 'left'}
+              yAxisId="orders"
               type="monotone"
               dataKey="orders"
               stroke="#06b6d4"
@@ -698,6 +715,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
         </ComposedChart>
       </ResponsiveContainer>
     </div>
+
   )
 }
 
@@ -705,29 +723,79 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
    Comparison Table
    ═══════════════════════════════════════════════════════════ */
 
-const COMPARISON_ROWS: Array<{ key: string; label: string; isMoney: boolean; invert?: boolean; bold?: boolean; indent?: boolean; mp?: 'wb' | 'ozon' }> = [
-  { key: 'revenue', label: 'Выручка', isMoney: true },
+type ComparisonRow = {
+  key: string
+  label: string
+  isMoney: boolean
+  invert?: boolean
+  bold?: boolean
+  section?: 'separator' // renders a section header, not data
+}
+
+const OZON_ROWS: ComparisonRow[] = [
+  { key: 'revenue', label: 'Выручка', isMoney: true, bold: true },
   { key: 'orders', label: 'Заказы', isMoney: false },
-  { key: 'payout', label: 'К перечислению', isMoney: true },
-  { key: 'mp_fees', label: 'Удержания маркетплейса', isMoney: true, invert: true, bold: true },
-  { key: 'commission', label: '  └ Комиссия + скидки', isMoney: true, invert: true, indent: true },
-  { key: 'operating', label: '  └ Расходы МП (ОПЕКС)', isMoney: true, invert: true, indent: true },
-  { key: 'logistics', label: '        • Логистика', isMoney: true, invert: true, indent: true },
-  { key: 'storage', label: '        • Хранение', isMoney: true, invert: true, indent: true },
-  { key: 'acquiring', label: '        • Эквайринг', isMoney: true, invert: true, indent: true },
-  { key: 'penalties', label: '        • Штрафы', isMoney: true, invert: true, indent: true },
-  { key: 'deductions_ads', label: '        • ВБ Продвижение', isMoney: true, invert: true, indent: true, mp: 'wb' },
-  { key: 'deductions_other', label: '        • Пр. удержания', isMoney: true, invert: true, indent: true, mp: 'wb' },
-  { key: 'acceptance', label: '        • Плат. приёмка', isMoney: true, invert: true, indent: true, mp: 'wb' },
-  { key: 'advertising', label: 'Реклама', isMoney: true, invert: true },
+  { key: '_sep_expenses', label: 'РАСХОДЫ', isMoney: false, section: 'separator' },
+  { key: 'commission', label: 'Комиссия', isMoney: true, invert: true },
+  { key: 'delivery', label: 'Доставка покупателям', isMoney: true, invert: true },
+  { key: 'fbo', label: 'Приёмка / FBO', isMoney: true, invert: true },
+  { key: 'acquiring', label: 'Эквайринг', isMoney: true, invert: true },
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
+  { key: 'storage', label: 'Хранение', isMoney: true, invert: true },
+  { key: 'penalties', label: 'Штрафы', isMoney: true, invert: true },
+  { key: 'advertising', label: 'Реклама', isMoney: true, invert: true },
   { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
+  { key: '_sep_totals', label: 'ИТОГО', isMoney: false, section: 'separator' },
+  { key: 'payout', label: 'К перечислению', isMoney: true },
   { key: 'profit', label: 'Чистая прибыль', isMoney: true, bold: true },
 ]
 
-function ComparisonTable({ comparison, marketplace }: { comparison: FinancesResponse['comparison']; marketplace?: string }) {
-  const mpKey = marketplace === 'wildberries' ? 'wb' : marketplace === 'ozon' ? 'ozon' : undefined
-  const rows = COMPARISON_ROWS.filter(r => !r.mp || r.mp === mpKey)
+const WB_ROWS: ComparisonRow[] = [
+  { key: 'revenue', label: 'Выручка', isMoney: true, bold: true },
+  { key: 'orders', label: 'Заказы', isMoney: false },
+  { key: '_sep_expenses', label: 'РАСХОДЫ', isMoney: false, section: 'separator' },
+  { key: 'commission', label: 'Комиссия + СПП', isMoney: true, invert: true },
+  { key: 'logistics', label: 'Логистика', isMoney: true, invert: true },
+  { key: 'storage', label: 'Хранение', isMoney: true, invert: true },
+  { key: 'acquiring', label: 'Эквайринг', isMoney: true, invert: true },
+  { key: 'compensation', label: 'Платная приёмка', isMoney: true, invert: true },
+  { key: 'deductions_other', label: 'Удержания', isMoney: true, invert: true },
+  { key: 'deductions_ads', label: 'ВБ Продвижение', isMoney: true, invert: true },
+  { key: 'advertising', label: 'Реклама (внешняя)', isMoney: true, invert: true },
+  { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
+  { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
+  { key: '_sep_totals', label: 'ИТОГО', isMoney: false, section: 'separator' },
+  { key: 'payout', label: 'К перечислению', isMoney: true },
+  { key: 'profit', label: 'Чистая прибыль', isMoney: true, bold: true },
+]
+
+/** Format "2026-03-01" → "01.03" */
+function fmtShort(dateStr: string): string {
+  const p = dateStr.split('-')
+  if (p.length < 3) return dateStr
+  return `${p[2]}.${p[1]}`
+}
+
+function ComparisonTable({
+  comparison,
+  marketplace,
+  dateFrom,
+  dateTo,
+  prevDateFrom,
+  prevDateTo,
+}: {
+  comparison: FinancesResponse['comparison']
+  marketplace?: string
+  dateFrom?: string
+  dateTo?: string
+  prevDateFrom?: string
+  prevDateTo?: string
+}) {
+  const rows = marketplace === 'wildberries' ? WB_ROWS : OZON_ROWS
+
+  const curLabel = dateFrom && dateTo ? `${fmtShort(dateFrom)} — ${fmtShort(dateTo)}` : 'Текущий период'
+  const prevLabel = prevDateFrom && prevDateTo ? `${fmtShort(prevDateFrom)} — ${fmtShort(prevDateTo)}` : 'Пред. период'
+
   return (
     <div className="overflow-x-auto -mx-5">
       <table className="w-full text-sm">
@@ -737,10 +805,10 @@ function ComparisonTable({ comparison, marketplace }: { comparison: FinancesResp
               Показатель
             </th>
             <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-              Текущий период
+              {curLabel}
             </th>
             <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
-              Предыдущий период
+              {prevLabel}
             </th>
             <th className="px-5 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">
               Δ
@@ -749,6 +817,20 @@ function ComparisonTable({ comparison, marketplace }: { comparison: FinancesResp
         </thead>
         <tbody>
           {rows.map((row) => {
+            // Section separator row
+            if (row.section === 'separator') {
+              return (
+                <tr key={row.key} className="border-b border-[hsl(var(--border)/0.3)]">
+                  <td
+                    colSpan={4}
+                    className="px-5 py-2 text-[11px] font-bold tracking-wider text-[hsl(var(--muted-foreground)/0.5)] uppercase"
+                  >
+                    {row.label}
+                  </td>
+                </tr>
+              )
+            }
+
             const curVal = comparison.current[row.key] ?? 0
             const prevVal = comparison.previous[row.key] ?? 0
             const delta = comparison.delta_pct[row.key] ?? 0
@@ -764,7 +846,7 @@ function ComparisonTable({ comparison, marketplace }: { comparison: FinancesResp
               >
                 <td className={`px-5 py-2.5 text-left ${
                   row.bold ? 'font-bold text-[hsl(var(--foreground))]' : ''
-                } ${row.indent ? 'text-[hsl(var(--muted-foreground)/0.7)] text-[12px]' : ''}`}>
+                }`}>
                   {row.label}
                 </td>
                 <td className={`px-3 py-2.5 text-right font-medium ${
@@ -1226,11 +1308,21 @@ export default function FinancesPage() {
               <CardHeader>
                 <CardTitle className="text-lg">Сравнение периодов</CardTitle>
                 <p className="text-sm text-[hsl(var(--muted-foreground))]">
-                  Текущий период vs предыдущий аналогичный период
+                  {data.prev_date_from && data.prev_date_to
+                    ? `${fmtShort(data.date_from)}–${fmtShort(data.date_to)} vs ${fmtShort(data.prev_date_from)}–${fmtShort(data.prev_date_to)}`
+                    : 'Текущий период vs предыдущий аналогичный период'
+                  }
                 </p>
               </CardHeader>
               <CardContent>
-                <ComparisonTable comparison={data.comparison} marketplace={currentShop?.marketplace} />
+                <ComparisonTable
+                  comparison={data.comparison}
+                  marketplace={currentShop?.marketplace}
+                  dateFrom={data.date_from}
+                  dateTo={data.date_to}
+                  prevDateFrom={data.prev_date_from}
+                  prevDateTo={data.prev_date_to}
+                />
               </CardContent>
             </Card>
           </motion.div>

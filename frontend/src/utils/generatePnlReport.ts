@@ -487,28 +487,57 @@ function drawDynamicsChart(doc: jsPDF, data: FinancesResponse, startY: number): 
 function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: string, startY: number): number {
   const comparison = data.comparison
   const isWb = marketplace === 'wildberries' || marketplace === 'wb'
-  const allRows: Array<{ key: string; label: string; isMoney?: boolean; bold?: boolean; wbOnly?: boolean }> = [
+
+  type CRow = { key: string; label: string; isMoney?: boolean; bold?: boolean; separator?: boolean }
+
+  const ozonRows: CRow[] = [
     { key: 'revenue', label: 'Выручка', bold: true },
     { key: 'orders', label: 'Заказы', isMoney: false },
-    { key: 'payout', label: 'К перечислению' },
-    { key: 'mp_fees', label: 'Удержания маркетплейса', bold: true },
-    { key: 'commission', label: '  └ Комиссия + скидки' },
-    { key: 'operating', label: '  └ Расходы МП (ОПЕКС)' },
-    { key: 'logistics', label: '     • Логистика' },
-    { key: 'storage', label: '     • Хранение' },
-    { key: 'acquiring', label: '     • Эквайринг' },
-    { key: 'penalties', label: '     • Штрафы' },
-    { key: 'deductions_ads', label: '     • ВБ Продвижение', wbOnly: true },
-    { key: 'deductions_other', label: '     • Пр. удержания', wbOnly: true },
-    { key: 'acceptance', label: '     • Плат. приёмка', wbOnly: true },
-    { key: 'advertising', label: 'Реклама' },
+    { key: '_sep_expenses', label: 'РАСХОДЫ', separator: true },
+    { key: 'commission', label: 'Комиссия' },
+    { key: 'delivery', label: 'Доставка покупателям' },
+    { key: 'fbo', label: 'Приёмка / FBO' },
+    { key: 'acquiring', label: 'Эквайринг' },
     { key: 'refunds', label: 'Возвраты' },
+    { key: 'storage', label: 'Хранение' },
+    { key: 'penalties', label: 'Штрафы' },
+    { key: 'advertising', label: 'Реклама' },
     { key: 'cogs', label: 'Себестоимость' },
+    { key: '_sep_totals', label: 'ИТОГО', separator: true },
+    { key: 'payout', label: 'К перечислению' },
     { key: 'profit', label: 'Чистая прибыль', bold: true },
   ]
-  const rows = allRows.filter(r => !r.wbOnly || isWb)
+
+  const wbRows: CRow[] = [
+    { key: 'revenue', label: 'Выручка', bold: true },
+    { key: 'orders', label: 'Заказы', isMoney: false },
+    { key: '_sep_expenses', label: 'РАСХОДЫ', separator: true },
+    { key: 'commission', label: 'Комиссия + СПП' },
+    { key: 'logistics', label: 'Логистика' },
+    { key: 'storage', label: 'Хранение' },
+    { key: 'acquiring', label: 'Эквайринг' },
+    { key: 'compensation', label: 'Платная приёмка' },
+    { key: 'deductions_other', label: 'Удержания' },
+    { key: 'deductions_ads', label: 'ВБ Продвижение' },
+    { key: 'advertising', label: 'Реклама (внешняя)' },
+    { key: 'refunds', label: 'Возвраты' },
+    { key: 'cogs', label: 'Себестоимость' },
+    { key: '_sep_totals', label: 'ИТОГО', separator: true },
+    { key: 'payout', label: 'К перечислению' },
+    { key: 'profit', label: 'Чистая прибыль', bold: true },
+  ]
+
+  const rows = isWb ? wbRows : ozonRows
+
+  // Date-based headers
+  const fmtS = (s: string) => { const p = s.split('-'); return p.length >= 3 ? `${p[2]}.${p[1]}` : s }
+  const curLabel = data.date_from && data.date_to ? `${fmtS(data.date_from)} — ${fmtS(data.date_to)}` : 'Текущий период'
+  const prevLabel = (data as any).prev_date_from && (data as any).prev_date_to ? `${fmtS((data as any).prev_date_from)} — ${fmtS((data as any).prev_date_to)}` : 'Пред. период'
 
   const tableBody = rows.map(r => {
+    if (r.separator) {
+      return [{ content: r.label, colSpan: 4, styles: { fontStyle: 'bold' as const, fillColor: [230, 236, 250] as RGB, textColor: C.textMuted, fontSize: 7 } }]
+    }
     const cur = comparison.current[r.key] ?? 0
     const prev = comparison.previous[r.key] ?? 0
     const delta = comparison.delta_pct[r.key] ?? 0
@@ -521,10 +550,14 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: st
     ]
   })
 
+  // Find indices of bold/profit rows for styling
+  const boldIndices = rows.reduce<number[]>((acc, r, i) => { if (r.bold) acc.push(i); return acc }, [])
+  const profitIndex = rows.findIndex(r => r.key === 'profit')
+
   autoTable(doc, {
     startY,
-    head: [['Показатель', 'Текущий период', 'Предыдущий период', 'Изменение']],
-    body: tableBody,
+    head: [['Показатель', curLabel, prevLabel, 'Изменение']],
+    body: tableBody as any,
     theme: 'grid',
     styles: {
       font: 'Roboto',
@@ -553,13 +586,12 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: st
       3: { halign: 'right', cellWidth: 28 },
     },
     didParseCell: (cellData) => {
-      const boldRows = [0, 3, 13]
-      if (cellData.section === 'body' && boldRows.includes(cellData.row.index)) {
+      if (cellData.section === 'body' && boldIndices.includes(cellData.row.index)) {
         cellData.cell.styles.fontStyle = 'bold'
         cellData.cell.styles.fillColor = [237, 242, 252]
         cellData.cell.styles.textColor = C.textDark
       }
-      if (cellData.section === 'body' && cellData.row.index === 13 && cellData.column.index === 1) {
+      if (cellData.section === 'body' && cellData.row.index === profitIndex && cellData.column.index === 1) {
         const val = comparison.current['profit'] ?? 0
         cellData.cell.styles.textColor = val >= 0 ? C.green : C.red
       }

@@ -64,6 +64,8 @@ export interface FinancesResponse {
   period: number
   date_from: string
   date_to: string
+  prev_date_from: string
+  prev_date_to: string
   group_by: string
   kpi: FinancesKpi
   breakdown: FinancesBreakdown
