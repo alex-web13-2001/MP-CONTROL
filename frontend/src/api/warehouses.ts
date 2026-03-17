@@ -238,6 +238,7 @@ export interface WarehouseAnalyticsKpi {
   critical_warehouses: number
   overstocked_warehouses: number
   period_days: number
+  cross_pct?: number
 }
 
 export interface WarehouseClusterServed {
@@ -245,6 +246,7 @@ export interface WarehouseClusterServed {
   orders: number
   qty: number
   share: number
+  is_local?: boolean
 }
 
 export interface WarehouseSkuDetail {
@@ -256,6 +258,10 @@ export interface WarehouseSkuDetail {
   daily_sales: number
   days_supply: number | null
   turnover_category: string
+  orders?: number
+  cross_orders?: number
+  cross_pct?: number
+  geography?: { cluster: string; orders: number; share: number; is_local: boolean }[]
 }
 
 export interface WarehouseDetail {
@@ -276,6 +282,9 @@ export interface WarehouseDetail {
   status: 'critical' | 'empty' | 'attention' | 'overstocked' | 'storage_fee' | 'ok'
   storage_risk: 'critical' | 'warning' | 'ok'
   estimated_storage_cost_day: number
+  cross_pct?: number
+  cross_orders?: number
+  local_orders?: number
   costs: {
     crossdocking: number
     crossdocking_cnt: number
@@ -409,11 +418,20 @@ export interface DistributionPlanWarehouse {
   total_orders_cd?: number
 }
 
+export interface OzonCrossMapRow {
+  warehouse: string
+  home_cluster: string
+  total_orders: number
+  clusters: Record<string, { count: number; is_local: boolean }>
+}
+
 export interface WarehouseAnalyticsResponse {
   kpi: WarehouseAnalyticsKpi
   summary: string
   costs: Record<string, CostItem>
   warehouses: WarehouseDetail[]
+  cross_map?: OzonCrossMapRow[]
+  cluster_list?: string[]
   recommendations: Recommendation[]
   storage_risk_skus: StorageRiskSku[]
   crossdocking_skus: CrossdockingSku[]
@@ -426,6 +444,89 @@ export async function getOzonWarehouseAnalytics(params: {
   period?: number
 }): Promise<WarehouseAnalyticsResponse> {
   const { data } = await apiClient.get<WarehouseAnalyticsResponse>('/warehouses/ozon/analytics', { params })
+  return data
+}
+
+// ── Ozon Overview Types ─────────────────────────────────────
+
+export interface OzonOverviewKpi {
+  total_warehouses: number
+  total_stock: number
+  total_sku: number
+  avg_turnover_days: number | null
+  total_expenses: number
+  total_logistics: number
+  total_crossdocking: number
+  total_storage: number
+  total_fbo: number
+  total_returns: number
+  total_acquiring: number
+  total_fines: number
+  fine_details: { reason: string; amount: number; count: number }[]
+  has_actual_storage: boolean
+  cross_pct: number
+  total_orders: number
+  period_days: number
+  out_of_stock_skus: { offer_id: string; name: string; stock: number; daily: number; days_left: number }[]
+  cross_problem_warehouses: { warehouse_name: string; cluster: string; cross_pct: number; cross_orders: number; total_orders: number }[]
+  prev: {
+    total_expenses: number
+    total_logistics: number
+    total_crossdocking: number
+    total_storage: number
+    total_orders: number
+  }
+}
+
+export interface OzonOverviewSku {
+  sku: number
+  offer_id: string
+  name: string
+  stock: number
+  orders: number
+  daily_sales: number
+  days_supply: number | null
+  cross_pct: number
+  cross_orders: number
+}
+
+export interface OzonOverviewWarehouse {
+  warehouse_name: string
+  cluster: string
+  status: 'critical' | 'empty' | 'attention' | 'overstocked' | 'ok'
+  stock: number
+  sku_count: number
+  orders: number
+  daily_sales: number
+  turnover_days: number | null
+  pct_of_total_sales: number
+  cross_pct: number
+  cross_orders: number
+  local_orders: number
+  storage_cost_actual: number
+  storage_cost_month: number
+  skus: OzonOverviewSku[]
+}
+
+export interface OzonOverviewCostItem {
+  operation_type: string
+  label: string
+  icon: string
+  count: number
+  amount: number
+}
+
+export interface OzonOverviewResponse {
+  kpi: OzonOverviewKpi
+  warehouses: OzonOverviewWarehouse[]
+  costs: OzonOverviewCostItem[]
+}
+
+export async function getOzonOverview(params: {
+  shop_id: number
+  period?: number
+}): Promise<OzonOverviewResponse> {
+  const { data } = await apiClient.get<OzonOverviewResponse>('/warehouses/ozon/overview', { params })
   return data
 }
 
@@ -1042,6 +1143,79 @@ export async function getOzonGeographyAIAnalysis(params: {
   force?: boolean
 }): Promise<GeoAIAnalysis> {
   const { data } = await apiClient.post<GeoAIAnalysis>('/warehouses/ozon/geography/ai-analysis', null, { params })
+  return data
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Ozon Cross-Logistics AI Analysis (Overview format)
+   ═══════════════════════════════════════════════════════════ */
+
+export interface OzonCrossAIProblemSkuRoute {
+  from_warehouse: string
+  to_cluster: string
+  orders: number
+}
+
+export interface OzonCrossAIProblemSku {
+  offer_id: string
+  name: string
+  total_orders: number
+  cross_orders: number
+  cross_pct: number
+  stock_distribution: { warehouse: string; stock: number }[]
+  top_cross_routes: OzonCrossAIProblemSkuRoute[]
+  recommendation: string
+}
+
+export interface OzonCrossAIWarehouseAssessment {
+  warehouse: string
+  cluster: string
+  status: 'critical' | 'warning' | 'ok'
+  total_orders: number
+  cross_orders: number
+  cross_pct: number
+  main_cross_destinations: string[]
+  assessment: string
+}
+
+export interface OzonCrossAIPriorityAction {
+  action: string
+  impact: string
+  link_to_supply: boolean
+}
+
+export interface OzonCrossAIAnalysis {
+  severity: 'critical' | 'warning' | 'ok'
+  diagnosis: string
+  key_metrics: {
+    cross_pct: number
+    cross_orders: number
+    total_orders: number
+    warehouses_with_cross: number
+    skus_with_high_cross: number
+  }
+  problem_skus: OzonCrossAIProblemSku[]
+  warehouse_assessments: OzonCrossAIWarehouseAssessment[]
+  priority_actions: OzonCrossAIPriorityAction[]
+  general_tips: string[]
+  period_days: number
+  analyzed_at: number
+  cached?: boolean
+  context?: {
+    total_orders: number
+    total_cross: number
+    cross_pct: number
+    warehouses_count: number
+    skus_analyzed: number
+  }
+}
+
+export async function getOzonCrossAIAnalysis(params: {
+  shop_id: number
+  period?: number
+  force?: boolean
+}): Promise<OzonCrossAIAnalysis> {
+  const { data } = await apiClient.post<OzonCrossAIAnalysis>('/warehouses/ozon/cross/ai-analysis', null, { params })
   return data
 }
 

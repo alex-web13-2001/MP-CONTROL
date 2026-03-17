@@ -7,10 +7,9 @@
  * - Expanded geography panel with progress bars
  * - Auto-recommendations for high-cross SKUs
  *
- * Ozon: redirects to /warehouses/analytics (crossdocking tab).
+ * Supports both WB and Ozon marketplaces.
  */
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { Navigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   ArrowRightLeft,
@@ -27,15 +26,25 @@ import {
   Truck,
   Target,
   PackageX,
+  Brain,
+  Sparkles,
+  X,
+  Lightbulb,
+  Zap,
+  ArrowRight,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import {
   getWBWarehouseAnalytics,
+  getOzonWarehouseAnalytics,
+  getOzonCrossAIAnalysis,
   type WBWarehouseAnalyticsResponse,
   type WBAnalyticsWarehouse,
   type WBAnalyticsSkuDetail,
+  type WarehouseAnalyticsResponse,
+  type OzonCrossAIAnalysis,
 } from '@/api/warehouses'
 
 /* ── Constants ── */
@@ -427,7 +436,7 @@ function CrossMapSection({ data }: { data: WBWarehouseAnalyticsResponse }) {
               <thead>
                 <tr className="border-b border-[hsl(var(--border)/0.3)]">
                   <th className="px-4 py-3 text-left font-bold text-[hsl(var(--muted-foreground))] sticky left-0 bg-[hsl(var(--card))] z-10 min-w-[160px]">
-                    Склад ↓ / Округ →
+                    Склад ↓ / Регион →
                   </th>
                   {okrugList.map((okrug) => (
                     <th key={okrug} className="px-3 py-3 text-center font-semibold text-[hsl(var(--muted-foreground))] text-[10px] uppercase tracking-wider min-w-[80px]">
@@ -894,6 +903,430 @@ function CrossSkeleton() {
    Main Page
    ═══════════════════════════════════════════════════════════ */
 
+/* ── Normalize Ozon analytics → WB cross-logistics format ── */
+function normalizeOzonToCrossData(ozon: WarehouseAnalyticsResponse): WBWarehouseAnalyticsResponse {
+  const warehouses: WBAnalyticsWarehouse[] = ozon.warehouses.map(w => ({
+    warehouse_name: w.warehouse_name,
+    okrug: w.cluster,
+    warehouse_type: 'normal' as const,
+    status: w.status === 'storage_fee' ? 'overstocked' as const : w.status as any,
+    stock: w.stock_free,
+    sku_count: w.sku_count,
+    orders: w.orders_period,
+    revenue: w.revenue_period,
+    daily_sales: w.daily_sales,
+    turnover_days: w.turnover_days,
+    pct_of_total_sales: w.pct_of_total_sales,
+    cross_pct: w.cross_pct ?? 0,
+    cross_orders: w.cross_orders ?? 0,
+    local_orders: w.local_orders ?? 0,
+    logistics_cost: Math.abs(w.costs.crossdocking) + Math.abs(w.costs.fbo_processing),
+    logistics_count: w.costs.crossdocking_cnt + w.costs.fbo_cnt,
+    storage_coef: 0,
+    storage_cost_actual: Math.abs(w.costs.storage),
+    storage_cost_month: 0,
+    acceptance_coef: 0,
+    acceptance: '—',
+    skus: w.skus.map(s => ({
+      nm_id: s.sku,
+      vendor_code: s.offer_id,
+      name: s.name,
+      stock: s.stock,
+      daily_sales: s.daily_sales,
+      days_supply: s.days_supply,
+      orders: s.orders ?? 0,
+      cross_orders: s.cross_orders ?? 0,
+      cross_pct: s.cross_pct ?? 0,
+      geography: (s.geography ?? []).map(g => ({
+        okrug: g.cluster,
+        orders: g.orders,
+        share: g.share,
+        is_local: g.is_local,
+      })),
+    })),
+    geography: w.clusters_served.map(cs => ({
+      okrug: cs.cluster,
+      orders: cs.orders,
+      share: cs.share ?? 0,
+      is_local: cs.is_local ?? false,
+    })),
+  }))
+
+  const cross_map = (ozon.cross_map ?? []).map(row => ({
+    warehouse: row.warehouse,
+    home_okrug: row.home_cluster,
+    total_orders: row.total_orders,
+    okrugs: Object.fromEntries(
+      Object.entries(row.clusters).map(([k, v]) => [k, v])
+    ),
+  }))
+
+  return {
+    kpi: {
+      total_warehouses: ozon.kpi.total_warehouses,
+      total_stock: ozon.kpi.total_stock,
+      total_sku: ozon.kpi.total_skus,
+      avg_turnover_days: ozon.kpi.avg_turnover_days,
+      total_logistics: Math.abs(ozon.kpi.total_crossdocking) + Math.abs(ozon.kpi.total_fbo_processing),
+      total_storage: Math.abs(ozon.kpi.total_storage_fee),
+      total_storage_actual: null,
+      total_penalties: 0,
+      cross_pct: ozon.kpi.cross_pct ?? 0,
+      total_orders: warehouses.reduce((s, w) => s + w.orders, 0),
+      period_days: ozon.kpi.period_days,
+      has_actual_storage: false,
+      forecast_30d: null,
+    },
+    warehouses,
+    cross_map,
+    okrug_list: ozon.cluster_list ?? [],
+    costs: [],
+    storage_skus: [],
+    recommendations: [],
+    period_days: ozon.kpi.period_days,
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Ozon Cross AI Analysis — Overview Banner + Modal
+   ═══════════════════════════════════════════════════════════ */
+function OzonCrossAIInsight({ shopId, period }: { shopId: number; period: number }) {
+  const [data, setData] = useState<OzonCrossAIAnalysis | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const fetchAI = useCallback(async (force = false) => {
+    if (force) setRefreshing(true)
+    else setLoading(true)
+    setError(null)
+    try {
+      const result = await getOzonCrossAIAnalysis({ shop_id: shopId, period, force })
+      setData(result)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Ошибка ИИ-анализа')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }, [shopId, period])
+
+  useEffect(() => { fetchAI() }, [fetchAI])
+  useEffect(() => {
+    if (modalOpen) {
+      document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = '' }
+    }
+  }, [modalOpen])
+
+  const severityConfig = {
+    critical: { bg: 'from-red-500/10 to-red-500/5', border: 'border-red-500/30', icon: '🔴', label: 'Критично', bannerBorder: 'border-red-500/25' },
+    warning:  { bg: 'from-amber-500/10 to-amber-500/5', border: 'border-amber-500/30', icon: '🟡', label: 'Внимание', bannerBorder: 'border-amber-500/25' },
+    ok:       { bg: 'from-emerald-500/10 to-emerald-500/5', border: 'border-emerald-500/30', icon: '🟢', label: 'Всё ОК', bannerBorder: 'border-emerald-500/25' },
+  }
+  const whStatusCfg = {
+    critical: { color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20', label: 'Критично' },
+    warning:  { color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20', label: 'Внимание' },
+    ok:       { color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20', label: 'Норма' },
+  }
+
+  if (loading && !data) {
+    return (
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 flex items-center justify-center">
+            <Brain className="h-4 w-4 text-white animate-pulse" />
+          </div>
+          <Skeleton className="h-4 w-48" />
+          <Skeleton className="h-4 w-24 ml-auto" />
+        </div>
+      </motion.div>
+    )
+  }
+
+  if (error) {
+    return (
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-red-500/20 bg-[hsl(var(--card))]">
+          <AlertTriangle className="h-4 w-4 text-red-400 shrink-0" />
+          <span className="text-[13px] text-[hsl(var(--muted-foreground))]">{error}</span>
+          <button onClick={() => fetchAI(true)} className="ml-auto text-[13px] font-medium text-[hsl(var(--primary))] hover:underline">Повторить</button>
+        </div>
+      </motion.div>
+    )
+  }
+
+  if (!data) return null
+
+  const sev = severityConfig[data.severity] || severityConfig.warning
+  const analyzedAtStr = data.analyzed_at
+    ? `Анализ от ${new Date(data.analyzed_at * 1000).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`
+    : null
+  const km = data.key_metrics || { cross_pct: 0, cross_orders: 0, total_orders: 0, warehouses_with_cross: 0, skus_with_high_cross: 0 }
+  const problemCount = data.problem_skus?.length || 0
+
+  return (
+    <>
+      {/* ═══ Compact Banner ═══ */}
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
+        <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${sev.bannerBorder} bg-[hsl(var(--card))] hover:bg-[hsl(var(--muted)/0.08)] transition-colors`}>
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 shadow-md shadow-purple-500/20 flex items-center justify-center shrink-0">
+            <Sparkles className="h-4 w-4 text-white" />
+          </div>
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            <span className="text-sm">{sev.icon}</span>
+            <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">{sev.label}</span>
+            <span className="text-[13px] text-[hsl(var(--muted-foreground))] truncate hidden sm:inline">
+              · {data.diagnosis?.substring(0, 100)}{(data.diagnosis?.length || 0) > 100 ? '…' : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {problemCount > 0 && (
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]">
+                {problemCount} SKU
+              </span>
+            )}
+            {analyzedAtStr && (
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] hidden md:inline">{analyzedAtStr}</span>
+            )}
+            <button onClick={(e) => { e.stopPropagation(); fetchAI(true) }} disabled={refreshing}
+              className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted)/0.3)] transition-colors" title="Обновить анализ">
+              <RefreshCw className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground))] ${refreshing ? 'animate-spin' : ''}`} />
+            </button>
+            <button onClick={() => setModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[hsl(var(--primary))] text-white text-[12px] font-semibold hover:opacity-90 transition-opacity">
+              <Brain className="h-3.5 w-3.5" />
+              Прочитать
+            </button>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* ═══ Full-screen Modal ═══ */}
+      <AnimatePresence>
+        {modalOpen && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }}
+            className="fixed inset-0 z-[100] flex items-start justify-center bg-black/60 backdrop-blur-sm"
+            onClick={() => setModalOpen(false)}>
+            <motion.div initial={{ opacity: 0, y: 40, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 40, scale: 0.97 }} transition={{ duration: 0.25, ease: 'easeOut' }}
+              className="w-full max-w-[1100px] max-h-[90vh] mt-[5vh] mx-4 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}>
+
+              {/* Header */}
+              <div className={`px-8 py-5 bg-gradient-to-r ${sev.bg} border-b border-[hsl(var(--border)/0.3)] shrink-0`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-12 w-12 rounded-xl bg-gradient-to-br from-purple-600 to-blue-500 shadow-lg shadow-purple-500/25 flex items-center justify-center">
+                      <Sparkles className="h-6 w-6 text-white" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-bold text-[hsl(var(--foreground))]">Обзор кросс-логистики</h3>
+                        <span className="text-sm">{sev.icon}</span>
+                        <span className="text-sm font-semibold text-[hsl(var(--muted-foreground))]">{sev.label}</span>
+                      </div>
+                      <p className="text-[15px] text-[hsl(var(--muted-foreground))] mt-1 leading-relaxed max-w-[700px]">{data.diagnosis}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setModalOpen(false)} className="p-2.5 rounded-xl hover:bg-[hsl(var(--muted)/0.3)] transition-colors">
+                    <X className="h-6 w-6 text-[hsl(var(--muted-foreground))]" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
+                {/* 4 metrics */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-5">
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <ArrowRightLeft className="h-5 w-5 text-red-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Кросс %</span>
+                    </div>
+                    <p className={`text-2xl font-bold ${km.cross_pct > 40 ? 'text-red-400' : km.cross_pct > 20 ? 'text-amber-400' : 'text-emerald-400'}`}>{km.cross_pct}%</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">{fmt(km.cross_orders)} из {fmt(km.total_orders)}</p>
+                  </div>
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Target className="h-5 w-5 text-amber-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Проблемных SKU</span>
+                    </div>
+                    <p className={`text-2xl font-bold ${km.skus_with_high_cross > 5 ? 'text-red-400' : km.skus_with_high_cross > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>{km.skus_with_high_cross}</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">кросс &gt;30%</p>
+                  </div>
+                  <div className="rounded-xl bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)] p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Warehouse className="h-5 w-5 text-purple-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.6)]">Складов с кроссом</span>
+                    </div>
+                    <p className="text-2xl font-bold text-[hsl(var(--foreground))]">{km.warehouses_with_cross}</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">из {data.context?.warehouses_count ?? '?'}</p>
+                  </div>
+                  <div className="rounded-xl bg-purple-500/5 border border-purple-500/20 p-5">
+                    <div className="flex items-center gap-2 mb-2">
+                      <AlertTriangle className="h-5 w-5 text-purple-400" />
+                      <span className="text-[13px] font-semibold uppercase tracking-wider text-purple-500/60">Проблемных складов</span>
+                    </div>
+                    <p className="text-2xl font-bold text-purple-400">{data.warehouse_assessments?.filter(w => w.status !== 'ok').length || 0}</p>
+                    <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">из {data.warehouse_assessments?.length || '?'}</p>
+                  </div>
+                </div>
+
+                {/* Priority Actions */}
+                {data.priority_actions?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Zap className="h-5 w-5" /> Что делать ({data.priority_actions.length})
+                    </h4>
+                    {data.priority_actions.map((pa, idx) => (
+                      <div key={idx} className="flex items-start gap-4 px-5 py-4 rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)]">
+                        <div className="flex items-center justify-center h-8 w-8 rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] font-bold text-sm shrink-0 mt-0.5">{idx + 1}</div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[15px] font-medium text-[hsl(var(--foreground))] leading-relaxed">{pa.action}</p>
+                          <p className="text-[13px] text-[hsl(var(--muted-foreground))] mt-1">{pa.impact}</p>
+                        </div>
+                        {pa.link_to_supply && (
+                          <a href="/warehouses/supply"
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[12px] font-semibold hover:bg-emerald-500/20 transition-colors shrink-0 whitespace-nowrap">
+                            <Package className="h-3.5 w-3.5" /> Поставки
+                          </a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Warehouse Assessments */}
+                {data.warehouse_assessments?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Warehouse className="h-5 w-5" /> Оценка складов ({data.warehouse_assessments.length})
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {data.warehouse_assessments.map((wa, idx) => {
+                        const ws = whStatusCfg[wa.status] || whStatusCfg.ok
+                        return (
+                          <div key={idx} className={`rounded-xl border ${ws.border} ${ws.bg} p-5`}>
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center gap-2">
+                                <Warehouse className="h-4 w-4 text-blue-400" />
+                                <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">{wa.warehouse}</span>
+                              </div>
+                              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${ws.bg} ${ws.color}`}>{ws.label}</span>
+                            </div>
+                            <div className="flex items-center gap-3 text-[12px] text-[hsl(var(--muted-foreground))] mb-2">
+                              <span>{wa.cluster}</span><span>·</span><span>{wa.total_orders} заказов</span><span>·</span>
+                              <span className={wa.cross_pct > 40 ? 'text-red-400 font-semibold' : wa.cross_pct > 20 ? 'text-amber-400 font-semibold' : ''}>{wa.cross_pct}% кросс</span>
+                            </div>
+                            {wa.main_cross_destinations?.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mb-2">
+                                {wa.main_cross_destinations.map((d, i) => (
+                                  <span key={i} className="text-[11px] px-1.5 py-0.5 rounded bg-red-500/8 text-red-400/80">{d}</span>
+                                ))}
+                              </div>
+                            )}
+                            <p className="text-[13px] text-[hsl(var(--foreground)/0.8)] leading-relaxed">{wa.assessment}</p>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Problem SKUs */}
+                {data.problem_skus?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Target className="h-5 w-5" /> Проблемные SKU ({data.problem_skus.length})
+                    </h4>
+                    {data.problem_skus.map((ps, idx) => (
+                      <div key={idx} className="rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)] overflow-hidden">
+                        <div className="px-6 py-5">
+                          <div className="flex items-start justify-between mb-3">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[16px] font-bold text-[hsl(var(--foreground))]">{ps.offer_id}</span>
+                                <span className="text-[14px] text-[hsl(var(--muted-foreground))] truncate">{ps.name}</span>
+                              </div>
+                              <div className="flex items-center gap-3 mt-1 text-[14px] text-[hsl(var(--muted-foreground)/0.6)]">
+                                <span>{ps.total_orders} заказов</span><span>·</span>
+                                <span className="text-red-400 font-semibold">{ps.cross_orders} кросс ({ps.cross_pct}%)</span>
+                              </div>
+                            </div>
+                            <span className={`text-[12px] font-bold px-3 py-1.5 rounded-full whitespace-nowrap ${
+                              ps.cross_pct > 60 ? 'bg-red-500/15 text-red-400' : ps.cross_pct > 30 ? 'bg-amber-500/15 text-amber-400' : 'bg-emerald-500/15 text-emerald-400'
+                            }`}>Кросс {ps.cross_pct}%</span>
+                          </div>
+                          {ps.stock_distribution?.length > 0 && (
+                            <div className="mb-3">
+                              <span className="text-[12px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Стоки:</span>
+                              <div className="flex flex-wrap gap-2 mt-1">
+                                {ps.stock_distribution.map((sd, i) => (
+                                  <span key={i} className={`text-[12px] px-2 py-0.5 rounded-md tabular-nums ${sd.stock === 0 ? 'bg-red-500/10 text-red-400' : 'bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground)/0.8)]'}`}>
+                                    {sd.warehouse}: <b>{sd.stock}</b>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {ps.top_cross_routes?.length > 0 && (
+                            <div className="mb-3">
+                              <span className="text-[12px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">Маршруты кросс:</span>
+                              <div className="flex flex-wrap gap-2 mt-1">
+                                {ps.top_cross_routes.map((rt, i) => (
+                                  <span key={i} className="text-[12px] px-2 py-1 rounded-md bg-red-500/8 text-[hsl(var(--foreground)/0.8)] inline-flex items-center gap-1">
+                                    {rt.from_warehouse} <ArrowRight className="h-3 w-3 text-red-400" /> {rt.to_cluster}
+                                    <span className="text-red-400 font-bold ml-0.5">{rt.orders}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {ps.recommendation && (
+                            <div className="flex items-start gap-3 px-4 py-3 rounded-lg bg-[hsl(var(--muted)/0.08)] border border-[hsl(var(--border)/0.3)]">
+                              <Lightbulb className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                              <p className="text-[14px] text-[hsl(var(--foreground)/0.85)] leading-relaxed">{ps.recommendation}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* General Tips */}
+                {data.general_tips?.length > 0 && (
+                  <div className="space-y-3">
+                    <h4 className="text-[15px] font-bold uppercase tracking-wider text-[hsl(var(--foreground))] flex items-center gap-2">
+                      <Lightbulb className="h-5 w-5" /> Рекомендации
+                    </h4>
+                    <div className="space-y-2">
+                      {data.general_tips.map((tip, i) => (
+                        <div key={i} className="flex items-start gap-3 px-5 py-3.5 rounded-xl border border-[hsl(var(--border)/0.3)] bg-[hsl(var(--muted)/0.04)]">
+                          <span className="text-sm mt-0.5">💡</span>
+                          <p className="text-[15px] text-[hsl(var(--foreground)/0.9)] leading-relaxed">{tip}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Footer */}
+                <div className="flex items-center justify-between text-[12px] text-[hsl(var(--muted-foreground)/0.4)] pt-4 border-t border-[hsl(var(--border)/0.1)]">
+                  <span>Gemini 2.5 Flash · Обзор кросс-логистики Ozon</span>
+                  <span>{analyzedAtStr} {data.cached ? '(кеш)' : ''}</span>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  )
+}
+
 export default function WarehousesCrossPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const isWB = currentShop?.marketplace === 'wildberries'
@@ -905,22 +1338,25 @@ export default function WarehousesCrossPage() {
   const [period, setPeriod] = useState(30)
 
   const fetchData = useCallback(async () => {
-    if (!currentShop || !isWB) return
+    if (!currentShop || (!isWB && !isOzon)) return
     setLoading(true)
     setError(null)
     try {
-      const result = await getWBWarehouseAnalytics({ shop_id: currentShop.id, period })
-      setData(result)
+      if (isWB) {
+        const result = await getWBWarehouseAnalytics({ shop_id: currentShop.id, period })
+        setData(result)
+      } else {
+        const ozonResult = await getOzonWarehouseAnalytics({ shop_id: currentShop.id, period })
+        setData(normalizeOzonToCrossData(ozonResult))
+      }
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
       setLoading(false)
     }
-  }, [currentShop, isWB, period])
+  }, [currentShop, isWB, isOzon, period])
 
-  useEffect(() => { if (isWB) fetchData() }, [fetchData, isWB])
-
-  if (isOzon) return <Navigate to="/warehouses/analytics" replace />
+  useEffect(() => { fetchData() }, [fetchData])
 
   const periodSelCls = (active: boolean) =>
     `px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all cursor-pointer ${
@@ -982,6 +1418,11 @@ export default function WarehousesCrossPage() {
         <>
           {/* KPI summary */}
           <CrossKpiCards data={data} />
+
+          {/* AI Analysis (Ozon only) */}
+          {isOzon && currentShop && (
+            <OzonCrossAIInsight shopId={currentShop.id} period={period} />
+          )}
 
           {/* Top Problem SKUs */}
           <TopProblemSkus data={data} />

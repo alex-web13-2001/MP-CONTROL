@@ -1,3 +1,183 @@
+## 2026-03-17 (v8)
+
+### fix(supply): WB — cross-drain re-balance, Excel нули, Риск перезатаривания
+
+**Backend** (`warehouses.py`):
+- **Cross-drain re-balance**: при поставке в региональный склад, `need` центрального склада уменьшается на долю кросс-drain, обслуживающую этот регион
+  - Для food/SGT: кросс-drain НЕ вычитается если в регионе нет food-совместимого склада (кросс неизбежен)
+  - Используется `wh_consumption` (фактические отгрузки warehouse→okrug) + `REGION_TO_WAREHOUSES` маппинг
+  - Re-balance срабатывает ПОСЛЕ начального расчёта need и ПЕРЕД global cap
+- **Excel «Поставка по складам»**: для food/SGT складов добавлены `paired_orders` и `paired_revenue` — WB бронирует продажи под базовым именем (Котовск), а не «Котовск: Питание»
+  - Новые поля в warehouse dict: `paired_orders`, `paired_revenue`
+  - `effective_orders = orders + paired_orders`, `effective_revenue = revenue + paired_revenue`
+- **Excel «Риск перезатаривания»**: 
+  - Фильтр: `turnover_days > target_days` вместо хардкода `> 45`
+  - `extra_cost` → `storage_per_month` (ежемесячная стоимость, не total за excess_days)
+  - Добавлено `excess_qty` — количество излишков в рекомендацию
+  - Колонка «Превышение»: `{excess_days} дн / ~{excess_qty} шт`
+
+---
+
+## 2026-03-17 (v7)
+
+### fix(supply): WB — global cap на поставки, устранение перезатарки
+
+**Backend** (`warehouses.py`):
+- Добавлен **global cap** в `_build_wb_supply_data()`: `sum(needs)` по складам не может превышать `boosted_daily × target_days × safety − total_stock`
+- Ранее каждый склад считал `need` независимо через `MAX(actual, regional, paired)`, и сумма превышала адекватный target в 2-3 раза
+- При превышении cap — пропорциональное уменьшение `need` каждого склада (распределение сохраняется)
+- Пример: товар 36 прод./мес, остаток 10 → было 104 шт, стало **30 шт** (без буста) / **71 шт** (с бустом ×2)
+
+---
+
+## 2026-03-17 (v6)
+
+### feat(warehouses): Ozon Overview — расширение расходов и диагностики
+
+**Backend** (`warehouses.py`):
+- Расширен `cost_type_map` — 9 новых типов расходов вместо 5:
+  - `OperationAgentDeliveredToCustomer` → Логистика (из `services_total`)
+  - `MarketplaceRedistributionOfAcquiringOperation` → Эквайринг (из `services_total`)
+  - `OperationItemReturn` + `OperationReturnGoodsFBSofRMS` → Возвраты (из `services_total`)
+  - `DefectFineShipmentDelay*`, `DefectFineCancellation` → Штрафы (из `amount`)
+  - `OperationMarketplaceServiceSupplyInboundCargoSurplus` → Излишки
+- SQL-запросы разделены на `amount`-based и `services_total`-based расходы
+- KPI: `total_expenses`, `total_logistics`, `total_returns`, `total_acquiring` с трендами prev period
+- `cross_problem_warehouses[]` — массив ВСЕХ складов с кросс > 30% (было: только worst)
+
+**Frontend** (`WarehousesOverviewPage.tsx`, `warehouses.ts`):
+- `OzonOverviewKpi` — расширен: `total_expenses`, `total_logistics`, `total_returns`, `total_acquiring`, `cross_problem_warehouses`
+- KPI: 6 карточек (Расходы, Логистика с ₽/заказ, Кроссдокинг, Хранение, Заказы, Кросс-кластер)
+- Диагностика кросс: список ВСЕХ проблемных складов (Пермь 100%, Дедовск 83%, УФА 78%...)
+- Новый блок «Возвраты/невыкупы» при total_returns > 1000₽
+- Расходы за период: + Логистика, Эквайринг, Возвраты
+
+---
+
+## 2026-03-17 (v5)
+
+### feat(warehouses): Ozon — раздел «Обзор» (по аналогии с WB)
+
+**Backend** (`warehouses.py`):
+- `GET /ozon/overview` — lightweight endpoint обзорного дашборда (~380 строк):
+  - Стоки по `fact_ozon_warehouse_stocks` (warehouse_name × offer_id)
+  - Заказы из `fact_ozon_orders` (текущий + предыдущий период для трендов)
+  - Расходы: кроссдокинг, хранение, FBO из `fact_ozon_transactions`
+  - Фактическое хранение из `fact_ozon_placement_cost` (приоритет над расчётным)
+  - Out-of-stock SKU: агрегация stock/daily по всем складам, top-10 с days_left < 14
+  - KPI с prev period: `total_crossdocking`, `total_storage`, `total_fbo`, `total_orders`, `cross_pct`
+  - Per-warehouse: status (critical/empty/attention/overstocked/ok), daily_sales, turnover_days, cross_pct, top-50 SKU
+  - Warehouse-to-cluster mapping (`WAREHOUSE_TO_CLUSTER`)
+
+**Frontend** (`WarehousesOverviewPage.tsx`, `warehouses.ts`):
+- Убран redirect Ozon → `/warehouses/analytics`
+- Ozon KPI: 5 карточек (Общие расходы, Кроссдокинг, Хранение, Заказы, Кросс-кластер) с трендами vs prev period
+- Диагностика: кросс-кластер (worst warehouse), затоваривание, out-of-stock, география
+- Расходы за период: анимированные бары (кроссдокинг, приёмка, хранение, недостача, ФБО)
+- `OzonWarehousesTable` (~150 строк): раскрываемые строки → per-SKU (offer_id, sku, stock, orders, days_supply, cross%)
+- API типы: `OzonOverviewKpi`, `OzonOverviewWarehouse`, `OzonOverviewSku`, `OzonOverviewCostItem`, `OzonOverviewResponse`
+- API функция `getOzonOverview()`
+
+---
+
+## 2026-03-17 (v4)
+
+### refactor(warehouses): Ozon — кросс-логистика ИИ V4: обзорный формат
+
+**Backend** (`warehouses.py`):
+- **Промпт переписан** → обзорный формат вместо конкретных qty рекомендаций
+- **Новые секции**: `warehouse_assessments` (оценка каждого склада с status critical/warning/ok, cross_pct, main_cross_destinations), `priority_actions` (текстовые действия с impact и link_to_supply)
+- **Убраны**: `transfers`, `supply_recommendations`, расчёты `cross_demand`, `deficit`, `cluster_stock`, каталог стоков по складам
+- **Упрощены данные промпта**: только кросс-маршруты per-SKU, стоки per-warehouse, общая статистика — без deficit-калькуляций
+- **ИИ запрещено**: считать конкретные qty, давать формулы перемещений, `cross_demand`, `deficit`
+
+**Frontend** (`WarehousesCrossPage.tsx`, `warehouses.ts`):
+- **Новые типы**: `OzonCrossAIWarehouseAssessment`, `OzonCrossAIPriorityAction`
+- **Удалены типы**: `OzonCrossAITransfer*`, `OzonCrossAISupply*`
+- **Модалка переписана**: 4 метрики + «Что делать» (нумерованные действия с кнопками «Поставки») + карточки складов (2-col grid, статус/кросс%/кросс-направления/оценка) + проблемные SKU + рекомендации
+- **Убраны**: таблицы перемещений и поставок с конкретными qty
+
+---
+
+## 2026-03-17 (v3)
+
+### fix(warehouses): Ozon — кросс-логистика ИИ V3: deficit-based рекомендации
+
+**Backend** (`warehouses.py`):
+- **Промпт V3**: формула `qty = cross_demand - stock_at_dest` вместо `MAX(daily_sales × 30, 40)`
+  - `cross_demand = ceil(cross_orders / period × 30 × 1.5)` — 30-дневная потребность с буфером 1.5
+  - `deficit = max(cross_demand - stock_at_dest, 0)` — реальный дефицит с учётом стока получателя
+- **Обогащение данных**: каждый кросс-маршрут теперь содержит `cross_demand`, `stock_at_dest`, `deficit`
+- **Построена `cluster_stock` карта** (sku → cluster → total_stock) для проверки стока получателя
+- **Убран минимум 40 шт** для поставок — qty = deficit (может быть 3, 5, 10 шт)
+- **Запрещён «добор» SKU** с 0 кросс-заказами в трансферы
+- **Результат**: 8 шт вместо 135, поставки 1-3 шт вместо 40, каждая рекомендация привязана к реальному кросс-спросу
+
+---
+
+## 2026-03-17 (v2)
+
+### fix(warehouses): Ozon — переписка промпта кросс-логистики ИИ (V2)
+
+**Backend** (`warehouses.py`):
+- Полная переработка промпта `_AI_PROMPT_OZON_CROSS` — 3-шаговый алгоритм:
+  1. **ПРОБЛЕМЫ** — SKU с cross_pct > 25% и ≥ 3 кросс-заказами
+  2. **ПЕРЕМЕЩЕНИЯ** — сборка трансферов ≥ 40 шт из полного КАТАЛОГА СТОКОВ
+  3. **ПОСТАВКИ** — для оставшихся проблем: qty = MAX(daily_sales × 30, 40)
+- Запрещены фразы: «например», «допустим», «альтернативно», «рассмотреть», «доберите до 40 единиц»
+- Каждый трансфер — конкретные offer_id, qty, stock_at_source, reason
+- **Product metadata** теперь запрашивается для ВСЕХ SKU со стоками (не только проблемных)
+- Новая секция промпта «КАТАЛОГ СТОКОВ ПО СКЛАДАМ» — полный инвентарь на каждом складе (offer_id, stock, daily_sales, buffer_days, метка [КРОСС])
+- HTTP таймаут увеличен с 60с до 120с для обработки увеличенного объёма данных
+- Результат: ИИ даёт конкретные трансферы (напр. «ДОМОДЕДОВО_РФЦ → САМАРА_РФЦ: АМ-КШ-ЯГ-0,4 — 41 шт»), конкретные поставки (напр. «Поставить 45 шт на Екатеринбург_РФЦ_НОВЫЙ»)
+
+---
+
+## 2026-03-17
+
+### feat(warehouses): Ozon — ИИ-анализ кросс-логистики (Gemini 2.5 Flash)
+
+**Backend** (`warehouses.py`):
+- `POST /ozon/cross/ai-analysis` — endpoint ИИ-анализа кросс-доставок Ozon
+  - Prompt `_AI_PROMPT_OZON_CROSS`: правило ≥40 ед. на перемещение (Ozon кратность), JSON-схема с transfers/problem_skus/supply_recommendations/general_tips
+  - 4 ClickHouse запроса: кросс-матрица (sku×warehouse×cluster_to), per-SKU cross summary, стоки по складам, общая статистика
+  - PostgreSQL: metadata товаров (offer_id, name)
+  - Кеширование 6ч в Redis, force-refresh параметр
+  - severity: critical/warning/ok, key_metrics, context
+
+**Frontend** (`WarehousesCrossPage.tsx`, `warehouses.ts`):
+- Компонент `OzonCrossAIInsight` (~450 строк):
+  - Баннер: severity 🔴/🟡/🟢 + diagnosis + badge перемещений + кнопка «Прочитать»
+  - Модалка: 4 метрики (кросс%, пробл. SKU, складов с кроссом, перемещений)
+  - Секции: Перемещения (from→to с таблицей товаров), Проблемные SKU (стоки+кросс маршруты), Поставки, Рекомендации
+- API типы: `OzonCrossAIAnalysis`, `OzonCrossAITransfer`, `OzonCrossAIProblemSku`, `OzonCrossAISupply`
+- API функция `getOzonCrossAIAnalysis()`
+- Отображается между KPI и TopProblemSkus (только для Ozon)
+
+---
+
+## 2026-03-16 (v7)
+
+### feat(warehouses): Ozon — кросс-логистика (по аналогии с WB)
+
+**Backend** (`warehouses.py`):
+- Query 3c: `sku × warehouse_name × cluster_to` из `fact_ozon_orders` для per-SKU cross анализа
+- Per-warehouse: `cross_pct`, `cross_orders`, `local_orders` — через `_get_cluster_for_warehouse`
+- Per-SKU: `cross_pct`, `cross_orders`, `geography[]` с `is_local` флагом
+- `cross_map`: матрица `warehouse × cluster` (аналог WB `okrug_list`/`cross_map`)
+- `cluster_list`: список всех кластеров для заголовков матрицы
+- KPI: `cross_pct` — общий % кросс-заказов по магазину
+- `clusters_served`: добавлен `is_local` флаг (свой кластер vs кросс)
+
+**Frontend** (`WarehousesCrossPage.tsx`, `warehouses.ts`):
+- Убран Ozon redirect → `/warehouses/analytics`
+- Adapter `normalizeOzonToCrossData()`: нормализует Ozon ответ в WB формат (cluster→okrug, sku→nm_id, offer_id→vendor_code, crossdocking→logistics_cost)
+- Все компоненты (KPI, кросс-карта, склады, SKU) работают для обоих маркетплейсов
+- Универсальный заголовок «Склад ↓ / Регион →»
+- API типы: `OzonCrossMapRow`, `cross_pct` в KPI, `cross_map`/`cluster_list` в response
+
+---
+
 ## 2026-03-16 (v6)
 
 ### feat(warehouses): Ozon — фактические данные хранения по SKU (Placement Cost API)

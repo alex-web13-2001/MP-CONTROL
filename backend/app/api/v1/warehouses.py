@@ -1817,14 +1817,25 @@ async def _build_wb_supply_data(
             wh_turnover = stock / effective_daily if effective_daily > 0 else 999
             ac = t.get("acceptance_coef", 0)
 
+            # Store paired data for Excel "Поставка по складам" (food/SGT fix)
+            paired_revenue = 0.0
+            if _FOOD_SUFFIX in wh:
+                base_name = wh.replace(_FOOD_SUFFIX, "").strip()
+                paired_revenue = wh_sales.get(base_name, {}).get("revenue", 0)
+            elif _SGT_SUFFIX in wh:
+                base_name = wh.replace(" СГТ", "").strip()
+                paired_revenue = wh_sales.get(base_name, {}).get("revenue", 0)
+
             warehouses.append({
                 "warehouse": wh,
                 "stock": stock,
                 "orders": orders,
+                "paired_orders": paired_orders,
                 "regional_orders": regional_orders,
                 "demand_regions": list(set(demand_regions)),
                 "daily_boosted": round(effective_daily_boosted, 2),
                 "revenue": revenue,
+                "paired_revenue": round(paired_revenue, 2),
                 "daily": round(wh_daily, 2),
                 "regional_daily": round(regional_daily, 2),
                 "need": need,
@@ -1898,6 +1909,94 @@ async def _build_wb_supply_data(
                 status = "critical"
             elif item_effective_days < target_days and status == "ok":
                 status = "attention"
+
+        # ── 5d. Cross-drain re-balance ──
+        # If we recommend supply to a regional warehouse, reduce
+        # central warehouse need by the cross-drain portion going
+        # to that region. This prevents double-counting demand.
+        #
+        # For food/SGT: only subtract cross-drain if the target region
+        # has a food-compatible warehouse. If not, the cross-drain
+        # is unavoidable and must stay on the central warehouse.
+        regional_wh_with_need = set()
+        for wh_item in warehouses:
+            if wh_item["need"] > 0:
+                wh_okrug = WAREHOUSE_TO_OKRUG.get(wh_item["warehouse"], "")
+                if wh_okrug:
+                    regional_wh_with_need.add(wh_okrug)
+
+        if regional_wh_with_need and nm_cross:
+            for wh_item in warehouses:
+                wh_name = wh_item["warehouse"]
+                home_okrug = WAREHOUSE_TO_OKRUG.get(wh_name, "")
+                if not home_okrug:
+                    continue
+                wh_okrug_data = nm_cross.get(wh_name, {})
+                if not wh_okrug_data:
+                    continue
+
+                # Calculate how much cross-drain goes to regions we're supplying
+                reducible_cross = 0
+                for dest_okrug, qty in wh_okrug_data.items():
+                    if dest_okrug == home_okrug:
+                        continue  # own region, not cross
+                    if dest_okrug not in regional_wh_with_need:
+                        continue  # not supplying that region
+                    # For food/SGT: check if target region has compatible warehouse
+                    if product_type in ("food", "sgt"):
+                        target_whs = REGION_TO_WAREHOUSES.get(dest_okrug, [])
+                        has_compatible = any(
+                            _filter_wh_for_type(tw, product_type)
+                            for tw in target_whs
+                        )
+                        if not has_compatible:
+                            continue  # no food/SGT warehouse → cross unavoidable
+                    reducible_cross += qty
+
+                if reducible_cross > 0 and wh_item["need"] > 0:
+                    # Reduce effective_daily by cross portion
+                    cross_daily_reduce = reducible_cross / max(sales_period, 1)
+                    current_eff_daily = wh_item["daily_boosted"]
+                    # New effective daily = max(own_demand, 0)
+                    new_eff_daily = max(0, current_eff_daily - cross_daily_reduce * boost)
+                    # Get combined stock for this warehouse
+                    wh_stock = wh_item["stock"]
+                    ps = 0
+                    if _FOOD_SUFFIX in wh_name or _SGT_SUFFIX in wh_name:
+                        bn = wh_name.replace(_FOOD_SUFFIX, "").replace(" СГТ", "").strip()
+                        ps = wh_stocks.get(bn, {}).get("qty", 0)
+                    elif product_type in ("food", "sgt"):
+                        fv = f"{wh_name}{_FOOD_SUFFIX}"
+                        sv = f"{wh_name} СГТ"
+                        ps = wh_stocks.get(fv, {}).get("qty", 0) + wh_stocks.get(sv, {}).get("qty", 0)
+                    cs = wh_stock + ps
+
+                    is_wrong = (
+                        (product_type == "food" and _FOOD_SUFFIX not in wh_name) or
+                        (product_type == "sgt" and _SGT_SUFFIX not in wh_name)
+                    )
+                    if not is_wrong:
+                        new_need = max(0, int(new_eff_daily * target_days * safety) - cs)
+                        wh_item["need"] = new_need
+                        wh_item["daily_boosted"] = round(new_eff_daily, 2)
+
+        # ── Global cap: prevent overstocking ──
+        # Sum of per-warehouse needs must not exceed the SKU-level target.
+        # Without this cap, regional demand + paired sales + actual sales
+        # can independently inflate each warehouse's need, resulting in
+        # a total 2-3× higher than what's actually required.
+        global_target = max(0, int(boosted_daily * target_days * safety) - total_stock)
+        raw_total_need = sum(w["need"] for w in warehouses)
+
+        if raw_total_need > global_target and raw_total_need > 0:
+            # Proportionally scale down each warehouse's need
+            scale = global_target / raw_total_need
+            remainder = 0.0
+            for w in warehouses:
+                if w["need"] > 0:
+                    exact = w["need"] * scale + remainder
+                    w["need"] = int(exact)
+                    remainder = exact - w["need"]
 
         total_need = sum(w["need"] for w in warehouses)
         storage_cost_month = sum(w["storage_per_month"] * w["stock"] for w in warehouses)
@@ -2240,15 +2339,19 @@ async def get_wb_supply_xlsx(
             wh_name = wh["warehouse"]
             if wh_name not in wh_groups:
                 wh_groups[wh_name] = []
+            # For food/SGT: include paired orders and revenue
+            # WB books sales under base name ("Котовск"), not "Котовск: Питание"
+            effective_orders = wh.get("orders", 0) + wh.get("paired_orders", 0)
+            effective_revenue = wh.get("revenue", 0) + wh.get("paired_revenue", 0)
             wh_groups[wh_name].append({
                 "vendor_code": item["vendor_code"],
                 "name": item["name"],
-                "orders": wh.get("orders", 0),
+                "orders": effective_orders,
                 "regional_orders": wh.get("regional_orders", 0),
                 "daily_boosted": wh.get("daily_boosted", 0),
                 "stock": wh["stock"],
                 "need": wh["need"],
-                "revenue": wh["revenue"],
+                "revenue": effective_revenue,
                 "product_type": item.get("product_type", ""),
             })
 
@@ -2363,20 +2466,25 @@ async def get_wb_supply_xlsx(
     ws4.freeze_panes = "A2"
     row4 = 2
 
-    risk_items = [it for it in items if it["turnover_days"] > 45 and it["total_stock"] > 0]
+    risk_items = [it for it in items if it["turnover_days"] > target_days and it["total_stock"] > 0]
     risk_items.sort(key=lambda x: x["turnover_days"], reverse=True)
 
     for item in risk_items:
         excess_days = max(0, item["turnover_days"] - target_days)
-        avg_storage_per_day = sum(
-            wh["storage_per_day"] * wh["stock"] for wh in item["warehouses"] if wh["stock"] > 0
+        # Ежемесячная стоимость хранения текущего stока
+        storage_per_month = sum(
+            wh["storage_per_day"] * wh["stock"] * 30 for wh in item["warehouses"] if wh["stock"] > 0
         )
-        extra_cost = avg_storage_per_day * excess_days if excess_days > 0 else 0
+        # Количество избыточных единиц
+        excess_qty = 0
+        if item["daily_avg"] > 0:
+            target_stock = int(item["daily_avg"] * target_days * safety)
+            excess_qty = max(0, item["total_stock"] - target_stock)
 
         if item["turnover_days"] > 90:
-            rec = f"Критично! {item['total_stock']} шт лежат более 90 дней. Рекомендуем распродажу или возврат товара!"
+            rec = f"Критично! {item['total_stock']} шт (излишек ~{excess_qty}) лежат более 90 дней. Рекомендуем распродажу или возврат товара!"
         elif item["turnover_days"] > target_days:
-            rec = f"Перезатарка: {excess_days:.0f} дней сверх горизонта поставки ({target_days} дн). Хранение платное. Ускорьте продажи или снизьте запас."
+            rec = f"Перезатарка: {excess_days:.0f} дней сверх горизонта ({target_days} дн), излишек ~{excess_qty} шт. Хранение платное. Ускорьте продажи или снизьте запас."
         else:
             rec = f"Внимание: оборачиваемость {item['turnover_days']:.0f} дн. Контролируйте запасы."
 
@@ -2388,9 +2496,9 @@ async def get_wb_supply_xlsx(
         ws4.cell(row4, 6, _fmt_turnover(item["turnover_days"])).font = (
             critical_font if item["turnover_days"] > 60 else warn_font
         )
-        ws4.cell(row4, 7, f"{excess_days:.0f} дн").number_format = num_fmt
-        ws4.cell(row4, 8, round(extra_cost, 2)).number_format = money_fmt
-        if extra_cost > 0:
+        ws4.cell(row4, 7, f"{excess_days:.0f} дн / ~{excess_qty} шт").number_format = num_fmt
+        ws4.cell(row4, 8, round(storage_per_month, 2)).number_format = money_fmt
+        if storage_per_month > 0:
             ws4.cell(row4, 8).font = critical_font
         ws4.cell(row4, 9, rec).font = Font(size=10)
         row4 += 1
@@ -2973,6 +3081,491 @@ async def trigger_ozon_placement_backfill(
     }
 
 
+# ══════════════════════════════════════════════════════════════
+# Ozon Warehouse Overview (lightweight dashboard)
+# ══════════════════════════════════════════════════════════════
+
+@router.get("/ozon/overview")
+async def ozon_warehouse_overview(
+    shop_id: int = Query(...),
+    period: int = Query(30, description="Period in days"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Overview dashboard for Ozon warehouses — similar to WB analytics overview.
+
+    Returns:
+    - KPI summary with trends (prev period comparison)
+    - Costs breakdown by operation type
+    - Per-warehouse breakdown with SKU details
+    - Out-of-stock alerts
+    """
+    from app.core.clickhouse import get_clickhouse_client
+
+    shop = await db.get(Shop, shop_id)
+    if not shop or shop.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    if shop.marketplace != "ozon":
+        raise HTTPException(status_code=400, detail="Only Ozon shops supported")
+
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    try:
+        # ── 1. Current stocks per warehouse ──────────────────────
+        stock_rows = ch.query("""
+            SELECT warehouse_name, sku, offer_id, product_name,
+                   free_to_sell, reserved
+            FROM fact_ozon_warehouse_stocks FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt = (SELECT max(dt) FROM fact_ozon_warehouse_stocks WHERE shop_id = {shop_id:UInt32})
+              AND warehouse_type = 'fbo'
+              AND free_to_sell > 0
+        """, parameters={"shop_id": shop_id}).result_rows
+
+        # Aggregate: wh → {skus: [{sku, offer_id, name, stock, reserved}], total}
+        wh_stocks: dict[str, dict] = {}
+        all_skus_set: set[int] = set()
+        for row in stock_rows:
+            wh, sku_id, offer_id, name, fts, reserved = row[0], int(row[1]), row[2], row[3], int(row[4]), int(row[5])
+            if wh not in wh_stocks:
+                wh_stocks[wh] = {"skus": {}, "total": 0}
+            wh_stocks[wh]["skus"][sku_id] = {
+                "sku": sku_id, "offer_id": offer_id, "name": name,
+                "stock": fts, "reserved": reserved,
+            }
+            wh_stocks[wh]["total"] += fts
+            all_skus_set.add(sku_id)
+
+        # ── 2. Orders per warehouse × cluster_to (current period) ──
+        order_rows = ch.query("""
+            SELECT warehouse_name, sku, cluster_to,
+                   count() AS orders, sum(quantity) AS qty
+            FROM fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled')
+            GROUP BY warehouse_name, sku, cluster_to
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+        # Aggregate orders
+        wh_orders: dict[str, dict] = {}  # wh → {total, skus: {sku → {orders, cluster_detail}}}
+        for row in order_rows:
+            wh, sku_id, cluster_to, orders, qty = row[0], int(row[1]), row[2], int(row[3]), int(row[4])
+            if wh not in wh_orders:
+                wh_orders[wh] = {"total": 0, "skus": {}, "cluster_detail": {}}
+            wh_orders[wh]["total"] += orders
+            # Per-SKU
+            sku_data = wh_orders[wh]["skus"].setdefault(sku_id, {"orders": 0, "cluster_detail": {}})
+            sku_data["orders"] += orders
+            if cluster_to:
+                sku_data["cluster_detail"][cluster_to] = sku_data["cluster_detail"].get(cluster_to, 0) + orders
+                wh_orders[wh]["cluster_detail"][cluster_to] = wh_orders[wh]["cluster_detail"].get(cluster_to, 0) + orders
+
+        total_orders = sum(d["total"] for d in wh_orders.values())
+
+        # ── 3. Previous period orders (for trend) ──────────────────
+        prev_d_start = d_start - timedelta(days=period)
+        prev_d_end = d_start
+        prev_total_orders = 0
+        try:
+            prev_rows = ch.query("""
+                SELECT count() FROM fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND order_date >= {prev_d_start:Date}
+                  AND order_date < {prev_d_end:Date}
+                  AND status NOT IN ('cancelled')
+            """, parameters={"shop_id": shop_id, "prev_d_start": prev_d_start, "prev_d_end": prev_d_end}).result_rows
+            prev_total_orders = int(prev_rows[0][0]) if prev_rows else 0
+        except Exception:
+            pass
+
+        # ── 4. Costs from fact_ozon_transactions ───────────────────
+        # Two groups: amount-based costs and services_total-based costs
+        # Logistics (OperationAgentDeliveredToCustomer) is in services_total (negative)
+        # while warehouse costs (crossdocking, storage) are in amount (negative)
+        amount_cost_types = {
+            "MarketplaceServiceItemCrossdocking": {"label": "Кроссдокинг", "icon": "arrow-right-left"},
+            "OperationMarketplaceServiceStorage": {"label": "Хранение", "icon": "boxes"},
+            "OperationMarketplaceSupplyAdditional": {"label": "Приёмка / FBO обработка", "icon": "package"},
+            "OperationMarketplaceSupplyExpirationDateProcessing": {"label": "ФБО обработка", "icon": "factory"},
+            "OperationMarketplaceServiceSupplyInboundCargoShortage": {"label": "Недостача", "icon": "alert"},
+            "OperationMarketplaceServiceSupplyInboundCargoSurplus": {"label": "Излишки", "icon": "package"},
+            "DefectFineShipmentDelayRated": {"label": "Штрафы отгрузка", "icon": "alert-triangle"},
+            "DefectFineShipmentDelay": {"label": "Штрафы отгрузка", "icon": "alert-triangle"},
+            "DefectFineCancellation": {"label": "Штрафы отмены", "icon": "alert-triangle"},
+        }
+        service_cost_types = {
+            "OperationAgentDeliveredToCustomer": {"label": "Логистика", "icon": "truck"},
+            "OperationItemReturn": {"label": "Возвраты", "icon": "undo"},
+            "OperationReturnGoodsFBSofRMS": {"label": "Возвраты FBS", "icon": "undo"},
+        }
+
+        all_cost_types = list(amount_cost_types.keys()) + list(service_cost_types.keys())
+        all_op_list_sql = ", ".join(f"'{op}'" for op in all_cost_types)
+
+        costs_rows = ch.query(f"""
+            SELECT operation_type,
+                   count() AS cnt,
+                   sum(abs(amount)) AS total_amount,
+                   sum(abs(services_total)) AS total_services
+            FROM fact_ozon_transactions FINAL
+            WHERE shop_id = {{shop_id:UInt32}}
+              AND operation_date >= {{d_start:Date}}
+              AND operation_type IN ({all_op_list_sql})
+            GROUP BY operation_type
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+        costs_by_type: dict[str, dict] = {}
+        for row in costs_rows:
+            op, cnt, total_amount, total_services = row[0], int(row[1]), float(row[2]), float(row[3])
+            # For logistics/acquiring/returns: cost is in services_total
+            # For warehouse costs: cost is in amount
+            if op in service_cost_types:
+                cost_val = total_services
+            else:
+                cost_val = total_amount
+            costs_by_type[op] = {"count": cnt, "amount": round(cost_val, 2)}
+
+        # Previous period costs
+        prev_costs_by_type: dict[str, dict] = {}
+        try:
+            prev_costs_rows = ch.query(f"""
+                SELECT operation_type,
+                       count() AS cnt,
+                       sum(abs(amount)) AS total_amount,
+                       sum(abs(services_total)) AS total_services
+                FROM fact_ozon_transactions FINAL
+                WHERE shop_id = {{shop_id:UInt32}}
+                  AND operation_date >= {{prev_d_start:Date}}
+                  AND operation_date < {{prev_d_end:Date}}
+                  AND operation_type IN ({all_op_list_sql})
+                GROUP BY operation_type
+            """, parameters={"shop_id": shop_id, "prev_d_start": prev_d_start, "prev_d_end": prev_d_end}).result_rows
+            for row in prev_costs_rows:
+                op = row[0]
+                if op in service_cost_types:
+                    cost_val = float(row[3])
+                else:
+                    cost_val = float(row[2])
+                prev_costs_by_type[op] = {"count": int(row[1]), "amount": round(cost_val, 2)}
+        except Exception:
+            pass
+
+        # ── 5. Actual storage from fact_ozon_placement_cost ────────
+        actual_storage_total = 0.0
+        actual_storage_by_wh: dict[str, float] = {}
+        has_actual_storage = False
+        try:
+            ps_rows = ch.query("""
+                SELECT warehouse_name, sum(total_cost) AS cost
+                FROM fact_ozon_placement_cost FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND date >= {d_start:Date}
+                GROUP BY warehouse_name
+                HAVING cost > 0
+            """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+            for r in ps_rows:
+                wh_name, cost = r[0], float(r[1])
+                actual_storage_by_wh[wh_name] = cost
+                actual_storage_total += cost
+            if actual_storage_by_wh:
+                has_actual_storage = True
+        except Exception as e:
+            logger.warning("Ozon overview: actual storage query failed: %s", e)
+
+        # Previous period storage
+        prev_actual_storage = 0.0
+        try:
+            if has_actual_storage:
+                prev_ps_rows = ch.query("""
+                    SELECT sum(total_cost)
+                    FROM fact_ozon_placement_cost FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND date >= {prev_d_start:Date}
+                      AND date < {prev_d_end:Date}
+                """, parameters={"shop_id": shop_id, "prev_d_start": prev_d_start, "prev_d_end": prev_d_end}).result_rows
+                prev_actual_storage = float(prev_ps_rows[0][0]) if prev_ps_rows and prev_ps_rows[0][0] else 0.0
+        except Exception:
+            pass
+
+        # ── 6. Build warehouse list ───────────────────────────────
+        all_wh_names = set(wh_stocks.keys()) | set(wh_orders.keys())
+        month_mult = 30 / period if period > 0 else 1.0
+
+        warehouses_result = []
+        total_cross_orders = 0
+
+        for wh_name in sorted(all_wh_names):
+            stk = wh_stocks.get(wh_name, {"skus": {}, "total": 0})
+            ords = wh_orders.get(wh_name, {"total": 0, "skus": {}, "cluster_detail": {}})
+
+            stock_total = stk["total"]
+            orders_total = ords["total"]
+            daily_sales = orders_total / period if period > 0 else 0
+            turnover = stock_total / daily_sales if daily_sales > 0 else None
+
+            # Cluster from WAREHOUSE_TO_CLUSTER
+            wh_cluster = WAREHOUSE_TO_CLUSTER.get(wh_name, "")
+
+            # Cross analysis: orders shipped to different clusters
+            cluster_detail = ords.get("cluster_detail", {})
+            local_orders = cluster_detail.get(wh_cluster, 0) if wh_cluster else 0
+            cross_orders = orders_total - local_orders
+            cross_pct = round(cross_orders / orders_total * 100, 1) if orders_total > 0 else 0
+            total_cross_orders += cross_orders
+
+            # Status
+            if stock_total == 0 and orders_total > 0:
+                wh_status = "empty"
+            elif turnover is not None and turnover < 14:
+                wh_status = "critical"
+            elif turnover is not None and turnover < 30:
+                wh_status = "attention"
+            elif turnover is not None and turnover > 120:
+                wh_status = "overstocked"
+            else:
+                wh_status = "ok"
+
+            # Storage cost
+            cd_cost = costs_by_type.get("MarketplaceServiceItemCrossdocking", {}).get("amount", 0)
+            storage_cost_actual = actual_storage_by_wh.get(wh_name, 0)
+            storage_cost_month = round(storage_cost_actual * month_mult, 2) if storage_cost_actual > 0 else 0
+
+            # Per-SKU details
+            skus_detail = []
+            sku_orders_data = ords.get("skus", {})
+            for sku_id, sku_info in stk.get("skus", {}).items():
+                sku_ords_data = sku_orders_data.get(sku_id, {"orders": 0, "cluster_detail": {}})
+                sku_total_orders = sku_ords_data["orders"]
+                sku_daily = sku_total_orders / period if period > 0 else 0
+                sku_days = sku_info["stock"] / sku_daily if sku_daily > 0 else None
+
+                # Per-SKU cross analysis
+                sku_cluster_detail = sku_ords_data.get("cluster_detail", {})
+                sku_local = sku_cluster_detail.get(wh_cluster, 0) if wh_cluster else 0
+                sku_cross = sku_total_orders - sku_local
+                sku_cross_pct = round(sku_cross / sku_total_orders * 100, 1) if sku_total_orders > 0 else 0
+
+                skus_detail.append({
+                    "sku": sku_id,
+                    "offer_id": sku_info["offer_id"],
+                    "name": sku_info["name"],
+                    "stock": sku_info["stock"],
+                    "orders": sku_total_orders,
+                    "daily_sales": round(sku_daily, 2),
+                    "days_supply": round(sku_days, 1) if sku_days is not None else None,
+                    "cross_pct": sku_cross_pct,
+                    "cross_orders": sku_cross,
+                })
+            skus_detail.sort(key=lambda x: x["orders"], reverse=True)
+
+            warehouses_result.append({
+                "warehouse_name": wh_name,
+                "cluster": wh_cluster,
+                "status": wh_status,
+                "stock": stock_total,
+                "sku_count": len(stk.get("skus", {})),
+                "orders": orders_total,
+                "daily_sales": round(daily_sales, 2),
+                "turnover_days": round(turnover, 1) if turnover is not None else None,
+                "pct_of_total_sales": round(orders_total / total_orders * 100, 1) if total_orders > 0 else 0,
+                "cross_pct": cross_pct,
+                "cross_orders": cross_orders,
+                "local_orders": local_orders,
+                "storage_cost_actual": round(storage_cost_actual, 2),
+                "storage_cost_month": storage_cost_month,
+                "skus": skus_detail[:50],
+            })
+
+        warehouses_result.sort(key=lambda x: x["orders"], reverse=True)
+
+        # ── 7. Costs summary (grouped, WB-compatible format) ─────
+        # Group fines into one line, returns into one line
+        fine_ops = ["DefectFineShipmentDelayRated", "DefectFineShipmentDelay", "DefectFineCancellation"]
+        return_ops = ["OperationItemReturn", "OperationReturnGoodsFBSofRMS"]
+
+        # Aggregate fines
+        fine_total = 0
+        fine_count = 0
+        fine_details = []
+        for op in fine_ops:
+            d = costs_by_type.get(op)
+            if d and d["amount"] > 0:
+                fine_total += d["amount"]
+                fine_count += d["count"]
+                # Detail label
+                detail_label = amount_cost_types.get(op, {}).get("label", op)
+                fine_details.append({"reason": detail_label, "amount": round(d["amount"], 2), "count": d["count"]})
+
+        # Aggregate returns
+        returns_total = 0
+        returns_count = 0
+        for op in return_ops:
+            d = costs_by_type.get(op)
+            if d and d["amount"] > 0:
+                returns_total += d["amount"]
+                returns_count += d["count"]
+
+        # Build ordered costs list (WB-compatible: label, icon, count, amount)
+        # Order: Логистика → Кроссдокинг → Хранение → Приёмка → Возвраты → Штрафы → остальные
+        ordered_costs = [
+            ("OperationAgentDeliveredToCustomer", "Логистика", "truck"),
+            ("MarketplaceServiceItemCrossdocking", "Кроссдокинг", "arrow-right-left"),
+            ("_storage", "Хранение", "factory"),
+            ("OperationMarketplaceSupplyAdditional", "Приёмка", "package"),
+            ("_returns", "Возвраты", "ban"),
+            ("_fines", "Штрафы", "alert"),
+            ("OperationMarketplaceServiceSupplyInboundCargoShortage", "Недостача", "alert"),
+            ("OperationMarketplaceServiceSupplyInboundCargoSurplus", "Излишки", "package"),
+            ("OperationMarketplaceSupplyExpirationDateProcessing", "ФБО обработка", "factory"),
+        ]
+
+        costs_summary = []
+        for op_key, label, icon in ordered_costs:
+            if op_key == "_storage":
+                # Storage: prefer actual, fallback to transaction
+                if has_actual_storage and actual_storage_total > 0:
+                    costs_summary.append({
+                        "operation_type": "actual_storage",
+                        "label": "Хранение (факт)",
+                        "icon": icon, "count": 0,
+                        "amount": round(actual_storage_total, 2),
+                    })
+                else:
+                    d = costs_by_type.get("OperationMarketplaceServiceStorage")
+                    if d and d["amount"] > 0:
+                        costs_summary.append({
+                            "operation_type": "OperationMarketplaceServiceStorage",
+                            "label": "Хранение", "icon": icon,
+                            "count": d["count"], "amount": d["amount"],
+                        })
+            elif op_key == "_returns":
+                if returns_total > 0:
+                    costs_summary.append({
+                        "operation_type": "returns_grouped",
+                        "label": label, "icon": icon,
+                        "count": returns_count, "amount": round(returns_total, 2),
+                    })
+            elif op_key == "_fines":
+                if fine_total > 0:
+                    costs_summary.append({
+                        "operation_type": "fines_grouped",
+                        "label": label, "icon": icon,
+                        "count": fine_count, "amount": round(fine_total, 2),
+                    })
+            else:
+                d = costs_by_type.get(op_key)
+                if d and d["amount"] > 0:
+                    costs_summary.append({
+                        "operation_type": op_key,
+                        "label": label, "icon": icon,
+                        "count": d["count"], "amount": d["amount"],
+                    })
+
+        # ── 8. Out-of-stock aggregation ───────────────────────────
+        # Aggregate stock + daily sales globally per SKU
+        global_sku_agg: dict[int, dict] = {}
+        for wh_name, stk_data in wh_stocks.items():
+            sku_orders_data = wh_orders.get(wh_name, {"skus": {}}).get("skus", {})
+            for sku_id, sku_info in stk_data["skus"].items():
+                if sku_id not in global_sku_agg:
+                    global_sku_agg[sku_id] = {
+                        "sku": sku_id, "offer_id": sku_info["offer_id"],
+                        "name": sku_info["name"], "stock": 0, "orders": 0,
+                    }
+                global_sku_agg[sku_id]["stock"] += sku_info["stock"]
+                global_sku_agg[sku_id]["orders"] += sku_orders_data.get(sku_id, {"orders": 0})["orders"]
+
+        out_of_stock_skus = []
+        for agg in global_sku_agg.values():
+            daily = agg["orders"] / period if period > 0 else 0
+            if daily > 0 and agg["stock"] > 0 and (agg["stock"] / daily) < 14:
+                days_left = round(agg["stock"] / daily)
+                out_of_stock_skus.append({
+                    "offer_id": agg["offer_id"],
+                    "name": agg["name"],
+                    "stock": agg["stock"],
+                    "daily": round(daily, 1),
+                    "days_left": days_left,
+                })
+        out_of_stock_skus.sort(key=lambda x: x["days_left"])
+        out_of_stock_skus = out_of_stock_skus[:10]
+
+        # ── 9. KPI ────────────────────────────────────────────────
+        total_stock = sum(w["stock"] for w in warehouses_result)
+        total_daily = sum(w["daily_sales"] for w in warehouses_result)
+        avg_turnover = total_stock / total_daily if total_daily > 0 else None
+        cross_pct_global = round(total_cross_orders / total_orders * 100, 1) if total_orders > 0 else 0
+
+        total_logistics = costs_by_type.get("OperationAgentDeliveredToCustomer", {}).get("amount", 0)
+        total_crossdocking = costs_by_type.get("MarketplaceServiceItemCrossdocking", {}).get("amount", 0)
+        total_storage = actual_storage_total if has_actual_storage else costs_by_type.get("OperationMarketplaceServiceStorage", {}).get("amount", 0)
+        total_fbo = costs_by_type.get("OperationMarketplaceSupplyAdditional", {}).get("amount", 0)
+        total_fines = round(fine_total, 2)  # grouped from fine_ops above
+
+        prev_logistics = prev_costs_by_type.get("OperationAgentDeliveredToCustomer", {}).get("amount", 0)
+        prev_crossdocking = prev_costs_by_type.get("MarketplaceServiceItemCrossdocking", {}).get("amount", 0)
+        prev_storage_tx = prev_costs_by_type.get("OperationMarketplaceServiceStorage", {}).get("amount", 0)
+        prev_storage = prev_actual_storage if has_actual_storage else prev_storage_tx
+
+        # Total expenses = sum of all non-revenue items (excluding acquiring — not logistics-related)
+        total_expenses = total_logistics + total_crossdocking + total_storage + total_fbo + returns_total + fine_total
+        prev_expenses = prev_logistics + prev_crossdocking + prev_storage
+
+        # Cross-cluster: list ALL problem warehouses (cross_pct > 30%)
+        cross_problem_warehouses = []
+        for w in warehouses_result:
+            if w["orders"] > 0 and w["cross_pct"] > 30:
+                cross_problem_warehouses.append({
+                    "warehouse_name": w["warehouse_name"],
+                    "cluster": w["cluster"],
+                    "cross_pct": w["cross_pct"],
+                    "cross_orders": w["cross_orders"],
+                    "total_orders": w["orders"],
+                })
+        cross_problem_warehouses.sort(key=lambda x: x["cross_pct"], reverse=True)
+
+        kpi = {
+            "total_warehouses": len([w for w in warehouses_result if w["stock"] > 0 or w["orders"] > 0]),
+            "total_stock": total_stock,
+            "total_sku": len(all_skus_set),
+            "avg_turnover_days": round(avg_turnover, 1) if avg_turnover is not None else None,
+            "total_expenses": round(total_expenses, 2),
+            "total_logistics": round(total_logistics, 2),
+            "total_crossdocking": round(total_crossdocking, 2),
+            "total_storage": round(total_storage, 2),
+            "total_fbo": round(total_fbo, 2),
+            "total_returns": round(returns_total, 2),
+            "total_fines": total_fines,
+            "fine_details": fine_details,
+            "has_actual_storage": has_actual_storage,
+            "cross_pct": cross_pct_global,
+            "total_orders": total_orders,
+            "period_days": period,
+            "out_of_stock_skus": out_of_stock_skus,
+            "cross_problem_warehouses": cross_problem_warehouses,
+            "prev": {
+                "total_expenses": round(prev_expenses, 2),
+                "total_logistics": round(prev_logistics, 2),
+                "total_crossdocking": round(prev_crossdocking, 2),
+                "total_storage": round(prev_storage, 2),
+                "total_orders": prev_total_orders,
+            },
+        }
+
+        return {
+            "kpi": kpi,
+            "warehouses": warehouses_result,
+            "costs": costs_summary,
+        }
+
+    finally:
+        ch.close()
+
+
 @router.get("/ozon/analytics")
 async def ozon_warehouse_analytics(
     shop_id: int = Query(...),
@@ -3069,6 +3662,26 @@ async def ozon_warehouse_analytics(
             GROUP BY sku, cluster_to
             ORDER BY sku, qty DESC
         """, parameters={"shop_id": shop_id, "period": period})
+
+        # ── 3c. Per-SKU per-warehouse geography (for cross analysis) ──
+        sku_wh_geo_data = ch.query("""
+            SELECT warehouse_name, sku, cluster_to,
+                   count() as orders, sum(quantity) as qty
+            FROM fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= today() - {period:UInt32}
+              AND status NOT IN ('cancelled')
+              AND cluster_to != ''
+            GROUP BY warehouse_name, sku, cluster_to
+        """, parameters={"shop_id": shop_id, "period": period})
+
+        # Index: wh → sku → {total_orders, cluster_detail: {cluster → count}}
+        wh_sku_geo: dict[str, dict[int, dict]] = {}
+        for row in sku_wh_geo_data.result_rows:
+            wh, sku_id, cluster, orders, qty = row[0], int(row[1]), row[2], int(row[3]), int(row[4])
+            entry = wh_sku_geo.setdefault(wh, {}).setdefault(sku_id, {"orders": 0, "cluster_detail": {}})
+            entry["orders"] += orders
+            entry["cluster_detail"][cluster] = entry["cluster_detail"].get(cluster, 0) + orders
 
         # ── 4. Logistics costs from transactions ─────────────────
         costs_data = ch.query("""
@@ -3910,8 +4523,9 @@ async def ozon_warehouse_analytics(
             total_orders_qty = sum(o.get("qty", 0) for o in orders_by_wh.values())
             pct_of_sales = round(order_qty / total_orders_qty * 100, 1) if total_orders_qty > 0 else 0
 
-            # SKU details
+            # SKU details (enriched with cross analysis)
             sku_details = []
+            wh_sku_geo_data = wh_sku_geo.get(wh_name, {})
             for i in range(len(skus)):
                 sku_id = int(skus[i])
                 sku_free = int(frees[i])
@@ -3922,6 +4536,24 @@ async def ozon_warehouse_analytics(
                 # Fallback: calculate from orders if no turnover data
                 if sku_daily == 0 and daily_sales > 0 and sku_count > 0:
                     sku_daily = daily_sales / sku_count  # rough approximation
+
+                # Per-SKU cross geography from this warehouse
+                sku_geo_entry = wh_sku_geo_data.get(sku_id, {"orders": 0, "cluster_detail": {}})
+                sku_total_orders = sku_geo_entry["orders"]
+                sku_cluster_detail = sku_geo_entry["cluster_detail"]
+                sku_local_orders = sku_cluster_detail.get(cluster, 0)
+                sku_cross_orders = sku_total_orders - sku_local_orders
+                sku_cross_pct = round(sku_cross_orders / sku_total_orders * 100, 1) if sku_total_orders > 0 else 0
+
+                sku_geo_list = []
+                for cl_name, cl_count in sorted(sku_cluster_detail.items(), key=lambda x: x[1], reverse=True):
+                    cl_share = round(cl_count / sku_total_orders * 100, 1) if sku_total_orders > 0 else 0
+                    sku_geo_list.append({
+                        "cluster": cl_name,
+                        "orders": cl_count,
+                        "share": cl_share,
+                        "is_local": cl_name == cluster,
+                    })
 
                 sku_details.append({
                     "sku": sku_id,
@@ -3934,21 +4566,37 @@ async def ozon_warehouse_analytics(
                         round(sku_free / sku_daily, 0) if sku_daily > 0 else None
                     ),
                     "turnover_category": sku_turnover.get("turnover_category", ""),
+                    "orders": sku_total_orders,
+                    "cross_orders": sku_cross_orders,
+                    "cross_pct": sku_cross_pct,
+                    "geography": sku_geo_list,
                 })
 
-            # Sort SKU details: highest stock first
-            sku_details.sort(key=lambda x: x["stock"], reverse=True)
+            # Sort SKU details: highest orders first (for cross analysis)
+            sku_details.sort(key=lambda x: x.get("orders", 0), reverse=True)
 
-            # Geography with shares
+            # Geography with shares + cross analysis
+            geo_total_orders = sum(g["orders"] for g in geo) if geo else 0
             geo_total = sum(g["qty"] for g in geo) if geo else 0
+            wh_local_orders = 0
             clusters_served = []
             for g in sorted(geo, key=lambda x: x["qty"], reverse=True)[:10]:
+                is_local_cluster = g["cluster"] == cluster
+                if is_local_cluster:
+                    wh_local_orders += g["orders"]
                 clusters_served.append({
                     "cluster": g["cluster"],
                     "orders": g["orders"],
                     "qty": g["qty"],
                     "share": round(g["qty"] / geo_total * 100, 1) if geo_total > 0 else 0,
+                    "is_local": is_local_cluster,
                 })
+            # Also count local from non-top-10 for accuracy
+            for g in geo:
+                if g["cluster"] == cluster and not any(c["cluster"] == g["cluster"] for c in clusters_served):
+                    wh_local_orders += g["orders"]
+            wh_cross_orders = geo_total_orders - wh_local_orders
+            wh_cross_pct = round(wh_cross_orders / geo_total_orders * 100, 1) if geo_total_orders > 0 else 0
 
             # Per-warehouse costs
             wh_costs = costs_by_wh.get(wh_name, {})
@@ -3971,6 +4619,9 @@ async def ozon_warehouse_analytics(
                 "status": wh_status,
                 "storage_risk": storage_risk,
                 "estimated_storage_cost_day": round(estimated_storage_cost, 2),
+                "cross_pct": wh_cross_pct,
+                "cross_orders": wh_cross_orders,
+                "local_orders": wh_local_orders,
                 "costs": {
                     "crossdocking": round(wh_costs.get("crossdocking", 0), 2),
                     "crossdocking_cnt": wh_costs.get("crossdocking_cnt", 0),
@@ -4006,6 +4657,40 @@ async def ozon_warehouse_analytics(
 
         critical_count = sum(1 for w in warehouses if w["status"] in ("critical", "empty"))
         overstocked_count = sum(1 for w in warehouses if w["status"] in ("overstocked", "storage_fee"))
+
+        # ── Cross-map: warehouse × cluster_to matrix ─────────────
+        _all_clusters_seen: set[str] = set()
+        total_cross_orders_all = 0
+        total_orders_all = 0
+        for w in warehouses:
+            total_cross_orders_all += w.get("cross_orders", 0)
+            total_orders_all += w.get("cross_orders", 0) + w.get("local_orders", 0)
+            for cs in w.get("clusters_served", []):
+                _all_clusters_seen.add(cs["cluster"])
+
+        cluster_list = sorted(_all_clusters_seen)
+        overall_cross_pct = round(total_cross_orders_all / total_orders_all * 100, 1) if total_orders_all > 0 else 0
+
+        cross_map = []
+        for wh_data in warehouses:
+            wh_geo_orders = wh_data.get("cross_orders", 0) + wh_data.get("local_orders", 0)
+            if wh_geo_orders == 0:
+                continue
+            clusters_detail = {cs["cluster"]: cs["orders"] for cs in wh_data.get("clusters_served", [])}
+            row_data = {
+                "warehouse": wh_data["warehouse_name"],
+                "home_cluster": wh_data["cluster"],
+                "total_orders": wh_geo_orders,
+                "clusters": {},
+            }
+            for cl_name in cluster_list:
+                cnt = clusters_detail.get(cl_name, 0)
+                is_local = cl_name == wh_data["cluster"]
+                row_data["clusters"][cl_name] = {
+                    "count": cnt,
+                    "is_local": is_local,
+                }
+            cross_map.append(row_data)
 
         # ── Generate recommendations ─────────────────────────────
         recommendations = []
@@ -4340,10 +5025,13 @@ async def ozon_warehouse_analytics(
                 "critical_warehouses": critical_count,
                 "overstocked_warehouses": overstocked_count,
                 "period_days": period,
+                "cross_pct": overall_cross_pct,
             },
             "summary": summary,
             "costs": costs_summary,
             "warehouses": warehouses,
+            "cross_map": cross_map,
+            "cluster_list": cluster_list,
             "recommendations": recommendations,
             "storage_risk_skus": storage_risk_skus,
             "crossdocking_skus": crossdocking_skus,
@@ -8595,6 +9283,373 @@ async def get_ozon_geography_ai_analysis(
         raise
     except Exception as e:
         logger.exception("Ozon Geography AI analysis failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Ozon Cross-Logistics AI Analysis
+# ═══════════════════════════════════════════════════════════════
+
+_AI_PROMPT_OZON_CROSS = """Ты — эксперт по КРОСС-ЛОГИСТИКЕ на Ozon. Твоя задача — дать ОБЗОР кросс-проблем и ОЦЕНКУ складов.
+
+## ВВОДНЫЕ
+- **Кросс-доставка** — заказ из кластера X обслуживается складом из кластера Y (не ближайшим). Увеличивает стоимость и время.
+- **offer_id** — артикул продавца.
+- **daily_sales** — среднесуточные продажи (глобально).
+- Ты НЕ СЧИТАЕШЬ конкретные количества для перемещений и поставок — это делает алгоритм в разделе «Поставки».
+
+## ТЫ ОБЯЗАН
+1. Оценить общую ситуацию с кросс-доставкой (severity, diagnosis)
+2. Выделить проблемные SKU (где кросс выше 25%)
+3. Оценить каждый склад — сколько кросса генерирует и почему
+4. Дать текстовые рекомендации — что сделать, БЕЗ конкретных штук
+
+## ФОРМАТ ОТВЕТА — строго JSON:
+{
+  "severity": "critical" | "warning" | "ok",
+  "diagnosis": "1-3 предложения. Конкретные цифры кросса, кол-во проблемных SKU.",
+  "key_metrics": {
+    "cross_pct": 45,
+    "cross_orders": 120,
+    "total_orders": 267,
+    "warehouses_with_cross": 5,
+    "skus_with_high_cross": 8
+  },
+  "problem_skus": [
+    {
+      "offer_id": "АРТ-789",
+      "name": "Название товара",
+      "total_orders": 50,
+      "cross_orders": 30,
+      "cross_pct": 60,
+      "stock_distribution": [
+        {"warehouse": "ДОМОДЕДОВО_РФЦ", "stock": 150},
+        {"warehouse": "САМАРА_РФЦ", "stock": 0}
+      ],
+      "top_cross_routes": [
+        {"from_warehouse": "ДОМОДЕДОВО_РФЦ", "to_cluster": "Самара", "orders": 15}
+      ],
+      "recommendation": "Товар сконцентрирован на Домодедово, а 60% заказов уходит в Самару и Екатеринбург. Нужен довоз на склады этих кластеров."
+    }
+  ],
+  "warehouse_assessments": [
+    {
+      "warehouse": "ГРИВНО_РФЦ",
+      "cluster": "Москва, МО и Дальние регионы",
+      "status": "critical" | "warning" | "ok",
+      "total_orders": 200,
+      "cross_orders": 80,
+      "cross_pct": 40,
+      "main_cross_destinations": ["Ярославль", "Беларусь", "Краснодар"],
+      "assessment": "Склад генерирует 40% кросс. Основная нагрузка: Ярославль (25 заказов), Беларусь (18 заказов). Довоз товаров на склады в Ярославле и Краснодаре снизит кросс."
+    }
+  ],
+  "priority_actions": [
+    {
+      "action": "Сформировать поставку на склады кластеров Ярославль, Краснодар и Самара для закрытия кросс-спроса",
+      "impact": "Снизит кросс на ~120 заказов/месяц (~38% от текущего кросса)",
+      "link_to_supply": true
+    },
+    {
+      "action": "Перераспределить сток АМ-СОБ-МЕЛ-ЯГ-1 с Гривно на ближайшие к спросу склады",
+      "impact": "Снизит кросс этого SKU с 67% до ~20%",
+      "link_to_supply": false
+    }
+  ],
+  "general_tips": [
+    "Конкретный совет с цифрами."
+  ]
+}
+
+## АБСОЛЮТНЫЕ ЗАПРЕТЫ
+- ❌ НЕ СЧИТАЙ конкретные штуки для перемещений и поставок — для этого есть алгоритм в разделе «Поставки»
+- ❌ НЕ выдумывай данные — используй ТОЛЬКО то, что есть в промпте
+- ❌ НИКОГДА: «например», «допустим», «альтернативно», «рассмотреть»
+- ✅ severity: "critical" если cross_pct > 40%, "warning" если 20-40%, "ok" если < 20%
+- ✅ warehouse_assessments.status: "critical" если cross_pct склада > 50%, "warning" если 25-50%, "ok" если < 25%
+- ✅ Пиши НА РУССКОМ
+- ✅ В priority_actions ставь link_to_supply=true для действий, которые решаются через раздел «Поставки»
+"""
+
+
+@router.post("/ozon/cross/ai-analysis")
+async def get_ozon_cross_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered Ozon cross-logistics analysis using Gemini 2.5 Flash."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    cache_key = f"ozon_cross_ai_{shop_id}_{period}"
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        params = {"shop_id": shop_id, "d_start": d_start, "period_days": period}
+
+        # ── 1. Cross-delivery matrix: sku × warehouse × cluster_to ──
+        cross_matrix_rows = ch.query("""
+            SELECT
+                sku, warehouse_name, cluster_to,
+                count() AS orders, sum(quantity) AS qty
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != '' AND warehouse_name != ''
+            GROUP BY sku, warehouse_name, cluster_to
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        # Build per-SKU cross data
+        sku_cross: dict[int, dict] = {}
+        for r in cross_matrix_rows:
+            sku = int(r[0])
+            wh = str(r[1])
+            cluster = str(r[2])
+            orders = int(r[3])
+            wh_cluster = _get_cluster_for_warehouse(wh)
+            is_cross = wh_cluster != cluster
+
+            if sku not in sku_cross:
+                sku_cross[sku] = {"total": 0, "cross": 0, "routes": []}
+            sku_cross[sku]["total"] += orders
+            if is_cross:
+                sku_cross[sku]["cross"] += orders
+                sku_cross[sku]["routes"].append({
+                    "from_wh": wh, "to_cluster": cluster, "orders": orders
+                })
+
+        # ── 2. Per-warehouse cross summary ──
+        wh_cross_rows = ch.query("""
+            SELECT
+                warehouse_name,
+                cluster_to,
+                count() AS orders
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND cluster_to != '' AND warehouse_name != ''
+            GROUP BY warehouse_name, cluster_to
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        wh_summary: dict[str, dict] = {}
+        total_orders = 0
+        total_cross = 0
+        for r in wh_cross_rows:
+            wh = str(r[0])
+            cluster = str(r[1])
+            orders = int(r[2])
+            wh_cluster = _get_cluster_for_warehouse(wh)
+            is_cross = wh_cluster != cluster
+
+            if wh not in wh_summary:
+                wh_summary[wh] = {"cluster": wh_cluster, "total": 0, "cross": 0}
+            wh_summary[wh]["total"] += orders
+            total_orders += orders
+            if is_cross:
+                wh_summary[wh]["cross"] += orders
+                total_cross += orders
+
+        # ── 3. Stocks per SKU per warehouse ──
+        stock_rows = ch.query("""
+            SELECT warehouse_name, offer_id, sku,
+                   argMax(free_to_sell, updated_at) AS stock
+            FROM mms_analytics.fact_ozon_warehouse_stocks
+            WHERE shop_id = {shop_id:UInt32}
+            GROUP BY warehouse_name, offer_id, sku
+            HAVING stock > 0
+            ORDER BY stock DESC
+        """, parameters={"shop_id": shop_id}).result_rows
+
+        # Build stock map: sku -> {warehouse: stock}
+        sku_stock: dict[int, dict[str, int]] = {}
+        for r in stock_rows:
+            wh = str(r[0])
+            sku = int(r[2])
+            stock = int(r[3])
+            if sku not in sku_stock:
+                sku_stock[sku] = {}
+            sku_stock[sku][wh] = stock
+
+        # ── 4. Product metadata from PostgreSQL (ALL SKUs with stock + cross) ──
+        all_sku_set = set(sku_cross.keys()) | set(sku_stock.keys())
+        all_skus = list(all_sku_set)
+        prod_map: dict[int, dict] = {}
+        # Query in batches of 500 to avoid SQL limit
+        for i in range(0, len(all_skus), 500):
+            batch = all_skus[i:i+500]
+            sku_list = ", ".join(str(x) for x in batch)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT sku, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku IN ({sku_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:60]}
+
+        # ── 5. Daily sales per SKU ──
+        daily_sales_rows = ch.query("""
+            SELECT sku,
+                   count() AS total_orders,
+                   sum(quantity) AS total_qty
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+            GROUP BY sku
+        """, parameters=params).result_rows
+
+        sku_daily_sales: dict[int, float] = {}
+        for r in daily_sales_rows:
+            sku = int(r[0])
+            total_qty = int(r[2])
+            sku_daily_sales[sku] = round(total_qty / period, 2) if period > 0 else 0
+
+        ch.close()
+
+        # ── 6. Build prompt ──
+        overall_cross_pct = round(total_cross / total_orders * 100, 1) if total_orders > 0 else 0
+
+        prompt = f"""Магазин: {shop.name} (Ozon)
+Период: {period} дней (с {d_start} по {today})
+Всего заказов: {total_orders}
+Кросс-заказов: {total_cross} ({overall_cross_pct}%)
+Складов: {len(wh_summary)}
+
+## СКЛАДЫ И КРОСС-СТАТИСТИКА:
+"""
+        for wh_name, wh_data in sorted(wh_summary.items(), key=lambda x: x[1]["total"], reverse=True):
+            wh_cross_pct = round(wh_data["cross"] / wh_data["total"] * 100) if wh_data["total"] > 0 else 0
+            prompt += f"- {wh_name} (кластер: {wh_data['cluster']}): {wh_data['total']} заказов, {wh_data['cross']} кросс ({wh_cross_pct}%)\n"
+
+        prompt += "\n## ПРОБЛЕМНЫЕ SKU (с кросс-заказами):\n"
+        problem_skus = [
+            (sku, data) for sku, data in sku_cross.items()
+            if data["total"] >= 3 and data["cross"] > 0
+        ]
+        problem_skus.sort(key=lambda x: x[1]["cross"], reverse=True)
+
+        for sku, data in problem_skus[:20]:
+            prod = prod_map.get(sku, {})
+            cross_pct = round(data["cross"] / data["total"] * 100) if data["total"] > 0 else 0
+            stocks = sku_stock.get(sku, {})
+            stock_str = ", ".join(f"{wh}: {s}" for wh, s in sorted(stocks.items(), key=lambda x: x[1], reverse=True)[:8])
+            if not stock_str:
+                stock_str = "нет стока"
+            ds = sku_daily_sales.get(sku, 0)
+            total_stock = sum(stocks.values())
+
+            prompt += f"\n### {prod.get('offer_id', str(sku))} ({prod.get('name', f'SKU {sku}')[:45]})\n"
+            prompt += f"  Заказов: {data['total']}, кросс: {data['cross']} ({cross_pct}%), daily_sales: {ds}\n"
+            prompt += f"  Сток: {total_stock} шт → {stock_str}\n"
+
+            # Top cross routes (simplified — no deficit calc)
+            routes = sorted(data["routes"], key=lambda x: x["orders"], reverse=True)[:7]
+            if routes:
+                prompt += "  Кросс-маршруты:\n"
+                for route in routes:
+                    prompt += f"    {route['from_wh']} → {route['to_cluster']}: {route['orders']} кросс-заказов\n"
+
+        skus_high_cross = sum(1 for _, d in sku_cross.items() if d["total"] >= 3 and d["cross"] / d["total"] > 0.3)
+        whs_with_cross = sum(1 for _, d in wh_summary.items() if d["cross"] > 0)
+
+        prompt += f"""
+## ЗАДАНИЕ:
+Период анализа: {period} дней.
+1. Оцени общую ситуацию (severity, diagnosis) — конкретные цифры.
+2. Выбери 5-10 проблемных SKU — где кросс > 25%. Для каждого: маршруты, стоки, текстовая рекомендация (БЕЗ конкретных штук).
+3. Оцени каждый склад (warehouse_assessments) — сколько кросса, куда идёт, почему проблема.
+4. Дай 3-5 приоритетных действий (priority_actions) — текстом, БЕЗ конкретных количеств. Если действие решается через довоз/поставку — ставь link_to_supply=true.
+5. Выдай ТОЛЬКО JSON."""
+
+        # ── 6. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_OZON_CROSS}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI API error")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Strip markdown code fences
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse Ozon cross AI JSON: %s", content[:500])
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # Enrich with context
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_orders": total_orders,
+            "total_cross": total_cross,
+            "cross_pct": overall_cross_pct,
+            "warehouses_count": len(wh_summary),
+            "skus_analyzed": len(sku_cross),
+        }
+
+        # Cache
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return ai_result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ozon Cross AI analysis failed")
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
 
 

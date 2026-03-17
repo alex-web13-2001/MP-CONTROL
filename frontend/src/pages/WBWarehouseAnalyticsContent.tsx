@@ -585,22 +585,42 @@ export function CostsSummary({ costs, crossData }: { costs: WBCostSummary[]; cro
     circle: CircleDollarSign,
     megaphone: Megaphone,
     ban: Ban,
+    // Ozon icon names (kebab-case from backend)
+    'arrow-right-left': ArrowRightLeft,
+    'credit-card': CircleDollarSign,
+    'alert-triangle': ShieldAlert,
+    undo: Ban,
+    boxes: Boxes,
   }
 
   const colorMap: Record<string, string> = {
     'Логистика': 'bg-blue-500',
     'Хранение': 'bg-purple-500',
+    'Хранение (факт)': 'bg-purple-500',
     'Штрафы': 'bg-red-500',
     'Удержания': 'bg-orange-500',
     'Приёмка': 'bg-amber-500',
+    'Кроссдокинг': 'bg-orange-500',
+    'Эквайринг': 'bg-slate-500',
+    'Возвраты': 'bg-rose-500',
+    'Недостача': 'bg-red-500',
+    'Излишки': 'bg-slate-500',
+    'ФБО обработка': 'bg-amber-500',
   }
 
   const iconBgMap: Record<string, string> = {
     'Логистика': 'bg-blue-500/15 text-blue-400',
     'Хранение': 'bg-purple-500/15 text-purple-400',
+    'Хранение (факт)': 'bg-purple-500/15 text-purple-400',
     'Штрафы': 'bg-red-500/15 text-red-400',
     'Удержания': 'bg-orange-500/15 text-orange-400',
     'Приёмка': 'bg-amber-500/15 text-amber-400',
+    'Кроссдокинг': 'bg-orange-500/15 text-orange-400',
+    'Эквайринг': 'bg-slate-500/15 text-slate-400',
+    'Возвраты': 'bg-rose-500/15 text-rose-400',
+    'Недостача': 'bg-red-500/15 text-red-400',
+    'Излишки': 'bg-slate-500/15 text-slate-400',
+    'ФБО обработка': 'bg-amber-500/15 text-amber-400',
   }
 
   const maxAmount = Math.max(...costs.map(c => Math.abs(c.amount)), 1)
