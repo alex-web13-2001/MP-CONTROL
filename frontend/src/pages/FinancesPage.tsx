@@ -557,12 +557,17 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
 
           {/* Each money metric gets its own Y-axis with independent domain.
               Only the first one shows tick labels. */}
-          {moneyMetrics.map((m) => (
+          {moneyMetrics.map((m) => {
+            // Bars (profit) MUST include 0 in domain so they start from zero baseline
+            const domainFn = (m.key === 'profit')
+              ? [(dataMin: number) => Math.min(dataMin, 0), (dataMax: number) => Math.max(dataMax, 0)] as const
+              : ['auto', 'auto'] as const
+            return (
             <YAxis
               key={`y-${m.key}`}
               yAxisId={m.key}
               orientation="left"
-              domain={['auto', 'auto']}
+              domain={domainFn as any}
               hide={m.key !== visibleLeftMetric}
               tick={m.key === visibleLeftMetric ? { fontSize: 12, fill: 'hsl(var(--muted-foreground))' } : false}
               tickFormatter={(v: number) =>
@@ -572,7 +577,7 @@ function DynamicsChart({ data }: { data: FinancesDailyPoint[] }) {
               tickLine={false}
               width={m.key === visibleLeftMetric ? 55 : 0}
             />
-          ))}
+          )})}
 
           {/* Orders axis — always on right */}
           {hasOrders && (
@@ -761,7 +766,6 @@ const WB_ROWS: ComparisonRow[] = [
   { key: 'compensation', label: 'Платная приёмка', isMoney: true, invert: true },
   { key: 'deductions_other', label: 'Удержания', isMoney: true, invert: true },
   { key: 'deductions_ads', label: 'ВБ Продвижение', isMoney: true, invert: true },
-  { key: 'advertising', label: 'Реклама (внешняя)', isMoney: true, invert: true },
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
   { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
   { key: '_sep_totals', label: 'ИТОГО', isMoney: false, section: 'separator' },

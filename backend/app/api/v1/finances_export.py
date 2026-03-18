@@ -1476,7 +1476,7 @@ async def export_wb_excel(
             SELECT
                 sumIf(spend, date>={d_start:Date} AND date<={d_end:Date}) AS cur,
                 sumIf(spend, date>={d_prev_start:Date} AND date<={d_prev_end:Date}) AS prev
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id={shop_id:UInt32}
               AND date>={d_prev_start:Date} AND date<={d_end:Date}
         """, parameters={
@@ -1594,19 +1594,7 @@ async def export_wb_excel(
     except Exception:
         pass
 
-    # Weekly ads from fact_advert_stats_v3
-    ads_by_week = {}
-    try:
-        aw = ch.query("""
-            SELECT toMonday(date) AS ws, sum(spend) AS s
-            FROM mms_analytics.fact_advert_stats_v3
-            WHERE shop_id={shop_id:UInt32}
-            GROUP BY ws
-        """, parameters={"shop_id": shop_id})
-        for r in aw.result_rows:
-            ads_by_week[str(r[0])] = float(r[1] or 0)
-    except Exception:
-        pass
+
 
     # Weekly COGS
     cogs_by_week = {}
@@ -1658,19 +1646,7 @@ async def export_wb_excel(
     except Exception:
         pass
 
-    # Monthly ads
-    ads_by_month = {}
-    try:
-        am = ch.query("""
-            SELECT toYYYYMM(date) AS ym, sum(spend) AS s
-            FROM mms_analytics.fact_advert_stats_v3
-            WHERE shop_id={shop_id:UInt32}
-            GROUP BY ym
-        """, parameters={"shop_id": shop_id})
-        for r in am.result_rows:
-            ads_by_month[int(r[0])] = float(r[1] or 0)
-    except Exception:
-        pass
+
 
     # Monthly COGS
     cogs_by_month = {}
@@ -1694,7 +1670,8 @@ async def export_wb_excel(
         except Exception:
             pass
 
-    # 7. Per-SKU data (extract nm_id for ad spend mapping)
+    # 7. Per-SKU data from fact_finances (base: qty, rev, pay, log, acc)
+    #    Ad spend from fact_advert_stats_v3, storage from fact_wb_paid_storage
     sku_data = {}
     nm_to_vc = {}  # nm_id → vendor_code mapping for ad spend
     try:
@@ -1707,11 +1684,7 @@ async def export_wb_excel(
                  - sumIf(JSONExtractFloat(raw_payload,'retail_price_withdisc_rub'), operation_type='Возврат') AS rev,
                 sumIf(payout_amount, operation_type='Продажа') - sumIf(payout_amount, operation_type='Возврат') AS pay,
                 sum(wb_delivery_rub) AS log,
-                sum(storage_fee) AS stor,
-                sum(wb_acquiring) AS acq,
-                sum(acceptance_fee) AS acc,
-                sumIf(JSONExtractFloat(raw_payload,'deduction'),
-                    positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded
+                sum(acceptance_fee) AS acc
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id={shop_id:UInt32} AND marketplace=1
               AND event_date>={d_start:Date} AND event_date<={d_end:Date}
@@ -1733,18 +1706,15 @@ async def export_wb_excel(
             sku_data[vc]["revenue"] += float(r[3] or 0)
             sku_data[vc]["payout"] += float(r[4] or 0)
             sku_data[vc]["logistics"] += abs(float(r[5] or 0))
-            sku_data[vc]["storage"] += abs(float(r[6] or 0))
-            sku_data[vc]["acquiring"] += abs(float(r[7] or 0))
-            sku_data[vc]["acceptance"] += abs(float(r[8] or 0))
-            sku_data[vc]["deductions"] += abs(float(r[9] or 0))
+            sku_data[vc]["acceptance"] += abs(float(r[6] or 0))
     except Exception:
         pass
 
-    # SKU ad spend from fact_advert_stats_v3 — by nm_id → vendor_code
+    # 7b. Per-SKU ad spend from fact_advert_stats_v3 — ACTUAL spend per nm_id
     try:
         sku_ads = ch.query("""
             SELECT nm_id, sum(spend) AS s
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id={shop_id:UInt32}
               AND date>={d_start:Date} AND date<={d_end:Date}
             GROUP BY nm_id
@@ -1758,7 +1728,6 @@ async def export_wb_excel(
                 sku_data[vc]["ad_spend"] += spend
             else:
                 unmatched_ads += spend
-        # Add unmatched ads as separate row
         if unmatched_ads > 0:
             sku_data["__реклама_без_привязки__"] = {
                 "qty": 0, "revenue": 0, "payout": 0,
@@ -1768,8 +1737,35 @@ async def export_wb_excel(
     except Exception:
         pass
 
+    # 7c. Per-SKU storage from fact_wb_paid_storage — ACTUAL storage per vendor_code
+    #     (WB doesn't bind storage_fee to vendor_code in fact_finances — always 0)
+    try:
+        paid_storage_q = ch.query("""
+            SELECT
+                vendor_code,
+                round(SUM(warehouse_price), 2) AS storage_total
+            FROM mms_analytics.fact_wb_paid_storage FINAL
+            WHERE shop_id={shop_id:UInt32}
+              AND dt>={d_start:Date} AND dt<={d_end:Date}
+              AND vendor_code != ''
+            GROUP BY vendor_code
+            HAVING storage_total != 0
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        sku_lower_map = {k.lower(): k for k in sku_data}
+        for r in paid_storage_q.result_rows:
+            vc_raw = str(r[0] or "").strip()
+            stor_val = abs(float(r[1] or 0))
+            if not vc_raw or stor_val <= 0:
+                continue
+            original_key = sku_lower_map.get(vc_raw.lower())
+            if original_key:
+                sku_data[original_key]["storage"] = stor_val
+    except Exception:
+        pass
+
     # Product names from dim_products (PG)
     names_map = {}
+    barcode_map = {}  # vendor_code -> barcode/GTIN
     try:
         nm = await db.execute(
             text("SELECT vendor_code, name FROM dim_products WHERE shop_id=:shop_id"),
@@ -1780,6 +1776,44 @@ async def export_wb_excel(
                 names_map[r[0]] = r[1]
     except Exception:
         pass
+
+    # Fallback: get names + barcode from fact_finances raw_payload
+    # (dim_products may be empty for WB shops)
+    # Build case-insensitive lookup from dim_products names first
+    names_lower = {k.lower(): v for k, v in names_map.items()}
+    try:
+        names_q = ch.query("""
+            SELECT
+                vendor_code,
+                any(JSONExtractString(raw_payload, 'subject_name')) AS subject,
+                any(JSONExtractString(raw_payload, 'sa_name')) AS sa_name,
+                any(JSONExtractString(raw_payload, 'barcode')) AS barcode
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id={shop_id:UInt32} AND marketplace=1
+              AND event_date>={d_start:Date} AND event_date<={d_end:Date}
+              AND vendor_code != ''
+            GROUP BY vendor_code
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        for r in names_q.result_rows:
+            vc = str(r[0] or "").strip()
+            subject = str(r[1] or "").strip()
+            sa_name = str(r[2] or "").strip()
+            barcode = str(r[3] or "").strip()
+            # Only use fallback name if dim_products doesn't have it (case-insensitive)
+            if vc and vc.lower() not in names_lower:
+                # subject_name is category (e.g. "Корм сухой"), sa_name is vendor_code
+                # Use as last resort only
+                name = subject if subject else sa_name
+                if name and name.lower() != vc.lower():
+                    names_map[vc] = name
+                    names_lower[vc.lower()] = name
+            if vc and barcode:
+                barcode_map[vc] = barcode
+    except Exception:
+        pass
+
+    # Build case-insensitive lookup for barcodes
+    barcode_lower = {k.lower(): v for k, v in barcode_map.items()}
 
     # 8. Expense detail (for "Расходы детально" sheet)
     # NOTE: penalty_total for 'Удержание' ops duplicates deduction — use raw penalty only
@@ -1813,103 +1847,250 @@ async def export_wb_excel(
     # ══════════════════════════════════════════════════════
     wb = Workbook()
 
-    # ── Sheet 1: Сводка ──
+    # ── Sheet 1: Сводка (секционный P&L как Ozon) ──
     ws1 = wb.active
     ws1.title = "Сводка"
     ws1.sheet_properties.tabColor = "7C3AED"
 
-    ws1.merge_cells("A1:D1")
-    ws1.cell(row=1, column=1, value=f"Финансовый отчёт WB — {shop.name}")
-    ws1.cell(row=1, column=1).font = Font(name="Calibri", bold=True, size=14, color="7C3AED")
-    ws1.cell(row=2, column=1, value=f"Период: {d_start} — {d_end} ({span} дн.)")
-    ws1.cell(row=2, column=1).font = Font(name="Calibri", size=11, italic=True, color="6B7280")
+    # WB-specific styles for sections (purple theme)
+    WB_SECTION_HDR_FILL = PatternFill(start_color="5B21B6", end_color="5B21B6", fill_type="solid")
+    WB_SECTION_HDR_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    WB_SUBTOTAL_FILL = PatternFill(start_color="EDE9FE", end_color="EDE9FE", fill_type="solid")
+    WB_SUBTOTAL_FONT = Font(name="Calibri", bold=True, size=10)
+    WB_SUB_ITEM_FONT = Font(name="Calibri", size=10, color="4B5563")
+    WB_INDENT = "    "
 
-    rows_data = [
-        ("Выручка (продажи-возвраты)", revenue_cur, revenue_prev),
-        ("Возвраты", returns_cur, returns_prev),
+    def _wb_section_header(ws, row, label, cols=5):
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=cols)
+        ws.cell(row=row, column=1, value=label).font = WB_SECTION_HDR_FONT
+        for c in range(1, cols + 1):
+            ws.cell(row=row, column=c).fill = WB_SECTION_HDR_FILL
+            ws.cell(row=row, column=c).border = THIN_BORDER
+
+    def _wb_kpi_row(ws, row, label, cur, prev, is_money=True, is_sub=False, is_total=False, is_profit=False, cols=5):
+        c1 = ws.cell(row=row, column=1, value=label)
+        c2 = ws.cell(row=row, column=2, value=round(cur, 2) if is_money else cur)
+        c3 = ws.cell(row=row, column=3, value=round(prev, 2) if is_money else prev)
+        delta = _safe_delta(cur, prev)
+        c4 = ws.cell(row=row, column=4, value=f"{'+' if delta > 0 else ''}{delta}%")
+        pct_cur = cur / revenue_cur * 100 if revenue_cur > 0 and is_money else 0
+        c5 = ws.cell(row=row, column=5, value=round(pct_cur, 1) if is_money else "")
+        if is_money:
+            c2.number_format = MONEY_FMT
+            c3.number_format = MONEY_FMT
+        if is_money and c5.value != "":
+            c5.number_format = '0.0"%"'
+        for c in [c2, c3, c4, c5]:
+            c.alignment = Alignment(horizontal='right')
+        if delta > 0:
+            c4.font = GREEN_FONT
+        elif delta < 0:
+            c4.font = RED_FONT
+        if is_sub:
+            c1.font = WB_SUB_ITEM_FONT
+        elif is_total:
+            _style_total_row(ws, row, cols)
+        elif is_profit:
+            _style_total_row(ws, row, cols)
+            c2.font = PROFIT_GREEN if cur >= 0 else PROFIT_RED
+            c3.font = PROFIT_GREEN if prev >= 0 else PROFIT_RED
+        else:
+            c1.font = NORMAL_FONT
+        if not is_total and not is_profit:
+            _style_data_row(ws, row, cols)
+
+    # Title
+    ws1.merge_cells('A1:E1')
+    ws1['A1'] = f"Финансовый отчёт WB — {shop.name}"
+    ws1['A1'].font = Font(name="Calibri", bold=True, size=16, color="7C3AED")
+    ws1.merge_cells('A2:E2')
+    ws1['A2'] = f"Период: {d_start.strftime('%d.%m.%Y')} — {d_end.strftime('%d.%m.%Y')} ({span} дн.)"
+    ws1['A2'].font = Font(name="Calibri", size=11, color="6B7280")
+
+    # Column headers
+    row = 4
+    for ci, hdr in enumerate(["Показатель", "Текущий период", "Предыдущий период", "Изм. %", "% выр."], 1):
+        ws1.cell(row=row, column=ci, value=hdr)
+    _style_wb_header_row(ws1, row, 5)
+
+    row = 5
+
+    # Derived for summary
+    avg_check_cur = revenue_cur / orders_cur if orders_cur > 0 else 0
+    avg_check_prev = revenue_prev / orders_prev if orders_prev > 0 else 0
+    # Total MP fees for WB: commission + logistics + storage + acceptance + deductions + deductions_ads + penalties
+    total_mp_fees_cur = commission_cur + logistics_cur + storage_cur + acceptance_cur + deductions_cur + deductions_ads_cur + penalties_cur
+    total_mp_fees_prev = commission_prev + logistics_prev + storage_prev + acceptance_prev + deductions_prev + deductions_ads_prev + penalties_prev
+    opex_cur = storage_cur + acceptance_cur + deductions_cur + penalties_cur
+    opex_prev = storage_prev + acceptance_prev + deductions_prev + penalties_prev
+    total_expenses_cur = total_mp_fees_cur + cogs_cur
+    total_expenses_prev = total_mp_fees_prev + cogs_prev
+
+    # ═══ ВЫРУЧКА И ЗАКАЗЫ ═══
+    _wb_section_header(ws1, row, "ВЫРУЧКА И ЗАКАЗЫ"); row += 1
+    _wb_kpi_row(ws1, row, "Выручка (продажи)", revenue_cur, revenue_prev); row += 1
+    _wb_kpi_row(ws1, row, "Возвраты", returns_cur, returns_prev); row += 1
+    _wb_kpi_row(ws1, row, "Заказы", orders_cur, orders_prev, is_money=False); row += 1
+    _wb_kpi_row(ws1, row, "Средний чек", avg_check_cur, avg_check_prev); row += 1
+
+    # ═══ КОМИССИЯ + СКИДКИ ═══
+    row += 1
+    _wb_section_header(ws1, row, "КОМИССИЯ + СКИДКИ"); row += 1
+    _wb_kpi_row(ws1, row, "Комиссия + SPP скидки", commission_cur, commission_prev); row += 1
+    _wb_kpi_row(ws1, row, "Эквайринг", acquiring_cur, acquiring_prev); row += 1
+
+    # ═══ ЛОГИСТИКА ═══
+    row += 1
+    _wb_section_header(ws1, row, "ЛОГИСТИКА"); row += 1
+    _wb_kpi_row(ws1, row, "Доставка / логистика", logistics_cur, logistics_prev); row += 1
+    _wb_kpi_row(ws1, row, "Итого логистика", logistics_cur, logistics_prev, is_total=True); row += 1
+
+    # ═══ ОПЕРАЦИОННЫЕ РАСХОДЫ ═══
+    row += 1
+    _wb_section_header(ws1, row, "ОПЕРАЦИОННЫЕ РАСХОДЫ"); row += 1
+    _wb_kpi_row(ws1, row, "Хранение", storage_cur, storage_prev); row += 1
+    _wb_kpi_row(ws1, row, "Платная приёмка", acceptance_cur, acceptance_prev); row += 1
+    _wb_kpi_row(ws1, row, "Удержания (прочие)", deductions_cur, deductions_prev); row += 1
+    if penalties_cur > 0 or penalties_prev > 0:
+        _wb_kpi_row(ws1, row, "Штрафы", penalties_cur, penalties_prev); row += 1
+    _wb_kpi_row(ws1, row, "Итого операционные", opex_cur, opex_prev, is_total=True); row += 1
+
+    # ═══ РЕКЛАМА ═══
+    row += 1
+    _wb_section_header(ws1, row, "РЕКЛАМА (ВБ ПРОМО)"); row += 1
+    _wb_kpi_row(ws1, row, "ВБ Продвижение (удержания)", deductions_ads_cur, deductions_ads_prev); row += 1
+    drr_cur = deductions_ads_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    drr_prev = deductions_ads_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value=f"{WB_INDENT}ДРР (доля рекл. расх.)").font = WB_SUB_ITEM_FONT
+    ws1.cell(row=row, column=2, value=f"{round(drr_cur, 1)}%").alignment = Alignment(horizontal='right')
+    ws1.cell(row=row, column=3, value=f"{round(drr_prev, 1)}%").alignment = Alignment(horizontal='right')
+    _style_data_row(ws1, row, 5)
+    row += 1
+
+    # ═══ ИТОГИ ═══
+    row += 1
+    _wb_section_header(ws1, row, "ИТОГИ"); row += 1
+    _wb_kpi_row(ws1, row, "Всего удержано WB", total_mp_fees_cur, total_mp_fees_prev, is_total=True); row += 1
+    _wb_kpi_row(ws1, row, "К перечислению", payout_cur, payout_prev); row += 1
+    _wb_kpi_row(ws1, row, "Себестоимость (COGS)", cogs_cur, cogs_prev); row += 1
+    _wb_kpi_row(ws1, row, "Всего расходов", total_expenses_cur, total_expenses_prev, is_total=True); row += 1
+    _wb_kpi_row(ws1, row, "ЧИСТАЯ ПРИБЫЛЬ", profit_cur, profit_prev, is_profit=True); row += 1
+    margin_cur = profit_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    margin_prev = profit_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value=f"{WB_INDENT}Маржинальность").font = WB_SUB_ITEM_FONT
+    ws1.cell(row=row, column=2, value=f"{round(margin_cur, 1)}%").alignment = Alignment(horizontal='right')
+    ws1.cell(row=row, column=3, value=f"{round(margin_prev, 1)}%").alignment = Alignment(horizontal='right')
+    _style_data_row(ws1, row, 5)
+    row += 2
+
+    # ═══ СТРУКТУРА РАСХОДОВ (% от выручки) ═══
+    ws1.cell(row=row, column=1, value="СТРУКТУРА РАСХОДОВ (% от выручки)").font = WB_SECTION_HDR_FONT
+    ws1.cell(row=row, column=1).fill = WB_SECTION_HDR_FILL
+    for ci, hdr in enumerate(["", "Тек. период", "% выр.", "Пред. период", "% выр."], 1):
+        ws1.cell(row=row, column=ci, value=hdr if ci > 1 else "СТРУКТУРА РАСХОДОВ (% от выручки)")
+    _style_wb_header_row(ws1, row, 5)
+    row += 1
+
+    pct_rows = [
         ("Комиссия + скидки", commission_cur, commission_prev),
-        ("Эквайринг", acquiring_cur, acquiring_prev),
-        ("К перечислению (payout)", payout_cur, payout_prev),
         ("Логистика", logistics_cur, logistics_prev),
         ("Хранение", storage_cur, storage_prev),
-        ("Платная приёмка", acceptance_cur, acceptance_prev),
+        ("Приёмка", acceptance_cur, acceptance_prev),
         ("Удержания (прочие)", deductions_cur, deductions_prev),
-        ("ВБ Продвижение", deductions_ads_cur, deductions_ads_prev),
+        ("ВБ Промо", deductions_ads_cur, deductions_ads_prev),
         ("Штрафы", penalties_cur, penalties_prev),
-        ("Итого к оплате", bank_cur, bank_prev),
         ("Себестоимость", cogs_cur, cogs_prev),
-        ("Чистая прибыль", profit_cur, profit_prev),
-        ("Заказов (шт.)", orders_cur, orders_prev),
     ]
 
-    headers = ["Показатель", "Текущий период", "Предыдущий период", "Изменение %"]
-    for col, h in enumerate(headers, 1):
-        ws1.cell(row=4, column=col, value=h)
-    _style_wb_header_row(ws1, 4, 4)
+    total_exp_c = sum(v[1] for v in pct_rows)
+    total_exp_p = sum(v[2] for v in pct_rows)
 
-    for i, (label, cur, prev) in enumerate(rows_data):
-        rn = i + 5
-        ws1.cell(row=rn, column=1, value=label).font = SECTION_FONT if label.startswith(("К перечислению", "Итого", "Чистая")) else NORMAL_FONT
-        ws1.cell(row=rn, column=2, value=round(cur, 2)).number_format = MONEY_FMT
-        ws1.cell(row=rn, column=3, value=round(prev, 2)).number_format = MONEY_FMT
-        delta = _safe_delta(cur, prev)
-        ws1.cell(row=rn, column=4, value=round(delta, 1)).number_format = '0.0"%"'
-        _style_data_row(ws1, rn, 4, is_alt=(i % 2 == 1))
-        if label.startswith(("К перечислению", "Итого", "Чистая")):
-            for c in range(1, 5):
-                ws1.cell(row=rn, column=c).fill = TOTAL_FILL
-                ws1.cell(row=rn, column=c).font = TOTAL_FONT
+    for i, (label, cur_val, prev_val) in enumerate(pct_rows):
+        pct_c = cur_val / revenue_cur * 100 if revenue_cur > 0 else 0
+        pct_p = prev_val / revenue_prev * 100 if revenue_prev > 0 else 0
+        ws1.cell(row=row, column=1, value=label).font = NORMAL_FONT
+        ws1.cell(row=row, column=2, value=round(cur_val, 2)).number_format = MONEY_FMT
+        ws1.cell(row=row, column=3, value=round(pct_c, 1))
+        ws1.cell(row=row, column=3).number_format = '0.0"%"'
+        ws1.cell(row=row, column=4, value=round(prev_val, 2)).number_format = MONEY_FMT
+        ws1.cell(row=row, column=5, value=round(pct_p, 1))
+        ws1.cell(row=row, column=5).number_format = '0.0"%"'
+        for c in range(2, 6):
+            ws1.cell(row=row, column=c).alignment = Alignment(horizontal='right')
+        _style_data_row(ws1, row, 5, is_alt=(i % 2 == 1))
+        row += 1
+
+    # Total expenses row
+    pct_tc = total_exp_c / revenue_cur * 100 if revenue_cur > 0 else 0
+    pct_tp = total_exp_p / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value="Итого расходов").font = TOTAL_FONT
+    ws1.cell(row=row, column=2, value=round(total_exp_c, 2)).number_format = MONEY_FMT
+    ws1.cell(row=row, column=3, value=round(pct_tc, 1))
+    ws1.cell(row=row, column=3).number_format = '0.0"%"'
+    ws1.cell(row=row, column=4, value=round(total_exp_p, 2)).number_format = MONEY_FMT
+    ws1.cell(row=row, column=5, value=round(pct_tp, 1))
+    ws1.cell(row=row, column=5).number_format = '0.0"%"'
+    _style_total_row(ws1, row, 5)
+    row += 1
+
+    # Profit row
+    pct_prof_c = profit_cur / revenue_cur * 100 if revenue_cur > 0 else 0
+    pct_prof_p = profit_prev / revenue_prev * 100 if revenue_prev > 0 else 0
+    ws1.cell(row=row, column=1, value="Прибыль").font = TOTAL_FONT
+    c2 = ws1.cell(row=row, column=2, value=round(profit_cur, 2))
+    c2.number_format = MONEY_FMT
+    c2.font = PROFIT_GREEN if profit_cur >= 0 else PROFIT_RED
+    ws1.cell(row=row, column=3, value=round(pct_prof_c, 1))
+    ws1.cell(row=row, column=3).number_format = '0.0"%"'
+    c4 = ws1.cell(row=row, column=4, value=round(profit_prev, 2))
+    c4.number_format = MONEY_FMT
+    c4.font = PROFIT_GREEN if profit_prev >= 0 else PROFIT_RED
+    ws1.cell(row=row, column=5, value=round(pct_prof_p, 1))
+    ws1.cell(row=row, column=5).number_format = '0.0"%"'
+    _style_total_row(ws1, row, 5)
 
     _auto_width(ws1)
+    ws1.column_dimensions['A'].width = 32
+    ws1.freeze_panes = 'A5'
 
-    # ── Sheet 2: Дни ──
-    ws2 = wb.create_sheet("По дням")
-    ws2.sheet_properties.tabColor = "3B82F6"
 
-    day_headers = ["Дата", "Заказов", "Выручка", "К перечисл.", "Логистика", "Хранение",
-                   "Приёмка", "Удержания", "ВБ Промо", "Эквайринг"]
-    for col, h in enumerate(day_headers, 1):
-        ws2.cell(row=1, column=col, value=h)
-    _style_wb_header_row(ws2, 1, len(day_headers))
-
-    for i, r in enumerate(daily_data):
-        rn = i + 2
-        ws2.cell(row=rn, column=1, value=str(r[0]))
-        ws2.cell(row=rn, column=2, value=int(r[9] or 0))
-        ws2.cell(row=rn, column=3, value=float(r[1] or 0)).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=4, value=float(r[2] or 0)).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=5, value=abs(float(r[3] or 0))).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=6, value=abs(float(r[4] or 0))).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=7, value=abs(float(r[6] or 0))).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=8, value=abs(float(r[7] or 0))).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=9, value=abs(float(r[8] or 0))).number_format = MONEY_FMT
-        ws2.cell(row=rn, column=10, value=abs(float(r[5] or 0))).number_format = MONEY_FMT
-        _style_data_row(ws2, rn, len(day_headers), is_alt=(i % 2 == 1))
-
-    _auto_width(ws2)
-    ws2.freeze_panes = 'A2'
-
-    # ── Sheet 3: По неделям (FULL RETROSPECTIVE) ──
+    # ── Sheet 2: По неделям (FULL RETROSPECTIVE with Δ-columns) ──
     ws3 = wb.create_sheet("По неделям")
     ws3.sheet_properties.tabColor = "EA580C"
 
-    wk_headers = [
-        "Год", "Нед.", "Период", "Заказов", "Выручка",
-        "К перечисл.", "Возвраты", "Логистика", "Хранение",
+    # Headers: money columns + paired (%, Δ%) columns
+    wk_base_headers = [
+        "Год", "Нед.", "Начало", "Конец", "Кол-во",
+        "Выручка", "К перечисл.", "Возвраты", "Логистика", "Хранение",
         "Приёмка", "Удержания", "ВБ Промо",
         "С/С", "Прибыль",
-        "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
-    ]
+    ]  # cols 1..15
+    wk_pct_pairs = [
+        ("Комис%", "Δ"), ("Логист%", "Δ"), ("ВБПромо%", "Δ"),
+        ("С/С%", "Δ"), ("Приб%", "Δ"),
+    ]  # 5 pairs = 10 columns → cols 16..25
+    wk_headers = wk_base_headers + [h for pair in wk_pct_pairs for h in pair]
     for col, h in enumerate(wk_headers, 1):
         ws3.cell(row=1, column=col, value=h)
     _style_wb_header_row(ws3, 1, len(wk_headers))
+    # Style Δ headers with grey fill
+    for pi in range(len(wk_pct_pairs)):
+        delta_col = 16 + pi * 2 + 1  # 17, 19, 21, 23, 25
+        c = ws3.cell(row=1, column=delta_col)
+        c.fill = DELTA_HDR_FILL
+        c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
 
-    pct_cols_wk = [15, 16, 17, 18]
+    wk_totals = {"qty": 0, "revenue": 0, "payout": 0, "returns": 0,
+                 "logistics": 0, "storage": 0, "acceptance": 0,
+                 "deductions": 0, "ded_ads": 0,
+                 "cogs": 0, "profit": 0}
+    prev_wk_pcts = None
 
     for i, r in enumerate(weekly_data):
         rn = i + 2
         ws_d = r[0]
         we_d = r[1]
+        qty = int(r[2] or 0)
         rev = float(r[3] or 0)
         pay = float(r[4] or 0)
         rets = abs(float(r[5] or 0))
@@ -1919,79 +2100,134 @@ async def export_wb_excel(
         acc = abs(float(r[9] or 0))
         ded = abs(float(r[10] or 0))
         ded_ads = abs(float(r[11] or 0))
-        cogs = cogs_by_week.get(str(ws_d), 0)
+        cogs_wk = cogs_by_week.get(str(ws_d), 0)
         comm = max(rev - pay, 0)
-        # NOTE: ded_ads (ВБ Промо) IS the advertising — no separate external ads
-        profit_wk = pay - log - stor - acc - ded - ded_ads - cogs
+        profit_wk = pay - log - stor - acc - ded - ded_ads - cogs_wk
 
         ws3.cell(row=rn, column=1, value=ws_d.year if hasattr(ws_d, 'year') else int(str(ws_d)[:4]))
         ws3.cell(row=rn, column=2, value=ws_d.isocalendar()[1] if hasattr(ws_d, 'isocalendar') else 0)
-        ws3.cell(row=rn, column=3, value=f"{_fmt_date_ru(ws_d)} — {_fmt_date_ru(we_d)}")
-        ws3.cell(row=rn, column=4, value=int(r[2] or 0))
-        ws3.cell(row=rn, column=5, value=rev).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=6, value=pay).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=7, value=rets).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=8, value=log).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=9, value=stor).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=10, value=acc).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=11, value=ded).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=12, value=ded_ads).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=13, value=round(cogs, 2)).number_format = MONEY_FMT
-        ws3.cell(row=rn, column=14, value=round(profit_wk, 2)).number_format = MONEY_FMT
+        ws3.cell(row=rn, column=3, value=_fmt_date_ru(ws_d))
+        ws3.cell(row=rn, column=4, value=_fmt_date_ru(we_d))
+        ws3.cell(row=rn, column=5, value=qty)
 
-        # Percentages
-        comm_pct = comm / rev * 100 if rev > 0 else 0
-        log_pct = log / rev * 100 if rev > 0 else 0
-        cogs_pct = cogs / rev * 100 if rev > 0 else 0
-        prof_pct = profit_wk / rev * 100 if rev > 0 else 0
+        money_vals = [rev, pay, rets, log, stor, acc, ded, ded_ads, cogs_wk, profit_wk]
+        money_keys = ["revenue", "payout", "returns", "logistics", "storage", "acceptance",
+                      "deductions", "ded_ads", "cogs", "profit"]
+        for j, v in enumerate(money_vals):
+            c = ws3.cell(row=rn, column=6 + j, value=round(v, 2))
+            c.number_format = MONEY_FMT
+            wk_totals[money_keys[j]] += v
+        wk_totals["qty"] += qty
 
-        ws3.cell(row=rn, column=15, value=round(comm_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=16, value=round(log_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=17, value=round(cogs_pct, 1)).number_format = '0.0"%"'
-        ws3.cell(row=rn, column=18, value=round(prof_pct, 1)).number_format = '0.0"%"'
+        # Profit coloring
+        ws3.cell(row=rn, column=15).font = GREEN_FONT if profit_wk >= 0 else RED_FONT
 
-        _style_data_row(ws3, rn, len(wk_headers), is_alt=(i % 2 == 1))
+        # Percentage columns: Комис%, Логист%, ВБПромо%, С/С%, Приб%
+        is_alt = (i % 2 == 1)
+        if rev > 0:
+            cur_pcts = [
+                round(comm / rev * 100, 1),
+                round(log / rev * 100, 1),
+                round(ded_ads / rev * 100, 1),
+                round(cogs_wk / rev * 100, 1),
+                round(profit_wk / rev * 100, 1),
+            ]
+        else:
+            cur_pcts = [0, 0, 0, 0, 0]
 
-        # Color % columns
-        for pc in pct_cols_wk:
-            cell = ws3.cell(row=rn, column=pc)
-            val = cell.value or 0
-            if pc == 18:  # profit%
-                cell.font = GREEN_FONT if val >= 0 else RED_FONT
-            else:  # cost%
-                if val > 35:
-                    cell.font = RED_FONT
-                elif val < 20:
-                    cell.font = GREEN_FONT
+        for pi, pct_val in enumerate(cur_pcts):
+            pct_col = 16 + pi * 2       # 16, 18, 20, 22, 24
+            delta_col = 16 + pi * 2 + 1 # 17, 19, 21, 23, 25
+
+            pc = ws3.cell(row=rn, column=pct_col, value=pct_val)
+            pc.number_format = '0.0"%"'
+            if pi == 4:  # Profit%
+                pc.font = GREEN_FONT if pct_val >= 0 else RED_FONT
+            else:
+                pc.font = RED_FONT if pct_val > 35 else (GREEN_FONT if pct_val < 20 else NORMAL_FONT)
+
+            dc = ws3.cell(row=rn, column=delta_col)
+            dc.fill = DELTA_FILL_ALT if is_alt else DELTA_FILL
+            if prev_wk_pcts is not None:
+                delta_pp = round(pct_val - prev_wk_pcts[pi], 1)
+                dc.value = delta_pp
+                dc.number_format = '+0.0;-0.0;0.0'
+                if pi == 4:
+                    dc.font = GREEN_FONT_SM if delta_pp > 0 else (RED_FONT_SM if delta_pp < 0 else GREY_FONT_SM)
+                else:
+                    dc.font = GREEN_FONT_SM if delta_pp < 0 else (RED_FONT_SM if delta_pp > 0 else GREY_FONT_SM)
+            else:
+                dc.value = "—"
+                dc.font = GREY_FONT_SM
+
+        prev_wk_pcts = cur_pcts
+        _style_data_row(ws3, rn, 15, is_alt=is_alt)
+
+    # Totals row
+    total_row = len(weekly_data) + 2
+    ws3.cell(row=total_row, column=1, value="ИТОГО")
+    ws3.cell(row=total_row, column=5, value=wk_totals["qty"])
+    for j, k in enumerate(money_keys):
+        ws3.cell(row=total_row, column=6 + j, value=round(wk_totals[k], 2)).number_format = MONEY_FMT
+
+    ts = wk_totals["revenue"] or 1
+    total_comm_wk = max(wk_totals["revenue"] - wk_totals["payout"], 0)
+    total_pcts_wk = [
+        round(total_comm_wk / ts * 100, 1),
+        round(wk_totals["logistics"] / ts * 100, 1),
+        round(wk_totals["ded_ads"] / ts * 100, 1),
+        round(wk_totals["cogs"] / ts * 100, 1),
+        round(wk_totals["profit"] / ts * 100, 1),
+    ]
+    for pi, pv in enumerate(total_pcts_wk):
+        pct_col = 16 + pi * 2
+        ws3.cell(row=total_row, column=pct_col, value=pv).number_format = '0.0"%"'
+    _style_total_row(ws3, total_row, len(wk_headers))
 
     _auto_width(ws3)
-    ws3.freeze_panes = 'D2'
+    ws3.freeze_panes = 'E2'
 
-    # ── Sheet 4: По месяцам (FULL RETROSPECTIVE) ──
+    # ── Sheet 3: По месяцам (FULL RETROSPECTIVE with Δ-columns) ──
     ws4 = wb.create_sheet("По месяцам")
     ws4.sheet_properties.tabColor = "7C3AED"
 
     MONTHS_RU = {1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 5: "Май", 6: "Июнь",
                  7: "Июль", 8: "Август", 9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"}
 
-    m_headers = [
-        "Год", "Месяц", "Заказов", "Выручка",
-        "К перечисл.", "Возвраты", "Логистика", "Хранение",
+    mo_base_headers = [
+        "Месяц", "Начало", "Конец", "Кол-во",
+        "Выручка", "К перечисл.", "Возвраты", "Логистика", "Хранение",
         "Приёмка", "Удержания", "ВБ Промо",
         "С/С", "Прибыль",
-        "Комисс.%", "Логист.%", "С/С%", "Прибыль%",
-    ]
-    for col, h in enumerate(m_headers, 1):
+    ]  # cols 1..14
+    mo_pct_pairs = [
+        ("Комис%", "Δ"), ("Логист%", "Δ"), ("ВБПромо%", "Δ"),
+        ("С/С%", "Δ"), ("Приб%", "Δ"),
+    ]  # 5 pairs = 10 columns → cols 15..24
+    mo_headers = mo_base_headers + [h for pair in mo_pct_pairs for h in pair]
+    for col, h in enumerate(mo_headers, 1):
         ws4.cell(row=1, column=col, value=h)
-    _style_wb_header_row(ws4, 1, len(m_headers))
+    _style_wb_header_row(ws4, 1, len(mo_headers))
+    for pi in range(len(mo_pct_pairs)):
+        delta_col = 15 + pi * 2 + 1  # 16, 18, 20, 22, 24
+        c = ws4.cell(row=1, column=delta_col)
+        c.fill = DELTA_HDR_FILL
+        c.font = Font(name="Calibri", bold=True, color="FFFFFF", size=10)
 
-    pct_cols_m = [14, 15, 16, 17]
+    mo_totals = {"qty": 0, "revenue": 0, "payout": 0, "returns": 0,
+                 "logistics": 0, "storage": 0, "acceptance": 0,
+                 "deductions": 0, "ded_ads": 0,
+                 "cogs": 0, "profit": 0}
+    prev_mo_pcts = None
 
     for i, r in enumerate(monthly_data):
         rn = i + 2
         ym = int(r[0])
         year = ym // 100
         month = ym % 100
+        month_name = f"{MONTHS_RU.get(month, str(month))} {year}"
+
+        qty = int(r[3] or 0)
         rev = float(r[4] or 0)
         pay = float(r[5] or 0)
         rets = abs(float(r[6] or 0))
@@ -2001,59 +2237,100 @@ async def export_wb_excel(
         acc = abs(float(r[10] or 0))
         ded = abs(float(r[11] or 0))
         ded_ads = abs(float(r[12] or 0))
-        cogs = cogs_by_month.get(ym, 0)
+        cogs_mo = cogs_by_month.get(ym, 0)
         comm = max(rev - pay, 0)
-        # NOTE: ded_ads (ВБ Промо) IS the advertising — no separate external ads
-        profit_m = pay - log - stor - acc - ded - ded_ads - cogs
+        profit_mo = pay - log - stor - acc - ded - ded_ads - cogs_mo
 
-        ws4.cell(row=rn, column=1, value=year)
-        ws4.cell(row=rn, column=2, value=MONTHS_RU.get(month, str(month)))
-        ws4.cell(row=rn, column=3, value=int(r[3] or 0))
-        ws4.cell(row=rn, column=4, value=rev).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=5, value=pay).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=6, value=rets).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=7, value=log).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=8, value=stor).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=9, value=acc).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=10, value=ded).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=11, value=ded_ads).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=12, value=round(cogs, 2)).number_format = MONEY_FMT
-        ws4.cell(row=rn, column=13, value=round(profit_m, 2)).number_format = MONEY_FMT
+        ws4.cell(row=rn, column=1, value=month_name)
+        ws4.cell(row=rn, column=2, value=str(r[1]))
+        ws4.cell(row=rn, column=3, value=str(r[2]))
+        ws4.cell(row=rn, column=4, value=qty)
 
-        comm_pct = comm / rev * 100 if rev > 0 else 0
-        log_pct = log / rev * 100 if rev > 0 else 0
-        cogs_pct = cogs / rev * 100 if rev > 0 else 0
-        prof_pct = profit_m / rev * 100 if rev > 0 else 0
+        money_vals_mo = [rev, pay, rets, log, stor, acc, ded, ded_ads, cogs_mo, profit_mo]
+        money_keys_mo = ["revenue", "payout", "returns", "logistics", "storage", "acceptance",
+                         "deductions", "ded_ads", "cogs", "profit"]
+        for j, v in enumerate(money_vals_mo):
+            c = ws4.cell(row=rn, column=5 + j, value=round(v, 2))
+            c.number_format = MONEY_FMT
+            mo_totals[money_keys_mo[j]] += v
+        mo_totals["qty"] += qty
 
-        ws4.cell(row=rn, column=14, value=round(comm_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=15, value=round(log_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=16, value=round(cogs_pct, 1)).number_format = '0.0"%"'
-        ws4.cell(row=rn, column=17, value=round(prof_pct, 1)).number_format = '0.0"%"'
+        # Profit coloring
+        ws4.cell(row=rn, column=14).font = GREEN_FONT if profit_mo >= 0 else RED_FONT
 
-        _style_data_row(ws4, rn, len(m_headers), is_alt=(i % 2 == 1))
+        # Percentage columns with Δ
+        is_alt = (i % 2 == 1)
+        if rev > 0:
+            cur_mo_pcts = [
+                round(comm / rev * 100, 1),
+                round(log / rev * 100, 1),
+                round(ded_ads / rev * 100, 1),
+                round(cogs_mo / rev * 100, 1),
+                round(profit_mo / rev * 100, 1),
+            ]
+        else:
+            cur_mo_pcts = [0, 0, 0, 0, 0]
 
-        for pc in pct_cols_m:
-            cell = ws4.cell(row=rn, column=pc)
-            val = cell.value or 0
-            if pc == 17:
-                cell.font = GREEN_FONT if val >= 0 else RED_FONT
+        for pi, pct_val in enumerate(cur_mo_pcts):
+            pct_col = 15 + pi * 2       # 15, 17, 19, 21, 23
+            delta_col = 15 + pi * 2 + 1 # 16, 18, 20, 22, 24
+
+            pc = ws4.cell(row=rn, column=pct_col, value=pct_val)
+            pc.number_format = '0.0"%"'
+            if pi == 4:
+                pc.font = GREEN_FONT if pct_val >= 0 else RED_FONT
             else:
-                if val > 35:
-                    cell.font = RED_FONT
-                elif val < 20:
-                    cell.font = GREEN_FONT
+                pc.font = RED_FONT if pct_val > 35 else (GREEN_FONT if pct_val < 20 else NORMAL_FONT)
+
+            dc = ws4.cell(row=rn, column=delta_col)
+            dc.fill = DELTA_FILL_ALT if is_alt else DELTA_FILL
+            if prev_mo_pcts is not None:
+                delta_pp = round(pct_val - prev_mo_pcts[pi], 1)
+                dc.value = delta_pp
+                dc.number_format = '+0.0;-0.0;0.0'
+                if pi == 4:
+                    dc.font = GREEN_FONT_SM if delta_pp > 0 else (RED_FONT_SM if delta_pp < 0 else GREY_FONT_SM)
+                else:
+                    dc.font = GREEN_FONT_SM if delta_pp < 0 else (RED_FONT_SM if delta_pp > 0 else GREY_FONT_SM)
+            else:
+                dc.value = "—"
+                dc.font = GREY_FONT_SM
+
+        prev_mo_pcts = cur_mo_pcts
+        _style_data_row(ws4, rn, 14, is_alt=is_alt)
+
+    # Totals row
+    total_row_mo = len(monthly_data) + 2
+    ws4.cell(row=total_row_mo, column=1, value="ИТОГО")
+    ws4.cell(row=total_row_mo, column=4, value=mo_totals["qty"])
+    for j, k in enumerate(money_keys_mo):
+        ws4.cell(row=total_row_mo, column=5 + j, value=round(mo_totals[k], 2)).number_format = MONEY_FMT
+
+    ts_mo = mo_totals["revenue"] or 1
+    total_comm_mo = max(mo_totals["revenue"] - mo_totals["payout"], 0)
+    total_pcts_mo = [
+        round(total_comm_mo / ts_mo * 100, 1),
+        round(mo_totals["logistics"] / ts_mo * 100, 1),
+        round(mo_totals["ded_ads"] / ts_mo * 100, 1),
+        round(mo_totals["cogs"] / ts_mo * 100, 1),
+        round(mo_totals["profit"] / ts_mo * 100, 1),
+    ]
+    for pi, pv in enumerate(total_pcts_mo):
+        pct_col = 15 + pi * 2
+        ws4.cell(row=total_row_mo, column=pct_col, value=pv).number_format = '0.0"%"'
+    _style_total_row(ws4, total_row_mo, len(mo_headers))
 
     _auto_width(ws4)
-    ws4.freeze_panes = 'C2'
+    ws4.freeze_panes = 'D2'
 
-    # ── Sheet 5: По товарам (SKU) ──
+    # ── Sheet 5: По товарам (SKU) — с ДРР% ──
     ws5 = wb.create_sheet("По товарам")
     ws5.sheet_properties.tabColor = "10B981"
 
     sku_headers = [
-        "Артикул", "Название", "Кол-во", "Выручка",
+        "Артикул", "Название", "GTIN", "Кол-во", "Выручка",
         "К перечисл.", "Логистика", "Хранение", "Приёмка",
-        "Удержания", "Реклама", "С/С", "Прибыль", "Маржа%",
+        "Удержания", "Реклама", "ДРР%", "С/С", "Прибыль", "Маржа%",
     ]
     for col, h in enumerate(sku_headers, 1):
         ws5.cell(row=1, column=col, value=h)
@@ -2067,20 +2344,26 @@ async def export_wb_excel(
         ads_sku = sd.get("ad_spend", 0)
         profit_sku = sd["payout"] - sd["logistics"] - sd["storage"] - sd["acceptance"] - sd["deductions"] - ads_sku - cogs_sku
         margin = profit_sku / sd["revenue"] * 100 if sd["revenue"] > 0 else 0
+        drr_sku = ads_sku / sd["revenue"] * 100 if sd["revenue"] > 0 else 0
 
+        vc_lower = vc.lower()
         ws5.cell(row=rn, column=1, value=vc)
-        ws5.cell(row=rn, column=2, value=names_map.get(vc, ""))
-        ws5.cell(row=rn, column=3, value=sd["qty"])
-        ws5.cell(row=rn, column=4, value=round(sd["revenue"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=5, value=round(sd["payout"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=6, value=round(sd["logistics"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=7, value=round(sd["storage"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=8, value=round(sd["acceptance"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=9, value=round(sd["deductions"], 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=10, value=round(ads_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=11, value=round(cogs_sku, 2)).number_format = MONEY_FMT
-        ws5.cell(row=rn, column=12, value=round(profit_sku, 2)).number_format = MONEY_FMT
-        cell_m = ws5.cell(row=rn, column=13, value=round(margin, 1))
+        ws5.cell(row=rn, column=2, value=names_map.get(vc, names_lower.get(vc_lower, "")))
+        ws5.cell(row=rn, column=3, value=barcode_map.get(vc, barcode_lower.get(vc_lower, "")))
+        ws5.cell(row=rn, column=4, value=sd["qty"])
+        ws5.cell(row=rn, column=5, value=round(sd["revenue"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=6, value=round(sd["payout"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=7, value=round(sd["logistics"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=8, value=round(sd["storage"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=9, value=round(sd["acceptance"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=10, value=round(sd["deductions"], 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=11, value=round(ads_sku, 2)).number_format = MONEY_FMT
+        cell_drr = ws5.cell(row=rn, column=12, value=round(drr_sku, 1))
+        cell_drr.number_format = '0.0"%"'
+        cell_drr.font = RED_FONT if drr_sku > 30 else (GREEN_FONT if drr_sku < 15 else NORMAL_FONT)
+        ws5.cell(row=rn, column=13, value=round(cogs_sku, 2)).number_format = MONEY_FMT
+        ws5.cell(row=rn, column=14, value=round(profit_sku, 2)).number_format = MONEY_FMT
+        cell_m = ws5.cell(row=rn, column=15, value=round(margin, 1))
         cell_m.number_format = '0.0"%"'
         cell_m.font = GREEN_FONT if margin >= 0 else RED_FONT
 
@@ -2100,24 +2383,27 @@ async def export_wb_excel(
     t_cogs_sku = sum(cost_map.get(vc.lower(), 0) * s["qty"] for vc, s in sku_data.items())
     t_profit_sku = t_pay - t_log - t_stor - t_acc - t_ded - t_ads_sku - t_cogs_sku
     t_margin = t_profit_sku / t_rev * 100 if t_rev > 0 else 0
+    t_drr = t_ads_sku / t_rev * 100 if t_rev > 0 else 0
 
-    ws5.cell(row=total_row, column=3, value=t_qty)
-    ws5.cell(row=total_row, column=4, value=round(t_rev, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=5, value=round(t_pay, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=6, value=round(t_log, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=7, value=round(t_stor, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=8, value=round(t_acc, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=9, value=round(t_ded, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=10, value=round(t_ads_sku, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=11, value=round(t_cogs_sku, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=12, value=round(t_profit_sku, 2)).number_format = MONEY_FMT
-    ws5.cell(row=total_row, column=13, value=round(t_margin, 1)).number_format = '0.0"%"'
+    ws5.cell(row=total_row, column=4, value=t_qty)
+    ws5.cell(row=total_row, column=5, value=round(t_rev, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=6, value=round(t_pay, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=7, value=round(t_log, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=8, value=round(t_stor, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=9, value=round(t_acc, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=10, value=round(t_ded, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=11, value=round(t_ads_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=12, value=round(t_drr, 1)).number_format = '0.0"%"'
+    ws5.cell(row=total_row, column=13, value=round(t_cogs_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=14, value=round(t_profit_sku, 2)).number_format = MONEY_FMT
+    ws5.cell(row=total_row, column=15, value=round(t_margin, 1)).number_format = '0.0"%"'
     _style_total_row(ws5, total_row, len(sku_headers))
 
     _auto_width(ws5)
     ws5.freeze_panes = 'A2'
+    ws5.auto_filter.ref = f"A1:{chr(64 + len(sku_headers))}{total_row - 1}"
 
-    # ── Sheet 6: Расходы детально ──
+    # ── Sheet 6: Расходы детально (с % от выручки) ──
     ws6 = wb.create_sheet("Расходы детально")
     ws6.sheet_properties.tabColor = "D97706"
 
@@ -2125,26 +2411,41 @@ async def export_wb_excel(
         "Тип операции", "Тип бонуса/удержания", "Записей",
         "Логистика", "Хранение", "Приёмка",
         "Штрафы", "Удержания", "Эквайринг",
+        "Итого", "% выр.",
     ]
     for col, h in enumerate(exp_headers, 1):
         ws6.cell(row=1, column=col, value=h)
     _style_wb_header_row(ws6, 1, len(exp_headers))
 
+    exp_grand_total = 0.0
     for i, r in enumerate(expense_detail_rows):
         rn = i + 2
         ws6.cell(row=rn, column=1, value=str(r[0] or ""))
         ws6.cell(row=rn, column=2, value=str(r[1] or "—"))
         ws6.cell(row=rn, column=3, value=int(r[2] or 0))
-        ws6.cell(row=rn, column=4, value=abs(float(r[3] or 0))).number_format = MONEY_FMT_2   # Логистика
-        ws6.cell(row=rn, column=5, value=abs(float(r[4] or 0))).number_format = MONEY_FMT_2   # Хранение
-        ws6.cell(row=rn, column=6, value=abs(float(r[5] or 0))).number_format = MONEY_FMT_2   # Приёмка
-        ws6.cell(row=rn, column=7, value=abs(float(r[6] or 0))).number_format = MONEY_FMT_2   # Штрафы
-        ws6.cell(row=rn, column=8, value=abs(float(r[7] or 0))).number_format = MONEY_FMT_2   # Удержания
-        ws6.cell(row=rn, column=9, value=abs(float(r[8] or 0))).number_format = MONEY_FMT_2   # Эквайринг
+        vals = [abs(float(r[j] or 0)) for j in range(3, 9)]
+        for j, v in enumerate(vals):
+            ws6.cell(row=rn, column=4 + j, value=v).number_format = MONEY_FMT_2
+        row_total = sum(vals)
+        exp_grand_total += row_total
+        ws6.cell(row=rn, column=10, value=round(row_total, 2)).number_format = MONEY_FMT_2
+        pct_rev = row_total / revenue_cur * 100 if revenue_cur > 0 else 0
+        c_pct = ws6.cell(row=rn, column=11, value=round(pct_rev, 2))
+        c_pct.number_format = '0.00"%"'
+        c_pct.font = RED_FONT if pct_rev > 5 else NORMAL_FONT
         _style_data_row(ws6, rn, len(exp_headers), is_alt=(i % 2 == 1))
+
+    # Totals row for expenses
+    exp_total_row = len(expense_detail_rows) + 2
+    ws6.cell(row=exp_total_row, column=1, value="ИТОГО")
+    ws6.cell(row=exp_total_row, column=10, value=round(exp_grand_total, 2)).number_format = MONEY_FMT_2
+    pct_total = exp_grand_total / revenue_cur * 100 if revenue_cur > 0 else 0
+    ws6.cell(row=exp_total_row, column=11, value=round(pct_total, 1)).number_format = '0.0"%"'
+    _style_total_row(ws6, exp_total_row, len(exp_headers))
 
     _auto_width(ws6)
     ws6.freeze_panes = 'A2'
+    ws6.auto_filter.ref = f"A1:{chr(64 + len(exp_headers))}{exp_total_row - 1}"
 
     # ══════════════════════════════════════════════════════
     # Save

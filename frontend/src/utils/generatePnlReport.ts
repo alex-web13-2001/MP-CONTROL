@@ -519,7 +519,6 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: st
     { key: 'compensation', label: 'Платная приёмка' },
     { key: 'deductions_other', label: 'Удержания' },
     { key: 'deductions_ads', label: 'ВБ Продвижение' },
-    { key: 'advertising', label: 'Реклама (внешняя)' },
     { key: 'refunds', label: 'Возвраты' },
     { key: 'cogs', label: 'Себестоимость' },
     { key: '_sep_totals', label: 'ИТОГО', separator: true },
@@ -730,7 +729,7 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
   let body: string[][]
 
   if (isWb) {
-    head = ['Нед', 'Период', 'Кол-во', 'Выручка', 'К перечисл.', 'Комиссия', 'Логистика', 'Хранение', 'Удержания', 'ВБ Продв.', 'Приёмка', 'Реклама', 'С/С', 'Прибыль', 'Маржа']
+    head = ['Нед', 'Период', 'Кол-во', 'Выручка', 'К перечисл.', 'Комиссия', 'Логистика', 'Хранение', 'Удержания', 'ВБ Продв.', 'Приёмка', 'С/С', 'Прибыль', 'Маржа']
     body = weeks.map(w => {
       const wk = w as WBWeeklyReportRow
       const rev = wk.revenue || 1
@@ -747,7 +746,6 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
         fmtNum(wk.deductions),
         fmtNum(wk.wb_promo),
         fmtNum(wk.acceptance),
-        fmtNum(wk.marketing),
         fmtNum(wk.cogs),
         fmtNum(wk.gross_profit),
         margin,
@@ -787,7 +785,7 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
         '', 'ИТОГО', `${t.qty || 0}`,
         fmtNum(t.revenue || 0), fmtNum(t.payout || 0), fmtNum(t.commission || 0),
         fmtNum(t.logistics || 0), fmtNum(t.storage || 0), fmtNum(t.deductions || 0),
-        fmtNum(t.wb_promo || 0), fmtNum(t.acceptance || 0), fmtNum(t.marketing || 0),
+        fmtNum(t.wb_promo || 0), fmtNum(t.acceptance || 0),
         fmtNum(t.cogs || 0), fmtNum(t.gross_profit || 0),
         `${((t.gross_profit || 0) / rev * 100).toFixed(1)}%`,
       ])
@@ -846,7 +844,7 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
         cellData.cell.styles.textColor = C.textDark
       }
       // Profit column color
-      const profitCol = isWb ? 13 : 12
+      const profitCol = isWb ? 12 : 12
       if (cellData.section === 'body' && cellData.column.index === profitCol) {
         const numVal = parseFloat(String(cellData.cell.raw).replace(/\s/g, '').replace(',', '.'))
         if (!isNaN(numVal)) {
@@ -855,7 +853,7 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
         }
       }
       // Margin column
-      const marginCol = isWb ? 14 : 13
+      const marginCol = isWb ? 13 : 13
       if (cellData.section === 'body' && cellData.column.index === marginCol) {
         const pct = parseFloat(String(cellData.cell.raw))
         if (!isNaN(pct)) {
