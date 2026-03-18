@@ -3479,20 +3479,56 @@ async def ozon_warehouse_overview(
                 global_sku_agg[sku_id]["stock"] += sku_info["stock"]
                 global_sku_agg[sku_id]["orders"] += sku_orders_data.get(sku_id, {"orders": 0})["orders"]
 
+        # Also add SKUs that have orders but NO stock (filtered by free_to_sell > 0)
+        missing_sku_ids: set[int] = set()
+        missing_sku_orders: dict[int, int] = {}  # sku_id → total_orders
+        for wh_name, wh_ord_data in wh_orders.items():
+            for sku_id, sku_ord in wh_ord_data.get("skus", {}).items():
+                if sku_id not in global_sku_agg:
+                    missing_sku_ids.add(sku_id)
+                    missing_sku_orders[sku_id] = missing_sku_orders.get(sku_id, 0) + sku_ord["orders"]
+
+        if missing_sku_ids:
+            # Resolve offer_id / name for these zero-stock SKUs
+            sku_info_rows = ch.query("""
+                SELECT sku, offer_id, product_name
+                FROM fact_ozon_warehouse_stocks FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND sku IN {sku_ids:Array(UInt64)}
+            """, parameters={"shop_id": shop_id, "sku_ids": list(missing_sku_ids)}).result_rows
+            sku_info_map = {int(r[0]): {"offer_id": r[1], "name": r[2]} for r in sku_info_rows}
+
+            for sku_id in missing_sku_ids:
+                info = sku_info_map.get(sku_id, {"offer_id": str(sku_id), "name": ""})
+                global_sku_agg[sku_id] = {
+                    "sku": sku_id, "offer_id": info["offer_id"],
+                    "name": info["name"], "stock": 0,
+                    "orders": missing_sku_orders.get(sku_id, 0),
+                }
+
         out_of_stock_skus = []
         for agg in global_sku_agg.values():
             daily = agg["orders"] / period if period > 0 else 0
-            if daily > 0 and agg["stock"] > 0 and (agg["stock"] / daily) < 14:
-                days_left = round(agg["stock"] / daily)
-                out_of_stock_skus.append({
-                    "offer_id": agg["offer_id"],
-                    "name": agg["name"],
-                    "stock": agg["stock"],
-                    "daily": round(daily, 1),
-                    "days_left": days_left,
-                })
-        out_of_stock_skus.sort(key=lambda x: x["days_left"])
-        out_of_stock_skus = out_of_stock_skus[:10]
+            if daily > 0:
+                if agg["stock"] == 0:
+                    # Already out-of-stock — most critical
+                    out_of_stock_skus.append({
+                        "offer_id": agg["offer_id"],
+                        "name": agg["name"],
+                        "stock": 0,
+                        "daily": round(daily, 1),
+                        "days_left": 0,
+                    })
+                elif (agg["stock"] / daily) < 14:
+                    days_left = round(agg["stock"] / daily)
+                    out_of_stock_skus.append({
+                        "offer_id": agg["offer_id"],
+                        "name": agg["name"],
+                        "stock": agg["stock"],
+                        "daily": round(daily, 1),
+                        "days_left": days_left,
+                    })
+        out_of_stock_skus.sort(key=lambda x: (x["days_left"], -x["daily"]))
 
         # ── 9. KPI ────────────────────────────────────────────────
         total_stock = sum(w["stock"] for w in warehouses_result)
@@ -5564,6 +5600,9 @@ async def wb_warehouse_analytics(
     all_nm_ids: set[int] = set()
     for wh_data in wh_stocks.values():
         all_nm_ids.update(wh_data["nm_ids"])
+    # Also include nm_ids from orders (for OOS items that have stock=0 but orders>0)
+    for wh_sku_data in wh_sku_orders.values():
+        all_nm_ids.update(wh_sku_data.keys())
 
     products_map: dict[int, dict] = {}
     if all_nm_ids:
@@ -5978,20 +6017,62 @@ async def wb_warehouse_analytics(
             global_sku_agg[nm_id]["stock"] += qty
             global_sku_agg[nm_id]["orders"] += sku_ords["orders"]
 
+    # Also add items that have orders but NO stock (stock query filters qty > 0)
+    for wh_name, sku_data_map in wh_sku_orders.items():
+        for nm_id, sku_ords in sku_data_map.items():
+            if nm_id not in global_sku_agg:
+                prod = products_map.get(nm_id, {})
+                global_sku_agg[nm_id] = {
+                    "nm_id": nm_id,
+                    "vendor_code": prod.get("vendor_code", ""),
+                    "name": prod.get("name", ""),
+                    "stock": 0,
+                    "orders": sku_ords["orders"],
+                }
+
     out_of_stock_skus = []
     for agg in global_sku_agg.values():
         daily = agg["orders"] / period if period > 0 else 0
-        if daily > 0 and agg["stock"] > 0 and (agg["stock"] / daily) < 14:
-            days_left = round(agg["stock"] / daily)
-            out_of_stock_skus.append({
-                "vendor_code": agg["vendor_code"],
-                "name": agg["name"],
-                "stock": agg["stock"],
-                "daily": round(daily, 1),
-                "days_left": days_left,
-            })
-    out_of_stock_skus.sort(key=lambda x: x["days_left"])
-    out_of_stock_skus = out_of_stock_skus[:10]  # top 10 most critical
+        if daily > 0:
+            if agg["stock"] == 0:
+                # Already out-of-stock — most critical
+                out_of_stock_skus.append({
+                    "vendor_code": agg["vendor_code"],
+                    "name": agg["name"],
+                    "stock": 0,
+                    "daily": round(daily, 1),
+                    "days_left": 0,
+                })
+            elif (agg["stock"] / daily) < 14:
+                days_left = round(agg["stock"] / daily)
+                out_of_stock_skus.append({
+                    "vendor_code": agg["vendor_code"],
+                    "name": agg["name"],
+                    "stock": agg["stock"],
+                    "daily": round(daily, 1),
+                    "days_left": days_left,
+                })
+    out_of_stock_skus.sort(key=lambda x: (x["days_left"], -x["daily"]))
+
+    # ── 11b. Products summary (ALL products aggregated across warehouses) ──
+    products_summary = []
+    for agg in global_sku_agg.values():
+        daily = round(agg["orders"] / period, 2) if period > 0 else 0
+        days_supply = round(agg["stock"] / daily) if daily > 0 else None
+        products_summary.append({
+            "nm_id": agg["nm_id"],
+            "vendor_code": agg["vendor_code"],
+            "name": agg["name"],
+            "stock": agg["stock"],
+            "orders": agg["orders"],
+            "daily": daily,
+            "days_supply": days_supply,
+        })
+    # Sort: OOS first (stock=0 with sales), then by daily descending
+    products_summary.sort(key=lambda x: (
+        0 if x["stock"] == 0 and (x["daily"] or 0) > 0 else 1,
+        -(x["daily"] or 0),
+    ))
 
     # ── 12. KPI ──────────────────────────────────────────────
     total_stock = sum(w["stock"] for w in warehouses_result)
@@ -6082,6 +6163,7 @@ async def wb_warehouse_analytics(
     return {
         "kpi": kpi,
         "warehouses": warehouses_result,
+        "products_summary": products_summary,
         "cross_map": cross_map,
         "okrug_list": okrug_list,
         "costs": costs_summary,
@@ -7436,7 +7518,7 @@ async def get_wb_ai_analysis(
             # Count SKUs near out-of-stock globally
             oos_count = 0
             for s in skus_context:
-                if s["daily"] > 0 and s["stock"] > 0 and (s["stock"] / s["daily"]) < 14:
+                if s["daily"] > 0 and (s["stock"] == 0 or (s["stock"] / s["daily"]) < 14):
                     oos_count += 1
             sev = "critical" if oos_count > 2 else "warning" if oos_count > 0 else "ok"
             ai_sections.append({
@@ -10901,3 +10983,442 @@ async def get_ozon_storage_ai_analysis(
     except Exception as e:
         logger.exception("Ozon Storage AI analysis failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+
+# ══════════════════════════════════════════════════════════════
+# Stock Report — Excel (WB + Ozon)
+# ══════════════════════════════════════════════════════════════
+
+def _build_stock_report_excel(
+    warehouses: list[dict],
+    wh_name_key: str,
+    sku_id_key: str,
+    sku_label_key: str,
+    sku_name_key: str,
+    period: int,
+    shop_id: int,
+    marketplace: str,
+):
+    """Build a stock report Excel workbook with two sheets: По складам & По товарам.
+
+    Common logic for both WB and Ozon — differences parametrized via keys.
+    """
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+
+    # ── Styles ──
+    hdr_font = Font(bold=True, size=11, color="FFFFFF")
+    hdr_fill = PatternFill("solid", fgColor="2F5496")
+    hdr_fill_green = PatternFill("solid", fgColor="2E7D32")
+    bold_font = Font(bold=True, size=11)
+    bold_sm = Font(bold=True, size=10)
+    oos_fill = PatternFill("solid", fgColor="FDECEA")       # light red
+    oos_font = Font(bold=True, size=11, color="C0392B")
+    low_fill = PatternFill("solid", fgColor="FFF8E1")       # light amber
+    low_font = Font(bold=True, size=11, color="E65100")
+    wh_fill = PatternFill("solid", fgColor="D9E2F3")
+    wh_font = Font(bold=True, size=12)
+    thin = Side(style="thin", color="D0D0D0")
+    border = Border(bottom=thin, top=thin, left=thin, right=thin)
+    center = Alignment(horizontal="center", vertical="center")
+    wrap = Alignment(wrap_text=True, vertical="top")
+    num_fmt = "#,##0"
+
+    def style_header(ws, headers, fill):
+        for ci, (name, w) in enumerate(headers, 1):
+            c = ws.cell(1, ci, name)
+            c.font = hdr_font
+            c.fill = fill
+            c.alignment = center
+            c.border = border
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    # ════════════════════════════════════════════════════════════
+    # Sheet 1: ПО СКЛАДАМ
+    # ════════════════════════════════════════════════════════════
+    ws1 = wb.active
+    ws1.title = "По складам"
+
+    headers1 = [
+        ("Склад", 24), ("Артикул", 20), ("Название", 40),
+        ("Остаток", 12), ("Заказов", 12), ("В день", 10),
+        ("Запас дн", 12), ("Статус", 14),
+    ]
+    style_header(ws1, headers1, hdr_fill)
+
+    row = 2
+    for wh in sorted(warehouses, key=lambda w: w.get("orders", 0), reverse=True):
+        wh_name = wh[wh_name_key]
+        skus = wh.get("skus", [])
+        if not skus:
+            continue
+
+        # Warehouse header row
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        c = ws1.cell(row, 1, f"📦 {wh_name}  —  Остаток: {wh.get('stock', 0):,}  |  Заказов: {wh.get('orders', 0):,}  |  SKU: {wh.get('sku_count', len(skus))}")
+        c.font = wh_font
+        c.fill = wh_fill
+        c.alignment = Alignment(vertical="center")
+        for ci in range(1, 9):
+            ws1.cell(row, ci).border = border
+        row += 1
+
+        for sku in sorted(skus, key=lambda s: s.get("orders", 0), reverse=True):
+            stock = sku.get("stock", 0)
+            orders = sku.get("orders", 0)
+            daily = sku.get("daily_sales", 0)
+            days = sku.get("days_supply")
+            is_oos = stock == 0 and orders > 0
+            is_low = not is_oos and days is not None and days < 14 and stock > 0
+
+            # Status label
+            if is_oos:
+                status = "🔴 OOS"
+            elif is_low:
+                status = "🟡 Дефицит"
+            elif days is not None and days > 120:
+                status = "🟣 Излишек"
+            else:
+                status = "✅ Норма"
+
+            ws1.cell(row, 1, wh_name)
+            ws1.cell(row, 2, sku.get(sku_label_key, ""))
+            ws1.cell(row, 3, sku.get(sku_name_key, "")).alignment = wrap
+            ws1.cell(row, 4, stock).number_format = num_fmt
+            ws1.cell(row, 5, orders).number_format = num_fmt
+            ws1.cell(row, 6, round(daily, 2)).number_format = "0.00"
+            ws1.cell(row, 7, round(days, 1) if days is not None else "—")
+            ws1.cell(row, 8, status)
+
+            # Apply highlighting
+            for ci in range(1, 9):
+                ws1.cell(row, ci).border = border
+                if is_oos:
+                    ws1.cell(row, ci).fill = oos_fill
+                    if ci in (4, 7, 8):
+                        ws1.cell(row, ci).font = oos_font
+                elif is_low:
+                    ws1.cell(row, ci).fill = low_fill
+                    if ci in (7, 8):
+                        ws1.cell(row, ci).font = low_font
+            row += 1
+
+        row += 1  # blank row between warehouses
+
+    # ════════════════════════════════════════════════════════════
+    # Sheet 2: ПО ТОВАРАМ
+    # ════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet("По товарам")
+
+    # Pivot: product → {wh_name: stock}
+    product_map: dict[str, dict] = {}  # keyed by sku_id
+    wh_names_set: set[str] = set()
+
+    for wh in warehouses:
+        wh_name = wh[wh_name_key]
+        for sku in wh.get("skus", []):
+            sku_id = str(sku.get(sku_id_key, ""))
+            if sku_id not in product_map:
+                product_map[sku_id] = {
+                    "label": sku.get(sku_label_key, ""),
+                    "name": sku.get(sku_name_key, ""),
+                    "total_stock": 0,
+                    "total_orders": 0,
+                    "total_daily": 0.0,
+                    "per_wh": {},
+                }
+            product_map[sku_id]["total_stock"] += sku.get("stock", 0)
+            product_map[sku_id]["total_orders"] += sku.get("orders", 0)
+            product_map[sku_id]["total_daily"] += sku.get("daily_sales", 0)
+            product_map[sku_id]["per_wh"][wh_name] = sku.get("stock", 0)
+            wh_names_set.add(wh_name)
+
+    wh_names_list = sorted(wh_names_set)
+
+    headers2 = [
+        ("Артикул", 20), ("Название", 40),
+        ("Остаток", 12), ("Заказов", 12), ("В день", 10),
+        ("Запас дн", 12), ("Скл.", 8), ("Статус", 14),
+    ]
+    # Add per-warehouse columns
+    for wn in wh_names_list:
+        short_name = wn[:16] + "…" if len(wn) > 16 else wn
+        headers2.append((short_name, 14))
+
+    style_header(ws2, headers2, hdr_fill_green)
+
+    # Sorted products: by orders desc
+    products_sorted = sorted(product_map.items(), key=lambda x: x[1]["total_orders"], reverse=True)
+
+    row = 2
+    for sku_id, p in products_sorted:
+        total_stock = p["total_stock"]
+        total_orders = p["total_orders"]
+        daily = p["total_daily"]
+        days = total_stock / daily if daily > 0 else None
+        wh_count = sum(1 for s in p["per_wh"].values() if s > 0)
+        is_oos = total_stock == 0 and total_orders > 0
+        is_low = not is_oos and days is not None and days < 14 and total_stock > 0
+
+        if is_oos:
+            status = "🔴 OOS"
+        elif is_low:
+            status = "🟡 Дефицит"
+        elif days is not None and days > 120:
+            status = "🟣 Излишек"
+        else:
+            status = "✅ Норма"
+
+        ws2.cell(row, 1, p["label"]).font = bold_sm
+        ws2.cell(row, 2, p["name"]).alignment = wrap
+        ws2.cell(row, 3, total_stock).number_format = num_fmt
+        ws2.cell(row, 4, total_orders).number_format = num_fmt
+        ws2.cell(row, 5, round(daily, 2)).number_format = "0.00"
+        ws2.cell(row, 6, round(days, 1) if days is not None else "—")
+        ws2.cell(row, 7, wh_count)
+        ws2.cell(row, 8, status)
+
+        # Per-warehouse stock
+        for wi, wn in enumerate(wh_names_list):
+            stock_at_wh = p["per_wh"].get(wn, 0)
+            c = ws2.cell(row, 9 + wi, stock_at_wh if stock_at_wh > 0 else "")
+            c.number_format = num_fmt
+            c.alignment = center
+            # Highlight zero stock where product has orders
+            if stock_at_wh == 0 and total_orders > 0:
+                c.fill = PatternFill("solid", fgColor="FCE4EC")
+                c.font = Font(color="B71C1C", size=10)
+
+        # Apply row highlighting
+        total_cols = 8 + len(wh_names_list)
+        for ci in range(1, total_cols + 1):
+            ws2.cell(row, ci).border = border
+            if ci <= 8:  # main columns only
+                if is_oos:
+                    ws2.cell(row, ci).fill = oos_fill
+                    if ci in (3, 6, 8):
+                        ws2.cell(row, ci).font = oos_font
+                elif is_low:
+                    ws2.cell(row, ci).fill = low_fill
+                    if ci in (6, 8):
+                        ws2.cell(row, ci).font = low_font
+        row += 1
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@router.get("/wb/analytics/stock-report/excel")
+async def wb_stock_report_excel(
+    shop_id: int = Query(...),
+    period: int = Query(30),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download WB stock report as formatted Excel (two sheets: По складам & По товарам).
+    Includes OOS products (zero stock but with orders)."""
+    from fastapi.responses import StreamingResponse
+    from app.core.clickhouse import get_clickhouse_client
+
+    result = await wb_warehouse_analytics(shop_id=shop_id, period=period, db=db, current_user=current_user)
+    warehouses = result.get("warehouses", [])
+
+    if not warehouses:
+        raise HTTPException(404, "Нет данных по складам")
+
+    # ── Inject OOS products (stock=0 but orders>0) ─────────
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    # Collect all nm_ids that already have stock in some warehouse
+    stocked_nm_ids: set[int] = set()
+    for wh in warehouses:
+        for sku in wh.get("skus", []):
+            stocked_nm_ids.add(sku.get("nm_id", 0))
+
+    # Get all ordered nm_ids per warehouse in the period
+    oos_rows = ch.query("""
+        SELECT warehouse_name, nm_id, count() AS orders
+        FROM mms_analytics.fact_orders_raw
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {d_start:Date}
+          AND is_cancel = 0
+        GROUP BY warehouse_name, nm_id
+    """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+    # Find OOS: nm_ids with orders but NOT in stocked_nm_ids
+    oos_by_wh: dict[str, dict[int, int]] = {}  # wh → {nm_id → orders}
+    all_oos_nm_ids: set[int] = set()
+    for row in oos_rows:
+        wh_name, nm_id, orders = row[0], int(row[1]), int(row[2])
+        if nm_id not in stocked_nm_ids:
+            oos_by_wh.setdefault(wh_name, {})[nm_id] = orders
+            all_oos_nm_ids.add(nm_id)
+
+    if all_oos_nm_ids:
+        # Resolve product names for OOS nm_ids (dim_products is PostgreSQL!)
+        from sqlalchemy import text as sa_text
+        prod_result = await db.execute(
+            sa_text("SELECT nm_id, vendor_code, name FROM dim_products WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)"),
+            {"shop_id": shop_id, "nm_ids": list(all_oos_nm_ids)},
+        )
+        prod_map = {int(r[0]): {"vendor_code": r[1] or str(r[0]), "name": r[2] or ""} for r in prod_result.fetchall()}
+
+        # Add OOS SKUs to each warehouse
+        wh_map = {wh["warehouse_name"]: wh for wh in warehouses}
+        for wh_name, nm_orders in oos_by_wh.items():
+            if wh_name not in wh_map:
+                continue
+            wh = wh_map[wh_name]
+            for nm_id, orders in nm_orders.items():
+                prod = prod_map.get(nm_id, {"vendor_code": str(nm_id), "name": ""})
+                daily = orders / period if period > 0 else 0
+                wh["skus"].append({
+                    "nm_id": nm_id,
+                    "vendor_code": prod["vendor_code"],
+                    "name": prod["name"],
+                    "stock": 0,
+                    "daily_sales": round(daily, 2),
+                    "days_supply": None,
+                    "orders": orders,
+                    "cross_orders": 0,
+                    "cross_pct": 0,
+                    "geography": [],
+                })
+
+    buf = _build_stock_report_excel(
+        warehouses=warehouses,
+        wh_name_key="warehouse_name",
+        sku_id_key="nm_id",
+        sku_label_key="vendor_code",
+        sku_name_key="name",
+        period=period,
+        shop_id=shop_id,
+        marketplace="wb",
+    )
+
+    filename = f"stock_report_wb_shop{shop_id}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/ozon/overview/stock-report/excel")
+async def ozon_stock_report_excel(
+    shop_id: int = Query(...),
+    period: int = Query(30),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download Ozon stock report as formatted Excel (two sheets: По складам & По товарам).
+    Includes OOS products (zero stock but with orders)."""
+    from fastapi.responses import StreamingResponse
+    from app.core.clickhouse import get_clickhouse_client
+
+    result = await ozon_warehouse_overview(shop_id=shop_id, period=period, db=db, current_user=current_user)
+    warehouses = result.get("warehouses", [])
+
+    if not warehouses:
+        raise HTTPException(404, "Нет данных по складам")
+
+    # ── Inject OOS products (stock=0 but orders>0) ─────────
+    ch = get_clickhouse_client()
+    today = date.today()
+    d_start = today - timedelta(days=period)
+
+    # Collect all SKUs that already have stock
+    stocked_skus: set[int] = set()
+    for wh in warehouses:
+        for sku in wh.get("skus", []):
+            stocked_skus.add(int(sku.get("sku", 0)))
+
+    # Get all ordered SKUs per warehouse in the period
+    oos_rows = ch.query("""
+        SELECT warehouse_name, sku, count() AS orders
+        FROM fact_ozon_orders FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND order_date >= {d_start:Date}
+          AND status NOT IN ('cancelled')
+        GROUP BY warehouse_name, sku
+    """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+
+    oos_by_wh: dict[str, dict[int, int]] = {}
+    all_oos_skus: set[int] = set()
+    for row in oos_rows:
+        wh_name, sku_id, orders = row[0], int(row[1]), int(row[2])
+        if sku_id not in stocked_skus:
+            oos_by_wh.setdefault(wh_name, {})[sku_id] = orders
+            all_oos_skus.add(sku_id)
+
+    if all_oos_skus:
+        # Resolve product names for OOS SKUs
+        prod_rows = ch.query("""
+            SELECT sku, offer_id, product_name
+            FROM fact_ozon_warehouse_stocks FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND sku IN {sku_ids:Array(UInt64)}
+        """, parameters={"shop_id": shop_id, "sku_ids": list(all_oos_skus)}).result_rows
+        prod_map = {int(r[0]): {"offer_id": r[1], "name": r[2]} for r in prod_rows}
+
+        # Fallback: try dim_ozon_products
+        missing = all_oos_skus - set(prod_map.keys())
+        if missing:
+            prod_rows2 = ch.query("""
+                SELECT product_id, offer_id, name
+                FROM dim_ozon_products FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND product_id IN {ids:Array(UInt64)}
+            """, parameters={"shop_id": shop_id, "ids": list(missing)}).result_rows
+            for r in prod_rows2:
+                prod_map[int(r[0])] = {"offer_id": r[1], "name": r[2]}
+
+        # Add OOS SKUs to each warehouse
+        wh_map = {wh["warehouse_name"]: wh for wh in warehouses}
+        for wh_name, sku_orders in oos_by_wh.items():
+            if wh_name not in wh_map:
+                continue
+            wh = wh_map[wh_name]
+            for sku_id, orders in sku_orders.items():
+                prod = prod_map.get(sku_id, {"offer_id": str(sku_id), "name": ""})
+                daily = orders / period if period > 0 else 0
+                wh["skus"].append({
+                    "sku": sku_id,
+                    "offer_id": prod["offer_id"],
+                    "name": prod["name"],
+                    "stock": 0,
+                    "daily_sales": round(daily, 2),
+                    "days_supply": None,
+                    "orders": orders,
+                    "cross_orders": 0,
+                    "cross_pct": 0,
+                })
+
+    buf = _build_stock_report_excel(
+        warehouses=warehouses,
+        wh_name_key="warehouse_name",
+        sku_id_key="sku",
+        sku_label_key="offer_id",
+        sku_name_key="name",
+        period=period,
+        shop_id=shop_id,
+        marketplace="ozon",
+    )
+
+    filename = f"stock_report_ozon_shop{shop_id}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+

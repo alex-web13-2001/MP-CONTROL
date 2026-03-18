@@ -1,3 +1,83 @@
+## 2026-03-18 (v17.3)
+
+### feat(warehouses): режим «Товары» — обратная перспектива таблицы складов (WB + Ozon)
+
+**Frontend** (`WarehousesOverviewPage.tsx`):
+- Toggle «Склады / Товары» в заголовке таблицы складов
+- Режим «Товары»: строки = все товары, колонки = per-warehouse stock
+- Данные из `warehouses[].skus` + `products_summary` пивотятся в матрицу `ProductRow[]`
+- OOS-товары (stock=0, orders>0) подсвечены красным фоном + бейдж `OOS`
+- Товары с дефицитом (<14 дней) подсвечены amber + бейдж `LOW`
+- Ячейки складов: красный если 0 stock + есть заказы, серый если нет данных
+- Развернутые строки: per-warehouse детали (склад, остаток, заказы, дн.запаса)
+- В развёрнутом виде видно список складов где товара нет — «Нет на складах: [список]»
+- Sticky first column (Товар) при горизонтальном скролле
+- Легенда OOS/LOW над таблицей с количеством
+- Сортировка: OOS → LOW → по заказам
+
+---
+
+## 2026-03-18 (v17.2)
+
+### feat(warehouses): products_summary — OOS-товары в поиске по таблице складов
+
+**Backend** (`warehouses.py`):
+- Новое поле `products_summary` в ответе `/wb/analytics` — агрегированная статистика по всем товарам (stock, orders, daily, days_supply) из `global_sku_agg`
+- Включает OOS-товары (stock=0, orders>0), которые раньше не попадали в таблицу складов
+
+**Frontend** (`warehouses.ts`):
+- Новый интерфейс `WBProductSummary` (nm_id, vendor_code, name, stock, orders, daily, days_supply)
+- Поле `products_summary: WBProductSummary[]` в `WBWarehouseAnalyticsResponse`
+
+**Frontend** (`WarehousesOverviewPage.tsx`):
+- `WarehousesTable` принимает `productsSummary` prop
+- `allSkus` мерж: warehouse SKUs + products_summary → OOS-товары доступны в поиске/фильтре
+
+**Frontend** (`WarehousesCrossPage.tsx`):
+- `normalizeOzonToCrossData()` — добавлен `products_summary: []` для совместимости типов
+
+---
+
+## 2026-03-18 (v17.1)
+
+### fix(diagnostics): OOS-товары без vendor_code и name в диагностике
+
+**Root cause**: `all_nm_ids` (строка 5601-5603 в `warehouses.py`) формировался **только** из `wh_stocks` — товаров с остатком > 0. OOS-товары (stock=0, но есть заказы) не попадали в запрос к `dim_products`, и `products_map` для них оставался пустым → пустые `vendor_code` и `name` в ответе API.
+
+**Backend** (`warehouses.py`):
+- `all_nm_ids` теперь дополняется nm_id из `wh_sku_orders` — товаров с заказами за период
+- Все OOS-товары получают полные данные (vendor_code, name) из `dim_products`
+- Блок «Диагностика проблем → Out-of-stock» на Overview теперь корректно показывает артикулы и названия
+
+---
+
+## 2026-03-18 (v17)
+
+### fix(diagnostics): OOS — товары с нулевым остатком не отображались в диагностике
+
+**Root cause**: Логика OOS-агрегации фильтровала товары с `stock > 0` и `free_to_sell > 0`, исключая самые критичные товары — уже распроданные (stock = 0).
+
+**Backend** (`warehouses.py`):
+- **Ozon OOS** (строки 3482-3510): добавлен цикл по `wh_orders` для SKU с заказами, но без стока. Доп-запрос к `fact_ozon_warehouse_stocks` для resolve `offer_id` / `name` нулевых SKU
+- **AI-диагностика** (строка 7499): условие `s["stock"] > 0 and (s["stock"] / s["daily"]) < 14` → `s["stock"] == 0 or (s["stock"] / s["daily"]) < 14` — теперь включает товары с полностью нулевым остатком
+- **WB OOS** (строки 6018-6053): проверен — уже содержал корректный цикл для товаров без стока
+
+---
+
+## 2026-03-18 (v16)
+
+### fix(stocks): WB остатки — товары «в пути» учитывались как доступные на складе
+
+**Root cause**: `wb_stocks_service.py:131` использовал `quantityFull` (включает `inWayToClient` + `inWayFromClient`) вместо `quantity` (фактический остаток на складе). Это приводило к завышенным остаткам, отсутствию предупреждений STOCK_OUT и некорректному расчёту поставок.
+
+**Backend** (`wb_stocks_service.py`):
+- `quantity_full = stock_item.get("quantityFull", ...)` → `quantity = stock_item.get("quantity", 0)`
+- `amount` в данных теперь содержит реальный остаток на складе
+- `quantity_full` сохранён отдельно как `stock_item.get("quantityFull", 0)` для информации
+- Все downstream-потребители (event detector, Redis state, ClickHouse snapshot, dashboard, products, supply, turnover) автоматически получают корректные данные
+
+---
+
 ## 2026-03-18 (v15)
 
 ### fix(finances): устранение задвоения рекламы в WB отчётах

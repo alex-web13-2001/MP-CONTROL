@@ -736,9 +736,20 @@ export interface WBRecommendation {
   warehouse: string
 }
 
+export interface WBProductSummary {
+  nm_id: number
+  vendor_code: string
+  name: string
+  stock: number
+  orders: number
+  daily: number
+  days_supply: number | null
+}
+
 export interface WBWarehouseAnalyticsResponse {
   kpi: WBAnalyticsKpi
   warehouses: WBAnalyticsWarehouse[]
+  products_summary: WBProductSummary[]
   cross_map: WBCrossMapRow[]
   okrug_list: string[]
   costs: WBCostSummary[]
@@ -767,6 +778,29 @@ export async function downloadStorageExcel(params: {
   const link = document.createElement('a')
   link.href = url
   link.setAttribute('download', `storage_${params.shop_id}_${params.period ?? 30}d.xlsx`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
+export async function downloadStockReportExcel(params: {
+  shop_id: number
+  period?: number
+  marketplace: 'wildberries' | 'ozon'
+}): Promise<void> {
+  const endpoint = params.marketplace === 'wildberries'
+    ? '/warehouses/wb/analytics/stock-report/excel'
+    : '/warehouses/ozon/overview/stock-report/excel'
+  const response = await apiClient.get(endpoint, {
+    params: { shop_id: params.shop_id, period: params.period ?? 30 },
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  const mp = params.marketplace === 'wildberries' ? 'wb' : 'ozon'
+  link.setAttribute('download', `stock_report_${mp}_${params.shop_id}_${params.period ?? 30}d.xlsx`)
   document.body.appendChild(link)
   link.click()
   link.remove()

@@ -978,6 +978,7 @@ function normalizeOzonToCrossData(ozon: WarehouseAnalyticsResponse): WBWarehouse
       forecast_30d: null,
     },
     warehouses,
+    products_summary: [],
     cross_map,
     okrug_list: ozon.cluster_list ?? [],
     costs: [],

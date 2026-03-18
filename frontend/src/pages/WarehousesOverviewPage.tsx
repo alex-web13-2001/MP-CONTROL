@@ -30,6 +30,7 @@ import {
   X,
   Check,
   Search,
+  Download,
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -38,8 +39,10 @@ import {
   getWBWarehouseAnalytics,
   getWBWarehouseAIAnalysis,
   getOzonOverview,
+  downloadStockReportExcel,
   type WBWarehouseAnalyticsResponse,
   type WBAnalyticsWarehouse,
+  type WBProductSummary,
   type AIWarehouseAnalysis,
   type AIAnalysisSection,
   type OzonOverviewResponse,
@@ -205,6 +208,88 @@ function ProblemCard({
   )
 }
 
+
+/* ═══ OOS Expandable Card ═══ */
+function OosExpandableCard({
+  severity, title, items, idField, link, linkLabel, delay,
+}: {
+  severity: 'critical' | 'warning'
+  title: string
+  items: any[]
+  idField: 'vendor_code' | 'offer_id'
+  link?: string
+  linkLabel?: string
+  delay: number
+}) {
+  const navigate = useNavigate()
+  const [expanded, setExpanded] = useState(false)
+  const PREVIEW_COUNT = 3
+  const hasMore = items.length > PREVIEW_COUNT
+  const visible = expanded ? items : items.slice(0, PREVIEW_COUNT)
+
+  const styles = {
+    critical: { border: 'border-red-500/30', bg: 'bg-red-500/5', icon: 'text-red-400', dot: 'bg-red-500' },
+    warning: { border: 'border-amber-500/30', bg: 'bg-amber-500/5', icon: 'text-amber-400', dot: 'bg-amber-500' },
+  }
+  const s = styles[severity]
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay, duration: 0.3 }}
+    >
+      <div className={`rounded-xl border ${s.border} ${s.bg} p-4 flex items-start gap-3`}>
+        <div className={`mt-0.5 p-1.5 rounded-lg ${s.bg} ${s.icon}`}>
+          <AlertTriangle className="h-4 w-4" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-1">
+            <span className={`h-2 w-2 rounded-full ${s.dot}`} />
+            <span className="text-[13px] font-bold text-[hsl(var(--foreground))]">{title}</span>
+          </div>
+          <div className="text-[12px] text-[hsl(var(--muted-foreground))] leading-relaxed">
+            <div className="mb-1.5">SKU заканчиваются на всех складах:</div>
+            <div className={`space-y-1 ${expanded && items.length > 8 ? 'max-h-[300px] overflow-y-auto pr-1' : ''}`}>
+              {visible.map((item: any, i: number) => (
+                <div key={i} className="flex items-center gap-2 text-[11px]">
+                  <span className="font-semibold text-[hsl(var(--foreground))] truncate min-w-0 max-w-[180px]">
+                    {item[idField] || `SKU ${item.sku || '?'}`}
+                  </span>
+                  {item.name && (
+                    <span className="text-[10px] opacity-40 truncate max-w-[150px] hidden sm:inline">{item.name}</span>
+                  )}
+                  <span className={`ml-auto font-bold shrink-0 ${item.days_left === 0 ? 'text-red-500' : 'text-red-400'}`}>
+                    {item.days_left === 0 ? 'OOS!' : `${item.days_left} дн`}
+                  </span>
+                  <span className="opacity-40 shrink-0">{fmt(item.stock)} шт / {item.daily.toFixed(1)}/день</span>
+                </div>
+              ))}
+            </div>
+            {hasMore && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
+                className="mt-2 flex items-center gap-1 text-[11px] font-medium text-[hsl(var(--primary))] hover:underline"
+              >
+                {expanded ? (
+                  <><ChevronUp className="h-3 w-3" /> Свернуть</>
+                ) : (
+                  <><ChevronDown className="h-3 w-3" /> Показать все {items.length} товаров</>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+        {link && (
+          <button
+            onClick={() => navigate(link)}
+            className="shrink-0 flex items-center gap-1 text-[12px] font-medium text-[hsl(var(--primary))] hover:underline mt-1"
+          >
+            {linkLabel || 'Подробнее'} <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+    </motion.div>
+  )
+}
 
 /* ═══ AI Frontend Cache ═══ */
 const _aiCache = new Map<string, { ts: number; data: AIWarehouseAnalysis }>()
@@ -538,10 +623,11 @@ function SkuCombobox({ allSkus, selected, onSelect, onRemove, onClear }: {
   )
 }
 
-/* ═══ Warehouses Table (with expandable SKU rows + combobox filter) ═══ */
-function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] }) {
+/* ═══ Warehouses Table (with expandable SKU rows + combobox filter + Products view) ═══ */
+function WarehousesTable({ warehouses, productsSummary, onDownloadExcel, downloading }: { warehouses: WBAnalyticsWarehouse[]; productsSummary?: WBProductSummary[]; onDownloadExcel?: () => void; downloading?: boolean }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedSkus, setSelectedSkus] = useState<SkuOption[]>([])
+  const [viewMode, setViewMode] = useState<'warehouses' | 'products'>('warehouses')
   const thCls = 'px-2.5 py-2 text-center text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider whitespace-nowrap'
   const tdCls = 'px-2.5 py-2 text-center tabular-nums text-[12px] whitespace-nowrap'
 
@@ -553,14 +639,20 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
     })
   }
 
-  // Collect unique SKUs from all warehouses
+  // Collect unique SKUs from all warehouses + products_summary (includes OOS items)
   const allSkus = useMemo(() => {
     const map = new Map<number, SkuOption>()
     warehouses.forEach(wh => (wh.skus || []).forEach(s => {
       if (!map.has(s.nm_id)) map.set(s.nm_id, { nm_id: s.nm_id, vendor_code: s.vendor_code, name: s.name })
     }))
+    // Add OOS & low-stock items from products_summary that aren't already in the map
+    if (productsSummary) {
+      productsSummary.forEach(p => {
+        if (!map.has(p.nm_id)) map.set(p.nm_id, { nm_id: p.nm_id, vendor_code: p.vendor_code, name: p.name })
+      })
+    }
     return Array.from(map.values())
-  }, [warehouses])
+  }, [warehouses, productsSummary])
 
   // Filter warehouses by selected SKUs
   const selectedIds = new Set(selectedSkus.map(s => s.nm_id))
@@ -568,14 +660,145 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
     ? warehouses.filter(wh => (wh.skus || []).some(s => selectedIds.has(s.nm_id)))
     : warehouses
 
+  // ── Products view: pivot data (products as rows, warehouses as columns) ──
+  const warehouseNames = useMemo(() =>
+    warehouses.map(wh => wh.warehouse_name).sort((a, b) => {
+      const whA = warehouses.find(w => w.warehouse_name === a)!
+      const whB = warehouses.find(w => w.warehouse_name === b)!
+      return whB.orders - whA.orders
+    }),
+  [warehouses])
+
+  interface ProductRow {
+    nm_id: number
+    vendor_code: string
+    name: string
+    total_stock: number
+    total_orders: number
+    daily: number
+    days_supply: number | null
+    per_wh: Map<string, { stock: number; orders: number; days_supply: number | null }>
+    wh_count: number       // on how many warehouses
+    missing_count: number   // warehouses with stock=0 but orders>0
+  }
+
+  const productRows = useMemo(() => {
+    const map = new Map<number, ProductRow>()
+
+    // Seed from products_summary (has all products incl. OOS)
+    if (productsSummary) {
+      productsSummary.forEach(p => {
+        map.set(p.nm_id, {
+          nm_id: p.nm_id, vendor_code: p.vendor_code, name: p.name,
+          total_stock: p.stock, total_orders: p.orders, daily: p.daily,
+          days_supply: p.days_supply,
+          per_wh: new Map(), wh_count: 0, missing_count: 0,
+        })
+      })
+    }
+
+    // Fill per-warehouse data from actual warehouse SKUs
+    warehouses.forEach(wh => {
+      (wh.skus || []).forEach(s => {
+        let row = map.get(s.nm_id)
+        if (!row) {
+          row = {
+            nm_id: s.nm_id, vendor_code: s.vendor_code, name: s.name,
+            total_stock: 0, total_orders: 0, daily: 0, days_supply: null,
+            per_wh: new Map(), wh_count: 0, missing_count: 0,
+          }
+          map.set(s.nm_id, row)
+        }
+        row.per_wh.set(wh.warehouse_name, { stock: s.stock, orders: s.orders, days_supply: s.days_supply })
+        // recalc totals from warehouse data
+        if (!productsSummary?.some(p => p.nm_id === s.nm_id)) {
+          row.total_stock += s.stock
+          row.total_orders += s.orders
+          row.daily += s.daily_sales
+        }
+      })
+    })
+
+    // Compute wh_count and missing_count
+    map.forEach(row => {
+      let onWh = 0, missing = 0
+      warehouseNames.forEach(wn => {
+        const d = row.per_wh.get(wn)
+        if (d && d.stock > 0) onWh++
+        // check if any orders from this warehouse but 0 stock
+        if (d && d.stock === 0 && d.orders > 0) missing++
+      })
+      row.wh_count = onWh
+      row.missing_count = missing
+    })
+
+    return Array.from(map.values())
+  }, [warehouses, productsSummary, warehouseNames])
+
+  // Sort products: OOS first (stock=0 with orders), then by orders desc
+  const sortedProducts = useMemo(() => {
+    let rows = [...productRows]
+    if (selectedIds.size > 0) {
+      rows = rows.filter(r => selectedIds.has(r.nm_id))
+    }
+    return rows.sort((a, b) => {
+      const aOos = a.total_stock === 0 && a.total_orders > 0 ? 1 : 0
+      const bOos = b.total_stock === 0 && b.total_orders > 0 ? 1 : 0
+      if (aOos !== bOos) return bOos - aOos
+      const aLow = a.days_supply !== null && a.days_supply < 14 && a.total_stock > 0 ? 1 : 0
+      const bLow = b.days_supply !== null && b.days_supply < 14 && b.total_stock > 0 ? 1 : 0
+      if (aLow !== bLow) return bLow - aLow
+      return b.total_orders - a.total_orders
+    })
+  }, [productRows, selectedIds])
+
+  // Count OOS and low stock
+  const oosCount = productRows.filter(r => r.total_stock === 0 && r.total_orders > 0).length
+  const lowCount = productRows.filter(r => r.total_stock > 0 && r.days_supply !== null && r.days_supply < 14).length
+
+  // Toggle button classes
+  const toggleBtnCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all ${
+      active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
+    }`
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6, duration: 0.4 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[hsl(var(--border))]">
-          <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">Склады</h2>
-          <span className="text-xs text-[hsl(var(--muted-foreground))] font-medium">
-            {filteredWarehouses.length === warehouses.length ? `${warehouses.length} складов` : `${filteredWarehouses.length} из ${warehouses.length}`}
-          </span>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">
+              {viewMode === 'warehouses' ? 'Склады' : 'Товары'}
+            </h2>
+            {/* View mode toggle */}
+            <div className="flex items-center gap-1 bg-[hsl(var(--muted)/0.1)] rounded-xl p-0.5">
+              <button className={toggleBtnCls(viewMode === 'warehouses')} onClick={() => setViewMode('warehouses')}>
+                <span className="flex items-center gap-1"><Warehouse className="h-3.5 w-3.5" /> Склады</span>
+              </button>
+              <button className={toggleBtnCls(viewMode === 'products')} onClick={() => setViewMode('products')}>
+                <span className="flex items-center gap-1"><Package className="h-3.5 w-3.5" /> Товары</span>
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-[hsl(var(--muted-foreground))] font-medium">
+              {viewMode === 'warehouses'
+                ? (filteredWarehouses.length === warehouses.length ? `${warehouses.length} складов` : `${filteredWarehouses.length} из ${warehouses.length}`)
+                : `${sortedProducts.length} товаров`
+              }
+            </span>
+            {onDownloadExcel && (
+              <button
+                onClick={onDownloadExcel}
+                disabled={downloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-[hsl(var(--muted)/0.2)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.4)] hover:text-[hsl(var(--foreground))] transition-all disabled:opacity-50"
+                title="Скачать остатки в Excel"
+              >
+                {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                Excel
+              </button>
+            )}
+          </div>
         </div>
 
         {/* SKU Combobox */}
@@ -589,133 +812,333 @@ function WarehousesTable({ warehouses }: { warehouses: WBAnalyticsWarehouse[] })
           />
         </div>
 
-        <div className="overflow-auto max-h-[700px]">
-          <table className="w-full border-collapse" style={{ minWidth: 760 }}>
-            <thead className="sticky top-0 z-20">
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider" style={{ width: '28%' }}>Склад</th>
-                <th className={thCls} style={{ width: '8%' }}>Статус</th>
-                <th className={thCls} style={{ width: '9%' }}>Остаток</th>
-                <th className={thCls} style={{ width: '9%' }}>Заказов</th>
-                <th className={thCls} style={{ width: '8%' }}>В день</th>
-                <th className={thCls} style={{ width: '9%' }}>Оборач.</th>
-                <th className={thCls} style={{ width: '10%' }}>Кросс%</th>
-                <th className={thCls} style={{ width: '11%' }}>Хранение</th>
-                <th className={thCls} style={{ width: '6%' }}>SKU</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredWarehouses.map((wh, idx) => {
-                const hasSelectedFilter = selectedIds.size > 0
-                const isExp = expanded.has(wh.warehouse_name)
-                const rowBg = idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
-                const hasSkus = (wh.skus || []).length > 0
-                const visibleSkus = hasSelectedFilter
-                  ? (wh.skus || []).filter(s => selectedIds.has(s.nm_id))
-                  : (wh.skus || [])
-                const showExpanded = (hasSelectedFilter || isExp) && visibleSkus.length > 0
-                return (
-                  <React.Fragment key={wh.warehouse_name}>
-                    <tr
-                      className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${hasSkus ? 'cursor-pointer' : ''}`}
-                      onClick={() => hasSkus && toggle(wh.warehouse_name)}
-                    >
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-1.5">
-                          {hasSkus ? (
-                            <ChevronDown className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.6)] shrink-0 transition-transform ${showExpanded ? 'rotate-180' : ''}`} />
-                          ) : (
-                            <Warehouse className="h-3.5 w-3.5 text-blue-400/60 shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <div className="text-[12px] font-semibold text-[hsl(var(--foreground))] flex items-center gap-1 flex-wrap leading-tight">
-                              {wh.warehouse_name}
-                              <TypeBadge type={wh.warehouse_type} />
-                            </div>
-                            {wh.okrug && (
-                              <div className="text-[9px] text-[hsl(var(--muted-foreground)/0.5)] truncate leading-tight">
-                                {wh.okrug.replace(' федеральный округ', '')}
-                              </div>
+        {/* ═══ WAREHOUSES VIEW ═══ */}
+        {viewMode === 'warehouses' && (
+          <div className="overflow-auto max-h-[700px]">
+            <table className="w-full border-collapse" style={{ minWidth: 760 }}>
+              <thead className="sticky top-0 z-20">
+                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider" style={{ width: '28%' }}>Склад</th>
+                  <th className={thCls} style={{ width: '8%' }}>Статус</th>
+                  <th className={thCls} style={{ width: '9%' }}>Остаток</th>
+                  <th className={thCls} style={{ width: '9%' }}>Заказов</th>
+                  <th className={thCls} style={{ width: '8%' }}>В день</th>
+                  <th className={thCls} style={{ width: '9%' }}>Оборач.</th>
+                  <th className={thCls} style={{ width: '10%' }}>Кросс%</th>
+                  <th className={thCls} style={{ width: '11%' }}>Хранение</th>
+                  <th className={thCls} style={{ width: '6%' }}>SKU</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredWarehouses.map((wh, idx) => {
+                  const hasSelectedFilter = selectedIds.size > 0
+                  const isExp = expanded.has(wh.warehouse_name)
+                  const rowBg = idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
+                  const hasSkus = (wh.skus || []).length > 0
+                  const visibleSkus = hasSelectedFilter
+                    ? (wh.skus || []).filter(s => selectedIds.has(s.nm_id))
+                    : (wh.skus || [])
+                  const showExpanded = (hasSelectedFilter || isExp) && visibleSkus.length > 0
+                  return (
+                    <React.Fragment key={wh.warehouse_name}>
+                      <tr
+                        className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${hasSkus ? 'cursor-pointer' : ''}`}
+                        onClick={() => hasSkus && toggle(wh.warehouse_name)}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1.5">
+                            {hasSkus ? (
+                              <ChevronDown className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.6)] shrink-0 transition-transform ${showExpanded ? 'rotate-180' : ''}`} />
+                            ) : (
+                              <Warehouse className="h-3.5 w-3.5 text-blue-400/60 shrink-0" />
                             )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className={tdCls}><StatusBadge status={wh.status} /></td>
-                      <td className={tdCls}>{fmt(wh.stock)}</td>
-                      <td className={tdCls}>{fmt(wh.orders)}</td>
-                      <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
-                      <td className={tdCls}>
-                        <span className={`font-semibold ${
-                          wh.turnover_days === null ? '' :
-                          wh.turnover_days < 14 ? 'text-red-400' :
-                          wh.turnover_days < 30 ? 'text-amber-400' :
-                          wh.turnover_days > 120 ? 'text-purple-400' :
-                          'text-emerald-400'
-                        }`}>
-                          {fmtD(wh.turnover_days)}
-                        </span>
-                      </td>
-                      <td className={tdCls}>
-                        <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
-                      </td>
-                      <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
-                        {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
-                      </td>
-                      <td className={`${tdCls} text-[hsl(var(--muted-foreground)/0.6)]`}>{wh.sku_count}</td>
-                    </tr>
-                    {/* Expanded SKU rows — flat, aligned with parent columns */}
-                    {showExpanded && [...visibleSkus].sort((a, b) => b.stock - a.stock).map((sku) => (
-                      <tr key={`sku-${sku.nm_id}`} className="border-b border-[hsl(var(--border)/0.07)] bg-[hsl(var(--muted)/0.04)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors">
-                        <td className="py-1.5 pr-2" style={{ paddingLeft: '2rem' }}>
-                          <div className="min-w-0">
-                            <div className="text-[11px] text-[hsl(var(--foreground)/0.85)] leading-tight truncate">{sku.name || `Товар #${sku.nm_id}`}</div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              {sku.vendor_code && (
-                                <div className="flex items-center gap-0.5">
-                                  <span className="text-[10px] font-semibold text-[hsl(var(--primary))]">{sku.vendor_code}</span>
-                                  <CopyButton text={sku.vendor_code} />
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-semibold text-[hsl(var(--foreground))] flex items-center gap-1 flex-wrap leading-tight">
+                                {wh.warehouse_name}
+                                <TypeBadge type={wh.warehouse_type} />
+                              </div>
+                              {wh.okrug && (
+                                <div className="text-[9px] text-[hsl(var(--muted-foreground)/0.5)] truncate leading-tight">
+                                  {wh.okrug.replace(' федеральный округ', '')}
                                 </div>
                               )}
-                              <div className="flex items-center gap-0.5">
-                                <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">ID: {sku.nm_id}</span>
-                                <CopyButton text={String(sku.nm_id)} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className={tdCls}><StatusBadge status={wh.status} /></td>
+                        <td className={tdCls}>{fmt(wh.stock)}</td>
+                        <td className={tdCls}>{fmt(wh.orders)}</td>
+                        <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
+                        <td className={tdCls}>
+                          <span className={`font-semibold ${
+                            wh.turnover_days === null ? '' :
+                            wh.turnover_days < 14 ? 'text-red-400' :
+                            wh.turnover_days < 30 ? 'text-amber-400' :
+                            wh.turnover_days > 120 ? 'text-purple-400' :
+                            'text-emerald-400'
+                          }`}>
+                            {fmtD(wh.turnover_days)}
+                          </span>
+                        </td>
+                        <td className={tdCls}>
+                          <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
+                        </td>
+                        <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                          {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
+                        </td>
+                        <td className={`${tdCls} text-[hsl(var(--muted-foreground)/0.6)]`}>{wh.sku_count}</td>
+                      </tr>
+                      {/* Expanded SKU rows — flat, aligned with parent columns */}
+                      {showExpanded && [...visibleSkus].sort((a, b) => b.stock - a.stock).map((sku) => (
+                        <tr key={`sku-${sku.nm_id}`} className="border-b border-[hsl(var(--border)/0.07)] bg-[hsl(var(--muted)/0.04)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors">
+                          <td className="py-1.5 pr-2" style={{ paddingLeft: '2rem' }}>
+                            <div className="min-w-0">
+                              <div className="text-[11px] text-[hsl(var(--foreground)/0.85)] leading-tight truncate">{sku.name || `Товар #${sku.nm_id}`}</div>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                {sku.vendor_code && (
+                                  <div className="flex items-center gap-0.5">
+                                    <span className="text-[10px] font-semibold text-[hsl(var(--primary))]">{sku.vendor_code}</span>
+                                    <CopyButton text={sku.vendor_code} />
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-0.5">
+                                  <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">ID: {sku.nm_id}</span>
+                                  <CopyButton text={String(sku.nm_id)} />
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className={`${tdCls} text-[11px]`}></td>
+                          <td className={`${tdCls} text-[11px]`}>{fmt(sku.stock)}</td>
+                          <td className={`${tdCls} text-[11px]`}>{fmt(sku.orders)}</td>
+                          <td className={`${tdCls} text-[11px]`}>{sku.daily_sales.toFixed(2)}</td>
+                          <td className={`${tdCls} text-[11px]`}>
+                            <span className={`font-semibold ${
+                              sku.days_supply === null ? '' :
+                              sku.days_supply < 14 ? 'text-red-400' :
+                              sku.days_supply < 30 ? 'text-amber-400' :
+                              sku.days_supply > 120 ? 'text-purple-400' :
+                              'text-emerald-400'
+                            }`}>{fmtD(sku.days_supply)}</span>
+                          </td>
+                          <td className={`${tdCls} text-[11px]`}><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
+                          <td className={tdCls}></td>
+                          <td className={tdCls}></td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* ═══ PRODUCTS VIEW ═══ */}
+        {viewMode === 'products' && (
+          <div className="overflow-auto max-h-[700px]">
+            {/* OOS / low stock legend */}
+            {(oosCount > 0 || lowCount > 0) && (
+              <div className="px-5 py-2 border-b border-[hsl(var(--border)/0.3)] flex items-center gap-4 flex-wrap">
+                {oosCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-red-500/20 border border-red-500/40" />
+                    <span className="text-red-400 font-semibold">OOS: {oosCount} товаров</span>
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">— нет на складах, но есть заказы</span>
+                  </span>
+                )}
+                {lowCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-amber-500/20 border border-amber-500/40" />
+                    <span className="text-amber-400 font-semibold">Дефицит: {lowCount} товаров</span>
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">— запас &lt;14 дней</span>
+                  </span>
+                )}
+              </div>
+            )}
+            <table className="border-collapse" style={{ tableLayout: 'fixed', width: 260 + 70 * 5 + warehouseNames.length * 90 }}>
+              <colgroup>
+                <col style={{ width: 260 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 50 }} />
+                {warehouseNames.map(wn => (
+                  <col key={wn} style={{ width: 90 }} />
+                ))}
+              </colgroup>
+              <thead className="sticky top-0 z-20">
+                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider sticky left-0 bg-[hsl(var(--card))] z-30">
+                    Товар
+                  </th>
+                  <th className={thCls}>Остаток</th>
+                  <th className={thCls}>Заказов</th>
+                  <th className={thCls}>В день</th>
+                  <th className={thCls}>Запас</th>
+                  <th className={thCls}>Скл.</th>
+                  {warehouseNames.map(wn => (
+                    <th key={wn} className={`${thCls} border-l border-[hsl(var(--border)/0.15)]`}>
+                      <div className="truncate mx-auto" title={wn}>
+                        {wn.length > 12 ? wn.slice(0, 11) + '…' : wn}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedProducts.map((row, idx) => {
+                  const isOos = row.total_stock === 0 && row.total_orders > 0
+                  const isLow = !isOos && row.days_supply !== null && row.days_supply < 14 && row.total_stock > 0
+                  const isProductExpanded = expanded.has(`product-${row.nm_id}`)
+                  const rowBg = isOos
+                    ? 'bg-red-500/[0.06]'
+                    : isLow
+                    ? 'bg-amber-500/[0.04]'
+                    : idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
+
+                  return (
+                    <React.Fragment key={row.nm_id}>
+                      <tr
+                        className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors cursor-pointer`}
+                        onClick={() => toggle(`product-${row.nm_id}`)}
+                      >
+                        <td className="px-3 py-2 sticky left-0 bg-[hsl(var(--card))] z-10 overflow-hidden">
+                          <div className="flex items-center gap-1.5 overflow-hidden">
+                            <ChevronDown className={`h-3 w-3 text-[hsl(var(--muted-foreground)/0.5)] shrink-0 transition-transform ${isProductExpanded ? 'rotate-180' : ''}`} />
+                            <div className="min-w-0 overflow-hidden">
+                              <div className="text-[11px] text-[hsl(var(--foreground))] leading-tight flex items-center gap-1.5">
+                                <span className="truncate">{row.name || `Товар #${row.nm_id}`}</span>
+                                {isOos && <span className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-bold bg-red-500/20 text-red-400 ring-1 ring-inset ring-red-500/30 shrink-0">OOS</span>}
+                                {isLow && <span className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 ring-1 ring-inset ring-amber-500/30 shrink-0">LOW</span>}
+                              </div>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                {row.vendor_code && (
+                                  <span className="text-[10px] font-semibold text-[hsl(var(--primary))] truncate">{row.vendor_code}</span>
+                                )}
+                                <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)] shrink-0">#{row.nm_id}</span>
                               </div>
                             </div>
                           </div>
                         </td>
-                        <td className={`${tdCls} text-[11px]`}></td>
-                        <td className={`${tdCls} text-[11px]`}>{fmt(sku.stock)}</td>
-                        <td className={`${tdCls} text-[11px]`}>{fmt(sku.orders)}</td>
-                        <td className={`${tdCls} text-[11px]`}>{sku.daily_sales.toFixed(2)}</td>
-                        <td className={`${tdCls} text-[11px]`}>
+                        <td className={`${tdCls} ${isOos ? 'text-red-400 font-bold' : ''}`}>{fmt(row.total_stock)}</td>
+                        <td className={tdCls}>{fmt(row.total_orders)}</td>
+                        <td className={tdCls}>{row.daily.toFixed(2)}</td>
+                        <td className={tdCls}>
                           <span className={`font-semibold ${
-                            sku.days_supply === null ? '' :
-                            sku.days_supply < 14 ? 'text-red-400' :
-                            sku.days_supply < 30 ? 'text-amber-400' :
-                            sku.days_supply > 120 ? 'text-purple-400' :
+                            row.days_supply === null ? '' :
+                            row.days_supply === 0 || (isOos) ? 'text-red-400' :
+                            row.days_supply < 14 ? 'text-red-400' :
+                            row.days_supply < 30 ? 'text-amber-400' :
+                            row.days_supply > 120 ? 'text-purple-400' :
                             'text-emerald-400'
-                          }`}>{fmtD(sku.days_supply)}</span>
+                          }`}>{isOos ? '0 дн' : fmtD(row.days_supply)}</span>
                         </td>
-                        <td className={`${tdCls} text-[11px]`}><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
-                        <td className={tdCls}></td>
-                        <td className={tdCls}></td>
+                        <td className={tdCls}>
+                          <span className={`text-[11px] font-semibold ${row.wh_count === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground))]'}`}>
+                            {row.wh_count}
+                          </span>
+                        </td>
+                        {/* Per-warehouse stock cells */}
+                        {warehouseNames.map(wn => {
+                          const d = row.per_wh.get(wn)
+                          const stock = d?.stock ?? 0
+                          const hasOrders = d ? d.orders > 0 : false
+                          // Color logic: 0 stock + orders = red, 0 stock no orders = grey, >0 stock = normal
+                          const cellBg = (stock === 0 && hasOrders)
+                            ? 'bg-red-500/10 text-red-400 font-bold'
+                            : stock === 0
+                            ? 'text-[hsl(var(--muted-foreground)/0.2)]'
+                            : ''
+                          return (
+                            <td key={wn} className={`${tdCls} text-[11px] border-l border-[hsl(var(--border)/0.08)] ${cellBg}`}>
+                              {d ? fmt(stock) : <span className="opacity-20">—</span>}
+                            </td>
+                          )
+                        })}
                       </tr>
-                    ))}
-                  </React.Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+
+                      {/* Expanded: per-warehouse detail rows */}
+                      {isProductExpanded && (
+                        <>
+                          {warehouseNames.filter(wn => {
+                            const d = row.per_wh.get(wn)
+                            return d && (d.stock > 0 || d.orders > 0)
+                          }).map(wn => {
+                            const d = row.per_wh.get(wn)!
+                            const wh = warehouses.find(w => w.warehouse_name === wn)
+                            return (
+                              <tr key={`${row.nm_id}-${wn}`} className="border-b border-[hsl(var(--border)/0.05)] bg-[hsl(var(--muted)/0.04)]">
+                                <td className="py-1 pr-2 sticky left-0 bg-[hsl(var(--card))] z-10" style={{ paddingLeft: '2.5rem' }}>
+                                  <div className="flex items-center gap-1.5">
+                                    <Warehouse className="h-3 w-3 text-blue-400/50 shrink-0" />
+                                    <span className="text-[11px] text-[hsl(var(--foreground)/0.7)]">{wn}</span>
+                                    {wh?.okrug && (
+                                      <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">
+                                        {wh.okrug.replace(' федеральный округ', '')}
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className={`${tdCls} text-[11px] ${d.stock === 0 ? 'text-red-400 font-semibold' : ''}`}>{fmt(d.stock)}</td>
+                                <td className={`${tdCls} text-[11px]`}>{fmt(d.orders)}</td>
+                                <td className={`${tdCls} text-[11px]`}></td>
+                                <td className={`${tdCls} text-[11px]`}>
+                                  <span className={`font-semibold ${
+                                    d.days_supply === null ? '' :
+                                    d.days_supply < 14 ? 'text-red-400' :
+                                    d.days_supply < 30 ? 'text-amber-400' :
+                                    'text-emerald-400'
+                                  }`}>{fmtD(d.days_supply)}</span>
+                                </td>
+                                <td className={tdCls}></td>
+                                {warehouseNames.map(wn2 => (
+                                  <td key={wn2} className={`${tdCls} text-[11px] border-l border-[hsl(var(--border)/0.05)]`}></td>
+                                ))}
+                              </tr>
+                            )
+                          })}
+                          {/* Show warehouses where product is missing (has orders but 0 stock) */}
+                          {warehouseNames.filter(wn => {
+                            const d = row.per_wh.get(wn)
+                            return !d || (d.stock === 0 && d.orders === 0)
+                          }).length > 0 && row.total_orders > 0 && (
+                            <tr className="border-b border-[hsl(var(--border)/0.05)] bg-[hsl(var(--muted)/0.02)]">
+                              <td className="py-1 pr-2 sticky left-0 bg-[hsl(var(--card))] z-10" style={{ paddingLeft: '2.5rem' }} colSpan={6 + warehouseNames.length}>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">Нет на складах:</span>
+                                  {warehouseNames.filter(wn => {
+                                    const d = row.per_wh.get(wn)
+                                    return !d || (d.stock === 0 && d.orders === 0)
+                                  }).map(wn => (
+                                    <span key={wn} className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--muted-foreground)/0.4)]">
+                                      {wn}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )}
+                    </React.Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </motion.div>
   )
 }
 
 /* ═══ Ozon Warehouses Table ═══ */
-function OzonWarehousesTable({ warehouses }: { warehouses: OzonOverviewWarehouse[] }) {
+function OzonWarehousesTable({ warehouses, onDownloadExcel, downloading }: { warehouses: OzonOverviewWarehouse[]; onDownloadExcel?: () => void; downloading?: boolean }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [selectedSkus, setSelectedSkus] = useState<SkuOption[]>([])
+  const [viewMode, setViewMode] = useState<'warehouses' | 'products'>('warehouses')
   const thCls = 'px-2.5 py-2 text-center text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider whitespace-nowrap'
   const tdCls = 'px-2.5 py-2 text-center tabular-nums text-[12px] whitespace-nowrap'
 
@@ -742,14 +1165,122 @@ function OzonWarehousesTable({ warehouses }: { warehouses: OzonOverviewWarehouse
     ? warehouses.filter(wh => (wh.skus || []).some(s => selectedIds.has(s.sku)))
     : warehouses
 
+  // ── Products view: pivot data ──
+  const warehouseNames = useMemo(() =>
+    warehouses.map(wh => wh.warehouse_name).sort((a, b) => {
+      const whA = warehouses.find(w => w.warehouse_name === a)!
+      const whB = warehouses.find(w => w.warehouse_name === b)!
+      return whB.orders - whA.orders
+    }),
+  [warehouses])
+
+  interface OzonProductRow {
+    sku: number
+    offer_id: string
+    name: string
+    total_stock: number
+    total_orders: number
+    daily: number
+    days_supply: number | null
+    per_wh: Map<string, { stock: number; orders: number; days_supply: number | null }>
+    wh_count: number
+  }
+
+  const productRows = useMemo(() => {
+    const map = new Map<number, OzonProductRow>()
+    warehouses.forEach(wh => {
+      (wh.skus || []).forEach(s => {
+        let row = map.get(s.sku)
+        if (!row) {
+          row = {
+            sku: s.sku, offer_id: s.offer_id, name: s.name,
+            total_stock: 0, total_orders: 0, daily: 0, days_supply: null,
+            per_wh: new Map(), wh_count: 0,
+          }
+          map.set(s.sku, row)
+        }
+        row.per_wh.set(wh.warehouse_name, { stock: s.stock, orders: s.orders, days_supply: s.days_supply })
+        row.total_stock += s.stock
+        row.total_orders += s.orders
+        row.daily += s.daily_sales
+      })
+    })
+
+    // Compute aggregated days_supply and wh_count
+    map.forEach(row => {
+      row.days_supply = row.daily > 0 ? Math.round(row.total_stock / row.daily) : (row.total_stock > 0 ? 999 : 0)
+      let onWh = 0
+      warehouseNames.forEach(wn => {
+        const d = row.per_wh.get(wn)
+        if (d && d.stock > 0) onWh++
+      })
+      row.wh_count = onWh
+    })
+
+    return Array.from(map.values())
+  }, [warehouses, warehouseNames])
+
+  // Sort: OOS first, then LOW, then by orders
+  const sortedProducts = useMemo(() => {
+    let rows = [...productRows]
+    if (selectedIds.size > 0) {
+      rows = rows.filter(r => selectedIds.has(r.sku))
+    }
+    return rows.sort((a, b) => {
+      const aOos = a.total_stock === 0 && a.total_orders > 0 ? 1 : 0
+      const bOos = b.total_stock === 0 && b.total_orders > 0 ? 1 : 0
+      if (aOos !== bOos) return bOos - aOos
+      const aLow = a.days_supply !== null && a.days_supply < 14 && a.total_stock > 0 ? 1 : 0
+      const bLow = b.days_supply !== null && b.days_supply < 14 && b.total_stock > 0 ? 1 : 0
+      if (aLow !== bLow) return bLow - aLow
+      return b.total_orders - a.total_orders
+    })
+  }, [productRows, selectedIds])
+
+  const oosCount = productRows.filter(r => r.total_stock === 0 && r.total_orders > 0).length
+  const lowCount = productRows.filter(r => r.total_stock > 0 && r.days_supply !== null && r.days_supply < 14).length
+
+  const toggleBtnCls = (active: boolean) =>
+    `px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all ${
+      active ? 'bg-[hsl(var(--primary))] text-white shadow-md' : 'bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
+    }`
+
   return (
     <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6, duration: 0.4 }}>
       <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-[hsl(var(--border))]">
-          <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">Склады</h2>
-          <span className="text-xs text-[hsl(var(--muted-foreground))] font-medium">
-            {filteredWarehouses.length === warehouses.length ? `${warehouses.length} складов` : `${filteredWarehouses.length} из ${warehouses.length}`}
-          </span>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">
+              {viewMode === 'warehouses' ? 'Склады' : 'Товары'}
+            </h2>
+            <div className="flex items-center gap-1 bg-[hsl(var(--muted)/0.1)] rounded-xl p-0.5">
+              <button className={toggleBtnCls(viewMode === 'warehouses')} onClick={() => setViewMode('warehouses')}>
+                <span className="flex items-center gap-1"><Warehouse className="h-3.5 w-3.5" /> Склады</span>
+              </button>
+              <button className={toggleBtnCls(viewMode === 'products')} onClick={() => setViewMode('products')}>
+                <span className="flex items-center gap-1"><Package className="h-3.5 w-3.5" /> Товары</span>
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-[hsl(var(--muted-foreground))] font-medium">
+              {viewMode === 'warehouses'
+                ? (filteredWarehouses.length === warehouses.length ? `${warehouses.length} складов` : `${filteredWarehouses.length} из ${warehouses.length}`)
+                : `${sortedProducts.length} товаров`
+              }
+            </span>
+            {onDownloadExcel && (
+              <button
+                onClick={onDownloadExcel}
+                disabled={downloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium bg-[hsl(var(--muted)/0.2)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.4)] hover:text-[hsl(var(--foreground))] transition-all disabled:opacity-50"
+                title="Скачать остатки в Excel"
+              >
+                {downloading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                Excel
+              </button>
+            )}
+          </div>
         </div>
 
         {/* SKU Combobox */}
@@ -763,119 +1294,314 @@ function OzonWarehousesTable({ warehouses }: { warehouses: OzonOverviewWarehouse
           />
         </div>
 
-        <div className="overflow-auto max-h-[700px]">
-          <table className="w-full border-collapse" style={{ minWidth: 760 }}>
-            <thead className="sticky top-0 z-20">
-              <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-                <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider" style={{ width: '28%' }}>Склад</th>
-                <th className={thCls} style={{ width: '8%' }}>Статус</th>
-                <th className={thCls} style={{ width: '9%' }}>Остаток</th>
-                <th className={thCls} style={{ width: '9%' }}>Заказов</th>
-                <th className={thCls} style={{ width: '8%' }}>В день</th>
-                <th className={thCls} style={{ width: '9%' }}>Оборач.</th>
-                <th className={thCls} style={{ width: '10%' }}>Кросс%</th>
-                <th className={thCls} style={{ width: '11%' }}>Хранение</th>
-                <th className={thCls} style={{ width: '6%' }}>SKU</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredWarehouses.map((wh, idx) => {
-                const hasSelectedFilter = selectedIds.size > 0
-                const isExp = expanded.has(wh.warehouse_name)
-                const rowBg = idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
-                const visibleSkus = hasSelectedFilter
-                  ? (wh.skus || []).filter(s => selectedIds.has(s.sku))
-                  : (wh.skus || [])
-                const hasSkus = visibleSkus.length > 0
-                const showExpanded = (hasSelectedFilter || isExp) && hasSkus
-                return (
-                  <React.Fragment key={wh.warehouse_name}>
-                    <tr
-                      className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${hasSkus ? 'cursor-pointer' : ''}`}
-                      onClick={() => hasSkus && toggle(wh.warehouse_name)}
-                    >
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-1.5">
-                          {hasSkus ? (
-                            <ChevronDown className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.6)] shrink-0 transition-transform ${showExpanded ? 'rotate-180' : ''}`} />
-                          ) : (
-                            <Warehouse className="h-3.5 w-3.5 text-blue-400/60 shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <div className="text-[12px] font-semibold text-[hsl(var(--foreground))] leading-tight">{wh.warehouse_name}</div>
-                            {wh.cluster && (
-                              <div className="text-[9px] text-[hsl(var(--muted-foreground)/0.5)] truncate leading-tight">{wh.cluster}</div>
+        {/* ═══ WAREHOUSES VIEW ═══ */}
+        {viewMode === 'warehouses' && (
+          <div className="overflow-auto max-h-[700px]">
+            <table className="w-full border-collapse" style={{ minWidth: 760 }}>
+              <thead className="sticky top-0 z-20">
+                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider" style={{ width: '28%' }}>Склад</th>
+                  <th className={thCls} style={{ width: '8%' }}>Статус</th>
+                  <th className={thCls} style={{ width: '9%' }}>Остаток</th>
+                  <th className={thCls} style={{ width: '9%' }}>Заказов</th>
+                  <th className={thCls} style={{ width: '8%' }}>В день</th>
+                  <th className={thCls} style={{ width: '9%' }}>Оборач.</th>
+                  <th className={thCls} style={{ width: '10%' }}>Кросс%</th>
+                  <th className={thCls} style={{ width: '11%' }}>Хранение</th>
+                  <th className={thCls} style={{ width: '6%' }}>SKU</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredWarehouses.map((wh, idx) => {
+                  const hasSelectedFilter = selectedIds.size > 0
+                  const isExp = expanded.has(wh.warehouse_name)
+                  const rowBg = idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
+                  const visibleSkus = hasSelectedFilter
+                    ? (wh.skus || []).filter(s => selectedIds.has(s.sku))
+                    : (wh.skus || [])
+                  const hasSkus = visibleSkus.length > 0
+                  const showExpanded = (hasSelectedFilter || isExp) && hasSkus
+                  return (
+                    <React.Fragment key={wh.warehouse_name}>
+                      <tr
+                        className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors ${hasSkus ? 'cursor-pointer' : ''}`}
+                        onClick={() => hasSkus && toggle(wh.warehouse_name)}
+                      >
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1.5">
+                            {hasSkus ? (
+                              <ChevronDown className={`h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.6)] shrink-0 transition-transform ${showExpanded ? 'rotate-180' : ''}`} />
+                            ) : (
+                              <Warehouse className="h-3.5 w-3.5 text-blue-400/60 shrink-0" />
                             )}
-                          </div>
-                        </div>
-                      </td>
-                      <td className={tdCls}><StatusBadge status={wh.status} /></td>
-                      <td className={tdCls}>{fmt(wh.stock)}</td>
-                      <td className={tdCls}>{fmt(wh.orders)}</td>
-                      <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
-                      <td className={tdCls}>
-                        <span className={`font-semibold ${
-                          wh.turnover_days === null ? '' :
-                          wh.turnover_days < 14 ? 'text-red-400' :
-                          wh.turnover_days < 30 ? 'text-amber-400' :
-                          wh.turnover_days > 120 ? 'text-purple-400' :
-                          'text-emerald-400'
-                        }`}>
-                          {fmtD(wh.turnover_days)}
-                        </span>
-                      </td>
-                      <td className={tdCls}>
-                        <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
-                      </td>
-                      <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
-                        {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
-                      </td>
-                      <td className={`${tdCls} text-[hsl(var(--muted-foreground)/0.6)]`}>{wh.sku_count}</td>
-                    </tr>
-                    {/* Expanded SKU rows — flat, aligned with parent columns */}
-                    {showExpanded && [...visibleSkus].sort((a, b) => b.stock - a.stock).map((sku) => (
-                      <tr key={`sku-${sku.sku}`} className="border-b border-[hsl(var(--border)/0.07)] bg-[hsl(var(--muted)/0.04)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors">
-                        <td className="py-1.5 pr-2" style={{ paddingLeft: '2rem' }}>
-                          <div className="min-w-0">
-                            <div className="text-[11px] text-[hsl(var(--foreground)/0.85)] leading-tight truncate">{sku.name || `Товар #${sku.sku}`}</div>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              {sku.offer_id && (
-                                <div className="flex items-center gap-0.5">
-                                  <span className="text-[10px] font-semibold text-[hsl(var(--primary))]">{sku.offer_id}</span>
-                                  <CopyButton text={sku.offer_id} />
-                                </div>
+                            <div className="min-w-0">
+                              <div className="text-[12px] font-semibold text-[hsl(var(--foreground))] leading-tight">{wh.warehouse_name}</div>
+                              {wh.cluster && (
+                                <div className="text-[9px] text-[hsl(var(--muted-foreground)/0.5)] truncate leading-tight">{wh.cluster}</div>
                               )}
-                              <div className="flex items-center gap-0.5">
-                                <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">SKU: {sku.sku}</span>
-                                <CopyButton text={String(sku.sku)} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className={tdCls}><StatusBadge status={wh.status} /></td>
+                        <td className={tdCls}>{fmt(wh.stock)}</td>
+                        <td className={tdCls}>{fmt(wh.orders)}</td>
+                        <td className={tdCls}>{wh.daily_sales.toFixed(2)}</td>
+                        <td className={tdCls}>
+                          <span className={`font-semibold ${
+                            wh.turnover_days === null ? '' :
+                            wh.turnover_days < 14 ? 'text-red-400' :
+                            wh.turnover_days < 30 ? 'text-amber-400' :
+                            wh.turnover_days > 120 ? 'text-purple-400' :
+                            'text-emerald-400'
+                          }`}>
+                            {fmtD(wh.turnover_days)}
+                          </span>
+                        </td>
+                        <td className={tdCls}>
+                          <CrossPctBar pct={wh.cross_pct} orders={wh.orders} />
+                        </td>
+                        <td className={`${tdCls} ${wh.storage_cost_month > 5000 ? 'text-purple-400 font-semibold' : wh.storage_cost_month > 0 ? 'text-[hsl(var(--foreground))]' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                          {wh.storage_cost_month > 0 ? fmtM(wh.storage_cost_month) : '—'}
+                        </td>
+                        <td className={`${tdCls} text-[hsl(var(--muted-foreground)/0.6)]`}>{wh.sku_count}</td>
+                      </tr>
+                      {/* Expanded SKU rows */}
+                      {showExpanded && [...visibleSkus].sort((a, b) => b.stock - a.stock).map((sku) => (
+                        <tr key={`sku-${sku.sku}`} className="border-b border-[hsl(var(--border)/0.07)] bg-[hsl(var(--muted)/0.04)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors">
+                          <td className="py-1.5 pr-2" style={{ paddingLeft: '2rem' }}>
+                            <div className="min-w-0">
+                              <div className="text-[11px] text-[hsl(var(--foreground)/0.85)] leading-tight truncate">{sku.name || `Товар #${sku.sku}`}</div>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                {sku.offer_id && (
+                                  <div className="flex items-center gap-0.5">
+                                    <span className="text-[10px] font-semibold text-[hsl(var(--primary))]">{sku.offer_id}</span>
+                                    <CopyButton text={sku.offer_id} />
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-0.5">
+                                  <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">SKU: {sku.sku}</span>
+                                  <CopyButton text={String(sku.sku)} />
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className={`${tdCls} text-[11px]`}></td>
+                          <td className={`${tdCls} text-[11px]`}>{fmt(sku.stock)}</td>
+                          <td className={`${tdCls} text-[11px]`}>{fmt(sku.orders)}</td>
+                          <td className={`${tdCls} text-[11px]`}>{sku.daily_sales.toFixed(2)}</td>
+                          <td className={`${tdCls} text-[11px]`}>
+                            <span className={`font-semibold ${
+                              sku.days_supply === null ? '' :
+                              sku.days_supply < 14 ? 'text-red-400' :
+                              sku.days_supply < 30 ? 'text-amber-400' :
+                              sku.days_supply > 120 ? 'text-purple-400' :
+                              'text-emerald-400'
+                            }`}>{fmtD(sku.days_supply)}</span>
+                          </td>
+                          <td className={`${tdCls} text-[11px]`}><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
+                          <td className={tdCls}></td>
+                          <td className={tdCls}></td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* ═══ PRODUCTS VIEW ═══ */}
+        {viewMode === 'products' && (
+          <div className="overflow-auto max-h-[700px]">
+            {/* OOS / low stock legend */}
+            {(oosCount > 0 || lowCount > 0) && (
+              <div className="px-5 py-2 border-b border-[hsl(var(--border)/0.3)] flex items-center gap-4 flex-wrap">
+                {oosCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-red-500/20 border border-red-500/40" />
+                    <span className="text-red-400 font-semibold">OOS: {oosCount} товаров</span>
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">— нет на складах, но есть заказы</span>
+                  </span>
+                )}
+                {lowCount > 0 && (
+                  <span className="flex items-center gap-1.5 text-[11px]">
+                    <span className="h-2.5 w-2.5 rounded-sm bg-amber-500/20 border border-amber-500/40" />
+                    <span className="text-amber-400 font-semibold">Дефицит: {lowCount} товаров</span>
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">— запас &lt;14 дней</span>
+                  </span>
+                )}
+              </div>
+            )}
+            <table className="border-collapse" style={{ tableLayout: 'fixed', width: 260 + 70 * 5 + warehouseNames.length * 90 }}>
+              <colgroup>
+                <col style={{ width: 260 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 70 }} />
+                <col style={{ width: 50 }} />
+                {warehouseNames.map(wn => (
+                  <col key={wn} style={{ width: 90 }} />
+                ))}
+              </colgroup>
+              <thead className="sticky top-0 z-20">
+                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+                  <th className="px-3 py-2 text-left text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider sticky left-0 bg-[hsl(var(--card))] z-30">
+                    Товар
+                  </th>
+                  <th className={thCls}>Остаток</th>
+                  <th className={thCls}>Заказов</th>
+                  <th className={thCls}>В день</th>
+                  <th className={thCls}>Запас</th>
+                  <th className={thCls}>Скл.</th>
+                  {warehouseNames.map(wn => (
+                    <th key={wn} className={`${thCls} border-l border-[hsl(var(--border)/0.15)]`}>
+                      <div className="truncate mx-auto" title={wn}>
+                        {wn.length > 12 ? wn.slice(0, 11) + '…' : wn}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedProducts.map((row, idx) => {
+                  const isOos = row.total_stock === 0 && row.total_orders > 0
+                  const isLow = !isOos && row.days_supply !== null && row.days_supply < 14 && row.total_stock > 0
+                  const isProductExpanded = expanded.has(`product-ozon-${row.sku}`)
+                  const rowBg = isOos
+                    ? 'bg-red-500/[0.06]'
+                    : isLow
+                    ? 'bg-amber-500/[0.04]'
+                    : idx % 2 === 0 ? '' : 'bg-[hsl(var(--muted)/0.03)]'
+
+                  return (
+                    <React.Fragment key={row.sku}>
+                      <tr
+                        className={`border-b border-[hsl(var(--border)/0.12)] ${rowBg} hover:bg-[hsl(var(--muted)/0.08)] transition-colors cursor-pointer`}
+                        onClick={() => toggle(`product-ozon-${row.sku}`)}
+                      >
+                        <td className="px-3 py-2 sticky left-0 bg-[hsl(var(--card))] z-10 overflow-hidden">
+                          <div className="flex items-center gap-1.5 overflow-hidden">
+                            <ChevronDown className={`h-3 w-3 text-[hsl(var(--muted-foreground)/0.5)] shrink-0 transition-transform ${isProductExpanded ? 'rotate-180' : ''}`} />
+                            <div className="min-w-0 overflow-hidden">
+                              <div className="text-[11px] text-[hsl(var(--foreground))] leading-tight flex items-center gap-1.5">
+                                <span className="truncate">{row.name || `Товар #${row.sku}`}</span>
+                                {isOos && <span className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-bold bg-red-500/20 text-red-400 ring-1 ring-inset ring-red-500/30 shrink-0">OOS</span>}
+                                {isLow && <span className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-bold bg-amber-500/20 text-amber-400 ring-1 ring-inset ring-amber-500/30 shrink-0">LOW</span>}
+                              </div>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                {row.offer_id && (
+                                  <span className="text-[10px] font-semibold text-[hsl(var(--primary))] truncate">{row.offer_id}</span>
+                                )}
+                                <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)] shrink-0">SKU: {row.sku}</span>
                               </div>
                             </div>
                           </div>
                         </td>
-                        <td className={`${tdCls} text-[11px]`}></td>
-                        <td className={`${tdCls} text-[11px]`}>{fmt(sku.stock)}</td>
-                        <td className={`${tdCls} text-[11px]`}>{fmt(sku.orders)}</td>
-                        <td className={`${tdCls} text-[11px]`}>{sku.daily_sales.toFixed(2)}</td>
-                        <td className={`${tdCls} text-[11px]`}>
+                        <td className={`${tdCls} ${isOos ? 'text-red-400 font-bold' : ''}`}>{fmt(row.total_stock)}</td>
+                        <td className={tdCls}>{fmt(row.total_orders)}</td>
+                        <td className={tdCls}>{row.daily.toFixed(2)}</td>
+                        <td className={tdCls}>
                           <span className={`font-semibold ${
-                            sku.days_supply === null ? '' :
-                            sku.days_supply < 14 ? 'text-red-400' :
-                            sku.days_supply < 30 ? 'text-amber-400' :
-                            sku.days_supply > 120 ? 'text-purple-400' :
+                            row.days_supply === null ? '' :
+                            row.days_supply === 0 || isOos ? 'text-red-400' :
+                            row.days_supply < 14 ? 'text-red-400' :
+                            row.days_supply < 30 ? 'text-amber-400' :
+                            row.days_supply > 120 ? 'text-purple-400' :
                             'text-emerald-400'
-                          }`}>{fmtD(sku.days_supply)}</span>
+                          }`}>{isOos ? '0 дн' : fmtD(row.days_supply)}</span>
                         </td>
-                        <td className={`${tdCls} text-[11px]`}><CrossPctBar pct={sku.cross_pct} orders={sku.orders} /></td>
-                        <td className={tdCls}></td>
-                        <td className={tdCls}></td>
+                        <td className={tdCls}>
+                          <span className={`text-[11px] font-semibold ${row.wh_count === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground))]'}`}>
+                            {row.wh_count}
+                          </span>
+                        </td>
+                        {warehouseNames.map(wn => {
+                          const d = row.per_wh.get(wn)
+                          const stock = d?.stock ?? 0
+                          const hasOrders = d ? d.orders > 0 : false
+                          const cellBg = (stock === 0 && hasOrders)
+                            ? 'bg-red-500/10 text-red-400 font-bold'
+                            : stock === 0
+                            ? 'text-[hsl(var(--muted-foreground)/0.2)]'
+                            : ''
+                          return (
+                            <td key={wn} className={`${tdCls} text-[11px] border-l border-[hsl(var(--border)/0.08)] ${cellBg}`}>
+                              {d ? fmt(stock) : <span className="opacity-20">—</span>}
+                            </td>
+                          )
+                        })}
                       </tr>
-                    ))}
-                  </React.Fragment>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+
+                      {/* Expanded: per-warehouse detail rows */}
+                      {isProductExpanded && (
+                        <>
+                          {warehouseNames.filter(wn => {
+                            const d = row.per_wh.get(wn)
+                            return d && (d.stock > 0 || d.orders > 0)
+                          }).map(wn => {
+                            const d = row.per_wh.get(wn)!
+                            const wh = warehouses.find(w => w.warehouse_name === wn)
+                            return (
+                              <tr key={`${row.sku}-${wn}`} className="border-b border-[hsl(var(--border)/0.05)] bg-[hsl(var(--muted)/0.04)]">
+                                <td className="py-1 pr-2 sticky left-0 bg-[hsl(var(--card))] z-10" style={{ paddingLeft: '2.5rem' }}>
+                                  <div className="flex items-center gap-1.5">
+                                    <Warehouse className="h-3 w-3 text-blue-400/50 shrink-0" />
+                                    <span className="text-[11px] text-[hsl(var(--foreground)/0.7)]">{wn}</span>
+                                    {wh?.cluster && (
+                                      <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">{wh.cluster}</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className={`${tdCls} text-[11px] ${d.stock === 0 ? 'text-red-400 font-semibold' : ''}`}>{fmt(d.stock)}</td>
+                                <td className={`${tdCls} text-[11px]`}>{fmt(d.orders)}</td>
+                                <td className={`${tdCls} text-[11px]`}></td>
+                                <td className={`${tdCls} text-[11px]`}>
+                                  <span className={`font-semibold ${
+                                    d.days_supply === null ? '' :
+                                    d.days_supply < 14 ? 'text-red-400' :
+                                    d.days_supply < 30 ? 'text-amber-400' :
+                                    'text-emerald-400'
+                                  }`}>{fmtD(d.days_supply)}</span>
+                                </td>
+                                <td className={tdCls}></td>
+                                {warehouseNames.map(wn2 => (
+                                  <td key={wn2} className={`${tdCls} text-[11px] border-l border-[hsl(var(--border)/0.05)]`}></td>
+                                ))}
+                              </tr>
+                            )
+                          })}
+                          {/* Missing warehouses */}
+                          {warehouseNames.filter(wn => {
+                            const d = row.per_wh.get(wn)
+                            return !d || (d.stock === 0 && d.orders === 0)
+                          }).length > 0 && row.total_orders > 0 && (
+                            <tr className="border-b border-[hsl(var(--border)/0.05)] bg-[hsl(var(--muted)/0.02)]">
+                              <td className="py-1 pr-2 sticky left-0 bg-[hsl(var(--card))] z-10" style={{ paddingLeft: '2.5rem' }} colSpan={6 + warehouseNames.length}>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">Нет на складах:</span>
+                                  {warehouseNames.filter(wn => {
+                                    const d = row.per_wh.get(wn)
+                                    return !d || (d.stock === 0 && d.orders === 0)
+                                  }).map(wn => (
+                                    <span key={wn} className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--muted-foreground)/0.4)]">
+                                      {wn}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )}
+                    </React.Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </motion.div>
   )
@@ -910,6 +1636,23 @@ export default function WarehousesOverviewPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [period, setPeriod] = useState(30)
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownloadExcel = useCallback(async () => {
+    if (!currentShop) return
+    setDownloading(true)
+    try {
+      await downloadStockReportExcel({
+        shop_id: currentShop.id,
+        period,
+        marketplace: currentShop.marketplace as 'wildberries' | 'ozon',
+      })
+    } catch (e) {
+      console.error('Stock report Excel download error', e)
+    } finally {
+      setDownloading(false)
+    }
+  }, [currentShop, period])
 
   const data = isWB ? wbData : null // keep backward compat for WB render block
 
@@ -1148,26 +1891,20 @@ export default function WarehousesOverviewPage() {
             }
 
             // 3. Out-of-stock
-            const outOfStockSkus = (kpi.out_of_stock_skus || []).slice(0, 5)
+            const outOfStockSkus = kpi.out_of_stock_skus || []
             if (outOfStockSkus.length > 0) {
+              const fullyOos = outOfStockSkus.filter((s: any) => s.days_left === 0)
+              const soonOos = outOfStockSkus.filter((s: any) => s.days_left > 0)
+              const title = fullyOos.length > 0
+                ? `Out-of-stock: ${fullyOos.length} SKU${soonOos.length > 0 ? ` + ${soonOos.length} скоро` : ''}`
+                : `Скоро out-of-stock: ${soonOos.length} SKU`
               problems.push(
-                <ProblemCard
+                <OosExpandableCard
                   key="outofstock"
-                  severity="critical"
-                  icon={AlertTriangle}
-                  title={`Скоро out-of-stock: ${outOfStockSkus.length} SKU`}
-                  details={
-                    <div className="space-y-1">
-                      <div>SKU заканчиваются на ВСЕХ складах:</div>
-                      {outOfStockSkus.map((s: any, i: number) => (
-                        <div key={i} className="flex items-center gap-2 text-[11px]">
-                          <span className="font-semibold text-[hsl(var(--foreground))]">{s.vendor_code}</span>
-                          <span className="ml-auto font-bold text-red-400">{s.days_left} дн</span>
-                          <span className="opacity-40">{fmt(s.stock)} шт / {s.daily.toFixed(1)}/день</span>
-                        </div>
-                      ))}
-                    </div>
-                  }
+                  severity={fullyOos.length > 0 ? 'critical' : 'warning'}
+                  title={title}
+                  items={outOfStockSkus}
+                  idField="vendor_code"
                   link="/warehouses/supplies"
                   linkLabel="Поставки"
                   delay={delay}
@@ -1257,7 +1994,7 @@ export default function WarehousesOverviewPage() {
           })()}
 
           {/* ─── WB Warehouses Table ─── */}
-          <WarehousesTable warehouses={data.warehouses} />
+          <WarehousesTable warehouses={data.warehouses} productsSummary={data.products_summary} onDownloadExcel={handleDownloadExcel} downloading={downloading} />
         </>
       ) : ozonData ? (
         <>
@@ -1403,26 +2140,20 @@ export default function WarehousesOverviewPage() {
             }
 
             // Out-of-stock
-            const outOfStockSkus = (kpi.out_of_stock_skus || []).slice(0, 5)
+            const outOfStockSkus = kpi.out_of_stock_skus || []
             if (outOfStockSkus.length > 0) {
+              const fullyOos = outOfStockSkus.filter(s => s.days_left === 0)
+              const soonOos = outOfStockSkus.filter(s => s.days_left > 0)
+              const title = fullyOos.length > 0
+                ? `Out-of-stock: ${fullyOos.length} SKU${soonOos.length > 0 ? ` + ${soonOos.length} скоро` : ''}`
+                : `Скоро out-of-stock: ${soonOos.length} SKU`
               problems.push(
-                <ProblemCard
+                <OosExpandableCard
                   key="outofstock"
-                  severity="critical"
-                  icon={AlertTriangle}
-                  title={`Скоро out-of-stock: ${kpi.out_of_stock_skus.length} SKU`}
-                  details={
-                    <div className="space-y-1">
-                      <div>SKU заканчиваются на складах:</div>
-                      {outOfStockSkus.map((s, i) => (
-                        <div key={i} className="flex items-center gap-2 text-[11px]">
-                          <span className="font-semibold text-[hsl(var(--foreground))]">{s.offer_id}</span>
-                          <span className="ml-auto font-bold text-red-400">{s.days_left} дн</span>
-                          <span className="opacity-40">{fmt(s.stock)} шт / {s.daily.toFixed(1)}/день</span>
-                        </div>
-                      ))}
-                    </div>
-                  }
+                  severity={fullyOos.length > 0 ? 'critical' : 'warning'}
+                  title={title}
+                  items={outOfStockSkus}
+                  idField="offer_id"
                   link="/warehouses/supplies"
                   linkLabel="Поставки"
                   delay={delay}
@@ -1497,7 +2228,7 @@ export default function WarehousesOverviewPage() {
           <CostsSummary costs={ozonData.costs} />
 
           {/* ─── Ozon Warehouses Table ─── */}
-          <OzonWarehousesTable warehouses={ozonData.warehouses} />
+          <OzonWarehousesTable warehouses={ozonData.warehouses} onDownloadExcel={handleDownloadExcel} downloading={downloading} />
         </>
       ) : null}
     </div>

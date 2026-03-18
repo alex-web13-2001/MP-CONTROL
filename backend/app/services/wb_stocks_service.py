@@ -127,19 +127,19 @@ class WBStocksService:
                     continue
 
                 warehouse_name = stock_item.get("warehouseName", "Unknown")
-                # Use quantityFull (includes inWayToClient + inWayFromClient)
-                quantity_full = stock_item.get("quantityFull", stock_item.get("quantity", 0))
+                # Use quantity (actual stock on warehouse, NOT quantityFull which includes in-transit)
+                quantity = stock_item.get("quantity", 0)
 
                 all_stocks.append({
                     "nm_id": nm_id,
                     "warehouse_name": warehouse_name,
-                    "amount": quantity_full,
+                    "amount": quantity,
                     "supplier_article": stock_item.get("supplierArticle", ""),
                     "price": stock_item.get("Price", 0),
                     "discount": stock_item.get("Discount", 0),
                     "in_way_to_client": stock_item.get("inWayToClient", 0),
                     "in_way_from_client": stock_item.get("inWayFromClient", 0),
-                    "quantity_full": quantity_full,
+                    "quantity_full": stock_item.get("quantityFull", 0),
                 })
 
         logger.info(f"Total stocks fetched: {len(all_stocks)} for shop {self.shop_id}")
