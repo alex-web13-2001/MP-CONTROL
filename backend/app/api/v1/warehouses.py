@@ -11371,17 +11371,16 @@ async def ozon_stock_report_excel(
         """, parameters={"shop_id": shop_id, "sku_ids": list(all_oos_skus)}).result_rows
         prod_map = {int(r[0]): {"offer_id": r[1], "name": r[2]} for r in prod_rows}
 
-        # Fallback: try dim_ozon_products
+        # Fallback: try dim_ozon_products (PostgreSQL!)
         missing = all_oos_skus - set(prod_map.keys())
         if missing:
-            prod_rows2 = ch.query("""
-                SELECT product_id, offer_id, name
-                FROM dim_ozon_products FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND product_id IN {ids:Array(UInt64)}
-            """, parameters={"shop_id": shop_id, "ids": list(missing)}).result_rows
-            for r in prod_rows2:
-                prod_map[int(r[0])] = {"offer_id": r[1], "name": r[2]}
+            from sqlalchemy import text as sa_text
+            prod_result2 = await db.execute(
+                sa_text("SELECT product_id, offer_id, name FROM dim_ozon_products WHERE shop_id = :shop_id AND product_id = ANY(:ids)"),
+                {"shop_id": shop_id, "ids": list(missing)},
+            )
+            for r in prod_result2.fetchall():
+                prod_map[int(r[0])] = {"offer_id": r[1] or str(r[0]), "name": r[2] or ""}
 
         # Add OOS SKUs to each warehouse
         wh_map = {wh["warehouse_name"]: wh for wh in warehouses}
