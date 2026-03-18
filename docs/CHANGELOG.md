@@ -1,3 +1,25 @@
+## 2026-03-18 (v17.5)
+
+### fix(finances): WB — MAX-reconciliation рекламных расходов (ручное пополнение баланса)
+
+**Root cause**: При ручном пополнении рекламного баланса WB, расходы на рекламу не попадают в `fact_finances` (нет записи удержания), но фактически тратятся и отражаются в `fact_advert_stats_v3`. Результат: Excel и JSON API занижали рекламные расходы и завышали прибыль.
+
+**Решение**: `MAX(fact_finances_ded_ads, fact_advert_stats_v3_spend)` для каждого периода.
+
+**Excel** (`finances_export.py`):
+- **Summary (P&L)**: `deductions_ads_cur = max(deductions_ads_cur, ad_spend_cur)` — прибыль теперь учитывает реальные рекл. расходы
+- **По неделям / По месяцам**: 2 доп. SQL-запроса к `fact_advert_stats_v3` (`toMonday(date)`, `toYYYYMM(date)`), MAX в row writers
+- **Daily**: доп. SQL-запрос по дням к `fact_advert_stats_v3`
+- **Секция РЕКЛАМА**: переименована «Итого реклама» + подстрока «Факт. расход (API кампаний)» при расхождении
+
+**JSON API** (`finances.py`):
+- **Summary**: `total_deductions += max(0, ad_spend - deductions_ads_raw)` перед расчётом operating/profit
+- **Daily dynamics** (grouped + ungrouped): аналогичная корректировка `tded_d` для дневных данных
+
+**Примечание**: «Списание за отзыв» (bonus_type_name не содержит «продвижение») корректно учитывается в прочих удержаниях (`ded`) и не смешивается с рекламой.
+
+---
+
 ## 2026-03-18 (v17.4)
 
 ### feat(warehouses): Excel экспорт остатков по складам и товарам (WB + Ozon)

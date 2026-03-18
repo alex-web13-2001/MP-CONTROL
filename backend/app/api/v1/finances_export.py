@@ -1490,6 +1490,11 @@ async def export_wb_excel(
     except Exception:
         pass
 
+    # 2b. MAX-reconciliation: use the higher of fact_finances vs fact_advert_stats_v3
+    # fact_finances misses ad spend when WB ad balance is topped up manually
+    deductions_ads_cur = max(deductions_ads_cur, ad_spend_cur)
+    deductions_ads_prev = max(deductions_ads_prev, ad_spend_prev)
+
     # 3. COGS
     cogs_cur = cogs_prev = 0.0
     cost_map = {}
@@ -1566,6 +1571,21 @@ async def export_wb_excel(
     except Exception:
         pass
 
+    # 4b. Daily ad spend from fact_advert_stats_v3 for MAX-reconciliation
+    daily_ad_spend = {}  # date_str -> spend
+    try:
+        dad = ch.query("""
+            SELECT date, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id={shop_id:UInt32}
+              AND date>={d_start:Date} AND date<={d_end:Date}
+            GROUP BY date
+        """, parameters={"shop_id": shop_id, "d_start": d_start, "d_end": d_end})
+        for r in dad.result_rows:
+            daily_ad_spend[str(r[0])] = float(r[1] or 0)
+    except Exception:
+        pass
+
     # 5. Weekly FULL RETROSPECTIVE
     weekly_data = []
     try:
@@ -1594,7 +1614,19 @@ async def export_wb_excel(
     except Exception:
         pass
 
-
+    # 5b. Weekly ad spend from fact_advert_stats_v3 for MAX-reconciliation
+    weekly_ad_spend = {}  # monday_str -> spend
+    try:
+        wad = ch.query("""
+            SELECT toMonday(date) AS ws, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id={shop_id:UInt32}
+            GROUP BY ws
+        """, parameters={"shop_id": shop_id})
+        for r in wad.result_rows:
+            weekly_ad_spend[str(r[0])] = float(r[1] or 0)
+    except Exception:
+        pass
 
     # Weekly COGS
     cogs_by_week = {}
@@ -1646,6 +1678,19 @@ async def export_wb_excel(
     except Exception:
         pass
 
+    # 6b. Monthly ad spend from fact_advert_stats_v3 for MAX-reconciliation
+    monthly_ad_spend = {}  # yyyymm_int -> spend
+    try:
+        mad = ch.query("""
+            SELECT toYYYYMM(date) AS ym, sum(spend) AS s
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id={shop_id:UInt32}
+            GROUP BY ym
+        """, parameters={"shop_id": shop_id})
+        for r in mad.result_rows:
+            monthly_ad_spend[int(r[0])] = float(r[1] or 0)
+    except Exception:
+        pass
 
 
     # Monthly COGS
@@ -1958,7 +2003,10 @@ async def export_wb_excel(
     # ═══ РЕКЛАМА ═══
     row += 1
     _wb_section_header(ws1, row, "РЕКЛАМА (ВБ ПРОМО)"); row += 1
-    _wb_kpi_row(ws1, row, "ВБ Продвижение (удержания)", deductions_ads_cur, deductions_ads_prev); row += 1
+    _wb_kpi_row(ws1, row, "Итого реклама", deductions_ads_cur, deductions_ads_prev); row += 1
+    # Show source breakdown for transparency if there's a discrepancy
+    if ad_spend_cur > 0 or ad_spend_prev > 0:
+        _wb_kpi_row(ws1, row, f"{WB_INDENT}Факт. расход (API кампаний)", ad_spend_cur, ad_spend_prev, is_sub=True); row += 1
     drr_cur = deductions_ads_cur / revenue_cur * 100 if revenue_cur > 0 else 0
     drr_prev = deductions_ads_prev / revenue_prev * 100 if revenue_prev > 0 else 0
     ws1.cell(row=row, column=1, value=f"{WB_INDENT}ДРР (доля рекл. расх.)").font = WB_SUB_ITEM_FONT
@@ -2099,7 +2147,9 @@ async def export_wb_excel(
         acq = abs(float(r[8] or 0))
         acc = abs(float(r[9] or 0))
         ded = abs(float(r[10] or 0))
-        ded_ads = abs(float(r[11] or 0))
+        ded_ads_fin = abs(float(r[11] or 0))
+        ded_ads_stats = weekly_ad_spend.get(str(ws_d), 0)
+        ded_ads = max(ded_ads_fin, ded_ads_stats)  # MAX-reconciliation
         cogs_wk = cogs_by_week.get(str(ws_d), 0)
         comm = max(rev - pay, 0)
         profit_wk = pay - log - stor - acc - ded - ded_ads - cogs_wk
@@ -2236,7 +2286,9 @@ async def export_wb_excel(
         acq = abs(float(r[9] or 0))
         acc = abs(float(r[10] or 0))
         ded = abs(float(r[11] or 0))
-        ded_ads = abs(float(r[12] or 0))
+        ded_ads_fin = abs(float(r[12] or 0))
+        ded_ads_stats = monthly_ad_spend.get(ym, 0)
+        ded_ads = max(ded_ads_fin, ded_ads_stats)  # MAX-reconciliation
         cogs_mo = cogs_by_month.get(ym, 0)
         comm = max(rev - pay, 0)
         profit_mo = pay - log - stor - acc - ded - ded_ads - cogs_mo
