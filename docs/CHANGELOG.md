@@ -1,3 +1,31 @@
+## 2026-03-18 (v17.4)
+
+### feat(warehouses): Excel экспорт остатков по складам и товарам (WB + Ozon)
+
+**Backend** (`warehouses.py`):
+- `GET /wb/analytics/stock-report/excel` — Excel экспорт остатков WB (2 листа)
+- `GET /ozon/overview/stock-report/excel` — Excel экспорт остатков Ozon (2 листа)
+- Общая функция `_build_stock_report_excel()` — shared логика для обоих маркетплейсов
+- Лист «По складам»: склад × SKU матрица с подсветкой OOS (красный), дефицит (жёлтый), излишек (фиолетовый)
+- Лист «По товарам»: сводка по SKU × склад, итоги, статусы OOS/LOW/OVER
+- OOS-товары: инъекция из `fact_orders_raw` (WB) / `fact_ozon_orders` (Ozon) — SKU с заказами но без стока
+- Имена OOS-товаров: fallback-запрос к `dim_products` / `dim_ozon_products` (PostgreSQL через SQLAlchemy)
+
+**Frontend** (`WarehousesOverviewPage.tsx`, `warehouses.ts`):
+- Кнопка «📥 Excel» в header таблицы складов (WB и Ozon)
+- API функция `downloadStockReportExcel(shopId, period, marketplace)` — blob download
+- Типы: `downloadStockReportExcel` в `api/warehouses.ts`
+
+### fix(warehouses): dim_products/dim_ozon_products — запросы через PostgreSQL
+
+**Root cause**: OOS-fallback запросы к `dim_products` и `dim_ozon_products` ошибочно шли через ClickHouse-клиент с префиксом `mms_analytics`. Эти таблицы существуют только в PostgreSQL.
+
+**Backend** (`warehouses.py`):
+- WB: `ch.query("mms_analytics.dim_products")` → `db.execute(sa_text("SELECT ... FROM dim_products"))`
+- Ozon: `ch.query("dim_ozon_products FINAL")` → `db.execute(sa_text("SELECT ... FROM dim_ozon_products"))`
+
+---
+
 ## 2026-03-18 (v17.3)
 
 ### feat(warehouses): режим «Товары» — обратная перспектива таблицы складов (WB + Ozon)

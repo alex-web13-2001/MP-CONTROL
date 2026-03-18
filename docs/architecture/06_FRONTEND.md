@@ -528,6 +528,13 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | `ProblemCard` | Карточка проблемы: severity badge, icon, title, details, link |
 | `KpiCard` | Анимированная KPI: value, trend, subtitle |
 | `ProductCell` | Фото + название + артикул товара (combobox-select в SKU фильтрах) |
+
+**Excel экспорт остатков:**
+
+- Кнопка «📥 Excel» в header таблицы складов (WarehousesTable / OzonWarehousesTable)
+- WB → `GET /api/v1/warehouses/wb/analytics/stock-report/excel` (blob download)
+- Ozon → `GET /api/v1/warehouses/ozon/overview/stock-report/excel` (blob download)
+- API функция: `downloadStockReportExcel(shopId, period, marketplace)` в `api/warehouses.ts`
 | `AIDiagnosticsBlock` | ИИ-анализ (Gemini): проблемные SKU, перераспределение, советы |
 
 ---
@@ -954,6 +961,10 @@ Bоковая панель с вложенной навигацией (collapse 
 
 ### 2026-03-18
 
+- **Excel экспорт остатков** — `WarehousesOverviewPage`:
+  - Кнопка «📥 Excel» в header таблиц `WarehousesTable` (WB) и `OzonWarehousesTable` (Ozon)
+  - API функция `downloadStockReportExcel(shopId, period, marketplace)` в `api/warehouses.ts`
+  - Blob download → 2 листа (.xlsx): По складам, По товарам
 - **FinancesPage** — устранение задвоения рекламы WB:
   - Убрана строка «Реклама (внешняя)» из `WB_ROWS` (таблица сравнения периодов) — осталась только «ВБ Продвижение»
   - PDF отчёт (`generatePnlReport.ts`): убрана «Реклама (внешняя)» из comparison table + убрана колонка «Реклама» из weekly table

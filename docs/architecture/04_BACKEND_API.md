@@ -746,9 +746,10 @@ sku_filter: int[] (optional)         — массив SKU для фильтра�
 
 ### Ozon Overview — `/api/v1/warehouses/ozon/overview`
 
-| Метод | Path                             | Описание                    | Auth   |
-| ----- | -------------------------------- | --------------------------- | ------ |
-| `GET` | `/warehouses/ozon/overview`      | Обзорный дашборд складов    | Bearer |
+| Метод | Path                                          | Описание                         | Auth   |
+| ----- | --------------------------------------------- | -------------------------------- | ------ |
+| `GET` | `/warehouses/ozon/overview`                   | Обзорный дашборд складов         | Bearer |
+| `GET` | `/warehouses/ozon/overview/stock-report/excel` | Excel-экспорт остатков (2 листа) | Bearer |
 
 #### Query Parameters
 
@@ -766,6 +767,48 @@ period: int (default: 30)            — период анализа (дни)
 - Out-of-stock SKU: агрегация по всем складам, top-10 с `days_left < 14`
 - KPI с трендами vs prev period: `total_expenses`, `total_logistics`, `total_crossdocking`, `total_storage`, `total_returns`, `total_orders`, `cross_pct`
 - Per-warehouse: status (critical/empty/attention/overstocked/ok), daily_sales, turnover_days, cross_pct, top-50 SKU
+
+#### Excel экспорт (GET /ozon/overview/stock-report/excel)
+
+Параметры: `shop_id`, `period` (default: 30)
+
+**2 листа в .xlsx файле:**
+
+| Лист | Название       | Содержимое                                                                              |
+| ---- | -------------- | --------------------------------------------------------------------------------------- |
+| 1    | По складам     | Склад × SKU: offer_id, sku, stock, orders, daily, days_supply. Подсветка OOS/дефицит    |
+| 2    | По товарам     | SKU-сводка по всем складам: матрица (stock, orders, turnover), OOS/LOW/OVER подсветка    |
+
+**Подсветка:**
+- 🔴 OOS (красный) — stock=0, orders>0
+- 🟡 Дефицит (жёлтый) — days_supply < 14
+- 🟣 Излишек (фиолетовый) — days_supply > 120
+
+**OOS-товары:** инъектируются из `fact_ozon_orders` — SKU с заказами но без стока добавляются в данные. Имена товаров берутся из `dim_ozon_products` (PostgreSQL).
+
+---
+
+### WB Overview — `/api/v1/warehouses/wb/analytics`
+
+| Метод | Path                                        | Описание                         | Auth   |
+| ----- | ------------------------------------------- | -------------------------------- | ------ |
+| `GET` | `/warehouses/wb/analytics`                  | Аналитика складов WB (JSON)      | Bearer |
+| `GET` | `/warehouses/wb/analytics/stock-report/excel` | Excel-экспорт остатков (2 листа) | Bearer |
+
+#### Excel экспорт (GET /wb/analytics/stock-report/excel)
+
+Параметры: `shop_id`, `period` (default: 30)
+
+**2 листа в .xlsx файле:**
+
+| Лист | Название       | Содержимое                                                                              |
+| ---- | -------------- | --------------------------------------------------------------------------------------- |
+| 1    | По складам     | Склад × SKU: vendor_code, nm_id, stock, orders, daily, days_supply. Подсветка OOS/дефицит |
+| 2    | По товарам     | SKU-сводка по всем складам: матрица (stock, orders, turnover), OOS/LOW/OVER подсветка    |
+
+**Подсветка:** аналогична Ozon (OOS/дефицит/излишек). OOS-товары инъектируются из `fact_orders_raw`. Имена из `dim_products` (PostgreSQL).
+
+**Общая функция:** `_build_stock_report_excel(warehouses, marketplace, shop_id, period, db, ch)` — shared логика для WB и Ozon.
 
 ---
 
@@ -1413,3 +1456,10 @@ data: [DONE]
 - **WB Excel «Риск перезатаривания»**: фильтр `turnover_days > target_days` (не хардкод 45), `storage_per_month`, `excess_qty`
 - **Ozon Overview — расширение расходов**: 9 типов вместо 5, `cross_problem_warehouses[]`
 - Обновлена документация всех Ozon warehouse endpoints
+
+### 2026-03-18
+
+- **Excel экспорт остатков (WB + Ozon)**: `GET /wb/analytics/stock-report/excel`, `GET /ozon/overview/stock-report/excel` — 2 листа (По складам, По товарам), подсветка OOS/дефицит/излишек
+- **Общая функция** `_build_stock_report_excel()` — shared логика для обоих маркетплейсов
+- **Fix**: `dim_products` и `dim_ozon_products` — запросы через PostgreSQL (SQLAlchemy), не ClickHouse
+- **WB `products_summary`**: OOS-товары включены в ответ `/wb/analytics` для фильтрации на фронтенде
