@@ -1,3 +1,22 @@
+## 2026-03-19 (v17.8)
+
+### feat(advertising): Редизайн KPI карточек — 11 метрик + default «Сегодня»
+
+**Backend** (`advertising_analytics.py`):
+- Добавлены KPI: cart, conversion_rate, CPO, total_drr (через fact_ozon_orders/fact_orders_raw), ROMI
+- Total DRR = ad_spend / total_revenue (все заказы, не только рекламные)
+- ROMI = (revenue - spend) / spend × 100
+
+**Frontend** (`AdvertisingAnalyticsPage.tsx`):
+- 11 KPI карточек: Расход → Показы → Клики → CTR → Корзины → Заказы → Конверсия → CPO → ДРР рекламы → Общий ДРР → ROMI
+- Период по умолчанию: «Сегодня» (было 7 дней)
+- Grid: 4 колонки на 2xl экранах (было 3)
+
+**API** (`advertising.ts`):
+- Добавлены типы: cart, conversion_rate, cpo, total_drr, romi
+
+---
+
 ## 2026-03-19 (v17.7)
 
 ### refactor(nav): Реструктуризация навигации — Воронка → Реклама

@@ -217,7 +217,7 @@ export function Sidebar() {
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
-                  className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-widest text-[hsl(var(--muted-foreground)/0.6)]"
+                  className="mb-2 px-3 text-[11px] font-bold uppercase tracking-widest text-[hsl(var(--muted-foreground)/0.85)]"
                 >
                   {section.title}
                 </motion.p>
