@@ -20,6 +20,8 @@ import {
   Users,
   ArrowRightLeft,
   Globe,
+  Settings2,
+  Bot,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -59,7 +61,14 @@ const navSections: NavSection[] = [
           { path: '/sales/forecast', label: 'Прогноз', icon: LineChart },
         ],
       },
-      { path: '/funnel', label: 'Воронка', icon: BarChart3 },
+      {
+        path: '/advertising',
+        label: 'Реклама',
+        icon: Megaphone,
+        children: [
+          { path: '/advertising/analytics', label: 'Обзор', icon: BarChart3 },
+        ],
+      },
       { path: '/warehouses', label: 'Склады', icon: Warehouse, children: [
           { path: '/warehouses/overview', label: 'Обзор', icon: BarChart3 },
           { path: '/warehouses/cross', label: 'Кросс-логистика', icon: ArrowRightLeft },
@@ -81,7 +90,15 @@ const navSections: NavSection[] = [
   {
     title: 'Управление',
     items: [
-      { path: '/advertising', label: 'Реклама', icon: Megaphone },
+      {
+        path: '/advertising',
+        label: 'Реклама',
+        icon: Megaphone,
+        children: [
+          { path: '/advertising/campaigns', label: 'Управление', icon: Settings2 },
+          { path: '/advertising/autobidder', label: 'Автобиддер', icon: Bot },
+        ],
+      },
       {
         path: '/events',
         label: 'События',

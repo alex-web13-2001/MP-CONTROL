@@ -1,3 +1,45 @@
+## 2026-03-19 (v17.7)
+
+### refactor(nav): Реструктуризация навигации — Воронка → Реклама
+
+**Sidebar.tsx:**
+- АНАЛИТИКА: убран пункт «Воронка», добавлен collapsible «Реклама → Обзор» (path: `/advertising/analytics`)
+- УПРАВЛЕНИЕ → Реклама: убран подпункт «Аналитика» (перенесён в АНАЛИТИКА), оставлены «Управление» и «Автобиддер»
+
+---
+
+## 2026-03-18 (v17.6)
+
+### feat(advertising): Рекламный модуль — аналитика кампаний (Ozon + WB)
+
+**Новый раздел «Реклама»** — аналитика рекламных кампаний для Ozon и Wildberries.
+
+**Backend** (`advertising_analytics.py`):
+- `GET /advertising-analytics?shop_id=X&period=7d` — единый endpoint, авто-определяет marketplace
+- 4 ClickHouse-запроса: KPI, ежедневный график, таблица кампаний, топ SKU
+- Ozon: `fact_ozon_ad_daily FINAL` + `dim_ozon_products` (PostgreSQL)
+- WB: `fact_advert_stats_v3 FINAL` + `dim_products` (PostgreSQL)
+- 9 KPI с delta vs предыдущий период: расход, заказы, выручка, показы, клики, CTR, CPC, ДРР, ROAS
+- Зарегистрирован в `router.py`
+
+**Frontend** (`AdvertisingAnalyticsPage.tsx` ~700 строк):
+- 9 KPI-карточек с цветодённой индикацией изменений
+- Переключаемый график (8 метрик: расход, показы, клики, корзины, заказы, выручка, CTR%, ДРР%)
+- Таблица кампаний за период (ID, расход, показы, клики, CTR, CPC, заказы, выручка, ДРР)
+- Таблица топ SKU по рекламному расходу (с картинками, hover-превью)
+- Period selector: today / 7d / 14d / 30d
+
+**Frontend** (навигация):
+- `Sidebar.tsx`: Реклама → collapsible group (Аналитика, Управление, Автобиддер)
+- `App.tsx`: 3 новых роута `/advertising/analytics`, `/campaigns`, `/autobidder`
+- Заглушки: `AdvertisingCampaignsPage.tsx`, `AdvertisingAutobidderPage.tsx` — «В разработке»
+
+**API-клиент** (`advertising.ts`):
+- Типы: `AdvertisingKpi`, `AdvertisingDailyPoint`, `CampaignRow`, `TopSkuRow`, `AdvertisingAnalyticsResponse`
+- Функция: `getAdvertisingAnalytics(shopId, period)`
+
+---
+
 ## 2026-03-18 (v17.5)
 
 ### fix(finances): WB — MAX-reconciliation рекламных расходов (ручное пополнение баланса)
