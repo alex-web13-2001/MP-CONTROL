@@ -952,6 +952,13 @@ Bоковая панель с вложенной навигацией (collapse 
   - API типы: `OzonStorageKpi`, `OzonStorageSku`, `OzonStorageResponse`
   - API функции: `syncOzonPlacementCost()`, `backfillOzonPlacementCost()`, `getOzonStorage()`
 
+### 2026-03-18
+
+- **FinancesPage** — устранение задвоения рекламы WB:
+  - Убрана строка «Реклама (внешняя)» из `WB_ROWS` (таблица сравнения периодов) — осталась только «ВБ Продвижение»
+  - PDF отчёт (`generatePnlReport.ts`): убрана «Реклама (внешняя)» из comparison table + убрана колонка «Реклама» из weekly table
+  - **DynamicsChart**: Y-ось метрики `profit` теперь включает 0 в domain — столбцы корректно растут от нулевой линии (было `auto-auto`, столбцы висели в воздухе)
+
 ### 2026-03-17
 
 - **Ozon Cross-логистика** — `WarehousesCrossPage` обновлена:
