@@ -208,15 +208,14 @@ async def _build_ozon_analytics(
         FROM (
             SELECT
                 CASE
-                    WHEN dt >= {cur_start:Date} AND dt <= {cur_end:Date} THEN 'current'
-                    WHEN dt >= {prev_start:Date} AND dt <= {prev_end:Date} THEN 'previous'
+                    WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
+                    WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
                 END AS period,
                 price * quantity AS t_rev
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND dt >= {prev_start:Date}
-              AND dt <= {cur_end:Date}
-              AND status NOT IN ('cancelled')
+              AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
+              AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
         )
         WHERE period != ''
         GROUP BY period
@@ -497,15 +496,14 @@ async def _build_wb_analytics(
         FROM (
             SELECT
                 CASE
-                    WHEN date >= {cur_start:Date} AND date <= {cur_end:Date} THEN 'current'
-                    WHEN date >= {prev_start:Date} AND date <= {prev_end:Date} THEN 'previous'
+                    WHEN toDate(addHours(date, 3)) >= {cur_start:Date} AND toDate(addHours(date, 3)) <= {cur_end:Date} THEN 'current'
+                    WHEN toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} THEN 'previous'
                 END AS period,
-                finishedPrice * 100 AS t_rev
+                price_with_disc AS t_rev
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND date >= {prev_start:Date}
-              AND date <= {cur_end:Date}
-              AND isCancel = 0
+              AND toDate(addHours(date, 3)) >= {prev_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
         )
         WHERE period != ''
         GROUP BY period
