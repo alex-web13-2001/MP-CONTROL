@@ -48,22 +48,42 @@ export interface AdvertisingDailyPoint {
   total_drr: number
 }
 
-export interface CampaignSkuInfo {
+export interface CampaignSkuItem {
   sku: number
+  product_id: number
   offer_id: string
   name: string
+  spend: number
+  views: number
+  clicks: number
+  cart: number
+  cart_conv: number
+  orders: number
+  order_conv: number
+  direct_orders: number
+  model_orders: number
+  revenue: number
+  direct_revenue: number
+  model_revenue: number
+  halo_pct: number
+  ctr: number
+  avg_cpc: number
+  drr: number
+  total_drr: number
 }
 
 export interface CampaignRow {
   campaign_id: number
   title: string
   sku_count: number
-  skus: CampaignSkuInfo[]
+  items: CampaignSkuItem[]
   spend: number
   views: number
   clicks: number
   cart: number
+  cart_conv: number
   orders: number
+  order_conv: number
   direct_orders: number
   model_orders: number
   revenue: number

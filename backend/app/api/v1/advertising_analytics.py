@@ -613,47 +613,66 @@ async def _build_ozon_analytics(
 
     campaign_ids = [int(row[0]) for row in campaigns_rows]
 
-    # Enrich campaign titles from PostgreSQL
+    # Enrich campaign titles from Redis
     campaign_title_map: dict = {}
-    if campaign_ids:
-        try:
-            title_result = await db.execute(
-                text("""
-                    SELECT campaign_id, title
-                    FROM dim_ozon_campaigns
-                    WHERE shop_id = :shop_id AND campaign_id = ANY(:campaign_ids)
-                """),
-                {"shop_id": shop_id, "campaign_ids": campaign_ids},
-            )
-            for row in title_result:
-                campaign_title_map[int(row[0])] = row[1] or ""
-        except Exception:
-            pass  # Table may not exist yet — graceful fallback
+    try:
+        from app.core.redis_state import RedisStateManager
+        redis_state = RedisStateManager()
+        for cid in campaign_ids:
+            state = redis_state.get_ozon_campaign_state(shop_id, cid)
+            if state.get("title"):
+                campaign_title_map[cid] = state["title"]
+    except Exception:
+        pass
 
-    # Get SKU list per campaign
-    sku_list_rows = ch.query("""
+    # Per-SKU breakdown within each campaign
+    sku_stats_rows = ch.query("""
         SELECT
             campaign_id,
-            groupArray(DISTINCT sku) AS skus
+            sku,
+            sum(money_spent) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(add_to_cart) AS t_cart,
+            sum(orders) AS t_direct_orders,
+            sum(model_orders) AS t_model_orders,
+            sum(revenue) AS t_direct_revenue,
+            sum(model_revenue) AS t_model_revenue
         FROM mms_analytics.fact_ozon_ad_daily FINAL
         WHERE shop_id = {shop_id:UInt32}
           AND dt >= {cur_start:Date}
           AND dt <= {cur_end:Date}
           AND sku > 0
-        GROUP BY campaign_id
+        GROUP BY campaign_id, sku
+        ORDER BY campaign_id, t_spend DESC
     """, parameters=params).result_rows
-    sku_map = {int(row[0]): [int(s) for s in row[1][:20]] for row in sku_list_rows}
+
+    # Collect all SKUs for name enrichment
+    all_skus: set = set()
+    sku_stats_by_campaign: dict = {}
+    for row in sku_stats_rows:
+        cid = int(row[0])
+        sku = int(row[1])
+        all_skus.add(sku)
+        sku_stats_by_campaign.setdefault(cid, []).append({
+            "sku": sku,
+            "spend": round(float(row[2]), 2),
+            "views": int(row[3]),
+            "clicks": int(row[4]),
+            "cart": int(row[5]),
+            "direct_orders": int(row[6]),
+            "model_orders": int(row[7]),
+            "direct_revenue": round(float(row[8]), 2),
+            "model_revenue": round(float(row[9]), 2),
+        })
 
     # Enrich SKU names from PostgreSQL
-    all_skus = set()
-    for skus in sku_map.values():
-        all_skus.update(skus)
     sku_name_map: dict = {}
     if all_skus:
         try:
             sku_result = await db.execute(
                 text("""
-                    SELECT product_id, offer_id, name
+                    SELECT product_id, sku, offer_id, name
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
                       AND (product_id = ANY(:skus) OR sku = ANY(:skus))
@@ -661,9 +680,68 @@ async def _build_ozon_analytics(
                 {"shop_id": shop_id, "skus": list(all_skus)},
             )
             for row in sku_result:
-                sku_name_map[int(row[0])] = {"offer_id": row[1] or "", "name": row[2] or ""}
+                pid = int(row[0])
+                s = int(row[1]) if row[1] else pid
+                info = {"product_id": pid, "offer_id": row[2] or "", "name": row[3] or ""}
+                sku_name_map[pid] = info
+                sku_name_map[s] = info
         except Exception:
             pass
+
+    # Per-SKU total revenue from fact_ozon_orders for total_drr
+    sku_total_rev_map: dict = {}
+    if all_skus:
+        try:
+            sku_rev_rows = ch.query("""
+                SELECT
+                    sku,
+                    sum(price * quantity) AS total_revenue
+                FROM mms_analytics.fact_ozon_orders FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
+                  AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+                  AND sku IN ({skus:Array(UInt64)})
+                GROUP BY sku
+            """, parameters={**params, "skus": list(all_skus)}).result_rows
+            for row in sku_rev_rows:
+                sku_total_rev_map[int(row[0])] = float(row[1])
+        except Exception:
+            pass
+
+    def build_sku_item(s: dict) -> dict:
+        sku = s["sku"]
+        info = sku_name_map.get(sku, {})
+        orders = s["direct_orders"] + s["model_orders"]
+        revenue = round(s["direct_revenue"] + s["model_revenue"], 2)
+        halo_pct = round(s["model_orders"] / orders * 100, 1) if orders > 0 else 0
+        ad_drr = round(s["spend"] / revenue * 100, 1) if revenue > 0 else 0
+        total_rev = sku_total_rev_map.get(sku, 0)
+        total_drr = round(s["spend"] / total_rev * 100, 1) if total_rev > 0 else 0
+        cart_conv = round(s["cart"] / s["clicks"] * 100, 1) if s["clicks"] > 0 else 0
+        order_conv = round(orders / s["cart"] * 100, 1) if s["cart"] > 0 else 0
+        return {
+            "sku": sku,
+            "product_id": info.get("product_id", sku),
+            "offer_id": info.get("offer_id", ""),
+            "name": info.get("name", ""),
+            "spend": s["spend"],
+            "views": s["views"],
+            "clicks": s["clicks"],
+            "cart": s["cart"],
+            "cart_conv": cart_conv,
+            "orders": orders,
+            "order_conv": order_conv,
+            "direct_orders": s["direct_orders"],
+            "model_orders": s["model_orders"],
+            "revenue": revenue,
+            "direct_revenue": s["direct_revenue"],
+            "model_revenue": s["model_revenue"],
+            "halo_pct": halo_pct,
+            "ctr": round(s["clicks"] / s["views"] * 100, 2) if s["views"] > 0 else 0,
+            "avg_cpc": round(s["spend"] / s["clicks"], 2) if s["clicks"] > 0 else 0,
+            "drr": ad_drr,
+            "total_drr": total_drr,
+        }
 
     campaigns_table = []
     for row in campaigns_rows:
@@ -675,28 +753,26 @@ async def _build_ozon_analytics(
         model_revenue = round(float(row[8]), 2)
         total_revenue = round(direct_revenue + model_revenue, 2)
         halo_pct = round(model_orders / total_orders * 100, 1) if total_orders > 0 else 0
+        clicks = int(row[3])
+        cart = int(row[4])
+        cart_conv = round(cart / clicks * 100, 1) if clicks > 0 else 0
+        order_conv = round(total_orders / cart * 100, 1) if cart > 0 else 0
 
-        # Build SKU info list
-        camp_skus = sku_map.get(cid, [])
-        skus_info = []
-        for s in camp_skus:
-            info = sku_name_map.get(s, {})
-            skus_info.append({
-                "sku": s,
-                "offer_id": info.get("offer_id", ""),
-                "name": info.get("name", ""),
-            })
+        # Build per-SKU items
+        items = [build_sku_item(s) for s in sku_stats_by_campaign.get(cid, [])]
 
         campaigns_table.append({
             "campaign_id": cid,
             "title": campaign_title_map.get(cid, ""),
-            "sku_count": int(row[14]),
-            "skus": skus_info,
+            "sku_count": int(row[12]),
+            "items": items,
             "spend": round(float(row[1]), 2),
             "views": int(row[2]),
-            "clicks": int(row[3]),
-            "cart": int(row[4]),
+            "clicks": clicks,
+            "cart": cart,
+            "cart_conv": cart_conv,
             "orders": total_orders,
+            "order_conv": order_conv,
             "direct_orders": direct_orders,
             "model_orders": model_orders,
             "revenue": total_revenue,

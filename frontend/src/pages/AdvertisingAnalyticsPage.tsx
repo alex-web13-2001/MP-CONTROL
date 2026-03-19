@@ -852,9 +852,9 @@ function EventsDetailModal({
    ═══════════════════════════════════════════════════════════ */
 
 function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
-  const [sortKey, setSortKey] = useState<keyof CampaignRow>('spend')
+  const [sortKey, setSortKey] = useState<string>('spend')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
-  const [expandedRow, setExpandedRow] = useState<number | null>(null)
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
 
   if (!campaigns.length) {
     return (
@@ -865,153 +865,174 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
   }
 
   const sorted = [...campaigns].sort((a, b) => {
-    const va = a[sortKey] ?? 0
-    const vb = b[sortKey] ?? 0
-    if (typeof va === 'number' && typeof vb === 'number') {
-      return sortDir === 'asc' ? va - vb : vb - va
-    }
-    return sortDir === 'asc'
-      ? String(va).localeCompare(String(vb))
-      : String(vb).localeCompare(String(va))
+    const va = (a as any)[sortKey] ?? 0
+    const vb = (b as any)[sortKey] ?? 0
+    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
+    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
   })
 
-  const handleSort = (key: keyof CampaignRow) => {
-    if (sortKey === key) {
-      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
-    } else {
-      setSortKey(key)
-      setSortDir('desc')
-    }
+  const handleSort = (key: string) => {
+    if (sortKey === key) setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
+    else { setSortKey(key); setSortDir('desc') }
   }
 
-  const SortHeader = ({ k, label, align = 'right' }: { k: keyof CampaignRow; label: string; align?: 'left' | 'right' }) => (
-    <th
-      className={`px-3 py-3 text-${align} text-[13px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap`}
-      onClick={() => handleSort(k)}
-    >
-      {label}
-      {sortKey === k && (
-        <span className="ml-1 text-[11px]">{sortDir === 'desc' ? '▼' : '▲'}</span>
+  const toggleExpand = (cid: number) => {
+    setExpandedRows(prev => {
+      const next = new Set(prev)
+      next.has(cid) ? next.delete(cid) : next.add(cid)
+      return next
+    })
+  }
+
+  const thCls = "px-3 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap"
+  const tdCls = "px-3 py-2.5 text-right text-[13px]"
+  const stickyTh = `${thCls} sticky left-0 z-10 bg-[hsl(var(--card))] text-left min-w-[200px]`
+  const stickyTd = "px-4 py-2.5 sticky left-0 z-10 bg-[hsl(var(--card))] min-w-[200px]"
+
+  const SortIcon = ({ k }: { k: string }) => sortKey === k ? <span className="ml-0.5 text-[10px]">{sortDir === 'desc' ? '▼' : '▲'}</span> : null
+
+  const drrColor = (d: number) => d > 30 ? 'text-red-500 font-semibold' : d > 15 ? 'text-red-400' : d > 8 ? 'text-yellow-400' : 'text-emerald-400'
+
+  const HaloBar = ({ direct, model, pct }: { direct: number; model: number; pct: number }) => (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className="font-semibold text-[13px]">{formatNumber(direct + model)}</span>
+      {model > 0 && (
+        <div className="flex items-center gap-1">
+          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{direct} + </span>
+          <span className="text-[11px] text-teal-400 font-medium">{model} halo</span>
+          <div className="w-10 h-1.5 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden ml-0.5">
+            <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400" style={{ width: `${Math.min(pct, 100)}%` }} />
+          </div>
+          <span className="text-[10px] text-teal-400">{pct}%</span>
+        </div>
       )}
-    </th>
+    </div>
   )
 
   return (
-    <div className="overflow-x-auto -mx-5">
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto -mx-5 relative">
+      <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="border-b border-[hsl(var(--border)/0.5)]">
-            <SortHeader k="campaign_id" label="Кампания" align="left" />
-            <SortHeader k="sku_count" label="Арт." />
-            <SortHeader k="spend" label="Расход" />
-            <SortHeader k="views" label="Показы" />
-            <SortHeader k="clicks" label="Клики" />
-            <SortHeader k="cart" label="Корз." />
-            <SortHeader k="ctr" label="CTR" />
-            <SortHeader k="avg_cpc" label="CPC" />
-            <SortHeader k="orders" label="Заказы" />
-            <SortHeader k="revenue" label="Выручка" />
-            <SortHeader k="drr" label="ДРР" />
+            <th className={stickyTh} onClick={() => handleSort('campaign_id')}>Кампания<SortIcon k="campaign_id" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('views')}>Показы<SortIcon k="views" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('clicks')}>Клики<SortIcon k="clicks" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('avg_cpc')}>CPC<SortIcon k="avg_cpc" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('ctr')}>CTR<SortIcon k="ctr" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('cart')}>Корз.<SortIcon k="cart" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('cart_conv')}>CR корз.<SortIcon k="cart_conv" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('orders')}>Заказы<SortIcon k="orders" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('order_conv')}>CR заказ<SortIcon k="order_conv" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('revenue')}>Выручка<SortIcon k="revenue" /></th>
+            <th className={`${thCls} text-right`} onClick={() => handleSort('drr')}>ДРР<SortIcon k="drr" /></th>
           </tr>
         </thead>
         <tbody>
-          {sorted.map((c) => (
-            <Fragment key={c.campaign_id}>
-              <tr className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.2)]">
-                {/* Campaign name + ID */}
-                <td className="px-5 py-3 max-w-[260px]">
-                  <div className="flex flex-col">
-                    {c.title ? (
-                      <>
-                        <span className="font-medium text-[13px] truncate" title={c.title}>{c.title}</span>
-                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">ID: {c.campaign_id}</span>
-                      </>
-                    ) : (
-                      <span className="font-medium">{c.campaign_id}</span>
-                    )}
-                  </div>
-                </td>
-                {/* SKU count — clickable to expand */}
-                <td className="px-3 py-3 text-right">
-                  {c.sku_count > 0 ? (
-                    <button
-                      onClick={() => setExpandedRow(expandedRow === c.campaign_id ? null : c.campaign_id)}
-                      className="inline-flex items-center gap-1 text-[13px] text-blue-400 hover:text-blue-300 transition-colors"
-                    >
-                      {c.sku_count}
-                      <ChevronDown className={`h-3 w-3 transition-transform ${expandedRow === c.campaign_id ? 'rotate-180' : ''}`} />
-                    </button>
-                  ) : (
-                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">—</span>
-                  )}
-                </td>
-                <td className="px-3 py-3 text-right">{formatMoney(c.spend)}</td>
-                <td className="px-3 py-3 text-right">{formatNumber(c.views)}</td>
-                <td className="px-3 py-3 text-right">{formatNumber(c.clicks)}</td>
-                <td className="px-3 py-3 text-right">{formatNumber(c.cart)}</td>
-                <td className="px-3 py-3 text-right">{c.ctr.toFixed(2)}%</td>
-                <td className="px-3 py-3 text-right">{c.avg_cpc.toFixed(2)} ₽</td>
-                {/* Orders: total + direct/halo split with progress bar */}
-                <td className="px-3 py-3 text-right">
-                  <div className="flex flex-col items-end gap-1">
-                    <span className="font-medium">{formatNumber(c.orders)}</span>
-                    {c.orders > 0 && c.model_orders > 0 && (
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-16 h-1.5 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden" title={`Halo: ${c.halo_pct}%`}>
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400"
-                            style={{ width: `${Math.min(c.halo_pct, 100)}%` }}
-                          />
-                        </div>
-                        <span className="text-[10px] text-teal-400">{c.halo_pct}%</span>
+          {sorted.map((c) => {
+            const isExpanded = expandedRows.has(c.campaign_id)
+            return (
+              <Fragment key={c.campaign_id}>
+                {/* Campaign row */}
+                <tr
+                  className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.15)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
+                  onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
+                >
+                  <td className={stickyTd}>
+                    <div className="flex items-center gap-2">
+                      {c.items.length > 0 && (
+                        <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      )}
+                      <div className="flex flex-col min-w-0">
+                        {c.title ? (
+                          <>
+                            <span className="font-semibold text-[13px] truncate" title={c.title}>{c.title}</span>
+                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">ID: {c.campaign_id} · {c.sku_count} арт.</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="font-semibold text-[13px]">{c.campaign_id}</span>
+                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{c.sku_count} арт.</span>
+                          </>
+                        )}
                       </div>
-                    )}
-                    {c.orders > 0 && (
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
-                        {c.direct_orders} прям. + {c.model_orders} halo
-                      </span>
-                    )}
-                  </div>
-                </td>
-                {/* Revenue: total + split */}
-                <td className="px-3 py-3 text-right">
-                  <div className="flex flex-col items-end">
-                    <span>{formatMoney(c.revenue)}</span>
-                    {c.model_revenue > 0 && (
-                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
-                        halo: {formatMoney(c.model_revenue)}
-                      </span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-3 py-3 text-right">
-                  <span className={c.drr > 20 ? 'text-red-400 font-semibold' : c.drr > 10 ? 'text-yellow-400' : 'text-emerald-400'}>
-                    {c.drr.toFixed(1)}%
-                  </span>
-                </td>
-              </tr>
-              {/* Expanded SKU list */}
-              {expandedRow === c.campaign_id && c.skus.length > 0 && (
-                <tr className="bg-[hsl(var(--muted)/0.1)]">
-                  <td colSpan={11} className="px-8 py-3">
-                    <div className="flex flex-wrap gap-2">
-                      {c.skus.map(s => (
-                        <div
-                          key={s.sku}
-                          className="inline-flex items-center gap-1.5 py-1 px-2.5 rounded-lg bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border)/0.3)] text-[12px]"
-                          title={s.name || `SKU ${s.sku}`}
-                        >
-                          {s.offer_id && <span className="text-blue-400 font-medium">{s.offer_id}</span>}
-                          {s.name && <span className="text-[hsl(var(--muted-foreground)/0.7)] truncate max-w-[200px]">{s.name}</span>}
-                          {!s.offer_id && !s.name && <span className="text-[hsl(var(--muted-foreground)/0.5)]">SKU {s.sku}</span>}
-                        </div>
-                      ))}
                     </div>
                   </td>
+                  <td className={tdCls}>{formatMoney(c.spend)}</td>
+                  <td className={tdCls}>{formatNumber(c.views)}</td>
+                  <td className={tdCls}>{formatNumber(c.clicks)}</td>
+                  <td className={tdCls}>{c.avg_cpc.toFixed(2)} ₽</td>
+                  <td className={tdCls}>{c.ctr.toFixed(2)}%</td>
+                  <td className={tdCls}>{formatNumber(c.cart)}</td>
+                  <td className={tdCls}>{c.cart_conv > 0 ? `${c.cart_conv}%` : '—'}</td>
+                  <td className={tdCls}>
+                    <HaloBar direct={c.direct_orders} model={c.model_orders} pct={c.halo_pct} />
+                  </td>
+                  <td className={tdCls}>{c.order_conv > 0 ? `${c.order_conv}%` : '—'}</td>
+                  <td className={tdCls}>
+                    <div className="flex flex-col items-end">
+                      <span>{formatMoney(c.revenue)}</span>
+                      {c.model_revenue > 0 && (
+                        <span className="text-[11px] text-teal-400">halo: {formatMoney(c.model_revenue)}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={tdCls}>
+                    <span className={drrColor(c.drr)}>{c.drr.toFixed(1)}%</span>
+                  </td>
                 </tr>
-              )}
-            </Fragment>
-          ))}
+
+                {/* Per-SKU rows */}
+                {isExpanded && c.items.map((s) => (
+                  <tr
+                    key={`${c.campaign_id}-${s.sku}`}
+                    className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.06)]"
+                  >
+                    <td className={`${stickyTd} bg-[hsl(var(--muted)/0.06)]`}>
+                      <div className="flex flex-col pl-6 min-w-0">
+                        <span className="text-[12px] font-medium truncate" title={s.name || `SKU ${s.sku}`}>
+                          {s.name || `SKU ${s.sku}`}
+                        </span>
+                        <div className="flex items-center gap-2 text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
+                          {s.offer_id && <span>Арт: {s.offer_id}</span>}
+                          <span>ID: {s.product_id}</span>
+                        </div>
+                      </div>
+                    </td>
+                    <td className={`${tdCls} text-[12px]`}>{formatMoney(s.spend)}</td>
+                    <td className={`${tdCls} text-[12px]`}>{formatNumber(s.views)}</td>
+                    <td className={`${tdCls} text-[12px]`}>{formatNumber(s.clicks)}</td>
+                    <td className={`${tdCls} text-[12px]`}>{s.avg_cpc.toFixed(2)} ₽</td>
+                    <td className={`${tdCls} text-[12px]`}>{s.ctr.toFixed(2)}%</td>
+                    <td className={`${tdCls} text-[12px]`}>{formatNumber(s.cart)}</td>
+                    <td className={`${tdCls} text-[12px]`}>{s.cart_conv > 0 ? `${s.cart_conv}%` : '—'}</td>
+                    <td className={`${tdCls} text-[12px]`}>
+                      <HaloBar direct={s.direct_orders} model={s.model_orders} pct={s.halo_pct} />
+                    </td>
+                    <td className={`${tdCls} text-[12px]`}>{s.order_conv > 0 ? `${s.order_conv}%` : '—'}</td>
+                    <td className={`${tdCls} text-[12px]`}>
+                      <div className="flex flex-col items-end">
+                        <span>{formatMoney(s.revenue)}</span>
+                        {s.model_revenue > 0 && (
+                          <span className="text-[10px] text-teal-400">halo: {formatMoney(s.model_revenue)}</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className={`${tdCls} text-[12px]`}>
+                      <div className="flex flex-col items-end">
+                        <span className={drrColor(s.drr)}>{s.drr.toFixed(1)}%</span>
+                        {s.total_drr > 0 && s.total_drr !== s.drr && (
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]" title="Общий ДРР">
+                            общ: {s.total_drr.toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
     </div>
