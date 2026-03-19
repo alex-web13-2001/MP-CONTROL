@@ -21,6 +21,9 @@ import WarehousesOverviewPage from '@/pages/WarehousesOverviewPage'
 import WarehousesCrossPage from '@/pages/WarehousesCrossPage'
 import WarehousesStoragePage from '@/pages/WarehousesStoragePage'
 import WarehousesGeographyPage from '@/pages/WarehousesGeographyPage'
+import AdvertisingAnalyticsPage from '@/pages/AdvertisingAnalyticsPage'
+import AdvertisingCampaignsPage from '@/pages/AdvertisingCampaignsPage'
+import AdvertisingAutobidderPage from '@/pages/AdvertisingAutobidderPage'
 
 export default function App() {
   return (
@@ -67,6 +70,10 @@ export default function App() {
           <Route path="/warehouses/geography" element={<WarehousesGeographyPage />} />
           <Route path="/warehouses/supply" element={<WarehouseSupplyPage />} />
           <Route path="/warehouses/analytics" element={<WarehouseAnalyticsPage />} />
+          {/* Advertising */}
+          <Route path="/advertising/analytics" element={<AdvertisingAnalyticsPage />} />
+          <Route path="/advertising/campaigns" element={<AdvertisingCampaignsPage />} />
+          <Route path="/advertising/autobidder" element={<AdvertisingAutobidderPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

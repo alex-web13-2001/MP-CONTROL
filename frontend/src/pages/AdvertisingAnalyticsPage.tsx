@@ -789,6 +789,15 @@ export default function AdvertisingAnalyticsPage() {
           delay={0.12}
         />
         <KpiCard
+          title="Конверсия в корзину"
+          value={`${kpi.cart_rate.toFixed(1)}%`}
+          delta={kpi.cart_rate_delta}
+          icon={Percent}
+          accent="#a78bfa"
+          delay={0.14}
+          subtitle={`Δ ${kpi.cart_rate_delta >= 0 ? '+' : ''}${kpi.cart_rate_delta.toFixed(1)} п.п.`}
+        />
+        <KpiCard
           title="Заказы"
           value={formatMoney(kpi.revenue)}
           delta={kpi.revenue_delta}

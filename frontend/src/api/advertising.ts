@@ -13,6 +13,8 @@ export interface AdvertisingKpi {
   ctr_delta: number
   cart: number
   cart_delta: number
+  cart_rate: number
+  cart_rate_delta: number
   orders: number
   orders_delta: number
   conversion_rate: number

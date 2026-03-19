@@ -190,6 +190,9 @@ async def _build_ozon_analytics(
     prev_drr = round(prev["spend"] / prev["revenue"] * 100, 1) if prev["revenue"] > 0 else 0
     cur_roas = round(cur["revenue"] / cur["spend"], 2) if cur["spend"] > 0 else 0
     prev_roas = round(prev["revenue"] / prev["spend"], 2) if prev["spend"] > 0 else 0
+    # Конверсия клик → корзина
+    cur_cart_rate = round(cur["cart"] / cur["clicks"] * 100, 1) if cur["clicks"] > 0 else 0
+    prev_cart_rate = round(prev["cart"] / prev["clicks"] * 100, 1) if prev["clicks"] > 0 else 0
     # Конверсия корзина → заказ
     cur_cr = round(cur["orders"] / cur["cart"] * 100, 1) if cur["cart"] > 0 else 0
     prev_cr = round(prev["orders"] / prev["cart"] * 100, 1) if prev["cart"] > 0 else 0
@@ -237,6 +240,8 @@ async def _build_ozon_analytics(
         "ctr_delta": round(cur_ctr - prev_ctr, 2),
         "cart": cur["cart"],
         "cart_delta": _safe_delta(cur["cart"], prev["cart"]),
+        "cart_rate": cur_cart_rate,
+        "cart_rate_delta": round(cur_cart_rate - prev_cart_rate, 1),
         "orders": cur["orders"],
         "orders_delta": _safe_delta(cur["orders"], prev["orders"]),
         "conversion_rate": cur_cr,
