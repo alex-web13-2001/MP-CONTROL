@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, Fragment } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
@@ -11,6 +11,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   RefreshCw,
+  ChevronDown,
   Megaphone,
   Target,
   XCircle,
@@ -851,6 +852,10 @@ function EventsDetailModal({
    ═══════════════════════════════════════════════════════════ */
 
 function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
+  const [sortKey, setSortKey] = useState<keyof CampaignRow>('spend')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [expandedRow, setExpandedRow] = useState<number | null>(null)
+
   if (!campaigns.length) {
     return (
       <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.15)]">
@@ -859,42 +864,153 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
     )
   }
 
+  const sorted = [...campaigns].sort((a, b) => {
+    const va = a[sortKey] ?? 0
+    const vb = b[sortKey] ?? 0
+    if (typeof va === 'number' && typeof vb === 'number') {
+      return sortDir === 'asc' ? va - vb : vb - va
+    }
+    return sortDir === 'asc'
+      ? String(va).localeCompare(String(vb))
+      : String(vb).localeCompare(String(va))
+  })
+
+  const handleSort = (key: keyof CampaignRow) => {
+    if (sortKey === key) {
+      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  const SortHeader = ({ k, label, align = 'right' }: { k: keyof CampaignRow; label: string; align?: 'left' | 'right' }) => (
+    <th
+      className={`px-3 py-3 text-${align} text-[13px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap`}
+      onClick={() => handleSort(k)}
+    >
+      {label}
+      {sortKey === k && (
+        <span className="ml-1 text-[11px]">{sortDir === 'desc' ? '▼' : '▲'}</span>
+      )}
+    </th>
+  )
+
   return (
     <div className="overflow-x-auto -mx-5">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-[hsl(var(--border)/0.5)]">
-            <th className="px-5 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">ID кампании</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Расход</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Показы</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Клики</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">CTR</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">CPC</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Выручка</th>
-            <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">ДРР</th>
+            <SortHeader k="campaign_id" label="Кампания" align="left" />
+            <SortHeader k="sku_count" label="Арт." />
+            <SortHeader k="spend" label="Расход" />
+            <SortHeader k="views" label="Показы" />
+            <SortHeader k="clicks" label="Клики" />
+            <SortHeader k="cart" label="Корз." />
+            <SortHeader k="ctr" label="CTR" />
+            <SortHeader k="avg_cpc" label="CPC" />
+            <SortHeader k="orders" label="Заказы" />
+            <SortHeader k="revenue" label="Выручка" />
+            <SortHeader k="drr" label="ДРР" />
           </tr>
         </thead>
         <tbody>
-          {campaigns.map((c) => (
-            <tr
-              key={c.campaign_id}
-              className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.2)]"
-            >
-              <td className="px-5 py-3 font-medium">{c.campaign_id}</td>
-              <td className="px-3 py-3 text-right">{formatMoney(c.spend)}</td>
-              <td className="px-3 py-3 text-right">{formatNumber(c.views)}</td>
-              <td className="px-3 py-3 text-right">{formatNumber(c.clicks)}</td>
-              <td className="px-3 py-3 text-right">{c.ctr.toFixed(2)}%</td>
-              <td className="px-3 py-3 text-right">{c.avg_cpc.toFixed(2)} ₽</td>
-              <td className="px-3 py-3 text-right font-medium">{formatNumber(c.orders)}</td>
-              <td className="px-3 py-3 text-right">{formatMoney(c.revenue)}</td>
-              <td className="px-3 py-3 text-right">
-                <span className={c.drr > 20 ? 'text-red-400 font-semibold' : c.drr > 10 ? 'text-yellow-400' : 'text-emerald-400'}>
-                  {c.drr.toFixed(1)}%
-                </span>
-              </td>
-            </tr>
+          {sorted.map((c) => (
+            <Fragment key={c.campaign_id}>
+              <tr className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.2)]">
+                {/* Campaign name + ID */}
+                <td className="px-5 py-3 max-w-[260px]">
+                  <div className="flex flex-col">
+                    {c.title ? (
+                      <>
+                        <span className="font-medium text-[13px] truncate" title={c.title}>{c.title}</span>
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">ID: {c.campaign_id}</span>
+                      </>
+                    ) : (
+                      <span className="font-medium">{c.campaign_id}</span>
+                    )}
+                  </div>
+                </td>
+                {/* SKU count — clickable to expand */}
+                <td className="px-3 py-3 text-right">
+                  {c.sku_count > 0 ? (
+                    <button
+                      onClick={() => setExpandedRow(expandedRow === c.campaign_id ? null : c.campaign_id)}
+                      className="inline-flex items-center gap-1 text-[13px] text-blue-400 hover:text-blue-300 transition-colors"
+                    >
+                      {c.sku_count}
+                      <ChevronDown className={`h-3 w-3 transition-transform ${expandedRow === c.campaign_id ? 'rotate-180' : ''}`} />
+                    </button>
+                  ) : (
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">—</span>
+                  )}
+                </td>
+                <td className="px-3 py-3 text-right">{formatMoney(c.spend)}</td>
+                <td className="px-3 py-3 text-right">{formatNumber(c.views)}</td>
+                <td className="px-3 py-3 text-right">{formatNumber(c.clicks)}</td>
+                <td className="px-3 py-3 text-right">{formatNumber(c.cart)}</td>
+                <td className="px-3 py-3 text-right">{c.ctr.toFixed(2)}%</td>
+                <td className="px-3 py-3 text-right">{c.avg_cpc.toFixed(2)} ₽</td>
+                {/* Orders: total + direct/halo split with progress bar */}
+                <td className="px-3 py-3 text-right">
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="font-medium">{formatNumber(c.orders)}</span>
+                    {c.orders > 0 && c.model_orders > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-16 h-1.5 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden" title={`Halo: ${c.halo_pct}%`}>
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400"
+                            style={{ width: `${Math.min(c.halo_pct, 100)}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-teal-400">{c.halo_pct}%</span>
+                      </div>
+                    )}
+                    {c.orders > 0 && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
+                        {c.direct_orders} прям. + {c.model_orders} halo
+                      </span>
+                    )}
+                  </div>
+                </td>
+                {/* Revenue: total + split */}
+                <td className="px-3 py-3 text-right">
+                  <div className="flex flex-col items-end">
+                    <span>{formatMoney(c.revenue)}</span>
+                    {c.model_revenue > 0 && (
+                      <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
+                        halo: {formatMoney(c.model_revenue)}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-right">
+                  <span className={c.drr > 20 ? 'text-red-400 font-semibold' : c.drr > 10 ? 'text-yellow-400' : 'text-emerald-400'}>
+                    {c.drr.toFixed(1)}%
+                  </span>
+                </td>
+              </tr>
+              {/* Expanded SKU list */}
+              {expandedRow === c.campaign_id && c.skus.length > 0 && (
+                <tr className="bg-[hsl(var(--muted)/0.1)]">
+                  <td colSpan={11} className="px-8 py-3">
+                    <div className="flex flex-wrap gap-2">
+                      {c.skus.map(s => (
+                        <div
+                          key={s.sku}
+                          className="inline-flex items-center gap-1.5 py-1 px-2.5 rounded-lg bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border)/0.3)] text-[12px]"
+                          title={s.name || `SKU ${s.sku}`}
+                        >
+                          {s.offer_id && <span className="text-blue-400 font-medium">{s.offer_id}</span>}
+                          {s.name && <span className="text-[hsl(var(--muted-foreground)/0.7)] truncate max-w-[200px]">{s.name}</span>}
+                          {!s.offer_id && !s.name && <span className="text-[hsl(var(--muted-foreground)/0.5)]">SKU {s.sku}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>

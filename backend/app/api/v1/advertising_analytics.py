@@ -588,8 +588,11 @@ async def _build_ozon_analytics(
             sum(money_spent) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
-            sum(orders) + sum(model_orders) AS t_orders,
-            sum(revenue) + sum(model_revenue) AS t_revenue,
+            sum(add_to_cart) AS t_cart,
+            sum(orders) AS t_direct_orders,
+            sum(model_orders) AS t_model_orders,
+            sum(revenue) AS t_direct_revenue,
+            sum(model_revenue) AS t_model_revenue,
             CASE WHEN sum(views) > 0
                 THEN round(sum(clicks) / sum(views) * 100, 2) ELSE 0
             END AS t_ctr,
@@ -598,7 +601,8 @@ async def _build_ozon_analytics(
             END AS t_avg_cpc,
             CASE WHEN (sum(revenue) + sum(model_revenue)) > 0
                 THEN round(sum(money_spent) / (sum(revenue) + sum(model_revenue)) * 100, 1) ELSE 0
-            END AS t_drr
+            END AS t_drr,
+            uniqExact(sku) AS t_sku_count
         FROM mms_analytics.fact_ozon_ad_daily FINAL
         WHERE shop_id = {shop_id:UInt32}
           AND dt >= {cur_start:Date}
@@ -607,20 +611,102 @@ async def _build_ozon_analytics(
         ORDER BY t_spend DESC
     """, parameters=params).result_rows
 
-    campaigns_table = [
-        {
-            "campaign_id": int(row[0]),
+    campaign_ids = [int(row[0]) for row in campaigns_rows]
+
+    # Enrich campaign titles from PostgreSQL
+    campaign_title_map: dict = {}
+    if campaign_ids:
+        try:
+            title_result = await db.execute(
+                text("""
+                    SELECT campaign_id, title
+                    FROM dim_ozon_campaigns
+                    WHERE shop_id = :shop_id AND campaign_id = ANY(:campaign_ids)
+                """),
+                {"shop_id": shop_id, "campaign_ids": campaign_ids},
+            )
+            for row in title_result:
+                campaign_title_map[int(row[0])] = row[1] or ""
+        except Exception:
+            pass  # Table may not exist yet — graceful fallback
+
+    # Get SKU list per campaign
+    sku_list_rows = ch.query("""
+        SELECT
+            campaign_id,
+            groupArray(DISTINCT sku) AS skus
+        FROM mms_analytics.fact_ozon_ad_daily FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND dt >= {cur_start:Date}
+          AND dt <= {cur_end:Date}
+          AND sku > 0
+        GROUP BY campaign_id
+    """, parameters=params).result_rows
+    sku_map = {int(row[0]): [int(s) for s in row[1][:20]] for row in sku_list_rows}
+
+    # Enrich SKU names from PostgreSQL
+    all_skus = set()
+    for skus in sku_map.values():
+        all_skus.update(skus)
+    sku_name_map: dict = {}
+    if all_skus:
+        try:
+            sku_result = await db.execute(
+                text("""
+                    SELECT product_id, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :shop_id
+                      AND (product_id = ANY(:skus) OR sku = ANY(:skus))
+                """),
+                {"shop_id": shop_id, "skus": list(all_skus)},
+            )
+            for row in sku_result:
+                sku_name_map[int(row[0])] = {"offer_id": row[1] or "", "name": row[2] or ""}
+        except Exception:
+            pass
+
+    campaigns_table = []
+    for row in campaigns_rows:
+        cid = int(row[0])
+        direct_orders = int(row[5])
+        model_orders = int(row[6])
+        total_orders = direct_orders + model_orders
+        direct_revenue = round(float(row[7]), 2)
+        model_revenue = round(float(row[8]), 2)
+        total_revenue = round(direct_revenue + model_revenue, 2)
+        halo_pct = round(model_orders / total_orders * 100, 1) if total_orders > 0 else 0
+
+        # Build SKU info list
+        camp_skus = sku_map.get(cid, [])
+        skus_info = []
+        for s in camp_skus:
+            info = sku_name_map.get(s, {})
+            skus_info.append({
+                "sku": s,
+                "offer_id": info.get("offer_id", ""),
+                "name": info.get("name", ""),
+            })
+
+        campaigns_table.append({
+            "campaign_id": cid,
+            "title": campaign_title_map.get(cid, ""),
+            "sku_count": int(row[14]),
+            "skus": skus_info,
             "spend": round(float(row[1]), 2),
             "views": int(row[2]),
             "clicks": int(row[3]),
-            "orders": int(row[4]),
-            "revenue": round(float(row[5]), 2),
-            "ctr": float(row[6]),
-            "avg_cpc": float(row[7]),
-            "drr": float(row[8]),
-        }
-        for row in campaigns_rows
-    ]
+            "cart": int(row[4]),
+            "orders": total_orders,
+            "direct_orders": direct_orders,
+            "model_orders": model_orders,
+            "revenue": total_revenue,
+            "direct_revenue": direct_revenue,
+            "model_revenue": model_revenue,
+            "halo_pct": halo_pct,
+            "ctr": float(row[9]),
+            "avg_cpc": float(row[10]),
+            "drr": float(row[11]),
+        })
 
     # ── 4. Top SKUs ───────────────────────────────────
     top_skus_rows = ch.query("""
