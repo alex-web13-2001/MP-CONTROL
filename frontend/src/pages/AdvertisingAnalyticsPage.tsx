@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
   ShoppingCart,
@@ -15,6 +15,12 @@ import {
   Target,
   XCircle,
   BarChart2,
+  Zap,
+  Package,
+  FileText,
+  X,
+  Clock,
+  Tag,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -27,15 +33,19 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  ReferenceLine,
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAppStore } from '@/stores/appStore'
 import {
   getAdvertisingAnalytics,
+  getEventsDetail,
   type AdvertisingAnalyticsResponse,
   type AdvertisingDailyPoint,
   type CampaignRow,
+  type EventDaySummary,
+  type EventDetail,
 } from '@/api/advertising'
 
 /* ═══════════════════════════════════════════════════════════
@@ -240,10 +250,30 @@ const ADS_METRIC_LABELS: Record<string, string> = {
   drr: 'ДРР',
 }
 
-function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
+const EVENT_CATEGORIES_CONFIG = [
+  { key: 'advertising', label: 'Реклама', color: '#f59e0b', icon: Megaphone },
+  { key: 'content', label: 'Контент', color: '#8b5cf6', icon: FileText },
+  { key: 'price', label: 'Цена', color: '#06b6d4', icon: Tag },
+  { key: 'stock', label: 'Склад', color: '#ef4444', icon: Package },
+] as const
+
+type EventCategoryKey = typeof EVENT_CATEGORIES_CONFIG[number]['key']
+
+interface AdsChartProps {
+  data: AdvertisingDailyPoint[]
+  eventsByDay: Record<string, EventDaySummary>
+  shopId: number
+}
+
+function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
   const [activeMetrics, setActiveMetrics] = useState<Set<AdsMetricKey>>(
     new Set<AdsMetricKey>(['spend', 'orders', 'drr'])
   )
+  const [showEvents, setShowEvents] = useState(true)
+  const [activeEventCats, setActiveEventCats] = useState<Set<EventCategoryKey>>(
+    new Set<EventCategoryKey>(['advertising', 'content', 'price', 'stock'])
+  )
+  const [selectedEventDate, setSelectedEventDate] = useState<string | null>(null)
 
   const toggleMetric = (key: AdsMetricKey) => {
     setActiveMetrics(prev => {
@@ -252,6 +282,20 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
         if (next.size > 1) next.delete(key)
       } else {
         next.add(key)
+      }
+      return next
+    })
+  }
+
+  const toggleEventCat = (key: EventCategoryKey) => {
+    setActiveEventCats(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) {
+        next.delete(key)
+        if (next.size === 0) setShowEvents(false)
+      } else {
+        next.add(key)
+        setShowEvents(true)
       }
       return next
     })
@@ -266,6 +310,13 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
   const hasPercentAxis = ADS_METRICS.some(
     m => activeMetrics.has(m.key) && m.yAxis === 'percent'
   )
+
+  // Filter event days by active categories
+  const visibleEventDates = showEvents
+    ? Object.entries(eventsByDay).filter(([, summary]) => {
+        return Array.from(activeEventCats).some(cat => (summary as any)[cat] > 0)
+      }).map(([dateStr]) => dateStr)
+    : []
 
   if (!data.length) {
     return (
@@ -297,6 +348,46 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
                 style={{ background: isActive ? m.color : 'hsl(var(--muted-foreground)/0.3)' }}
               />
               {m.label}
+            </button>
+          )
+        })}
+
+        {/* Separator */}
+        <div className="w-px bg-[hsl(var(--border))] mx-1 self-stretch" />
+
+        {/* Event category toggle chips */}
+        <button
+          onClick={() => {
+            setShowEvents(!showEvents)
+            if (!showEvents) setActiveEventCats(new Set(['advertising', 'content', 'price', 'stock']))
+          }}
+          className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-all duration-200 ${
+            showEvents
+              ? 'bg-amber-500/20 border-amber-500 text-amber-500'
+              : 'bg-transparent text-[hsl(var(--muted-foreground))]'
+          }`}
+          style={{ border: `1.5px solid ${showEvents ? '#f59e0b' : 'hsl(var(--border))'}` }}
+        >
+          <Zap className="h-3 w-3" />
+          События
+        </button>
+
+        {showEvents && EVENT_CATEGORIES_CONFIG.map(cat => {
+          const isActive = activeEventCats.has(cat.key)
+          const Icon = cat.icon
+          return (
+            <button
+              key={cat.key}
+              onClick={() => toggleEventCat(cat.key)}
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12px] font-medium transition-all duration-200"
+              style={{
+                background: isActive ? cat.color + '15' : 'transparent',
+                border: `1.5px solid ${isActive ? cat.color : 'hsl(var(--border)/0.5)'}`,
+                color: isActive ? cat.color : 'hsl(var(--muted-foreground)/0.5)',
+              }}
+            >
+              <Icon className="h-3 w-3" />
+              {cat.label}
             </button>
           )
         })}
@@ -377,7 +468,19 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
                 : formatNumber(value),
               ADS_METRIC_LABELS[name] || name,
             ]}
-            labelFormatter={formatTooltipDate}
+            labelFormatter={(label: string) => {
+              const base = formatTooltipDate(label)
+              const ev = eventsByDay[label]
+              if (ev && showEvents && ev.total > 0) {
+                const parts: string[] = []
+                if (activeEventCats.has('advertising') && ev.advertising > 0) parts.push(`📣 ${ev.advertising} рекл.`)
+                if (activeEventCats.has('content') && ev.content > 0) parts.push(`📝 ${ev.content} конт.`)
+                if (activeEventCats.has('price') && ev.price > 0) parts.push(`💰 ${ev.price} цена`)
+                if (activeEventCats.has('stock') && ev.stock > 0) parts.push(`📦 ${ev.stock} склад`)
+                if (parts.length > 0) return `${base}\n⚡ ${parts.join(' · ')}`
+              }
+              return base
+            }}
           />
           <Legend
             verticalAlign="top"
@@ -385,6 +488,39 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
             formatter={(value: string) => ADS_METRIC_LABELS[value] || value}
             wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
           />
+
+          {/* Event ReferenceLine markers */}
+          {visibleEventDates.map(dateStr => {
+            const ev = eventsByDay[dateStr]
+            if (!ev) return null
+            // Pick dominant category color
+            let color = '#f59e0b'
+            if (ev.stock > 0 && activeEventCats.has('stock')) color = '#ef4444'
+            else if (ev.advertising > 0 && activeEventCats.has('advertising')) color = '#f59e0b'
+            else if (ev.content > 0 && activeEventCats.has('content')) color = '#8b5cf6'
+            else if (ev.price > 0 && activeEventCats.has('price')) color = '#06b6d4'
+            return (
+              <ReferenceLine
+                key={`ev-${dateStr}`}
+                x={dateStr}
+                stroke={color}
+                strokeWidth={2}
+                strokeDasharray="4 2"
+                strokeOpacity={0.7}
+                yAxisId={hasLeftAxis ? 'left' : hasRightAxis ? 'right' : 'percent'}
+                label={{
+                  value: `⚡${ev.total}`,
+                  position: 'top',
+                  fill: color,
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+                cursor="pointer"
+                onClick={() => setSelectedEventDate(dateStr)}
+              />
+            )
+          })}
 
           {activeMetrics.has('spend') && (
             <Area
@@ -484,7 +620,208 @@ function AdsChart({ data }: { data: AdvertisingDailyPoint[] }) {
           )}
         </ComposedChart>
       </ResponsiveContainer>
+
+      {/* Events Detail Modal */}
+      {selectedEventDate && (
+        <EventsDetailModal
+          shopId={shopId}
+          date={selectedEventDate}
+          summary={eventsByDay[selectedEventDate]}
+          onClose={() => setSelectedEventDate(null)}
+        />
+      )}
     </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Events Detail Modal
+   ═══════════════════════════════════════════════════════════ */
+
+const CATEGORY_COLORS: Record<string, string> = {
+  advertising: '#f59e0b',
+  content: '#8b5cf6',
+  price: '#06b6d4',
+  stock: '#ef4444',
+}
+const CATEGORY_LABELS: Record<string, string> = {
+  advertising: 'Реклама',
+  content: 'Контент',
+  price: 'Цена',
+  stock: 'Склад',
+}
+const CATEGORY_ICONS: Record<string, any> = {
+  advertising: Megaphone,
+  content: FileText,
+  price: Tag,
+  stock: Package,
+}
+
+function EventsDetailModal({
+  shopId,
+  date,
+  summary,
+  onClose,
+}: {
+  shopId: number
+  date: string
+  summary?: EventDaySummary
+  onClose: () => void
+}) {
+  const [events, setEvents] = useState<EventDetail[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    setLoading(true)
+    getEventsDetail(shopId, date)
+      .then(res => setEvents(res.events))
+      .catch(() => setEvents([]))
+      .finally(() => setLoading(false))
+  }, [shopId, date])
+
+  const formatModalDate = (d: string) => {
+    const [y, m, day] = d.split('-')
+    const months = ['', 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+      'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+    return `${parseInt(day)} ${months[parseInt(m)]} ${y}`
+  }
+
+  // Group events by category
+  const grouped = events.reduce<Record<string, EventDetail[]>>((acc, ev) => {
+    if (!acc[ev.category]) acc[ev.category] = []
+    acc[ev.category].push(ev)
+    return acc
+  }, {})
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+        onClick={onClose}
+      >
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          transition={{ duration: 0.2 }}
+          className="w-full max-w-2xl max-h-[80vh] overflow-hidden rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
+          onClick={e => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-6 py-4">
+            <div>
+              <h2 className="text-lg font-semibold">События — {formatModalDate(date)}</h2>
+              {summary && (
+                <div className="flex gap-3 mt-1">
+                  {EVENT_CATEGORIES_CONFIG.map(cat => {
+                    const count = (summary as any)[cat.key]
+                    if (!count) return null
+                    return (
+                      <span key={cat.key} className="text-xs font-medium" style={{ color: cat.color }}>
+                        {cat.label}: {count}
+                      </span>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-2 hover:bg-[hsl(var(--muted))] transition-colors"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="overflow-y-auto max-h-[calc(80vh-80px)] px-6 py-4 space-y-6">
+            {loading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map(i => (
+                  <div key={i} className="h-16 rounded-lg bg-[hsl(var(--muted)/0.3)] animate-pulse" />
+                ))}
+              </div>
+            ) : events.length === 0 ? (
+              <p className="text-center text-[hsl(var(--muted-foreground))] py-8">Нет событий за этот день</p>
+            ) : (
+              Object.entries(grouped).map(([category, catEvents]) => {
+                const CatIcon = CATEGORY_ICONS[category] || Zap
+                const catColor = CATEGORY_COLORS[category] || '#888'
+                const catLabel = CATEGORY_LABELS[category] || category
+                return (
+                  <div key={category}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <CatIcon className="h-4 w-4" style={{ color: catColor }} />
+                      <span className="text-sm font-semibold" style={{ color: catColor }}>
+                        {catLabel}
+                      </span>
+                      <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                        ({catEvents.length})
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {catEvents.map(ev => (
+                        <div
+                          key={ev.id}
+                          className="flex items-start gap-3 rounded-xl border border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.1)] p-3 hover:bg-[hsl(var(--muted)/0.2)] transition-colors"
+                        >
+                          {/* Product image */}
+                          {ev.product?.image_url ? (
+                            <img
+                              src={ev.product.image_url}
+                              alt=""
+                              className="h-10 w-10 rounded-lg object-cover shrink-0"
+                            />
+                          ) : (
+                            <div
+                              className="h-10 w-10 rounded-lg shrink-0 flex items-center justify-center"
+                              style={{ background: catColor + '20' }}
+                            >
+                              <CatIcon className="h-4 w-4" style={{ color: catColor }} />
+                            </div>
+                          )}
+                          {/* Details */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium truncate">
+                                {ev.label}
+                              </span>
+                              <span className="text-[11px] text-[hsl(var(--muted-foreground))] flex items-center gap-0.5">
+                                <Clock className="h-3 w-3" />
+                                {ev.time}
+                              </span>
+                            </div>
+                            {ev.detail && (
+                              <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+                                {ev.detail}
+                              </p>
+                            )}
+                            {ev.product?.name && (
+                              <p className="text-xs text-[hsl(var(--foreground)/0.7)] mt-0.5 truncate">
+                                {ev.product.offer_id && <span className="text-[hsl(var(--muted-foreground))]">{ev.product.offer_id} · </span>}
+                                {ev.product.name}
+                              </p>
+                            )}
+                            {ev.campaign_title && (
+                              <p className="text-[11px] text-[hsl(var(--muted-foreground))] mt-0.5">
+                                📣 {ev.campaign_title}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
   )
 }
 
@@ -867,7 +1204,7 @@ export default function AdvertisingAnalyticsPage() {
             <CardTitle className="text-lg">Динамика рекламных показателей</CardTitle>
           </CardHeader>
           <CardContent>
-            <AdsChart data={data.chart_daily} />
+            <AdsChart data={data.chart_daily} eventsByDay={data.events_by_day || {}} shopId={currentShop!.id} />
           </CardContent>
         </Card>
       </motion.div>

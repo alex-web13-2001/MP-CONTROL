@@ -78,6 +78,38 @@ export interface AdvertisingAnalyticsResponse {
   chart_daily: AdvertisingDailyPoint[]
   campaigns_table: CampaignRow[]
   top_skus: TopSkuRow[]
+  events_by_day: Record<string, EventDaySummary>
+}
+
+export interface EventDaySummary {
+  advertising: number
+  content: number
+  price: number
+  stock: number
+  total: number
+}
+
+export interface EventDetail {
+  id: number
+  time: string
+  event_type: string
+  category: string
+  label: string
+  detail: string
+  campaign_id: number | null
+  campaign_title: string
+  product: {
+    nm_id: number
+    name: string
+    offer_id: string
+    image_url: string
+  } | null
+}
+
+export interface EventDetailResponse {
+  date: string
+  total: number
+  events: EventDetail[]
 }
 
 // ── API ──────────────────────────────────────────────────────────
@@ -88,6 +120,17 @@ export async function getAdvertisingAnalytics(
 ): Promise<AdvertisingAnalyticsResponse> {
   const res = await apiClient.get<AdvertisingAnalyticsResponse>('/advertising-analytics', {
     params: { shop_id: shopId, period },
+  })
+  return res.data
+}
+
+export async function getEventsDetail(
+  shopId: number,
+  eventDate: string,
+  category?: string,
+): Promise<EventDetailResponse> {
+  const res = await apiClient.get<EventDetailResponse>('/advertising-analytics/events-detail', {
+    params: { shop_id: shopId, event_date: eventDate, ...(category ? { category } : {}) },
   })
   return res.data
 }
