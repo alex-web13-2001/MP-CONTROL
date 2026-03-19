@@ -231,7 +231,7 @@ const ADS_METRICS = [
   { key: 'views', label: 'Показы', color: '#3b82f6', yAxis: 'right' },
   { key: 'clicks', label: 'Клики', color: '#06b6d4', yAxis: 'right' },
   { key: 'cart', label: 'Корзины', color: '#8b5cf6', yAxis: 'right' },
-  { key: 'orders', label: 'Заказы', color: '#10b981', yAxis: 'left' },
+  { key: 'orders', label: 'Заказы', color: '#10b981', yAxis: 'right' },
   { key: 'revenue', label: 'Выручка', color: '#22c55e', yAxis: 'left' },
   { key: 'ctr', label: 'CTR %', color: '#facc15', yAxis: 'percent' },
   { key: 'drr', label: 'ДРР %', color: '#ef4444', yAxis: 'percent' },
@@ -394,8 +394,17 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
       </div>
 
       {/* Chart */}
-      <ResponsiveContainer width="100%" height={360}>
-        <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
+      <ResponsiveContainer width="100%" height={400}>
+        <ComposedChart
+          data={data}
+          margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
+          onClick={(state: any) => {
+            if (state?.activeLabel && showEvents && eventsByDay[state.activeLabel]?.total > 0) {
+              setSelectedEventDate(state.activeLabel)
+            }
+          }}
+          style={{ cursor: showEvents && visibleEventDates.length > 0 ? 'pointer' : undefined }}
+        >
           <defs>
             <linearGradient id="adSpendGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#f97316" stopOpacity={0.4} />
@@ -477,7 +486,7 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
                 if (activeEventCats.has('content') && ev.content > 0) parts.push(`📝 ${ev.content} конт.`)
                 if (activeEventCats.has('price') && ev.price > 0) parts.push(`💰 ${ev.price} цена`)
                 if (activeEventCats.has('stock') && ev.stock > 0) parts.push(`📦 ${ev.stock} склад`)
-                if (parts.length > 0) return `${base}\n⚡ ${parts.join(' · ')}`
+                if (parts.length > 0) return `${base}\n⚡ ${parts.join(' · ')}\n→ Кликните для деталей`
               }
               return base
             }}
@@ -489,11 +498,10 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
             wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
           />
 
-          {/* Event ReferenceLine markers */}
+          {/* Event ReferenceLine markers — visual only, click handled at chart level */}
           {visibleEventDates.map(dateStr => {
             const ev = eventsByDay[dateStr]
             if (!ev) return null
-            // Pick dominant category color
             let color = '#f59e0b'
             if (ev.stock > 0 && activeEventCats.has('stock')) color = '#ef4444'
             else if (ev.advertising > 0 && activeEventCats.has('advertising')) color = '#f59e0b'
@@ -506,18 +514,8 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
                 stroke={color}
                 strokeWidth={2}
                 strokeDasharray="4 2"
-                strokeOpacity={0.7}
+                strokeOpacity={0.5}
                 yAxisId={hasLeftAxis ? 'left' : hasRightAxis ? 'right' : 'percent'}
-                label={{
-                  value: `⚡${ev.total}`,
-                  position: 'top',
-                  fill: color,
-                  fontSize: 11,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-                cursor="pointer"
-                onClick={() => setSelectedEventDate(dateStr)}
               />
             )
           })}
@@ -537,7 +535,7 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
 
           {activeMetrics.has('orders') && (
             <Bar
-              yAxisId="left"
+              yAxisId="right"
               dataKey="orders"
               fill="url(#adOrdersGrad)"
               radius={[3, 3, 0, 0]}
