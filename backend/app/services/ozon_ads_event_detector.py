@@ -228,6 +228,7 @@ class OzonAdsEventDetector:
                     status=str(current_status) if current_status else None,
                     budget=current_budget,
                     title=camp.get("title", ""),
+                    campaign_type=camp.get("advObjectType", ""),
                 )
 
             except Exception as e:

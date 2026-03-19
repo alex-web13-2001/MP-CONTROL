@@ -613,15 +613,18 @@ async def _build_ozon_analytics(
 
     campaign_ids = [int(row[0]) for row in campaigns_rows]
 
-    # Enrich campaign titles from Redis
-    campaign_title_map: dict = {}
+    # Enrich campaign info from Redis (title, status, type)
+    campaign_info_map: dict = {}
     try:
         from app.core.redis_state import RedisStateManager
         redis_state = RedisStateManager()
         for cid in campaign_ids:
             state = redis_state.get_ozon_campaign_state(shop_id, cid)
-            if state.get("title"):
-                campaign_title_map[cid] = state["title"]
+            campaign_info_map[cid] = {
+                "title": state.get("title", ""),
+                "status": state.get("status", ""),
+                "campaign_type": state.get("campaign_type", ""),
+            }
     except Exception:
         pass
 
@@ -761,9 +764,12 @@ async def _build_ozon_analytics(
         # Build per-SKU items
         items = [build_sku_item(s) for s in sku_stats_by_campaign.get(cid, [])]
 
+        info = campaign_info_map.get(cid, {})
         campaigns_table.append({
             "campaign_id": cid,
-            "title": campaign_title_map.get(cid, ""),
+            "title": info.get("title", ""),
+            "status": info.get("status", ""),
+            "campaign_type": info.get("campaign_type", ""),
             "sku_count": int(row[12]),
             "items": items,
             "spend": round(float(row[1]), 2),

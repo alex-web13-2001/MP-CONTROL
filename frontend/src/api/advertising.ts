@@ -75,6 +75,8 @@ export interface CampaignSkuItem {
 export interface CampaignRow {
   campaign_id: number
   title: string
+  status: string
+  campaign_type: string
   sku_count: number
   items: CampaignSkuItem[]
   spend: number

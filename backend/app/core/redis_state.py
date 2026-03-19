@@ -261,7 +261,7 @@ class RedisStateManager:
         raw = self.client.hgetall(key)
 
         if not raw:
-            return {"bids": {}, "status": None, "budget": None, "items": [], "title": ""}
+            return {"bids": {}, "status": None, "budget": None, "items": [], "title": "", "campaign_type": ""}
 
         bids = {}
         if raw.get("bids"):
@@ -287,6 +287,7 @@ class RedisStateManager:
             "budget": budget,
             "items": items,
             "title": title,
+            "campaign_type": raw.get("campaign_type", ""),
         }
 
     def set_ozon_campaign_state(
@@ -298,6 +299,7 @@ class RedisStateManager:
         budget: Optional[float] = None,
         items: Optional[List[int]] = None,
         title: Optional[str] = None,
+        campaign_type: Optional[str] = None,
     ) -> None:
         """
         Update Ozon campaign state in Redis.
@@ -316,6 +318,8 @@ class RedisStateManager:
             mapping["items"] = json.dumps(items)
         if title is not None:
             mapping["title"] = title
+        if campaign_type is not None:
+            mapping["campaign_type"] = campaign_type
 
         if mapping:
             self.client.hset(key, mapping=mapping)

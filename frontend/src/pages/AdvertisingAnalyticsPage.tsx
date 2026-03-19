@@ -886,12 +886,31 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
 
   const thCls = "px-3 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap"
   const tdCls = "px-3 py-2.5 text-right text-[13px]"
-  const stickyTh = `${thCls} sticky left-0 z-10 bg-[hsl(var(--card))] text-left min-w-[200px]`
-  const stickyTd = "px-4 py-2.5 sticky left-0 z-10 bg-[hsl(var(--card))] min-w-[200px]"
+  const stickyTh = `${thCls} sticky left-0 z-10 bg-[hsl(var(--card))] text-left min-w-[220px] max-w-[300px]`
+  const stickyTd = "px-4 py-2.5 sticky left-0 z-10 bg-[hsl(var(--card))] min-w-[220px] max-w-[300px]"
 
   const SortIcon = ({ k }: { k: string }) => sortKey === k ? <span className="ml-0.5 text-[10px]">{sortDir === 'desc' ? '▼' : '▲'}</span> : null
 
   const drrColor = (d: number) => d > 30 ? 'text-red-500 font-semibold' : d > 15 ? 'text-red-400' : d > 8 ? 'text-yellow-400' : 'text-emerald-400'
+
+  const OZON_STATUS_MAP: Record<string, { label: string; cls: string }> = {
+    CAMPAIGN_STATE_RUNNING: { label: 'Активна', cls: 'bg-emerald-500/20 text-emerald-400' },
+    CAMPAIGN_STATE_PLANNED: { label: 'Запланирована', cls: 'bg-blue-500/20 text-blue-400' },
+    CAMPAIGN_STATE_STOPPED: { label: 'Остановлена', cls: 'bg-yellow-500/20 text-yellow-400' },
+    CAMPAIGN_STATE_INACTIVE: { label: 'Неактивна', cls: 'bg-gray-500/20 text-gray-400' },
+    CAMPAIGN_STATE_ARCHIVED: { label: 'В архиве', cls: 'bg-gray-500/20 text-gray-400' },
+    CAMPAIGN_STATE_MODERATION: { label: 'Модерация', cls: 'bg-orange-500/20 text-orange-400' },
+    CAMPAIGN_STATE_NOT_MODERATED: { label: 'Не прошла', cls: 'bg-red-500/20 text-red-400' },
+  }
+
+  const CAMPAIGN_TYPE_MAP: Record<string, string> = {
+    SEARCH_PROMO: 'Поиск',
+    BANNER: 'Баннер',
+    BRAND_SHELF: 'Полка бренда',
+    ACTION: 'Акция',
+    VIDEO: 'Видео',
+    SKU: 'Товар в поиске',
+  }
 
   const HaloBar = ({ direct, model, pct }: { direct: number; model: number; pct: number }) => (
     <div className="flex flex-col items-end gap-0.5">
@@ -939,22 +958,31 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                   onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
                 >
                   <td className={stickyTd}>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-start gap-2">
                       {c.items.length > 0 && (
-                        <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        <ChevronDown className={`h-4 w-4 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       )}
-                      <div className="flex flex-col min-w-0">
+                      <div className="flex flex-col min-w-0 gap-0.5">
                         {c.title ? (
-                          <>
-                            <span className="font-semibold text-[13px] truncate" title={c.title}>{c.title}</span>
-                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">ID: {c.campaign_id} · {c.sku_count} арт.</span>
-                          </>
+                          <span className="font-semibold text-[13px] leading-tight line-clamp-2" title={c.title}>{c.title}</span>
                         ) : (
-                          <>
-                            <span className="font-semibold text-[13px]">{c.campaign_id}</span>
-                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{c.sku_count} арт.</span>
-                          </>
+                          <span className="font-semibold text-[13px]">{c.campaign_id}</span>
                         )}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
+                            ID: {c.campaign_id} · {c.sku_count} арт.
+                          </span>
+                          {c.status && OZON_STATUS_MAP[c.status] && (
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${OZON_STATUS_MAP[c.status].cls}`}>
+                              {OZON_STATUS_MAP[c.status].label}
+                            </span>
+                          )}
+                          {c.campaign_type && CAMPAIGN_TYPE_MAP[c.campaign_type] && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-violet-500/20 text-violet-400">
+                              {CAMPAIGN_TYPE_MAP[c.campaign_type]}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </td>
