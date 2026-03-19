@@ -208,7 +208,7 @@ async def get_events_detail(
     """
     # Verify shop ownership
     shop_result = await db.execute(
-        text("SELECT id, marketplace FROM shops WHERE id = :shop_id AND user_id = :user_id"),
+        sa_text("SELECT id, marketplace FROM shops WHERE id = :shop_id AND user_id = :user_id"),
         {"shop_id": shop_id, "user_id": str(current_user.id)},
     )
     shop_row = shop_result.fetchone()
