@@ -1,3 +1,28 @@
+## 2026-03-19 (v17.9)
+
+### feat(advertising): События на графике рекламной аналитики
+
+**Backend** (`advertising_analytics.py`):
+- `events_by_day` — агрегация event_log по дням (advertising/content/price/stock) в ответе `/advertising-analytics`
+- `GET /advertising-analytics/events-detail` — подробные события за день с product enrichment и campaign titles
+- Хало-заказы: все запросы (KPI, chart, campaigns, top_skus) теперь суммируют `orders + model_orders`, `revenue + model_revenue`
+- Исправлены колонки ClickHouse: `dt` → `in_process_at` (Ozon), `finishedPrice` → `price_with_disc` (WB)
+- Добавлена KPI «Конверсия в корзину» (cart/clicks)
+- Карточка «Заказы»: сумма крупно, количество мелко
+- Убрана кнопка RefreshCw
+
+**Frontend** (`AdvertisingAnalyticsPage.tsx`):
+- 12 KPI карточек (+ конверсия в корзину)
+- Фильтр-кнопки категорий: ⚡ События → 📣 Реклама / 📝 Контент / 💰 Цена / 📦 Склад
+- ReferenceLine маркеры на графике (пунктирные линии + ⚡N)
+- EventsDetailModal: группировка по категориям, product images, campaign titles, время, old→new
+
+**API** (`advertising.ts`):
+- Типы: EventDaySummary, EventDetail, EventDetailResponse
+- Функция: `getEventsDetail(shopId, date, category?)`
+
+---
+
 ## 2026-03-19 (v17.8)
 
 ### feat(advertising): Редизайн KPI карточек — 11 метрик + default «Сегодня»
