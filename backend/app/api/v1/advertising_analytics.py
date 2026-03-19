@@ -680,7 +680,7 @@ async def _build_ozon_analytics(
                     SELECT product_id, sku, offer_id, name
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
-                      AND (product_id = ANY(:skus::bigint[]) OR sku = ANY(:skus::bigint[]))
+                      AND (product_id = ANY(:skus) OR sku = ANY(:skus))
                 """),
                 {"shop_id": shop_id, "skus": sku_list},
             )
