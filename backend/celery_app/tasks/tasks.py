@@ -359,6 +359,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 backfill_ozon_ads,
                 sync_ozon_turnover,
                 backfill_ozon_placement_cost,
+                sync_ozon_campaigns_task,
             )
 
             seller_kwargs = dict(shop_id=shop_id, api_key=api_key, client_id=client_id)
@@ -385,6 +386,11 @@ def load_historical_data(self, shop_id: int, months: int = 6):
             # We set a Redis lock to prevent periodic sync_ozon_ad_stats
             # from competing for the same Ozon API rate limit.
             if perf_client_id and perf_client_secret:
+                steps.append((
+                    "Загрузка справочника кампаний",
+                    sync_ozon_campaigns_task,
+                    dict(shop_id=shop_id, perf_client_id=perf_client_id, perf_client_secret=perf_client_secret),
+                ))
                 steps.append((
                     "Загрузка рекламной статистики (180 дней)",
                     backfill_ozon_ads,
@@ -1243,17 +1249,33 @@ def sync_all_campaign_snapshots(self):
 
     dispatched = 0
     for shop in shops:
-        if shop.marketplace != "wildberries":
-            continue
-        try:
-            api_key = decrypt_api_key(shop.api_key_encrypted)
-        except Exception as e:
-            logger.error(f"sync_all_campaign_snapshots: shop {shop.id} decrypt failed: {e}")
-            continue
+        if shop.marketplace == "wildberries":
+            try:
+                api_key = decrypt_api_key(shop.api_key_encrypted)
+            except Exception as e:
+                logger.error(f"sync_all_campaign_snapshots: shop {shop.id} decrypt failed: {e}")
+                continue
 
-        sync_wb_campaign_snapshot.delay(shop_id=shop.id, api_key=api_key)
-        dispatched += 1
-        logger.info(f"sync_all_campaign_snapshots: dispatched for shop {shop.id}")
+            sync_wb_campaign_snapshot.delay(shop_id=shop.id, api_key=api_key)
+            dispatched += 1
+            logger.info(f"sync_all_campaign_snapshots: dispatched WB for shop {shop.id}")
+            
+        elif shop.marketplace in ("ozon", "ozon_performance"):
+            if not shop.perf_client_id or not shop.perf_client_secret_encrypted:
+                continue
+            try:
+                perf_secret = decrypt_api_key(shop.perf_client_secret_encrypted)
+            except Exception as e:
+                logger.error(f"sync_all_campaign_snapshots: Ozon shop {shop.id} decrypt failed: {e}")
+                continue
+                
+            sync_ozon_campaigns_task.delay(
+                shop_id=shop.id,
+                perf_client_id=shop.perf_client_id,
+                perf_client_secret=perf_secret,
+            )
+            dispatched += 1
+            logger.info(f"sync_all_campaign_snapshots: dispatched Ozon for shop {shop.id}")
 
     logger.info(f"sync_all_campaign_snapshots: dispatched {dispatched} tasks")
     return {"dispatched": dispatched}
@@ -4235,6 +4257,51 @@ def monitor_ozon_bids(
             await engine.dispose()
 
     return asyncio.run(run_monitor())
+
+
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=540)
+def sync_ozon_campaigns_task(
+    self,
+    shop_id: int,
+    perf_client_id: str,
+    perf_client_secret: str,
+):
+    """
+    Sync Ozon campaigns (titles, states, types) and their products (SKUs, bids).
+    Saves to dim_ozon_campaigns and dim_ozon_campaign_products.
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.ozon_ads_service import OzonAdsService
+    from app.services.ozon_campaigns_loader import OzonCampaignsLoader
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_sync():
+        engine = create_async_engine(settings.database_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with async_session() as db:
+            ads_service = OzonAdsService(
+                db=db,
+                shop_id=shop_id,
+                perf_client_id=perf_client_id,
+                perf_client_secret=perf_client_secret,
+            )
+            loader = OzonCampaignsLoader(db=db, shop_id=shop_id, ozon_ads_service=ads_service)
+            
+            try:
+                await loader.sync_all_campaigns()
+            except Exception as e:
+                logger.error(f"Error in sync_ozon_campaigns_task for shop {shop_id}: {e}")
+                
+        await engine.dispose()
+
+    return asyncio.run(run_sync())
 
 
 @celery_app.task(bind=True, time_limit=1800, soft_time_limit=1740)

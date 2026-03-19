@@ -613,21 +613,34 @@ async def _build_ozon_analytics(
 
     campaign_ids = [int(row[0]) for row in campaigns_rows]
 
-    # Enrich campaign info from Redis (title, status, type)
+    # Enrich campaign info
     campaign_info_map: dict = {}
-    try:
-        from app.core.redis_state import RedisStateManager
-        redis_state = RedisStateManager()
-        for cid in campaign_ids:
-            state = redis_state.get_ozon_campaign_state(shop_id, cid)
-            campaign_info_map[cid] = {
-                "title": state.get("title", ""),
-                "status": state.get("status", ""),
-                "campaign_type": state.get("campaign_type", ""),
-                "bids": state.get("bids", {}),
-            }
-    except Exception:
-        pass
+    
+    if campaign_ids:
+        pg_result = await db.execute(
+            sa_text("""
+                SELECT c.campaign_id, c.title, c.state AS status, c.campaign_type,
+                       p.sku, p.bid
+                FROM dim_ozon_campaigns c
+                LEFT JOIN dim_ozon_campaign_products p 
+                       ON c.shop_id = p.shop_id AND c.campaign_id = p.campaign_id
+                WHERE c.shop_id = :shop_id AND c.campaign_id = ANY(:cids)
+            """),
+            {"shop_id": shop_id, "cids": campaign_ids}
+        )
+        for row in pg_result:
+            cid = row[0]
+            if cid not in campaign_info_map:
+                campaign_info_map[cid] = {
+                    "title": row[1] or "",
+                    "status": row[2] or "",
+                    "campaign_type": row[3] or "",
+                    "bids": {},
+                }
+            sku = row[4]
+            bid = row[5]
+            if sku and bid is not None:
+                campaign_info_map[cid]["bids"][str(sku)] = float(bid)
 
     # Per-SKU breakdown within each campaign
     sku_stats_rows = ch.query("""
