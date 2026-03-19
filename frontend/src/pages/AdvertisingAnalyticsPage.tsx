@@ -741,12 +741,6 @@ export default function AdvertisingAnalyticsPage() {
         </div>
         <div className="flex items-center gap-3">
           <PeriodSelector current={period} onChange={setPeriod} />
-          <button
-            onClick={fetchData}
-            className="flex items-center justify-center rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-2.5 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
         </div>
       </div>
 
@@ -796,11 +790,12 @@ export default function AdvertisingAnalyticsPage() {
         />
         <KpiCard
           title="Заказы"
-          value={formatNumber(kpi.orders)}
-          delta={kpi.orders_delta}
+          value={formatMoney(kpi.revenue)}
+          delta={kpi.revenue_delta}
           icon={ShoppingCart}
           accent="#10b981"
           delay={0.15}
+          subtitle={`${formatNumber(kpi.orders)} шт.`}
         />
         <KpiCard
           title="Конверсия в заказ"

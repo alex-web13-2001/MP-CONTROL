@@ -155,8 +155,8 @@ async def _build_ozon_analytics(
                     WHEN dt >= {prev_start:Date} AND dt <= {prev_end:Date} THEN 'previous'
                 END AS period,
                 money_spent,
-                orders AS t_orders,
-                revenue AS t_revenue,
+                orders + model_orders AS t_orders,
+                revenue + model_revenue AS t_revenue,
                 clicks AS t_clicks,
                 views AS t_views,
                 add_to_cart
@@ -266,13 +266,13 @@ async def _build_ozon_analytics(
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
             sum(add_to_cart) AS t_cart,
-            sum(orders) AS t_orders,
-            sum(revenue) AS t_revenue,
+            sum(orders) + sum(model_orders) AS t_orders,
+            sum(revenue) + sum(model_revenue) AS t_revenue,
             CASE WHEN sum(views) > 0
                 THEN round(sum(clicks) / sum(views) * 100, 2) ELSE 0
             END AS t_ctr,
-            CASE WHEN sum(revenue) > 0
-                THEN round(sum(money_spent) / sum(revenue) * 100, 1) ELSE 0
+            CASE WHEN (sum(revenue) + sum(model_revenue)) > 0
+                THEN round(sum(money_spent) / (sum(revenue) + sum(model_revenue)) * 100, 1) ELSE 0
             END AS t_drr
         FROM mms_analytics.fact_ozon_ad_daily FINAL
         WHERE shop_id = {shop_id:UInt32}
@@ -308,16 +308,16 @@ async def _build_ozon_analytics(
             sum(money_spent) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
-            sum(orders) AS t_orders,
-            sum(revenue) AS t_revenue,
+            sum(orders) + sum(model_orders) AS t_orders,
+            sum(revenue) + sum(model_revenue) AS t_revenue,
             CASE WHEN sum(views) > 0
                 THEN round(sum(clicks) / sum(views) * 100, 2) ELSE 0
             END AS t_ctr,
             CASE WHEN sum(clicks) > 0
                 THEN round(sum(money_spent) / sum(clicks), 2) ELSE 0
             END AS t_avg_cpc,
-            CASE WHEN sum(revenue) > 0
-                THEN round(sum(money_spent) / sum(revenue) * 100, 1) ELSE 0
+            CASE WHEN (sum(revenue) + sum(model_revenue)) > 0
+                THEN round(sum(money_spent) / (sum(revenue) + sum(model_revenue)) * 100, 1) ELSE 0
             END AS t_drr
         FROM mms_analytics.fact_ozon_ad_daily FINAL
         WHERE shop_id = {shop_id:UInt32}
@@ -347,10 +347,10 @@ async def _build_ozon_analytics(
         SELECT
             sku,
             sum(money_spent) AS t_spend,
-            sum(orders) AS t_orders,
-            sum(revenue) AS t_revenue,
-            CASE WHEN sum(revenue) > 0
-                THEN round(sum(money_spent) / sum(revenue) * 100, 1) ELSE 0
+            sum(orders) + sum(model_orders) AS t_orders,
+            sum(revenue) + sum(model_revenue) AS t_revenue,
+            CASE WHEN (sum(revenue) + sum(model_revenue)) > 0
+                THEN round(sum(money_spent) / (sum(revenue) + sum(model_revenue)) * 100, 1) ELSE 0
             END AS t_drr
         FROM mms_analytics.fact_ozon_ad_daily FINAL
         WHERE shop_id = {shop_id:UInt32}
