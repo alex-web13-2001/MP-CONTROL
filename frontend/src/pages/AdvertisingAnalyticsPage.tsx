@@ -884,10 +884,8 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
     })
   }
 
-  const thCls = "px-3 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap"
-  const tdCls = "px-3 py-2.5 text-right text-[13px]"
-  const stickyTh = `${thCls} sticky left-0 z-10 bg-[hsl(var(--card))] text-left min-w-[220px] max-w-[300px]`
-  const stickyTd = "px-4 py-2.5 sticky left-0 z-10 bg-[hsl(var(--card))] min-w-[220px] max-w-[300px]"
+  const thCls = "px-3 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap text-right"
+  const tdCls = "px-3 py-2.5 text-right text-[13px] whitespace-nowrap"
 
   const SortIcon = ({ k }: { k: string }) => sortKey === k ? <span className="ml-0.5 text-[10px]">{sortDir === 'desc' ? '▼' : '▲'}</span> : null
 
@@ -936,24 +934,27 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
   }
 
   return (
-    <div className="overflow-x-auto -mx-5 relative">
-      <table className="w-full text-sm border-collapse">
-        <thead>
-          <tr className="border-b border-[hsl(var(--border)/0.5)]">
-            <th className={stickyTh} onClick={() => handleSort('campaign_id')}>Кампания<SortIcon k="campaign_id" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('views')}>Показы<SortIcon k="views" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('clicks')}>Клики<SortIcon k="clicks" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('avg_cpc')}>CPC<SortIcon k="avg_cpc" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('ctr')}>CTR<SortIcon k="ctr" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('cart')}>Корз.<SortIcon k="cart" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('cart_conv')}>CR корз.<SortIcon k="cart_conv" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('orders')}>Заказы<SortIcon k="orders" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('order_conv')}>CR заказ<SortIcon k="order_conv" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('revenue')}>Выручка<SortIcon k="revenue" /></th>
-            <th className={`${thCls} text-right`} onClick={() => handleSort('drr')}>ДРР<SortIcon k="drr" /></th>
-          </tr>
-        </thead>
+    <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+      <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
+        <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
+          <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+            <tr className="bg-[hsl(var(--card))]">
+              <th className="sticky left-0 z-40 w-[200px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
+                Кампания<SortIcon k="campaign_id" />
+              </th>
+              <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
+              <th className={thCls} onClick={() => handleSort('views')}>Показы<SortIcon k="views" /></th>
+              <th className={thCls} onClick={() => handleSort('clicks')}>Клики<SortIcon k="clicks" /></th>
+              <th className={thCls} onClick={() => handleSort('avg_cpc')}>CPC<SortIcon k="avg_cpc" /></th>
+              <th className={thCls} onClick={() => handleSort('ctr')}>CTR<SortIcon k="ctr" /></th>
+              <th className={thCls} onClick={() => handleSort('cart')}>Корз.<SortIcon k="cart" /></th>
+              <th className={thCls} onClick={() => handleSort('cart_conv')}>CR корз.<SortIcon k="cart_conv" /></th>
+              <th className={thCls} onClick={() => handleSort('orders')}>Заказы<SortIcon k="orders" /></th>
+              <th className={thCls} onClick={() => handleSort('order_conv')}>CR заказ<SortIcon k="order_conv" /></th>
+              <th className={thCls} onClick={() => handleSort('revenue')}>Выручка<SortIcon k="revenue" /></th>
+              <th className={thCls} onClick={() => handleSort('drr')}>ДРР<SortIcon k="drr" /></th>
+            </tr>
+          </thead>
         <tbody>
           {sorted.map((c) => {
             const isExpanded = expandedRows.has(c.campaign_id)
@@ -964,7 +965,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                   className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.15)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
                   onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
                 >
-                  <td className={stickyTd}>
+                    <td className="sticky left-0 z-20 w-[200px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
                     <div className="flex items-start gap-2">
                       {c.items.length > 0 && (
                         <ChevronDown className={`h-4 w-4 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
@@ -1018,7 +1019,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     key={`${c.campaign_id}-${s.sku}`}
                     className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.06)]"
                   >
-                    <td className={`${stickyTd} bg-[hsl(var(--muted)/0.06)]`}>
+                    <td className="sticky left-0 z-20 w-[200px] bg-[hsl(var(--muted)/0.06)] pl-4 pr-2 py-2">
                       <div className="flex flex-col pl-6 min-w-0">
                         <span className="text-[12px] font-medium truncate" title={s.name || `SKU ${s.sku}`}>
                           {s.name || `SKU ${s.sku}`}
@@ -1059,7 +1060,8 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
             )
           })}
         </tbody>
-      </table>
+        </table>
+      </div>
     </div>
   )
 }
