@@ -952,6 +952,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
               <th className={thCls} onClick={() => handleSort('orders')}>Заказы<SortIcon k="orders" /></th>
               <th className={thCls} onClick={() => handleSort('order_conv')}>CR заказ<SortIcon k="order_conv" /></th>
               <th className={thCls} onClick={() => handleSort('revenue')}>Выручка<SortIcon k="revenue" /></th>
+              <th className={thCls}>CPO</th>
               <th className={thCls} onClick={() => handleSort('drr')}>ДРР<SortIcon k="drr" /></th>
             </tr>
           </thead>
@@ -1009,6 +1010,9 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     <HaloBar direct={c.direct_revenue} model={c.model_revenue} pct={c.halo_pct} isMoney />
                   </td>
                   <td className={tdCls}>
+                    {(c.direct_orders + c.model_orders) > 0 ? formatMoney(Math.round(c.spend / (c.direct_orders + c.model_orders))) : '—'}
+                  </td>
+                  <td className={tdCls}>
                     <span className={drrColor(c.drr)}>{c.drr.toFixed(1)}%</span>
                   </td>
                 </tr>
@@ -1048,6 +1052,9 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     <td className={`${tdCls} text-[12px]`}>{s.order_conv > 0 ? `${s.order_conv}%` : '—'}</td>
                     <td className={`${tdCls} text-[12px]`}>
                       <HaloBar direct={s.direct_revenue} model={s.model_revenue} pct={s.halo_pct} isMoney />
+                    </td>
+                    <td className={`${tdCls} text-[12px]`}>
+                      {(s.direct_orders + s.model_orders) > 0 ? formatMoney(Math.round(s.spend / (s.direct_orders + s.model_orders))) : '—'}
                     </td>
                     <td className={`${tdCls} text-[12px]`}>
                       <div className="flex flex-col items-end">
