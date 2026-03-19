@@ -998,7 +998,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                   <td className={tdCls}>{formatMoney(c.spend)}</td>
                   <td className={tdCls}>{formatNumber(c.views)}</td>
                   <td className={tdCls}>{formatNumber(c.clicks)}</td>
-                  <td className={tdCls}>{c.avg_cpc.toFixed(2)} ₽</td>
+                  <td className={tdCls}>{Math.round(c.avg_cpc)} ₽</td>
                   <td className={tdCls}>{c.ctr.toFixed(2)}%</td>
                   <td className={tdCls}>{formatNumber(c.cart)}</td>
                   <td className={tdCls}>{c.cart_conv > 0 ? `${c.cart_conv}%` : '—'}</td>
@@ -1042,7 +1042,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     <td className={`${tdCls} text-[12px]`}>{formatMoney(s.spend)}</td>
                     <td className={`${tdCls} text-[12px]`}>{formatNumber(s.views)}</td>
                     <td className={`${tdCls} text-[12px]`}>{formatNumber(s.clicks)}</td>
-                    <td className={`${tdCls} text-[12px]`}>{s.avg_cpc.toFixed(2)} ₽</td>
+                    <td className={`${tdCls} text-[12px]`}>{Math.round(s.avg_cpc)} ₽</td>
                     <td className={`${tdCls} text-[12px]`}>{s.ctr.toFixed(2)}%</td>
                     <td className={`${tdCls} text-[12px]`}>{formatNumber(s.cart)}</td>
                     <td className={`${tdCls} text-[12px]`}>{s.cart_conv > 0 ? `${s.cart_conv}%` : '—'}</td>
