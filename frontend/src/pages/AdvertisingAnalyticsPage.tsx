@@ -912,21 +912,28 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
     SKU: 'Товар в поиске',
   }
 
-  const HaloBar = ({ direct, model, pct }: { direct: number; model: number; pct: number }) => (
+  const HaloBar = ({ direct, model, pct, isMoney }: { direct: number; model: number; pct: number; isMoney?: boolean }) => {
+    const fmt = isMoney ? formatMoney : formatNumber
+    return (
     <div className="flex flex-col items-end gap-0.5">
-      <span className="font-semibold text-[13px]">{formatNumber(direct + model)}</span>
+      <span className="font-semibold text-[13px]">{fmt(direct + model)}</span>
       {model > 0 && (
-        <div className="flex items-center gap-1">
-          <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{direct} + </span>
-          <span className="text-[11px] text-teal-400 font-medium">{model} halo</span>
-          <div className="w-10 h-1.5 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden ml-0.5">
-            <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400" style={{ width: `${Math.min(pct, 100)}%` }} />
+        <>
+          <div className="flex items-center gap-1">
+            <span className="text-[12px] text-[hsl(var(--foreground)/0.8)]">{fmt(direct)} прям.</span>
+            <span className="text-[12px] text-teal-400 font-medium">+ {fmt(model)} halo</span>
           </div>
-          <span className="text-[10px] text-teal-400">{pct}%</span>
-        </div>
+          <div className="flex items-center gap-1">
+            <div className="w-14 h-2 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-400" style={{ width: `${Math.min(pct, 100)}%` }} />
+            </div>
+            <span className="text-[11px] text-teal-400 font-medium">{pct}%</span>
+          </div>
+        </>
       )}
     </div>
-  )
+    )
+  }
 
   return (
     <div className="overflow-x-auto -mx-5 relative">
@@ -998,12 +1005,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                   </td>
                   <td className={tdCls}>{c.order_conv > 0 ? `${c.order_conv}%` : '—'}</td>
                   <td className={tdCls}>
-                    <div className="flex flex-col items-end">
-                      <span>{formatMoney(c.revenue)}</span>
-                      {c.model_revenue > 0 && (
-                        <span className="text-[11px] text-teal-400">halo: {formatMoney(c.model_revenue)}</span>
-                      )}
-                    </div>
+                    <HaloBar direct={c.direct_revenue} model={c.model_revenue} pct={c.halo_pct} isMoney />
                   </td>
                   <td className={tdCls}>
                     <span className={drrColor(c.drr)}>{c.drr.toFixed(1)}%</span>
@@ -1039,12 +1041,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     </td>
                     <td className={`${tdCls} text-[12px]`}>{s.order_conv > 0 ? `${s.order_conv}%` : '—'}</td>
                     <td className={`${tdCls} text-[12px]`}>
-                      <div className="flex flex-col items-end">
-                        <span>{formatMoney(s.revenue)}</span>
-                        {s.model_revenue > 0 && (
-                          <span className="text-[10px] text-teal-400">halo: {formatMoney(s.model_revenue)}</span>
-                        )}
-                      </div>
+                      <HaloBar direct={s.direct_revenue} model={s.model_revenue} pct={s.halo_pct} isMoney />
                     </td>
                     <td className={`${tdCls} text-[12px]`}>
                       <div className="flex flex-col items-end">

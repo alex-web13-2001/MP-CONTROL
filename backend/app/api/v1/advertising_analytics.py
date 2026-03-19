@@ -673,23 +673,26 @@ async def _build_ozon_analytics(
     sku_name_map: dict = {}
     if all_skus:
         try:
+            sku_list = [int(s) for s in all_skus]
             sku_result = await db.execute(
                 text("""
                     SELECT product_id, sku, offer_id, name
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
-                      AND (product_id = ANY(:skus) OR sku = ANY(:skus))
+                      AND (product_id = ANY(:skus::bigint[]) OR sku = ANY(:skus::bigint[]))
                 """),
-                {"shop_id": shop_id, "skus": list(all_skus)},
+                {"shop_id": shop_id, "skus": sku_list},
             )
             for row in sku_result:
                 pid = int(row[0])
                 s = int(row[1]) if row[1] else pid
                 info = {"product_id": pid, "offer_id": row[2] or "", "name": row[3] or ""}
                 sku_name_map[pid] = info
-                sku_name_map[s] = info
-        except Exception:
-            pass
+                if s != pid:
+                    sku_name_map[s] = info
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("SKU enrichment failed: %s", e)
 
     # Per-SKU total revenue from fact_ozon_orders for total_drr
     sku_total_rev_map: dict = {}
