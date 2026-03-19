@@ -13,7 +13,7 @@ from datetime import date, datetime as dt_datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select, text
+from sqlalchemy import select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -231,7 +231,7 @@ async def get_events_detail(
 
     # Fetch events
     events_result = await db.execute(
-        text("""
+        sa_text("""
             SELECT id, created_at, event_type, advert_id, nm_id,
                    old_value, new_value, event_metadata
             FROM event_log
@@ -260,7 +260,7 @@ async def get_events_detail(
     if nm_ids:
         if marketplace == "ozon":
             pg_result = await db.execute(
-                text("""
+                sa_text("""
                     SELECT product_id, sku, name, offer_id,
                            COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
@@ -276,7 +276,7 @@ async def get_events_detail(
                     product_map[int(row[1])] = info
         else:
             pg_result = await db.execute(
-                text("""
+                sa_text("""
                     SELECT nm_id, name, vendor_code, main_image_url
                     FROM dim_products
                     WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)
@@ -624,6 +624,7 @@ async def _build_ozon_analytics(
                 "title": state.get("title", ""),
                 "status": state.get("status", ""),
                 "campaign_type": state.get("campaign_type", ""),
+                "bids": state.get("bids", {}),
             }
     except Exception:
         pass
@@ -675,7 +676,7 @@ async def _build_ozon_analytics(
         try:
             sku_list = [int(s) for s in all_skus]
             sku_result = await db.execute(
-                text("""
+                sa_text("""
                     SELECT product_id, sku, offer_id, name
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
@@ -714,7 +715,7 @@ async def _build_ozon_analytics(
         except Exception:
             pass
 
-    def build_sku_item(s: dict) -> dict:
+    def build_sku_item(s: dict, bids_map: dict = None) -> dict:
         sku = s["sku"]
         info = sku_name_map.get(sku, {})
         orders = s["direct_orders"] + s["model_orders"]
@@ -747,6 +748,7 @@ async def _build_ozon_analytics(
             "avg_cpc": round(s["spend"] / s["clicks"], 2) if s["clicks"] > 0 else 0,
             "drr": ad_drr,
             "total_drr": total_drr,
+            "bid": float(bids_map.get(str(sku), 0)) if bids_map else 0,
         }
 
     campaigns_table = []
@@ -764,10 +766,10 @@ async def _build_ozon_analytics(
         cart_conv = round(cart / clicks * 100, 1) if clicks > 0 else 0
         order_conv = round(total_orders / cart * 100, 1) if cart > 0 else 0
 
-        # Build per-SKU items
-        items = [build_sku_item(s) for s in sku_stats_by_campaign.get(cid, [])]
-
+        # Build per-SKU items with bids from Redis
         info = campaign_info_map.get(cid, {})
+        campaign_bids = info.get("bids", {})
+        items = [build_sku_item(s, campaign_bids) for s in sku_stats_by_campaign.get(cid, [])]
         campaigns_table.append({
             "campaign_id": cid,
             "title": info.get("title", ""),
@@ -830,7 +832,7 @@ async def _build_ozon_analytics(
         from sqlalchemy import text
         sku_list = [s["sku"] for s in top_skus]
         pg_result = await db.execute(
-            text("""
+            sa_text("""
                 SELECT product_id, offer_id, name,
                        COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                 FROM dim_ozon_products
@@ -856,7 +858,7 @@ async def _build_ozon_analytics(
     chart_start_dt = dt_datetime.combine(chart_start, dt_datetime.min.time())
     chart_end_dt = dt_datetime.combine(cur_end + timedelta(days=1), dt_datetime.min.time())
     events_agg_result = await db.execute(
-        text("""
+        sa_text("""
             SELECT
                 date_trunc('day', created_at)::date AS day,
                 event_type,
@@ -1153,7 +1155,7 @@ async def _build_wb_analytics(
         from sqlalchemy import text
         nm_ids = [s["sku"] for s in top_skus]
         pg_result = await db.execute(
-            text("""
+            sa_text("""
                 SELECT nm_id, supplier_article, name
                 FROM dim_products
                 WHERE shop_id = :shop_id

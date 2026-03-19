@@ -70,6 +70,7 @@ export interface CampaignSkuItem {
   avg_cpc: number
   drr: number
   total_drr: number
+  bid: number
 }
 
 export interface CampaignRow {

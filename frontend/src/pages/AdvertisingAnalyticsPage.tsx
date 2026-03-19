@@ -939,7 +939,7 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
         <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
           <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
             <tr className="bg-[hsl(var(--card))]">
-              <th className="sticky left-0 z-40 w-[200px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
+              <th className="sticky left-0 z-40 w-[220px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
                 Кампания<SortIcon k="campaign_id" />
               </th>
               <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
@@ -965,14 +965,14 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                   className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.15)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
                   onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
                 >
-                    <td className="sticky left-0 z-20 w-[200px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
+                    <td className="sticky left-0 z-20 w-[220px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5">
                     <div className="flex items-start gap-2">
                       {c.items.length > 0 && (
                         <ChevronDown className={`h-4 w-4 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       )}
                       <div className="flex flex-col min-w-0 gap-0.5">
                         {c.title ? (
-                          <span className="font-semibold text-[13px] leading-tight line-clamp-2" title={c.title}>{c.title}</span>
+                          <span className="font-semibold text-[12px] leading-tight line-clamp-2" title={c.title}>{c.title}</span>
                         ) : (
                           <span className="font-semibold text-[13px]">{c.campaign_id}</span>
                         )}
@@ -981,12 +981,12 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                             ID: {c.campaign_id} · {c.sku_count} арт.
                           </span>
                           {c.status && OZON_STATUS_MAP[c.status] && (
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-medium ${OZON_STATUS_MAP[c.status].cls}`}>
+                            <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${OZON_STATUS_MAP[c.status].cls}`}>
                               {OZON_STATUS_MAP[c.status].label}
                             </span>
                           )}
                           {c.campaign_type && CAMPAIGN_TYPE_MAP[c.campaign_type] && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-full font-medium bg-violet-500/20 text-violet-400">
+                            <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-violet-500/20 text-violet-400">
                               {CAMPAIGN_TYPE_MAP[c.campaign_type]}
                             </span>
                           )}
@@ -1019,14 +1019,19 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                     key={`${c.campaign_id}-${s.sku}`}
                     className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.06)]"
                   >
-                    <td className="sticky left-0 z-20 w-[200px] bg-[hsl(var(--muted)/0.06)] pl-4 pr-2 py-2">
+                    <td className="sticky left-0 z-20 w-[220px] bg-[hsl(var(--muted)/0.06)] pl-4 pr-2 py-2">
                       <div className="flex flex-col pl-6 min-w-0">
-                        <span className="text-[12px] font-medium truncate" title={s.name || `SKU ${s.sku}`}>
+                        <span className="text-[12px] font-medium leading-tight line-clamp-2" title={s.name || `SKU ${s.sku}`}>
                           {s.name || `SKU ${s.sku}`}
                         </span>
                         <div className="flex items-center gap-2 text-[10px] text-[hsl(var(--muted-foreground)/0.5)]">
                           {s.offer_id && <span>Арт: {s.offer_id}</span>}
                           <span>ID: {s.product_id}</span>
+                          {s.bid > 0 && (
+                            <span className="text-[10px] font-semibold text-cyan-400">
+                              Ставка: {s.bid} ₽
+                            </span>
+                          )}
                         </div>
                       </div>
                     </td>
