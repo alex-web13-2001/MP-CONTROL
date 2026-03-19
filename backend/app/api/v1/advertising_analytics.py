@@ -554,9 +554,32 @@ async def _build_ozon_analytics(
             "revenue": round(float(row[6]), 2),
             "ctr": float(row[7]),
             "drr": float(row[8]),
+            "total_drr": 0.0,
         }
         for row in chart_rows
     ]
+
+    # Fetch daily total revenue from fact_ozon_orders for total_drr
+    total_rev_daily_rows = ch.query("""
+        SELECT
+            toDate(addHours(in_process_at, 3)) AS day,
+            sum(price * quantity) AS total_revenue
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND toDate(addHours(in_process_at, 3)) >= {start:Date}
+          AND toDate(addHours(in_process_at, 3)) <= {end:Date}
+        GROUP BY day
+        ORDER BY day
+    """, parameters={
+        "shop_id": shop_id,
+        "start": chart_start,
+        "end": cur_end,
+    }).result_rows
+    total_rev_by_day = {str(row[0]): float(row[1]) for row in total_rev_daily_rows}
+    for point in chart_daily:
+        total_rev = total_rev_by_day.get(point["date"], 0)
+        if total_rev > 0 and point["spend"] > 0:
+            point["total_drr"] = round(point["spend"] / total_rev * 100, 1)
 
     # ── 3. Campaigns Table ────────────────────────────
     campaigns_rows = ch.query("""

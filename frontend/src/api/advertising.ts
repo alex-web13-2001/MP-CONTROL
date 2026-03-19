@@ -45,6 +45,7 @@ export interface AdvertisingDailyPoint {
   revenue: number
   ctr: number
   drr: number
+  total_drr: number
 }
 
 export interface CampaignRow {

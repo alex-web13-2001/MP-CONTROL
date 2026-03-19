@@ -235,6 +235,7 @@ const ADS_METRICS = [
   { key: 'revenue', label: 'Выручка', color: '#22c55e', yAxis: 'left' },
   { key: 'ctr', label: 'CTR %', color: '#facc15', yAxis: 'percent' },
   { key: 'drr', label: 'ДРР %', color: '#ef4444', yAxis: 'percent' },
+  { key: 'total_drr', label: 'Общий ДРР %', color: '#f43f5e', yAxis: 'percent' },
 ] as const
 
 type AdsMetricKey = typeof ADS_METRICS[number]['key']
@@ -248,6 +249,7 @@ const ADS_METRIC_LABELS: Record<string, string> = {
   revenue: 'Выручка',
   ctr: 'CTR',
   drr: 'ДРР',
+  total_drr: 'Общий ДРР',
 }
 
 const EVENT_CATEGORIES_CONFIG = [
@@ -397,7 +399,7 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
       <ResponsiveContainer width="100%" height={400}>
         <ComposedChart
           data={data}
-          margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
+          margin={{ top: 5, right: 10, left: 0, bottom: 40 }}
           onClick={(state: any) => {
             if (state?.activeLabel && showEvents && eventsByDay[state.activeLabel]?.total > 0) {
               setSelectedEventDate(state.activeLabel)
@@ -473,7 +475,7 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
             }}
             formatter={(value: number, name: string) => [
               name === 'spend' || name === 'revenue' ? formatMoney(value)
-                : (name === 'drr' || name === 'ctr') ? `${value.toFixed(1)}%`
+                : (name === 'drr' || name === 'ctr' || name === 'total_drr') ? `${value.toFixed(1)}%`
                 : formatNumber(value),
               ADS_METRIC_LABELS[name] || name,
             ]}
@@ -493,9 +495,9 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
           />
           <Legend
             verticalAlign="top"
-            height={30}
+            height={50}
             formatter={(value: string) => ADS_METRIC_LABELS[value] || value}
-            wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }}
+            wrapperStyle={{ fontSize: '13px', color: 'hsl(var(--muted-foreground))', paddingTop: '4px', paddingBottom: '20px' }}
           />
 
           {/* Event ReferenceLine markers — visual only, click handled at chart level */}
@@ -516,6 +518,14 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
                 strokeDasharray="4 2"
                 strokeOpacity={0.5}
                 yAxisId={hasLeftAxis ? 'left' : hasRightAxis ? 'right' : 'percent'}
+                label={{
+                  value: `⚡${ev.total}`,
+                  position: 'top',
+                  fill: color,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  offset: 4,
+                }}
               />
             )
           })}
@@ -614,6 +624,19 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
               strokeDasharray="6 3"
               dot={false}
               activeDot={{ r: 4, fill: '#ef4444' }}
+            />
+          )}
+
+          {activeMetrics.has('total_drr') && (
+            <Line
+              yAxisId="percent"
+              type="monotone"
+              dataKey="total_drr"
+              stroke="#f43f5e"
+              strokeWidth={2}
+              strokeDasharray="3 3"
+              dot={{ r: 2, fill: '#f43f5e' }}
+              activeDot={{ r: 4, fill: '#f43f5e' }}
             />
           )}
         </ComposedChart>
