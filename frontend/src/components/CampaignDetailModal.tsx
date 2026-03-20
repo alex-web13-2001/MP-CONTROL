@@ -49,6 +49,17 @@ function formatMoney(value: number): string {
   }).format(value)
 }
 
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек']
+function formatChartDate(dateStr: string): string {
+  const parts = dateStr.split('-')
+  if (parts.length >= 3) {
+    const day = parseInt(parts[2], 10)
+    const month = parseInt(parts[1], 10) - 1
+    return `${day} ${MONTHS_SHORT[month] || parts[1]}`
+  }
+  return dateStr.slice(5)
+}
+
 /* ── Event labels & styles (from EventsPage) ────────────────── */
 const EVENT_LABELS: Record<string, string> = {
   OZON_BID_CHANGE: 'Ставка изменена',
@@ -413,7 +424,7 @@ export function CampaignDetailModal({
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
           {/* Расход */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Расход</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Расход</div>
             <div className="text-lg font-bold text-red-400 mt-0.5">{formatMoney(cur?.spend || 0)}</div>
             {spendD !== null && (
               <div className={`text-[11px] font-medium ${deltaColor(spendD, true)}`}>
@@ -424,7 +435,7 @@ export function CampaignDetailModal({
 
           {/* Выручка — реклама + товары */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Выручка</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Выручка</div>
             <div className="flex items-baseline gap-2 mt-0.5">
               <div>
                 <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Рекламная</div>
@@ -441,7 +452,7 @@ export function CampaignDetailModal({
 
           {/* Заказы + Корзины */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Заказы / Корзины</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Заказы / Корзины</div>
             <div className="flex items-baseline gap-3 mt-0.5">
               <div>
                 <div className="text-lg font-bold text-purple-400">{cur?.orders || 0}</div>
@@ -457,7 +468,7 @@ export function CampaignDetailModal({
 
           {/* ДРР — рекламный + общий */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">ДРР</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">ДРР</div>
             <div className="flex items-baseline gap-2 mt-0.5">
               <div>
                 <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Рекламный</div>
@@ -474,7 +485,7 @@ export function CampaignDetailModal({
 
           {/* CPO */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">CPO (стоимость заказа)</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">CPO (стоимость заказа)</div>
             <div className="text-lg font-bold text-purple-400 mt-0.5">{(cur?.cpo || 0) > 0 ? formatMoney(cur!.cpo) : '—'}</div>
             {cpoD !== null && (
               <div className={`text-[11px] font-medium ${deltaColor(cpoD, true)}`}>{deltaStr(cpoD)}</div>
@@ -483,7 +494,7 @@ export function CampaignDetailModal({
 
           {/* Клики + Показы + CTR */}
           <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">Трафик</div>
+            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Трафик</div>
             <div className="flex items-baseline gap-2 mt-0.5">
               <div>
                 <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Клики</div>
@@ -542,9 +553,13 @@ export function CampaignDetailModal({
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
               <XAxis
                 dataKey="dt"
-                tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
+                tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
                 tickLine={false} axisLine={false}
-                tickFormatter={v => { try { return format(parseISO(v), 'dd.MM') } catch { return v } }}
+                tickFormatter={formatChartDate}
+                interval={0}
+                angle={-45}
+                textAnchor="end"
+                height={50}
               />
               {/* Left axis — money (spend, revenue) */}
               <YAxis
@@ -566,9 +581,9 @@ export function CampaignDetailModal({
               <RTooltip content={<CustomTooltip />} />
 
               <Legend
-                verticalAlign="top" height={24} iconType="circle" iconSize={7}
+                verticalAlign="top" height={36} iconType="circle" iconSize={9}
                 formatter={v => CHART_METRICS.find(x => x.key === v)?.label || v}
-                wrapperStyle={{ fontSize: '11px' }}
+                wrapperStyle={{ fontSize: '14px', fontWeight: 500, paddingBottom: '12px' }}
               />
 
               {/* Event markers — vertical reference lines */}
