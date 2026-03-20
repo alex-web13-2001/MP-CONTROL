@@ -253,6 +253,24 @@ export function CampaignDetailModal({
     return () => window.removeEventListener('keydown', h)
   }, [onClose])
 
+  // Lock body scroll when modal is open
+  useEffect(() => {
+    if (isOpen) {
+      const scrollY = window.scrollY
+      document.body.style.position = 'fixed'
+      document.body.style.top = `-${scrollY}px`
+      document.body.style.width = '100%'
+      document.body.style.overflow = 'hidden'
+      return () => {
+        document.body.style.position = ''
+        document.body.style.top = ''
+        document.body.style.width = ''
+        document.body.style.overflow = ''
+        window.scrollTo(0, scrollY)
+      }
+    }
+  }, [isOpen])
+
   if (!isOpen) return null
 
   const tabs: { id: TabType; label: string; icon: React.ElementType }[] = [
@@ -875,15 +893,15 @@ export function CampaignDetailModal({
      ════════════════════════════════════════════════════════════ */
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="w-full max-w-[920px] max-h-[92vh] bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+      <div className="w-full max-w-[1200px] max-h-[92vh] bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="flex items-start justify-between p-5 px-6 border-b border-[hsl(var(--border))]">
           <div className="flex-1 min-w-0 pr-8">
             <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))]">{marketplace === 'ozon' ? 'OZON' : 'WB'}</span>
+              <span className="text-[11px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))]">{marketplace === 'ozon' ? 'OZON' : 'WB'}</span>
               <span className="text-[12px] text-[hsl(var(--muted-foreground))]">ID: {campaignId}</span>
             </div>
-            <h2 className="text-[18px] font-bold leading-tight truncate" title={campaignTitle}>{campaignTitle}</h2>
+            <h2 className="text-[22px] font-bold leading-tight truncate" title={campaignTitle}>{campaignTitle}</h2>
           </div>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors"><X className="w-5 h-5" /></button>
         </div>
@@ -892,7 +910,7 @@ export function CampaignDetailModal({
         <div className="px-6 py-3 border-b border-[hsl(var(--border))] flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-1 bg-[hsl(var(--muted)/0.3)] rounded-lg p-0.5">
             {PERIOD_OPTIONS.map(opt => (
-              <button key={opt.value} onClick={() => setPeriod(opt.value)} className={`px-3 py-1.5 text-[12px] font-medium rounded-md transition-all ${period === opt.value ? 'bg-[hsl(var(--background))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>{opt.label}</button>
+              <button key={opt.value} onClick={() => setPeriod(opt.value)} className={`px-3 py-1.5 text-[14px] font-medium rounded-md transition-all ${period === opt.value ? 'bg-[hsl(var(--background))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>{opt.label}</button>
             ))}
           </div>
           {items.length > 0 && (
@@ -924,8 +942,8 @@ export function CampaignDetailModal({
           {tabs.map(t => {
             const Icon = t.icon
             return (
-              <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 py-3 px-3 text-[13px] font-medium border-b-2 transition-colors ${activeTab === t.id ? 'border-[hsl(var(--primary))] text-[hsl(var(--foreground))]' : 'border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>
-                <Icon className="w-3.5 h-3.5" />{t.label}
+              <button key={t.id} onClick={() => setActiveTab(t.id)} className={`flex items-center gap-1.5 py-3 px-3 text-[14px] font-medium border-b-2 transition-colors ${activeTab === t.id ? 'border-[hsl(var(--primary))] text-[hsl(var(--foreground))]' : 'border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>
+                <Icon className="w-4 h-4" />{t.label}
               </button>
             )
           })}

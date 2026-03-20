@@ -969,7 +969,7 @@ function CampaignsTable({
   return (
     <div className="overflow-hidden">
       {/* Search input */}
-      <div className="px-4 pb-3">
+      <div className="px-4 pt-1 pb-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
           <input
@@ -977,7 +977,7 @@ function CampaignsTable({
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Поиск по названию, ID, артикулу, SKU или товару..."
-            className="w-full pl-9 pr-8 py-2 text-[14px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)] transition-all"
+            className="w-full pl-9 pr-8 py-2 text-[14px] rounded-lg border-none bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
           />
           {searchQuery && (
             <button
@@ -1026,28 +1026,16 @@ function CampaignsTable({
                   onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
                 >
                     <td className="sticky left-0 z-20 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
-                    <div className="flex items-start gap-2">
+                    <div className="flex items-center gap-2">
                       {c.items.length > 0 && (
-                        <ChevronDown className={`h-4 w-4 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       )}
                       <div className="flex flex-col min-w-0 gap-1 flex-1">
-                        <div className="flex items-center gap-2">
-                          {c.title ? (
-                            <span className="font-semibold text-[14px] leading-snug line-clamp-2 flex-1" title={c.title}>{c.title}</span>
-                          ) : (
-                            <span className="font-semibold text-[14px] flex-1">{c.campaign_id}</span>
-                          )}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              setModalState({ isOpen: true, campaignId: c.campaign_id, title: c.title || `Campaign #${c.campaign_id}`, items: c.items || [] })
-                            }}
-                            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors"
-                            title="Статистика кампании"
-                          >
-                            <BarChart2 className="w-5 h-5" />
-                          </button>
-                        </div>
+                        {c.title ? (
+                          <span className="font-semibold text-[14px] leading-snug line-clamp-2" title={c.title}>{c.title}</span>
+                        ) : (
+                          <span className="font-semibold text-[14px]">{c.campaign_id}</span>
+                        )}
                         {c.campaign_type && (
                           <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.8)] leading-tight mb-0.5">
                             {CAMPAIGN_TYPE_MAP[c.campaign_type] || c.campaign_type}
@@ -1064,6 +1052,16 @@ function CampaignsTable({
                           )}
                         </div>
                       </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setModalState({ isOpen: true, campaignId: c.campaign_id, title: c.title || `Campaign #${c.campaign_id}`, items: c.items || [] })
+                        }}
+                        className="shrink-0 ml-auto w-8 h-8 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors"
+                        title="Статистика кампании"
+                      >
+                        <BarChart2 className="w-5 h-5" />
+                      </button>
                     </div>
                   </td>
                   <td className={tdCls}>{formatMoney(c.spend)}</td>
