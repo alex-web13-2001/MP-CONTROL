@@ -20,6 +20,7 @@ from app.api.v1.events_analysis import router as events_analysis_router
 from app.api.v1.warehouses import router as warehouses_router
 from app.api.v1.finances_export import router as finances_export_router
 from app.api.v1.advertising_analytics import router as advertising_analytics_router
+from app.api.v1.campaign_details import router as campaign_details_router
 
 api_router = APIRouter()
 
@@ -32,6 +33,7 @@ api_router.include_router(finance_reports_router)
 api_router.include_router(finances_export_router)
 api_router.include_router(advertising_router)
 api_router.include_router(advertising_analytics_router)
+api_router.include_router(campaign_details_router)
 api_router.include_router(commercial_router)
 api_router.include_router(dashboard_router)
 api_router.include_router(products_router)

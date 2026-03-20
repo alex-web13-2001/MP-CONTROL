@@ -899,6 +899,8 @@ async def _build_ozon_analytics(
         events_by_day[day_str]["total"] += cnt
 
     return {
+        "date_from": cur_start.isoformat(),
+        "date_to": cur_end.isoformat(),
         "kpi": kpi,
         "chart_daily": chart_daily,
         "campaigns_table": campaigns_table,

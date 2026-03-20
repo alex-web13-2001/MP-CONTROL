@@ -104,6 +104,9 @@ class OzonAdsService:
     Base URL: https://api-performance.ozon.ru (marketplace='ozon_performance')
     """
 
+    RETRY_MAX_ATTEMPTS = 3
+    RETRY_DELAY_SEC = 30
+
     def __init__(
         self,
         db: AsyncSession,
@@ -353,6 +356,54 @@ class OzonAdsService:
         logger.info("Ozon report ordered: UUID=%s", uuid)
         return uuid
 
+    async def order_phrases_report(
+        self,
+        campaign_ids: List[int],
+        date_from: str,
+        date_to: str,
+    ) -> Optional[str]:
+        """
+        Order async statistics report for search phrases.
+
+        POST /api/client/statistics/phrases
+
+        Ozon API requirements:
+        - campaigns: Array of STRINGS (not ints!)
+        - dateFrom/dateTo: "YYYY-MM-DD"
+        - groupBy: "NO_GROUP_BY" (required)
+
+        Returns UUID of the report, or None on error.
+        """
+        response = await self._request(
+            "POST",
+            "/api/client/statistics/phrases",
+            json={
+                "campaigns": [str(cid) for cid in campaign_ids],
+                "dateFrom": date_from,
+                "dateTo": date_to,
+                "groupBy": "DATE",
+            },
+        )
+
+        if not response.is_success:
+            status = getattr(response, 'status_code', 0)
+            body = ''
+            try:
+                body = str(response.data)[:200] if response.data else str(response.error)
+            except Exception:
+                pass
+            logger.error(
+                "Ozon phrases order error: %s %s",
+                status, body,
+            )
+            return None
+
+        data = response.data if isinstance(response.data, dict) else {}
+        uuid = data.get("UUID")
+        if uuid:
+            logger.info("Ozon phrases report ordered for %d campaigns: UUID=%s", len(campaign_ids), uuid)
+        return uuid
+
     async def wait_for_report(self, uuid: str) -> Optional[str]:
         """
         Poll report status until ready.
@@ -541,6 +592,105 @@ class OzonAdsService:
                      len(set(r["campaign_id"] for r in rows)) if rows else 0)
         return rows
 
+    @staticmethod
+    def parse_phrases_csv_report(csv_text: str, shop_id: int) -> List[dict]:
+        """
+        Parse Ozon Performance CSV report for search phrases.
+        Returns list of dicts for `fact_advert_phrases_daily`.
+        """
+        rows = []
+        csv_text = csv_text.strip().lstrip("\ufeff")
+        lines = csv_text.split("\n")
+
+        if not lines:
+            return rows
+
+        campaign_id = 0
+        header_map = {}
+
+        for line in lines:
+            line = line.strip().lstrip("\ufeff")
+            if not line:
+                continue
+
+            if "Кампания" in line and "№" in line:
+                match = re.search(r"№\s*(\d+)", line)
+                if match:
+                    campaign_id = int(match.group(1))
+                continue
+
+            # Detect Header row
+            if line.startswith("День;") or line.startswith("Всего"):
+                if line.startswith("День;"):
+                    parts = line.split(";")
+                    header_map = {p.strip().lower(): i for i, p in enumerate(parts)}
+                continue
+
+            if not header_map:
+                continue
+
+            parts = line.split(";")
+            if len(parts) < len(header_map):
+                continue
+
+            try:
+                date_str = parts[header_map["день"]]
+                dt = datetime.strptime(date_str, "%d.%m.%Y").date()
+            except (KeyError, ValueError, IndexError):
+                continue
+                
+            # Phrase extraction
+            phrase_col_name = "ключевая фраза" if "ключевая фраза" in header_map else None
+            if not phrase_col_name:
+                # Fallback to general term if Ozon changes it
+                for k in header_map.keys():
+                    if "фраз" in k or "запрос" in k or "слово" in k:
+                        phrase_col_name = k
+                        break
+            
+            phrase = parts[header_map[phrase_col_name]].strip() if phrase_col_name else ""
+            if not phrase:
+                continue
+
+            def get_val(keys_list, default=0):
+                for k in keys_list:
+                    for hk in header_map.keys():
+                        if k in hk:
+                            val = parts[header_map[hk]]
+                            if isinstance(default, float):
+                                return _safe_float(val)
+                            return _safe_int(val)
+                return default
+
+            views = get_val(["показ"])
+            clicks = get_val(["клик", "переход"])
+            spend = get_val(["расход"], 0.0)
+            orders = get_val(["заказ"], 0)
+            revenue = get_val(["продаж", "на сумму"], 0.0)
+            ctr = get_val(["ctr"], 0.0)
+            
+            # Skip empty rows to save space
+            if views == 0 and clicks == 0 and spend == 0.0:
+                continue
+
+            rows.append({
+                "dt": dt,
+                "marketplace": 2, # Ozon
+                "shop_id": shop_id,
+                "campaign_id": campaign_id,
+                "phrase": phrase,
+                "views": views,
+                "clicks": clicks,
+                "spend": spend,
+                "orders": orders,
+                "revenue": revenue,
+                "ctr": ctr,
+            })
+
+        logger.info("Parsed %d phrase rows from Ozon CSV (%d campaigns)", len(rows),
+                     len(set(r["campaign_id"] for r in rows)) if rows else 0)
+        return rows
+
     async def fetch_statistics(
         self,
         shop_id: int,
@@ -657,6 +807,55 @@ class OzonAdsService:
                 await asyncio.sleep(pause)
 
         logger.info("Total stats rows from all batches: %d", len(all_rows))
+        return all_rows
+
+    async def fetch_phrases_statistics(
+        self,
+        shop_id: int,
+        campaign_ids: List[int],
+        date_from: str,
+        date_to: str,
+        batch_size: int = 10,
+    ) -> List[dict]:
+        """
+        Full pipeline for search phrases: order → wait → download → parse.
+        Batches campaign_ids into groups of 10.
+        """
+        import asyncio
+        all_rows = []
+
+        for i in range(0, len(campaign_ids), batch_size):
+            batch = campaign_ids[i:i + batch_size]
+            logger.info("Ozon phrases pipeline: ordering batch %d/%d (size %d)",
+                        i // batch_size + 1, (len(campaign_ids) - 1) // batch_size + 1, len(batch))
+
+            for attempt in range(1, self.RETRY_MAX_ATTEMPTS + 1):
+                uuid = await self.order_phrases_report(batch, date_from, date_to)
+
+                # Skip if empty campaign or API error
+                if not uuid:
+                    break
+
+                csv_link = await self.wait_for_report(uuid)
+                if not csv_link:
+                    logger.warning("Ozon phrases report %s failed/timeout, attempt %d", uuid, attempt)
+                    if attempt < self.RETRY_MAX_ATTEMPTS:
+                        await asyncio.sleep(self.RETRY_DELAY_SEC)
+                    continue
+
+                csv_text = await self.download_report(csv_link)
+                if not csv_text:
+                    logger.warning("Ozon phrases downloaded empty CSV for %s", uuid)
+                    break
+
+                batch_rows = self.parse_phrases_csv_report(csv_text, shop_id)
+                all_rows.extend(batch_rows)
+                break  # success
+
+            # Small delay between batches to respect rate limits
+            if i + batch_size < len(campaign_ids):
+                await asyncio.sleep(1.0)
+
         return all_rows
 
 
@@ -779,6 +978,53 @@ class OzonBidsLoader:
             "Inserted %d stats rows into ClickHouse (deduplicated from %d)",
             len(ch_rows), len(rows),
         )
+        return len(ch_rows)
+
+    def insert_phrases(self, rows: List[dict]) -> int:
+        """Insert phrase statistics into fact_advert_phrases_daily."""
+        if not rows or not self._client:
+            return 0
+
+        now = datetime.utcnow()
+        ch_rows = []
+
+        seen = set()
+        for r in rows:
+            # deduplicate by (shop_id, marketplace, campaign_id, dt, phrase)
+            key = (r["shop_id"], r["marketplace"], r["campaign_id"], str(r["dt"]), r["phrase"].lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            
+            ch_rows.append([
+                r["dt"],
+                now,
+                r["shop_id"],
+                r["marketplace"],
+                r["campaign_id"],
+                r["phrase"],
+                r["views"],
+                r["clicks"],
+                r["ctr"],
+                r["orders"],
+                r["revenue"],
+                r["spend"],
+            ])
+
+        columns = [
+            "dt", "updated_at", "shop_id", "marketplace", "campaign_id",
+            "phrase", "views", "clicks", "ctr", "orders", "revenue", "spend"
+        ]
+        
+        table = "mms_analytics.fact_advert_phrases_daily"
+        self._client.insert(table, ch_rows, column_names=columns)
+
+        try:
+            self._client.command(f"OPTIMIZE TABLE {table} FINAL")
+        except Exception as e:
+            pass
+
+        logger.info("Inserted %d phrase rows into ClickHouse", len(ch_rows))
         return len(ch_rows)
 
     def get_stats_summary(self, shop_id: int) -> dict:

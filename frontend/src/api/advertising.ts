@@ -113,6 +113,8 @@ export interface AdvertisingAnalyticsResponse {
   shop_id: number
   marketplace: string
   period: string
+  date_from: string
+  date_to: string
   kpi: AdvertisingKpi
   chart_daily: AdvertisingDailyPoint[]
   campaigns_table: CampaignRow[]

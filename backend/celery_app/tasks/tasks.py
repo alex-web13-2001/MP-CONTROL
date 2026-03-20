@@ -4401,29 +4401,52 @@ def sync_ozon_ad_stats(
                     date_from=date_from,
                     date_to=date_to,
                 )
+                logger.info(f"Ozon: parsed {len(all_rows)} stats rows")
 
-            logger.info(f"Ozon: parsed {len(all_rows)} stats rows")
+                # 3.5. Fetch Phrases pipeline (SKU + SEARCH_PROMO campaigns)
+                search_campaign_ids = [
+                    c["id"] for c in campaigns
+                    if c.get("id") and str(c.get("advObjectType", "")).upper() in ("SEARCH_PROMO", "SKU")
+                ]
+                phrases_rows = []
+                if search_campaign_ids:
+                    self.update_state(state='PROGRESS', meta={
+                        'status': f'Ordering PHRASES report {date_from} → {date_to} for {len(search_campaign_ids)} campaigns...',
+                    })
+                    phrases_rows = await service.fetch_phrases_statistics(
+                        shop_id=shop_id,
+                        campaign_ids=search_campaign_ids,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    logger.info(f"Ozon: parsed {len(phrases_rows)} phrase rows")
 
             # 4. Insert into ClickHouse
-            inserted = 0
-            if all_rows:
+            inserted_stats = 0
+            inserted_phrases = 0
+            
+            if True:
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
 
                 with OzonBidsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
-                    inserted = loader.insert_stats(all_rows)
+                    if all_rows:
+                        inserted_stats = loader.insert_stats(all_rows)
+                    if phrases_rows:
+                        inserted_phrases = loader.insert_phrases(phrases_rows)
 
             self.update_state(state='PROGRESS', meta={
-                'status': f'Done: {inserted} stats rows inserted',
+                'status': f'Done: {inserted_stats} stats, {inserted_phrases} phrases inserted',
             })
 
             return {
                 "shop_id": shop_id,
                 "campaigns": len(campaign_ids),
+                "phrases_campaigns": len(search_campaign_ids),
                 "date_from": date_from,
                 "date_to": date_to,
-                "rows_parsed": len(all_rows),
-                "rows_inserted": inserted,
+                "rows_inserted": inserted_stats,
+                "phrases_inserted": inserted_phrases,
             }
 
         finally:

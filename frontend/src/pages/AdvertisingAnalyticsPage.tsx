@@ -22,6 +22,7 @@ import {
   X,
   Clock,
   Tag,
+  Search,
 } from 'lucide-react'
 import {
   ComposedChart,
@@ -38,6 +39,7 @@ import {
 } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { CampaignDetailModal } from '@/components/CampaignDetailModal'
 import { useAppStore } from '@/stores/appStore'
 import {
   getAdvertisingAnalytics,
@@ -45,6 +47,7 @@ import {
   type AdvertisingAnalyticsResponse,
   type AdvertisingDailyPoint,
   type CampaignRow,
+  type CampaignSkuItem,
   type EventDaySummary,
   type EventDetail,
 } from '@/api/advertising'
@@ -851,10 +854,22 @@ function EventsDetailModal({
    Campaigns Table
    ═══════════════════════════════════════════════════════════ */
 
-function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
+function CampaignsTable({ 
+  campaigns,
+  marketplace,
+  dateFrom,
+  dateTo
+}: { 
+  campaigns: CampaignRow[]
+  marketplace: string
+  dateFrom: string
+  dateTo: string 
+}) {
   const [sortKey, setSortKey] = useState<string>('spend')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
+  const [modalState, setModalState] = useState<{isOpen: boolean, campaignId: number, title: string, items: CampaignSkuItem[], sku?: number} | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
 
   if (!campaigns.length) {
     return (
@@ -864,7 +879,25 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
     )
   }
 
-  const sorted = [...campaigns].sort((a, b) => {
+  // Universal search filter
+  const filtered = searchQuery.trim()
+    ? campaigns.filter(c => {
+        const q = searchQuery.trim().toLowerCase()
+        // Search in campaign title & id
+        if (c.title?.toLowerCase().includes(q)) return true
+        if (String(c.campaign_id).includes(q)) return true
+        // Search in items: sku, product_id, offer_id, name
+        if (c.items?.some(item =>
+          String(item.sku).includes(q) ||
+          String(item.product_id).includes(q) ||
+          item.offer_id?.toLowerCase().includes(q) ||
+          item.name?.toLowerCase().includes(q)
+        )) return true
+        return false
+      })
+    : campaigns
+
+  const sorted = [...filtered].sort((a, b) => {
     const va = (a as any)[sortKey] ?? 0
     const vb = (b as any)[sortKey] ?? 0
     if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
@@ -934,7 +967,33 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
   }
 
   return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+    <div className="overflow-hidden">
+      {/* Search input */}
+      <div className="px-4 pb-3">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="Поиск по названию, ID, артикулу, SKU или товару..."
+            className="w-full pl-9 pr-8 py-2 text-[14px] rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)] transition-all"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground)/0.5)]"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+        {searchQuery.trim() && (
+          <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] mt-1 ml-1">
+            Найдено: {filtered.length} из {campaigns.length} кампаний
+          </div>
+        )}
+      </div>
       <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
         <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
           <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
@@ -971,12 +1030,24 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
                       {c.items.length > 0 && (
                         <ChevronDown className={`h-4 w-4 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       )}
-                      <div className="flex flex-col min-w-0 gap-1">
-                        {c.title ? (
-                          <span className="font-semibold text-[14px] leading-snug line-clamp-2" title={c.title}>{c.title}</span>
-                        ) : (
-                          <span className="font-semibold text-[14px]">{c.campaign_id}</span>
-                        )}
+                      <div className="flex flex-col min-w-0 gap-1 flex-1">
+                        <div className="flex items-center gap-2">
+                          {c.title ? (
+                            <span className="font-semibold text-[14px] leading-snug line-clamp-2 flex-1" title={c.title}>{c.title}</span>
+                          ) : (
+                            <span className="font-semibold text-[14px] flex-1">{c.campaign_id}</span>
+                          )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setModalState({ isOpen: true, campaignId: c.campaign_id, title: c.title || `Campaign #${c.campaign_id}`, items: c.items || [] })
+                            }}
+                            className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors"
+                            title="Статистика кампании"
+                          >
+                            <BarChart2 className="w-5 h-5" />
+                          </button>
+                        </div>
                         {c.campaign_type && (
                           <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.8)] leading-tight mb-0.5">
                             {CAMPAIGN_TYPE_MAP[c.campaign_type] || c.campaign_type}
@@ -1074,6 +1145,20 @@ function CampaignsTable({ campaigns }: { campaigns: CampaignRow[] }) {
         </tbody>
         </table>
       </div>
+
+      {modalState?.isOpen && (
+        <CampaignDetailModal
+          isOpen={modalState.isOpen}
+          onClose={() => setModalState(null)}
+          marketplace={marketplace}
+          campaignId={modalState.campaignId}
+          campaignTitle={modalState.title}
+          startDate={dateFrom}
+          endDate={dateTo}
+          items={modalState.items}
+          sku={modalState.sku}
+        />
+      )}
     </div>
   )
 }
@@ -1417,7 +1502,12 @@ export default function AdvertisingAnalyticsPage() {
             <CardTitle className="text-lg">Кампании за период</CardTitle>
           </CardHeader>
           <CardContent>
-            <CampaignsTable campaigns={data.campaigns_table} />
+            <CampaignsTable 
+              campaigns={data.campaigns_table} 
+              marketplace={currentShop!.marketplace}
+              dateFrom={data.date_from}
+              dateTo={data.date_to}
+            />
           </CardContent>
         </Card>
       </motion.div>

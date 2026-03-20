@@ -45,17 +45,25 @@ class OzonCampaignsLoader:
                 mode = camp.get("productCampaignMode", "")
                 payment = camp.get("PaymentType", camp.get("paymentType", ""))
                 
-                # Places
+                # Places — Ozon API иногда возвращает PLACEMENT_TOP_PROMOTION 
+                # для обычных CPC кампаний, поэтому для CPC ставим «Поиск и рекомендации»
+                # если нет явного PLACEMENT_SEARCH_AND_CATEGORY
                 places = []
                 if "PLACEMENT_SEARCH_AND_CATEGORY" in placements:
                     places.append("Поиск и рекомендации")
                 if "PLACEMENT_PDP" in placements:
                     places.append("Карточка товара")
                 if "PLACEMENT_TOP_PROMOTION" in placements:
-                    places.append("Вывод в Топ")
+                    # Для CPC кампаний PLACEMENT_TOP_PROMOTION часто некорректен
+                    if payment != "CPC" or "PLACEMENT_SEARCH_AND_CATEGORY" in placements:
+                        places.append("Продвижение в топ")
                 
                 if not places:
-                    places_str = "Везде"
+                    # По умолчанию для CPC — Поиск и рекомендации (самый частый тип)
+                    if payment == "CPC":
+                        places_str = "Поиск и рекомендации"
+                    else:
+                        places_str = "Везде"
                 else:
                     places_str = " + ".join(places)
                     
