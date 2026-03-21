@@ -1362,23 +1362,23 @@ function CampaignsTable({
                     {isExpanded && (
                       <tr>
                         <td colSpan={12} className="p-0">
-                          <div className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)] px-6 py-3">
-                            <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.5)] mb-2">Кампании с этим товаром</div>
-                            <div className="space-y-1.5">
+                          <div className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)] px-6 py-2.5" onClick={(e) => e.stopPropagation()}>
+                            <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.4)] mb-1.5">Кампании с этим товаром:</div>
+                            <div className="space-y-1">
                               {p.campaignInfos.map(ci => (
-                                <div key={ci.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)] hover:border-[hsl(var(--border)/0.5)] transition-colors">
-                                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">#{ci.id}</span>
-                                    <span className="text-[13px] font-medium truncate">{ci.title}</span>
-                                  </div>
+                                <div key={ci.id} className="flex items-center gap-2 group">
+                                  <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.3)] font-mono">#{ci.id}</span>
+                                  <span className="text-[13px] font-medium truncate flex-1">{ci.title}</span>
                                   <button
-                                    className="shrink-0 text-[12px] font-medium px-3 py-1.5 rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.2)] transition-colors"
+                                    className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors opacity-60 group-hover:opacity-100"
+                                    title="Статистика кампании"
                                     onClick={(e) => {
                                       e.stopPropagation()
+                                      e.preventDefault()
                                       setModalState({ isOpen: true, campaignId: ci.id, title: ci.title, items: ci.items, sku: p.sku })
                                     }}
                                   >
-                                    📊 Статистика
+                                    <BarChart2 className="w-4 h-4" />
                                   </button>
                                 </div>
                               ))}
@@ -1557,7 +1557,10 @@ function CampaignsTable({
         </tbody>
         </table>
       </div>
+      </>
+      )}
 
+      {/* Modal — shared by both views */}
       {modalState?.isOpen && (
         <CampaignDetailModal
           isOpen={modalState.isOpen}
@@ -1570,8 +1573,6 @@ function CampaignsTable({
           items={modalState.items}
           sku={modalState.sku}
         />
-      )}
-      </>
       )}
     </div>
   )
