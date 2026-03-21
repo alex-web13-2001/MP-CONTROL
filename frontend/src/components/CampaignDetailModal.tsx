@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown,
+  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair,
   TrendingUp, TrendingDown, Activity, DollarSign, Palette,
   Image, Plus, Minus, AlertTriangle, Rocket, ArrowRight, ArrowUp, ArrowDown,
   type LucideIcon,
@@ -181,7 +181,7 @@ interface CampaignDetailModalProps {
   sku?: number
 }
 
-type TabType = 'stats' | 'events' | 'purchases' | 'phrases' | 'heatmap'
+type TabType = 'stats' | 'events' | 'purchases' | 'phrases' | 'heatmap' | 'bids'
 
 /* ═══════════════════════════════════════════════════════════════
    Main Component
@@ -294,9 +294,13 @@ export function CampaignDetailModal({
     { id: 'stats', label: 'Графики', icon: BarChart3 },
     { id: 'events', label: 'События', icon: Calendar },
     { id: 'purchases', label: 'Покупки', icon: Package },
+    { id: 'bids', label: 'Ставки', icon: Crosshair },
     { id: 'phrases', label: 'Фразы', icon: Search },
     { id: 'heatmap', label: 'Активность', icon: Flame },
   ]
+
+  // First stat date = approximate campaign creation date
+  const firstStatDate = stats.length > 0 ? [...stats].sort((a, b) => a.dt.localeCompare(b.dt))[0].dt : null
 
   /* ── EVENT DATE → events per day for chart markers ── */
   const eventsByDate: Record<string, CampaignEventRow[]> = {}
@@ -977,6 +981,80 @@ export function CampaignDetailModal({
   }
 
   /* ════════════════════════════════════════════════════════════
+     Bids Tab — current bids per SKU
+     ════════════════════════════════════════════════════════════ */
+  const renderBids = () => {
+    if (items.length === 0) return <Empty text="Нет товаров в кампании" />
+    const bidItems = [...items].sort((a, b) => b.bid - a.bid)
+    const maxBid = Math.max(...bidItems.map(i => i.bid), 1)
+    const isWB = marketplace === 'wb'
+    return (
+      <div className="space-y-3">
+        <div className="text-[13px] text-[hsl(var(--muted-foreground))]">
+          Текущие ставки по товарам в кампании {isWB && <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)]">(WB: копейки → рубли)</span>}
+        </div>
+        <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden max-h-[420px] overflow-y-auto">
+          <table className="w-full text-left">
+            <thead className="sticky top-0 bg-[hsl(var(--card))] z-10 shadow-[0_1px_0_hsl(var(--border))]">
+              <tr>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
+                <th className="px-4 py-2.5 text-[13px] font-semibold text-[hsl(var(--foreground))] text-right">Ставка</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">Расход</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">Показы</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">Клики</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">CPC</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">Заказы</th>
+                <th className="px-4 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] text-right">ДРР</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bidItems.map(item => {
+                const bidRub = isWB ? item.bid / 100 : item.bid
+                const barW = maxBid > 0 ? (item.bid / maxBid) * 100 : 0
+                return (
+                  <tr key={item.sku} className="border-b border-[hsl(var(--border)/0.3)] last:border-0 hover:bg-[hsl(var(--muted)/0.1)]">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {item.image_url ? (
+                          <img src={item.image_url} alt="" className="h-8 w-8 rounded object-cover shrink-0" />
+                        ) : (
+                          <div className="h-8 w-8 rounded bg-[hsl(var(--muted)/0.3)] shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-medium truncate max-w-[180px]">{item.offer_id || item.name || `SKU ${item.sku}`}</div>
+                          <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{item.name && item.offer_id ? item.name.slice(0, 40) : `SKU: ${item.sku}`}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="inline-flex flex-col items-end">
+                        <span className="text-[16px] font-bold text-[hsl(var(--foreground))]">{bidRub.toFixed(0)} ₽</span>
+                        <div className="w-[60px] h-[4px] rounded-full bg-[hsl(var(--muted)/0.2)] mt-1">
+                          <div className="h-full rounded-full bg-[hsl(var(--primary))]" style={{ width: `${barW}%` }} />
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-[13px] text-right font-medium text-red-400">{formatMoney(item.spend)}</td>
+                    <td className="px-4 py-3 text-[13px] text-right">{formatNumber(item.views)}</td>
+                    <td className="px-4 py-3 text-[13px] text-right">{formatNumber(item.clicks)}</td>
+                    <td className="px-4 py-3 text-[13px] text-right">{item.avg_cpc > 0 ? formatMoney(item.avg_cpc) : '—'}</td>
+                    <td className="px-4 py-3 text-[13px] text-right font-medium">{item.orders}</td>
+                    <td className="px-4 py-3 text-[13px] text-right">
+                      <span className={item.drr > 30 ? 'text-red-400 font-semibold' : item.drr > 0 ? 'text-amber-400' : ''}>
+                        {item.drr > 0 ? `${item.drr.toFixed(0)}%` : '—'}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
+  }
+
+  /* ════════════════════════════════════════════════════════════
      Layout
      ════════════════════════════════════════════════════════════ */
   return (
@@ -988,6 +1066,7 @@ export function CampaignDetailModal({
             <div className="flex items-center gap-2 mb-1.5">
               <span className="text-[11px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))]">{marketplace === 'ozon' ? 'OZON' : 'WB'}</span>
               <span className="text-[12px] text-[hsl(var(--muted-foreground))]">ID: {campaignId}</span>
+              {firstStatDate && <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">· с {(() => { try { return format(parseISO(firstStatDate), 'dd MMM yyyy', { locale: ru }) } catch { return firstStatDate } })()}</span>}
             </div>
             <h2 className="text-[22px] font-bold leading-tight truncate" title={campaignTitle}>{campaignTitle}</h2>
           </div>
@@ -1044,6 +1123,7 @@ export function CampaignDetailModal({
           {activeTab === 'purchases' && renderPurchases()}
           {activeTab === 'phrases' && renderPhrases()}
           {activeTab === 'heatmap' && renderHeatmap()}
+          {activeTab === 'bids' && renderBids()}
         </div>
       </div>
     </div>
