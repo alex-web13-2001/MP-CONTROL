@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import {
   AlertTriangle,
   TrendingUp,
+
   Zap,
   ShoppingCart,
   Ban,
@@ -17,8 +18,11 @@ import {
   CheckCircle2,
   Info,
   Activity,
+  ArrowUp,
+  ArrowDown,
+  Minus,
 } from 'lucide-react'
-import type { CampaignRow, EventDaySummary, EventDetail } from '@/api/advertising'
+import type { CampaignRow, EventDaySummary, EventDetail, AdvertisingDailyPoint } from '@/api/advertising'
 import { getEventsDetail } from '@/api/advertising'
 
 /* ═══════════════════════════════════════════════════════════
@@ -33,6 +37,20 @@ function fmtMoney(v: number): string {
 }
 function pct(v: number): string {
   return v.toFixed(1) + '%'
+}
+
+function deltaIcon(delta: number) {
+  if (delta > 5) return <ArrowUp className="h-3 w-3 text-emerald-400 inline" />
+  if (delta < -5) return <ArrowDown className="h-3 w-3 text-red-400 inline" />
+  return <Minus className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.3)] inline" />
+}
+
+function deltaColor(delta: number, inverse = false) {
+  const good = inverse ? delta < -5 : delta > 5
+  const bad = inverse ? delta > 5 : delta < -5
+  if (good) return 'text-emerald-400'
+  if (bad) return 'text-red-400'
+  return 'text-[hsl(var(--muted-foreground)/0.5)]'
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -88,7 +106,7 @@ function Section({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   CampaignRow renderer — single campaign line
+   Campaign line
    ═══════════════════════════════════════════════════════════ */
 
 function CampaignLine({
@@ -141,7 +159,6 @@ function CampaignLine({
   )
 }
 
-/* metric column pill */
 function Metric({
   label,
   value,
@@ -153,11 +170,7 @@ function Metric({
   bad?: boolean
   good?: boolean
 }) {
-  const color = bad
-    ? 'text-red-400'
-    : good
-      ? 'text-emerald-400'
-      : 'text-[hsl(var(--foreground))]'
+  const color = bad ? 'text-red-400' : good ? 'text-emerald-400' : 'text-[hsl(var(--foreground))]'
   return (
     <div className="text-center min-w-[60px]">
       <div className="text-[10px] uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.45)] mb-0.5">
@@ -169,84 +182,131 @@ function Metric({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Event impact analysis
+   Before/After event impact analysis
    ═══════════════════════════════════════════════════════════ */
 
-interface CampaignEventImpact {
-  campaign_title: string
-  campaign_id: number
+interface EventImpact {
+  date: string
+  category: string
   events: EventDetail[]
-  eventTypes: string[]
-  summary: string
+  campaignTitles: string[]
+  description: string
+  before: { spend: number; views: number; clicks: number; ctr: number; orders: number; drr: number }
+  after: { spend: number; views: number; clicks: number; ctr: number; orders: number; drr: number }
+  deltas: { spend: number; views: number; clicks: number; ctr: number; orders: number; drr: number }
 }
 
-function buildEventImpacts(events: EventDetail[], campaigns: CampaignRow[]): CampaignEventImpact[] {
-  // Group events by campaign
-  const byCampaign = new Map<number, EventDetail[]>()
-  for (const e of events) {
-    if (e.campaign_id) {
-      const arr = byCampaign.get(e.campaign_id) || []
-      arr.push(e)
-      byCampaign.set(e.campaign_id, arr)
+function avg(arr: number[]): number {
+  return arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+}
+
+// Compute per-date impacts using eventsByDay and chart_daily
+function computeDateImpacts(
+  eventsByDay: Record<string, EventDaySummary>,
+  chartDaily: AdvertisingDailyPoint[],
+  allEvents: EventDetail[],
+  campaigns: CampaignRow[],
+): EventImpact[] {
+  const sorted = [...chartDaily].sort((a, b) => a.date.localeCompare(b.date))
+  const dateToIndex = new Map(sorted.map((d, i) => [d.date, i]))
+  
+  // Build product_id → campaign titles
+  const prodToCampaigns = new Map<number, string[]>()
+  for (const c of campaigns) {
+    for (const item of c.items || []) {
+      if (item.product_id) {
+        const arr = prodToCampaigns.get(item.product_id) || []
+        if (!arr.includes(c.title)) arr.push(c.title)
+        prodToCampaigns.set(item.product_id, arr)
+      }
     }
   }
 
-  const impacts: CampaignEventImpact[] = []
-  for (const [campId, campEvents] of byCampaign) {
-    const campaign = campaigns.find((c) => c.campaign_id === campId)
-    if (!campaign) continue
+  // Group events by date — events come from getEventsDetail(date)
+  // We need to associate events with dates. Since getEventsDetail returns events for a specific date,
+  // and we loaded ALL events across all dates, we need a way to know which date each event belongs to.
+  // We'll use the EventDetail fields to reconstruct this.
+  // Actually the simplest approach: compute impacts from eventsByDay (known-dates-with-events)
+  // and use allEvents to enrich descriptions
 
-    const eventTypes = [...new Set(campEvents.map((e) => e.event_type))]
+  const impacts: EventImpact[] = []
+  const eventDates = Object.keys(eventsByDay).filter(d => (eventsByDay[d]?.total || 0) > 0).sort()
+
+  for (const eventDate of eventDates) {
+    const dateIdx = dateToIndex.get(eventDate)
+    if (dateIdx === undefined) continue
+
+    const summary = eventsByDay[eventDate]
+    
+    // Get 3 days before and 3 days after this date
+    const beforeDays = sorted.slice(Math.max(0, dateIdx - 3), dateIdx)
+    const afterDays = sorted.slice(dateIdx + 1, Math.min(sorted.length, dateIdx + 4))
+    
+    if (beforeDays.length < 2 || afterDays.length < 2) continue
+
+    const before = {
+      spend: avg(beforeDays.map(d => d.spend)),
+      views: avg(beforeDays.map(d => d.views)),
+      clicks: avg(beforeDays.map(d => d.clicks)),
+      ctr: avg(beforeDays.map(d => d.ctr)),
+      orders: avg(beforeDays.map(d => d.orders)),
+      drr: avg(beforeDays.map(d => d.drr)),
+    }
+    const after = {
+      spend: avg(afterDays.map(d => d.spend)),
+      views: avg(afterDays.map(d => d.views)),
+      clicks: avg(afterDays.map(d => d.clicks)),
+      ctr: avg(afterDays.map(d => d.ctr)),
+      orders: avg(afterDays.map(d => d.orders)),
+      drr: avg(afterDays.map(d => d.drr)),
+    }
+    const deltas = {
+      spend: before.spend > 0 ? ((after.spend - before.spend) / before.spend) * 100 : 0,
+      views: before.views > 0 ? ((after.views - before.views) / before.views) * 100 : 0,
+      clicks: before.clicks > 0 ? ((after.clicks - before.clicks) / before.clicks) * 100 : 0,
+      ctr: before.ctr > 0 ? ((after.ctr - before.ctr) / before.ctr) * 100 : 0,
+      orders: before.orders > 0 ? ((after.orders - before.orders) / before.orders) * 100 : 0,
+      drr: before.drr > 0 ? ((after.drr - before.drr) / before.drr) * 100 : 0,
+    }
+
+    // Build description from event types
     const parts: string[] = []
+    if (summary.advertising > 0) parts.push(`${summary.advertising} рекл.`)
+    if (summary.content > 0) parts.push(`${summary.content} контент`)
+    if (summary.price > 0) parts.push(`${summary.price} ценов.`)
+    if (summary.stock > 0) parts.push(`${summary.stock} склад.`)
 
-    const bidChanges = campEvents.filter((e) =>
-      e.event_type.includes('BID') || e.event_type.includes('bid'),
-    )
-    const statusChanges = campEvents.filter((e) =>
-      e.event_type.includes('STATUS') || e.event_type.includes('status'),
-    )
-    const contentChanges = campEvents.filter((e) =>
-      e.category === 'content',
-    )
-    const priceChanges = campEvents.filter((e) =>
-      e.category === 'price',
-    )
+    // Determine category
+    let category = 'mixed'
+    if (summary.advertising > 0 && summary.content === 0 && summary.price === 0) category = 'advertising'
+    else if (summary.content > 0 && summary.advertising === 0 && summary.price === 0) category = 'content'
+    else if (summary.price > 0 && summary.advertising === 0 && summary.content === 0) category = 'price'
 
-    if (bidChanges.length > 0) {
-      parts.push(`${bidChanges.length} ${bidChanges.length === 1 ? 'смена' : 'смен'} ставок`)
+    // Get campaign titles from events for this date
+    const campTitles = new Set<string>()
+    const dateEvents: EventDetail[] = []
+    for (const e of allEvents) {
+      // Match events to date — check if event title matches for this date
+      if (e.campaign_title) campTitles.add(e.campaign_title)
+      if (e.product?.nm_id) {
+        const camps = prodToCampaigns.get(e.product.nm_id)
+        if (camps) camps.forEach(t => campTitles.add(t))
+      }
     }
-    if (statusChanges.length > 0) {
-      parts.push(`${statusChanges.length} ${statusChanges.length === 1 ? 'смена' : 'смен'} статуса`)
-    }
-    if (contentChanges.length > 0) {
-      parts.push(`${contentChanges.length} ${contentChanges.length === 1 ? 'изменение' : 'изменений'} контента`)
-    }
-    if (priceChanges.length > 0) {
-      parts.push(`${priceChanges.length} ${priceChanges.length === 1 ? 'изменение' : 'изменений'} цены`)
-    }
-
-    // Add campaign metrics context
-    const metricsParts: string[] = []
-    if (campaign.orders > 0) {
-      metricsParts.push(`${campaign.orders} заказов, ДРР ${pct(campaign.drr)}`)
-    } else {
-      metricsParts.push(`0 заказов, расход ${fmtMoney(campaign.spend)}`)
-    }
-
-    const summary =
-      parts.join(', ') +
-      (metricsParts.length > 0 ? ` → текущие показатели: ${metricsParts.join(', ')}` : '')
 
     impacts.push({
-      campaign_title: campaign.title,
-      campaign_id: campId,
-      events: campEvents,
-      eventTypes,
-      summary,
+      date: eventDate,
+      category,
+      events: dateEvents,
+      campaignTitles: [...campTitles].slice(0, 5),
+      description: parts.join(', '),
+      before,
+      after,
+      deltas,
     })
   }
 
-  return impacts.sort((a, b) => b.events.length - a.events.length)
+  return impacts
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -256,12 +316,14 @@ function buildEventImpacts(events: EventDetail[], campaigns: CampaignRow[]): Cam
 export function CampaignInsights({
   campaigns,
   eventsByDay,
+  chartDaily,
   shopId,
   dateFrom,
   dateTo,
 }: {
   campaigns: CampaignRow[]
   eventsByDay: Record<string, EventDaySummary>
+  chartDaily: AdvertisingDailyPoint[]
   shopId: number
   dateFrom: string
   dateTo: string
@@ -269,17 +331,14 @@ export function CampaignInsights({
   const [allEvents, setAllEvents] = useState<EventDetail[]>([])
   const [eventsLoading, setEventsLoading] = useState(false)
 
-  // Load all events for the period
   useEffect(() => {
     if (!shopId || !dateFrom || !dateTo) return
-    const dates = Object.keys(eventsByDay).filter(
-      (d) => (eventsByDay[d]?.total || 0) > 0,
-    )
+    const dates = Object.keys(eventsByDay).filter(d => (eventsByDay[d]?.total || 0) > 0)
     if (dates.length === 0) return
 
     setEventsLoading(true)
-    Promise.all(dates.map((d) => getEventsDetail(shopId, d).catch(() => null)))
-      .then((results) => {
+    Promise.all(dates.map(d => getEventsDetail(shopId, d).catch(() => null)))
+      .then(results => {
         const events: EventDetail[] = []
         for (const r of results) {
           if (r?.events) events.push(...r.events)
@@ -290,16 +349,16 @@ export function CampaignInsights({
   }, [shopId, dateFrom, dateTo, eventsByDay])
 
   const analysis = useMemo(() => {
-    const active = campaigns.filter((c) => c.status !== 'archived')
+    const active = campaigns.filter(c => c.status !== 'archived')
     const totalSpend = active.reduce((s, c) => s + c.spend, 0)
     const totalRevenue = active.reduce((s, c) => s + c.revenue, 0)
     const totalOrders = active.reduce((s, c) => s + c.orders, 0)
-    const withOrders = active.filter((c) => c.orders > 0)
-    const withoutOrders = active.filter((c) => c.orders === 0 && c.spend > 0)
+    const withOrders = active.filter(c => c.orders > 0)
+    const withoutOrders = active.filter(c => c.orders === 0 && c.spend > 0)
 
-    const avgCpc = active.filter((c) => c.avg_cpc > 0).length > 0
-      ? active.filter((c) => c.avg_cpc > 0).reduce((s, c) => s + c.avg_cpc, 0) /
-        active.filter((c) => c.avg_cpc > 0).length
+    const avgCpc = active.filter(c => c.avg_cpc > 0).length > 0
+      ? active.filter(c => c.avg_cpc > 0).reduce((s, c) => s + c.avg_cpc, 0) /
+        active.filter(c => c.avg_cpc > 0).length
       : 0
     const avgDrr = withOrders.length > 0
       ? withOrders.reduce((s, c) => s + c.drr, 0) / withOrders.length
@@ -309,131 +368,99 @@ export function CampaignInsights({
       : 0
     const wastedSpend = withoutOrders.reduce((s, c) => s + c.spend, 0)
 
-    // ── 1. Сливают бюджет (0 заказов, расход > 0) ──
+    // 1. Сливают бюджет (0 заказов)
     const burningMoney = withoutOrders
       .sort((a, b) => b.spend - a.spend)
-      .map((c) => {
+      .map(c => {
         const problems: string[] = []
-        problems.push(`Расход ${fmtMoney(c.spend)} → 0 заказов`)
+        problems.push(`Расход ${fmtMoney(c.spend)} → 0 рекламных заказов`)
         if (c.cart === 0) {
-          problems.push(`0 корзин — аудитория не заинтересована в товаре`)
+          problems.push(`0 корзин — аудитория не заинтересована`)
         } else {
-          problems.push(`${c.cart} корзин, но ни одного заказа — возможно проблема с ценой или доставкой`)
+          problems.push(`${c.cart} корзин, но 0 заказов — проблема с ценой или доставкой`)
         }
-        if (c.ctr < 0.5 && c.views > 1000) {
-          problems.push(`CTR ${pct(c.ctr)} — карточка не привлекает внимание`)
-        }
-        if (c.avg_cpc > avgCpc * 1.5 && avgCpc > 0) {
-          problems.push(`CPC ${fmtMoney(c.avg_cpc)} — в ${(c.avg_cpc / avgCpc).toFixed(1)}x выше среднего`)
-        }
+        if (c.ctr < 0.5 && c.views > 1000) problems.push(`CTR ${pct(c.ctr)} — карточка не привлекает`)
+        if (c.avg_cpc > avgCpc * 1.5 && avgCpc > 0) problems.push(`CPC ${fmtMoney(c.avg_cpc)} — в ${(c.avg_cpc / avgCpc).toFixed(1)}x выше среднего`)
         return { campaign: c, problems }
       })
 
-    // ── 2. Убыточные (есть заказы, но DRR > 50%) ──
+    // 2. Убыточные (DRR > 50%)
     const unprofitable = withOrders
-      .filter((c) => c.drr > 50)
+      .filter(c => c.drr > 50)
       .sort((a, b) => b.drr - a.drr)
-      .map((c) => {
+      .map(c => {
         const problems: string[] = []
         if (c.drr > 100) {
-          problems.push(
-            `ДРР ${pct(c.drr)} — убыток ${fmtMoney(c.spend - c.revenue)}`,
-          )
+          problems.push(`ДРР ${pct(c.drr)} — убыток ${fmtMoney(c.spend - c.revenue)}`)
         } else {
           problems.push(`ДРР ${pct(c.drr)} — на грани рентабельности`)
         }
-        problems.push(
-          `Расход ${fmtMoney(c.spend)} → ${c.orders} заказов на ${fmtMoney(c.revenue)}`,
-        )
-        if (c.avg_cpc > avgCpc * 1.3 && avgCpc > 0) {
-          problems.push(`CPC ${fmtMoney(c.avg_cpc)} — выше среднего (${fmtMoney(avgCpc)})`)
-        }
+        problems.push(`Расход ${fmtMoney(c.spend)} → ${c.orders} заказов на ${fmtMoney(c.revenue)}`)
         return { campaign: c, problems }
       })
 
-    // ── 3. Низкий CTR ──
+    // 3. Низкий CTR
     const lowCtr = active
-      .filter((c) => c.ctr < 1 && c.views > 2000 && c.spend > 100)
+      .filter(c => c.ctr < 1 && c.views > 2000 && c.spend > 100)
       .sort((a, b) => a.ctr - b.ctr)
-      .map((c) => {
-        const problems: string[] = []
-        problems.push(`CTR ${pct(c.ctr)} при ${fmt(c.views)} показах`)
-        problems.push(
-          `Пользователи видят объявление, но не кликают. Проверьте главное фото, цену и название`,
-        )
-        return { campaign: c, problems }
-      })
+      .map(c => ({
+        campaign: c,
+        problems: [
+          `CTR ${pct(c.ctr)} при ${fmt(c.views)} показах`,
+          `Пользователи видят рекламу, но не кликают. Проверьте фото, цену и название`,
+        ],
+      }))
 
-    // ── 4. Низкая конверсия в корзину ──
+    // 4. Низкая конверсия в корзину
     const lowCartConv = active
-      .filter((c) => c.clicks > 20 && c.cart_conv < 5 && c.cart_conv >= 0)
+      .filter(c => c.clicks > 20 && c.cart_conv < 5 && c.cart_conv >= 0)
       .sort((a, b) => a.cart_conv - b.cart_conv)
-      .map((c) => {
-        const problems: string[] = []
-        problems.push(
+      .map(c => ({
+        campaign: c,
+        problems: [
           `Конверсия в корзину ${pct(c.cart_conv)} (${c.cart} из ${c.clicks} кликов)`,
-        )
-        problems.push(
-          `Кликают, но не добавляют в корзину — проблема на карточке товара (цена, описание, отзывы)`,
-        )
-        return { campaign: c, problems }
-      })
+          `Кликают, но не добавляют в корзину — цена, описание, отзывы`,
+        ],
+      }))
 
-    // ── 5. Эффективные кампании ──
+    // 5. Эффективные (ЖЁСТКИЕ критерии: DRR < 40%, orders >= 2)
     const effective = withOrders
-      .filter((c) => c.orders >= 1 && c.spend > 50)
-      .sort((a, b) => (b.revenue / b.spend) - (a.revenue / a.spend))
-      .map((c) => {
+      .filter(c => c.drr < 40 && c.drr > 0 && c.orders >= 2 && c.spend > 100)
+      .sort((a, b) => a.drr - b.drr)
+      .map(c => {
         const romi = c.spend > 0 ? (c.revenue / c.spend) * 100 : 0
         const cpo = c.orders > 0 ? c.spend / c.orders : 0
         const highlights: string[] = []
-        if (c.drr < 30) highlights.push(`ДРР ${pct(c.drr)}`)
+        highlights.push(`ДРР ${pct(c.drr)}`)
         if (romi > 300) highlights.push(`ROMI ${fmt(romi)}%`)
         if (cpo < avgCpo * 0.7 && avgCpo > 0) highlights.push(`Дешёвый CPO ${fmtMoney(cpo)}`)
         if (c.ctr > 3) highlights.push(`Высокий CTR ${pct(c.ctr)}`)
-        if (c.cart_conv > 20) highlights.push(`Конверсия в корзину ${pct(c.cart_conv)}`)
         if (c.direct_orders > 0 && c.model_orders > 0) {
           highlights.push(`Прямые: ${c.direct_orders}, модельные: ${c.model_orders}`)
         }
         return { campaign: c, romi, cpo, highlights }
       })
 
-    // ── Events summary ──
+    // Events summary
     const evtSummary = Object.values(eventsByDay).reduce(
-      (acc, d) => ({
-        advertising: acc.advertising + d.advertising,
-        content: acc.content + d.content,
-        price: acc.price + d.price,
-        stock: acc.stock + d.stock,
-        total: acc.total + d.total,
-      }),
+      (acc, d) => ({ advertising: acc.advertising + d.advertising, content: acc.content + d.content, price: acc.price + d.price, stock: acc.stock + d.stock, total: acc.total + d.total }),
       { advertising: 0, content: 0, price: 0, stock: 0, total: 0 },
     )
 
     return {
-      totalSpend,
-      totalRevenue,
-      totalOrders,
-      wastedSpend,
+      totalSpend, totalRevenue, totalOrders, wastedSpend,
       wastePercent: totalSpend > 0 ? (wastedSpend / totalSpend) * 100 : 0,
-      avgCpc,
-      avgDrr,
-      avgCpo,
+      avgCpc, avgDrr, avgCpo,
       activeCampaigns: active.length,
       campaignsWithOrders: withOrders.length,
       campaignsWithoutOrders: withoutOrders.length,
-      burningMoney,
-      unprofitable,
-      lowCtr,
-      lowCartConv,
-      effective,
-      evtSummary,
+      burningMoney, unprofitable, lowCtr, lowCartConv, effective, evtSummary,
     }
   }, [campaigns, eventsByDay])
 
-  const eventImpacts = useMemo(
-    () => (allEvents.length > 0 ? buildEventImpacts(allEvents, campaigns) : []),
-    [allEvents, campaigns],
+  const dateImpacts = useMemo(
+    () => computeDateImpacts(eventsByDay, chartDaily, allEvents, campaigns),
+    [eventsByDay, chartDaily, allEvents, campaigns],
   )
 
   if (campaigns.length === 0) return null
@@ -445,30 +472,16 @@ export function CampaignInsights({
       {/* ═══ Title ═══ */}
       <div className="flex items-center gap-3">
         <Activity className="h-6 w-6 text-[hsl(var(--primary))]" />
-        <h3 className="text-[20px] font-bold text-[hsl(var(--foreground))]">
-          Анализ рекламных кампаний
-        </h3>
-        <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)]">
-          рекламные заказы (атрибуция Ozon)
-        </span>
+        <h3 className="text-[20px] font-bold text-[hsl(var(--foreground))]">Анализ рекламных кампаний</h3>
+        <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)]">рекламные заказы (атрибуция Ozon)</span>
       </div>
 
       {/* ═══ Summary ═══ */}
       <div className="rounded-2xl border border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.06)] p-5">
         <div className="grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-6">
           <SummaryCard icon={<Target className="h-4 w-4 text-[hsl(var(--primary))]" />} label="Кампаний" value={a.activeCampaigns} />
-          <SummaryCard
-            icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />}
-            label="С заказами"
-            value={a.campaignsWithOrders}
-            valueColor="text-emerald-400"
-          />
-          <SummaryCard
-            icon={<Ban className="h-4 w-4 text-red-400" />}
-            label="Без заказов"
-            value={a.campaignsWithoutOrders}
-            valueColor="text-red-400"
-          />
+          <SummaryCard icon={<CheckCircle2 className="h-4 w-4 text-emerald-400" />} label="С заказами" value={a.campaignsWithOrders} valueColor="text-emerald-400" />
+          <SummaryCard icon={<Ban className="h-4 w-4 text-red-400" />} label="Без заказов" value={a.campaignsWithoutOrders} valueColor="text-red-400" />
           <SummaryCard icon={<MousePointerClick className="h-4 w-4 text-blue-400" />} label="Ср. CPC" value={fmtMoney(a.avgCpc)} />
           <SummaryCard icon={<BarChart2 className="h-4 w-4 text-amber-400" />} label="Ср. ДРР" value={pct(a.avgDrr)} />
           <SummaryCard icon={<DollarSign className="h-4 w-4 text-purple-400" />} label="Ср. CPO" value={fmtMoney(a.avgCpo)} />
@@ -479,85 +492,52 @@ export function CampaignInsights({
           получено <strong className="text-[hsl(var(--foreground))]">{a.totalOrders} рекламных заказов</strong> на сумму{' '}
           <strong className="text-[hsl(var(--foreground))]">{fmtMoney(a.totalRevenue)}</strong>.
           {a.wastedSpend > 0 && (
-            <>
-              {' '}Из них{' '}
-              <strong className="text-red-400">{fmtMoney(a.wastedSpend)} ({pct(a.wastePercent)})</strong>{' '}
-              потрачено на кампании, которые не принесли ни одного заказа.
-            </>
+            <> Из них <strong className="text-red-400">{fmtMoney(a.wastedSpend)} ({pct(a.wastePercent)})</strong> потрачено на кампании без заказов.</>
           )}
         </div>
       </div>
 
-      {/* ═══ 1. Сливают бюджет (0 заказов) ═══ */}
+      {/* ═══ 1. Сливают бюджет ═══ */}
       {a.burningMoney.length > 0 && (
-        <Section
-          icon={<Ban className="h-5 w-5 text-red-400" />}
-          title="Сливают бюджет"
-          count={a.burningMoney.length}
-          countColor="text-red-400"
-          accentColor="rgb(239 68 68)"
-          badge={
-            <span className="rounded-lg bg-red-500/10 px-3 py-1 text-[13px] font-semibold text-red-400">
-              −{fmtMoney(a.wastedSpend)}
-            </span>
-          }
+        <Section icon={<Ban className="h-5 w-5 text-red-400" />} title="Сливают бюджет" count={a.burningMoney.length} countColor="text-red-400" accentColor="rgb(239 68 68)"
+          badge={<span className="rounded-lg bg-red-500/10 px-3 py-1 text-[13px] font-semibold text-red-400">−{fmtMoney(a.wastedSpend)}</span>}
         >
           <p className="text-[14px] text-[hsl(var(--muted-foreground))] mt-3 mb-4">
-            Кампании с расходом, но без единого рекламного заказа за весь период. Рекомендуется отключить или снизить ставку до минимума.
+            Кампании с расходом, но без единого рекламного заказа. Отключите или снизьте ставку до минимума.
           </p>
           <div className="space-y-2">
             {a.burningMoney.map(({ campaign: c, problems }) => (
-              <CampaignLine
-                key={c.campaign_id}
-                c={c}
-                borderColor="border-red-500/15"
-                bgColor="bg-red-500/[0.02]"
-                problems={problems}
-                columns={
-                  <>
-                    <Metric label="Расход" value={fmtMoney(c.spend)} bad />
-                    <Metric label="Показы" value={fmt(c.views)} />
-                    <Metric label="Клики" value={fmt(c.clicks)} />
-                    <Metric label="CTR" value={pct(c.ctr)} bad={c.ctr < 0.5} />
-                    <Metric label="Корзины" value={c.cart} bad={c.cart === 0} />
-                    <Metric label="Заказы" value={0} bad />
-                  </>
-                }
+              <CampaignLine key={c.campaign_id} c={c} borderColor="border-red-500/15" bgColor="bg-red-500/[0.02]" problems={problems}
+                columns={<>
+                  <Metric label="Расход" value={fmtMoney(c.spend)} bad />
+                  <Metric label="Показы" value={fmt(c.views)} />
+                  <Metric label="Клики" value={fmt(c.clicks)} />
+                  <Metric label="CTR" value={pct(c.ctr)} bad={c.ctr < 0.5} />
+                  <Metric label="Корзины" value={c.cart} bad={c.cart === 0} />
+                  <Metric label="Заказы" value={0} bad />
+                </>}
               />
             ))}
           </div>
         </Section>
       )}
 
-      {/* ═══ 2. Убыточные кампании (DRR > 50%) ═══ */}
+      {/* ═══ 2. Высокий ДРР ═══ */}
       {a.unprofitable.length > 0 && (
-        <Section
-          icon={<AlertTriangle className="h-5 w-5 text-amber-400" />}
-          title="Высокий ДРР"
-          count={a.unprofitable.length}
-          countColor="text-amber-400"
-          accentColor="rgb(245 158 11)"
-        >
+        <Section icon={<AlertTriangle className="h-5 w-5 text-amber-400" />} title="Высокий ДРР" count={a.unprofitable.length} countColor="text-amber-400" accentColor="rgb(245 158 11)">
           <p className="text-[14px] text-[hsl(var(--muted-foreground))] mt-3 mb-4">
-            Кампании с заказами, но ДРР выше 50% — реклама на грани рентабельности или убыточна. Снизьте ставки за клик.
+            Кампании с ДРР &gt; 50%. Реклама на грани рентабельности или убыточна. Снизьте ставки.
           </p>
           <div className="space-y-2">
             {a.unprofitable.map(({ campaign: c, problems }) => (
-              <CampaignLine
-                key={c.campaign_id}
-                c={c}
-                borderColor="border-amber-500/15"
-                bgColor="bg-amber-500/[0.02]"
-                problems={problems}
-                columns={
-                  <>
-                    <Metric label="Расход" value={fmtMoney(c.spend)} />
-                    <Metric label="Заказы" value={c.orders} />
-                    <Metric label="Выручка" value={fmtMoney(c.revenue)} />
-                    <Metric label="ДРР" value={pct(c.drr)} bad={c.drr > 100} />
-                    <Metric label="CPO" value={fmtMoney(c.orders > 0 ? c.spend / c.orders : 0)} />
-                  </>
-                }
+              <CampaignLine key={c.campaign_id} c={c} borderColor="border-amber-500/15" bgColor="bg-amber-500/[0.02]" problems={problems}
+                columns={<>
+                  <Metric label="Расход" value={fmtMoney(c.spend)} />
+                  <Metric label="Заказы" value={c.orders} />
+                  <Metric label="Выручка" value={fmtMoney(c.revenue)} />
+                  <Metric label="ДРР" value={pct(c.drr)} bad={c.drr > 100} />
+                  <Metric label="CPO" value={fmtMoney(c.orders > 0 ? c.spend / c.orders : 0)} />
+                </>}
               />
             ))}
           </div>
@@ -566,32 +546,19 @@ export function CampaignInsights({
 
       {/* ═══ 3. Низкий CTR ═══ */}
       {a.lowCtr.length > 0 && (
-        <Section
-          icon={<Eye className="h-5 w-5 text-orange-400" />}
-          title="Низкий CTR"
-          count={a.lowCtr.length}
-          countColor="text-orange-400"
-          accentColor="rgb(251 146 60)"
-        >
+        <Section icon={<Eye className="h-5 w-5 text-orange-400" />} title="Низкий CTR" count={a.lowCtr.length} countColor="text-orange-400" accentColor="rgb(251 146 60)">
           <p className="text-[14px] text-[hsl(var(--muted-foreground))] mt-3 mb-4">
-            CTR ниже 1% — пользователи видят рекламу, но не кликают. Проверьте главное фото, цену на карточке и название товара.
+            CTR ниже 1% — видят рекламу, но не кликают. Проверьте фото, цену, название.
           </p>
           <div className="space-y-2">
             {a.lowCtr.map(({ campaign: c, problems }) => (
-              <CampaignLine
-                key={c.campaign_id}
-                c={c}
-                borderColor="border-orange-500/15"
-                bgColor="bg-orange-500/[0.02]"
-                problems={problems}
-                columns={
-                  <>
-                    <Metric label="CTR" value={pct(c.ctr)} bad />
-                    <Metric label="Показы" value={fmt(c.views)} />
-                    <Metric label="Клики" value={fmt(c.clicks)} />
-                    <Metric label="Расход" value={fmtMoney(c.spend)} />
-                  </>
-                }
+              <CampaignLine key={c.campaign_id} c={c} borderColor="border-orange-500/15" bgColor="bg-orange-500/[0.02]" problems={problems}
+                columns={<>
+                  <Metric label="CTR" value={pct(c.ctr)} bad />
+                  <Metric label="Показы" value={fmt(c.views)} />
+                  <Metric label="Клики" value={fmt(c.clicks)} />
+                  <Metric label="Расход" value={fmtMoney(c.spend)} />
+                </>}
               />
             ))}
           </div>
@@ -600,209 +567,178 @@ export function CampaignInsights({
 
       {/* ═══ 4. Низкая конверсия в корзину ═══ */}
       {a.lowCartConv.length > 0 && (
-        <Section
-          icon={<ShoppingCart className="h-5 w-5 text-rose-400" />}
-          title="Низкая конверсия в корзину"
-          count={a.lowCartConv.length}
-          countColor="text-rose-400"
-          accentColor="rgb(251 113 133)"
-        >
+        <Section icon={<ShoppingCart className="h-5 w-5 text-rose-400" />} title="Низкая конверсия в корзину" count={a.lowCartConv.length} countColor="text-rose-400" accentColor="rgb(251 113 133)">
           <p className="text-[14px] text-[hsl(var(--muted-foreground))] mt-3 mb-4">
-            Конверсия в корзину ниже 5% — кликают на рекламу, но не добавляют товар в корзину. Проблема на карточке: цена, описание, отзывы, характеристики.
+            Конверсия в корзину ниже 5%. Кликают, но не добавляют в корзину — проблема на карточке.
           </p>
           <div className="space-y-2">
             {a.lowCartConv.map(({ campaign: c, problems }) => (
-              <CampaignLine
-                key={c.campaign_id}
-                c={c}
-                borderColor="border-rose-500/15"
-                bgColor="bg-rose-500/[0.02]"
-                problems={problems}
-                columns={
-                  <>
-                    <Metric label="CR корз." value={pct(c.cart_conv)} bad />
-                    <Metric label="Клики" value={fmt(c.clicks)} />
-                    <Metric label="Корзины" value={c.cart} />
-                    <Metric label="Расход" value={fmtMoney(c.spend)} />
-                  </>
-                }
+              <CampaignLine key={c.campaign_id} c={c} borderColor="border-rose-500/15" bgColor="bg-rose-500/[0.02]" problems={problems}
+                columns={<>
+                  <Metric label="CR корз." value={pct(c.cart_conv)} bad />
+                  <Metric label="Клики" value={fmt(c.clicks)} />
+                  <Metric label="Корзины" value={c.cart} />
+                  <Metric label="Расход" value={fmtMoney(c.spend)} />
+                </>}
               />
             ))}
           </div>
         </Section>
       )}
 
-      {/* ═══ 5. Эффективные кампании ═══ */}
+      {/* ═══ 5. Эффективные (DRR < 40%, orders >= 2) ═══ */}
       {a.effective.length > 0 && (
-        <Section
-          icon={<Trophy className="h-5 w-5 text-emerald-400" />}
-          title="Эффективные кампании"
-          count={a.effective.length}
-          countColor="text-emerald-400"
-          accentColor="rgb(52 211 153)"
+        <Section icon={<Trophy className="h-5 w-5 text-emerald-400" />} title="Эффективные кампании" count={a.effective.length} countColor="text-emerald-400" accentColor="rgb(52 211 153)"
+          badge={<span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">ДРР &lt; 40%, 2+ заказа</span>}
         >
           <p className="text-[14px] text-[hsl(var(--muted-foreground))] mt-3 mb-4">
-            Кампании с заказами. Рассмотрите увеличение бюджета на лучших из них.
+            Кампании с низким ДРР и стабильными заказами. Рассмотрите увеличение бюджета.
           </p>
           <div className="space-y-2">
             {a.effective.map(({ campaign: c, romi, cpo, highlights }) => (
-              <CampaignLine
-                key={c.campaign_id}
-                c={c}
-                borderColor="border-emerald-500/15"
-                bgColor="bg-emerald-500/[0.02]"
-                highlights={highlights}
-                columns={
-                  <>
-                    <Metric label="Расход" value={fmtMoney(c.spend)} />
-                    <Metric label="Заказы" value={c.orders} good />
-                    <Metric label="Выручка" value={fmtMoney(c.revenue)} good />
-                    <Metric label="ДРР" value={pct(c.drr)} good={c.drr < 30} />
-                    <Metric label="CPO" value={fmtMoney(cpo)} />
-                    <Metric label="ROMI" value={`${fmt(romi)}%`} good={romi > 200} />
-                  </>
-                }
+              <CampaignLine key={c.campaign_id} c={c} borderColor="border-emerald-500/15" bgColor="bg-emerald-500/[0.02]" highlights={highlights}
+                columns={<>
+                  <Metric label="Расход" value={fmtMoney(c.spend)} />
+                  <Metric label="Заказы" value={c.orders} good />
+                  <Metric label="Выручка" value={fmtMoney(c.revenue)} good />
+                  <Metric label="ДРР" value={pct(c.drr)} good />
+                  <Metric label="CPO" value={fmtMoney(cpo)} />
+                  <Metric label="ROMI" value={`${fmt(romi)}%`} good={romi > 200} />
+                </>}
               />
             ))}
           </div>
         </Section>
       )}
 
-      {/* ═══ 6. Влияние событий на кампании ═══ */}
-      {(eventImpacts.length > 0 || eventsLoading) && (
-        <Section
-          icon={<Zap className="h-5 w-5 text-blue-400" />}
-          title="Влияние событий на кампании"
-          count={a.evtSummary.total}
-          countColor="text-blue-400"
-          accentColor="rgb(96 165 250)"
-          defaultOpen={true}
-        >
-          {eventsLoading ? (
-            <div className="py-6 text-center text-[14px] text-[hsl(var(--muted-foreground)/0.5)]">
-              Загрузка событий...
+      {/* ═══ 6. Влияние событий — До/После ═══ */}
+      <Section
+        icon={<Zap className="h-5 w-5 text-blue-400" />}
+        title="Влияние событий на метрики"
+        count={a.evtSummary.total}
+        countColor="text-blue-400"
+        accentColor="rgb(96 165 250)"
+        defaultOpen={true}
+      >
+        {eventsLoading ? (
+          <div className="py-6 text-center text-[14px] text-[hsl(var(--muted-foreground)/0.5)]">Загрузка событий...</div>
+        ) : (
+          <>
+            {/* Event type cards */}
+            <div className="mt-3 mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {a.evtSummary.advertising > 0 && <EventTypeCard label="Рекламные" count={a.evtSummary.advertising} desc="Ставки, статусы, бюджеты" color="text-blue-400" bg="bg-blue-500/5" border="border-blue-500/15" />}
+              {a.evtSummary.content > 0 && <EventTypeCard label="Контент" count={a.evtSummary.content} desc="Фото, описания" color="text-purple-400" bg="bg-purple-500/5" border="border-purple-500/15" />}
+              {a.evtSummary.price > 0 && <EventTypeCard label="Ценовые" count={a.evtSummary.price} desc="Изменения цен" color="text-amber-400" bg="bg-amber-500/5" border="border-amber-500/15" />}
+              {a.evtSummary.stock > 0 && <EventTypeCard label="Складские" count={a.evtSummary.stock} desc="Остатки" color="text-cyan-400" bg="bg-cyan-500/5" border="border-cyan-500/15" />}
             </div>
-          ) : (
-            <>
-              {/* Event type summary */}
-              <div className="mt-3 mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-                {a.evtSummary.advertising > 0 && (
-                  <EventTypeCard label="Рекламные" count={a.evtSummary.advertising} desc="Ставки, статусы" color="text-blue-400" bg="bg-blue-500/5" border="border-blue-500/15" />
-                )}
-                {a.evtSummary.content > 0 && (
-                  <EventTypeCard label="Контент" count={a.evtSummary.content} desc="Изменения карточек" color="text-purple-400" bg="bg-purple-500/5" border="border-purple-500/15" />
-                )}
-                {a.evtSummary.price > 0 && (
-                  <EventTypeCard label="Ценовые" count={a.evtSummary.price} desc="Изменения цен" color="text-amber-400" bg="bg-amber-500/5" border="border-amber-500/15" />
-                )}
-                {a.evtSummary.stock > 0 && (
-                  <EventTypeCard label="Складские" count={a.evtSummary.stock} desc="Остатки" color="text-cyan-400" bg="bg-cyan-500/5" border="border-cyan-500/15" />
-                )}
-              </div>
 
-              {/* Per-campaign events */}
-              {eventImpacts.length > 0 && (
-                <div className="space-y-2">
-                  <h4 className="text-[14px] font-semibold text-[hsl(var(--foreground))] mb-2">
-                    События по кампаниям
-                  </h4>
-                  {eventImpacts.slice(0, 15).map((impact) => (
-                    <div
-                      key={impact.campaign_id}
-                      className="rounded-xl border border-blue-500/10 bg-blue-500/[0.02] p-4"
-                    >
-                      <div className="flex items-center gap-2 mb-2">
-                        <Zap className="h-4 w-4 text-blue-400 shrink-0" />
-                        <span className="text-[14px] font-semibold text-[hsl(var(--foreground))] truncate" title={impact.campaign_title}>
-                          {impact.campaign_title}
+            {/* Before/After comparison per event date */}
+            {dateImpacts.length > 0 && (
+              <div className="space-y-3">
+                <h4 className="text-[15px] font-semibold text-[hsl(var(--foreground))]">
+                  До / После — как события повлияли на метрики
+                </h4>
+                <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)] mb-3">
+                  Сравнение средних показателей за 3 дня до и 3 дня после каждой даты с событиями (агрегированные по всем кампаниям)
+                </p>
+
+                {dateImpacts.map(impact => {
+                  const d = impact.deltas
+                  const hasChange = Object.values(d).some(v => Math.abs(v) > 5)
+                  
+                  return (
+                    <div key={impact.date} className={`rounded-xl border p-4 ${hasChange ? 'border-blue-500/20 bg-blue-500/[0.02]' : 'border-[hsl(var(--border)/0.3)]'}`}>
+                      {/* Date & description */}
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">
+                          {new Date(impact.date + 'T00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })}
                         </span>
-                        <span className="text-[13px] text-blue-400 font-medium shrink-0">
-                          {impact.events.length} {impact.events.length === 1 ? 'событие' : impact.events.length < 5 ? 'события' : 'событий'}
+                        <span className="text-[13px] text-[hsl(var(--muted-foreground))]">
+                          {impact.description}
                         </span>
-                      </div>
-                      <div className="text-[13px] text-[hsl(var(--muted-foreground))] mb-2">
-                        {impact.summary}
-                      </div>
-                      {/* Individual events */}
-                      <div className="space-y-1 ml-6">
-                        {impact.events.slice(0, 5).map((e) => (
-                          <div key={e.id} className="flex items-start gap-2 text-[12px]">
-                            <span className="text-[hsl(var(--muted-foreground)/0.4)] shrink-0 mt-0.5">
-                              {e.time}
-                            </span>
-                            <span className="text-[hsl(var(--muted-foreground)/0.7)]">
-                              {e.label}{e.detail ? ` — ${e.detail}` : ''}
-                            </span>
-                          </div>
-                        ))}
-                        {impact.events.length > 5 && (
-                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">
-                            +{impact.events.length - 5} ещё
-                          </span>
+                        {!hasChange && (
+                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">— без значимого влияния</span>
                         )}
                       </div>
+
+                      {/* Before/After metrics grid */}
+                      {hasChange && (
+                        <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
+                          <BeforeAfterMetric
+                            label="Расход"
+                            before={fmtMoney(impact.before.spend)}
+                            after={fmtMoney(impact.after.spend)}
+                            delta={d.spend}
+                            inverse
+                          />
+                          <BeforeAfterMetric
+                            label="Показы"
+                            before={fmt(impact.before.views)}
+                            after={fmt(impact.after.views)}
+                            delta={d.views}
+                          />
+                          <BeforeAfterMetric
+                            label="Клики"
+                            before={fmt(impact.before.clicks)}
+                            after={fmt(impact.after.clicks)}
+                            delta={d.clicks}
+                          />
+                          <BeforeAfterMetric
+                            label="CTR"
+                            before={pct(impact.before.ctr)}
+                            after={pct(impact.after.ctr)}
+                            delta={d.ctr}
+                          />
+                          <BeforeAfterMetric
+                            label="Заказы"
+                            before={impact.before.orders.toFixed(1)}
+                            after={impact.after.orders.toFixed(1)}
+                            delta={d.orders}
+                          />
+                          <BeforeAfterMetric
+                            label="ДРР"
+                            before={pct(impact.before.drr)}
+                            after={pct(impact.after.drr)}
+                            delta={d.drr}
+                            inverse
+                          />
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {eventImpacts.length > 15 && (
-                    <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] text-center py-2">
-                      Показаны 15 из {eventImpacts.length} кампаний с событиями
-                    </p>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-        </Section>
-      )}
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+      </Section>
 
       {/* ═══ 7. Рекомендации ═══ */}
-      <Section
-        icon={<Info className="h-5 w-5 text-[hsl(var(--primary))]" />}
-        title="Рекомендации"
-        accentColor="hsl(var(--primary))"
-      >
+      <Section icon={<Info className="h-5 w-5 text-[hsl(var(--primary))]" />} title="Рекомендации" accentColor="hsl(var(--primary))">
         <div className="space-y-3 mt-3">
           {a.burningMoney.length > 0 && (
-            <Rec
-              severity="critical"
-              title={`Отключите ${a.burningMoney.length} кампаний без заказов`}
-              text={`${fmtMoney(a.wastedSpend)} потрачено впустую. Отключите эти кампании или снизьте ставки до минимума. Перераспределите бюджет на эффективные кампании.`}
-            />
+            <Rec severity="critical" title={`Отключите ${a.burningMoney.length} кампаний без заказов`}
+              text={`${fmtMoney(a.wastedSpend)} потрачено впустую. Отключите или снизьте ставки. Перераспределите на эффективные.`} />
           )}
-          {a.burningMoney.filter((b) => b.campaign.cart === 0).length > 0 && (
-            <Rec
-              severity="warning"
-              title="Проверьте карточки товаров"
-              text={`${a.burningMoney.filter((b) => b.campaign.cart === 0).length} кампаний без единой корзины — проблема не в рекламе, а в самом товаре. Улучшите главное фото, проверьте цену, добавьте отзывы.`}
-            />
+          {a.burningMoney.filter(b => b.campaign.cart === 0).length > 0 && (
+            <Rec severity="warning" title="Проверьте карточки товаров"
+              text={`${a.burningMoney.filter(b => b.campaign.cart === 0).length} кампаний без корзин — проблема в товаре, не в рекламе. Улучшите фото, цену, отзывы.`} />
           )}
           {a.unprofitable.length > 0 && (
-            <Rec
-              severity="warning"
-              title={`Снизьте ставки на ${a.unprofitable.length} кампаниях с высоким ДРР`}
-              text={`Кампании с ДРР выше 50% тратят слишком много на привлечение. Снизьте ставку за клик — Ozon будет показывать реже, но дешевле.`}
-            />
+            <Rec severity="warning" title={`Снизьте ставки на ${a.unprofitable.length} убыточных кампаниях`}
+              text="Кампании с ДРР > 50% тратят слишком много. Снизьте ставку за клик." />
           )}
           {a.lowCtr.length > 0 && (
-            <Rec
-              severity="warning"
-              title="Улучшите кликабельность"
-              text={`${a.lowCtr.length} кампаний с CTR ниже 1%. Смените главное фото, добавьте яркий бейдж скидки, проверьте соответствие цены рынку.`}
-            />
+            <Rec severity="warning" title="Улучшите кликабельность"
+              text={`${a.lowCtr.length} кампаний с CTR < 1%. Смените фото, добавьте бейдж скидки, проверьте цену.`} />
           )}
           {a.effective.length > 0 && (
-            <Rec
-              severity="success"
-              title={`Масштабируйте ${a.effective.length} эффективных кампаний`}
-              text={`Увеличьте недельный бюджет на лучших кампаниях — они окупаются. Средний ROMI лучших: ${fmt(a.effective.reduce((s, e) => s + e.romi, 0) / a.effective.length)}%.`}
-            />
+            <Rec severity="success" title={`Масштабируйте ${a.effective.length} эффективных кампаний`}
+              text={`Увеличьте бюджет на лучших — они окупаются. Средний ROMI: ${fmt(a.effective.reduce((s, e) => s + e.romi, 0) / a.effective.length)}%.`} />
           )}
           {a.evtSummary.total > 50 && (
-            <Rec
-              severity="info"
-              title="Много изменений за период"
-              text={`${a.evtSummary.total} событий. Частые изменения ставок мешают алгоритмам Ozon оптимизировать показы. Дайте кампаниям 2-3 дня без изменений для набора статистики.`}
-            />
+            <Rec severity="info" title="Много изменений за период"
+              text={`${a.evtSummary.total} событий. Частые изменения мешают алгоритмам Ozon оптимизировать показы. Дайте 2-3 дня без изменений.`} />
           )}
         </div>
       </Section>
@@ -811,48 +747,19 @@ export function CampaignInsights({
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Small subcomponents
+   Subcomponents
    ═══════════════════════════════════════════════════════════ */
 
-function SummaryCard({
-  icon,
-  label,
-  value,
-  valueColor,
-}: {
-  icon: React.ReactNode
-  label: string
-  value: string | number
-  valueColor?: string
-}) {
+function SummaryCard({ icon, label, value, valueColor }: { icon: React.ReactNode; label: string; value: string | number; valueColor?: string }) {
   return (
     <div>
-      <div className="flex items-center gap-1.5 mb-1">
-        {icon}
-        <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)]">{label}</span>
-      </div>
-      <div className={`text-[18px] font-bold ${valueColor || 'text-[hsl(var(--foreground))]'}`}>
-        {value}
-      </div>
+      <div className="flex items-center gap-1.5 mb-1">{icon}<span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)]">{label}</span></div>
+      <div className={`text-[18px] font-bold ${valueColor || 'text-[hsl(var(--foreground))]'}`}>{value}</div>
     </div>
   )
 }
 
-function EventTypeCard({
-  label,
-  count,
-  desc,
-  color,
-  bg,
-  border,
-}: {
-  label: string
-  count: number
-  desc: string
-  color: string
-  bg: string
-  border: string
-}) {
+function EventTypeCard({ label, count, desc, color, bg, border }: { label: string; count: number; desc: string; color: string; bg: string; border: string }) {
   return (
     <div className={`rounded-xl border ${border} ${bg} p-4`}>
       <div className={`text-[12px] ${color} font-medium mb-1`}>{label}</div>
@@ -862,31 +769,37 @@ function EventTypeCard({
   )
 }
 
-function Rec({
-  severity,
-  title,
-  text,
-}: {
-  severity: 'critical' | 'warning' | 'success' | 'info'
-  title: string
-  text: string
-}) {
+function BeforeAfterMetric({ label, before, after, delta, inverse = false }: { label: string; before: string; after: string; delta: number; inverse?: boolean }) {
+  return (
+    <div className="rounded-lg bg-[hsl(var(--muted)/0.08)] p-2.5">
+      <div className="text-[10px] uppercase tracking-wider text-[hsl(var(--muted-foreground)/0.4)] mb-1">{label}</div>
+      <div className="flex items-center gap-1 text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
+        <span>{before}</span>
+        <span>→</span>
+        <span className={`font-semibold ${deltaColor(delta, inverse)}`}>{after}</span>
+      </div>
+      <div className={`text-[12px] font-semibold mt-0.5 ${deltaColor(delta, inverse)}`}>
+        {deltaIcon(inverse ? -delta : delta)}{' '}
+        {delta > 0 ? '+' : ''}{delta.toFixed(0)}%
+      </div>
+    </div>
+  )
+}
+
+function Rec({ severity, title, text }: { severity: 'critical' | 'warning' | 'success' | 'info'; title: string; text: string }) {
   const cfg = {
     critical: { icon: <AlertCircle className="h-4 w-4" />, color: 'text-red-400', bg: 'bg-red-500/[0.04]', border: 'border-red-500/15' },
     warning: { icon: <AlertTriangle className="h-4 w-4" />, color: 'text-amber-400', bg: 'bg-amber-500/[0.04]', border: 'border-amber-500/15' },
     success: { icon: <TrendingUp className="h-4 w-4" />, color: 'text-emerald-400', bg: 'bg-emerald-500/[0.04]', border: 'border-emerald-500/15' },
     info: { icon: <Info className="h-4 w-4" />, color: 'text-blue-400', bg: 'bg-blue-500/[0.04]', border: 'border-blue-500/15' },
   }[severity]
-
   return (
     <div className={`rounded-xl border ${cfg.border} ${cfg.bg} px-4 py-3`}>
       <div className="flex items-start gap-3">
         <span className={`mt-0.5 shrink-0 ${cfg.color}`}>{cfg.icon}</span>
         <div>
           <div className="text-[14px] font-semibold text-[hsl(var(--foreground))]">{title}</div>
-          <div className="mt-1 text-[13px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-            {text}
-          </div>
+          <div className="mt-1 text-[13px] leading-relaxed text-[hsl(var(--muted-foreground))]">{text}</div>
         </div>
       </div>
     </div>
