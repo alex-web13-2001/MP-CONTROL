@@ -556,7 +556,7 @@ export function CampaignDetailModal({
                 tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
                 tickLine={false} axisLine={false}
                 tickFormatter={formatChartDate}
-                interval={0}
+                interval={stats.length <= 15 ? 0 : Math.floor(stats.length / 12)}
                 angle={-45}
                 textAnchor="end"
                 height={50}

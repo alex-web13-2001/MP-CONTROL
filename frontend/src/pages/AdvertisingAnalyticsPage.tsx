@@ -577,7 +577,7 @@ function AdsChart({ data, eventsByDay, shopId }: AdsChartProps) {
             dataKey="date"
             tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
             tickFormatter={formatChartDate}
-            interval={0}
+            interval={data.length <= 15 ? 0 : Math.floor(data.length / 12)}
             angle={-45}
             textAnchor="end"
             height={50}
