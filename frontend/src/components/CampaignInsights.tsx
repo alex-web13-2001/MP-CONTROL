@@ -19,6 +19,7 @@ import {
   ArrowUp,
   ArrowDown,
   Minus,
+  Gauge,
 } from 'lucide-react'
 import type { CampaignRow, EventDaySummary, CampaignDailyPoint, CampaignEvent } from '@/api/advertising'
 import { getCampaignDailyStats } from '@/api/advertising'
@@ -29,6 +30,13 @@ const fmt = (v: number) => v.toLocaleString('ru-RU', { maximumFractionDigits: 0 
 const fmtM = (v: number) => fmt(v) + ' ₽'
 const pct = (v: number) => v.toFixed(1) + '%'
 const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+
+// Ozon model_revenue может превышать реальные продажи (атрибуция «предполагаемых» конверсий)
+// Поэтому total_revenue должна быть >= ad_revenue
+function getTotalRev(c: CampaignRow, fallback: Record<number, number>) {
+  const raw = c.total_revenue || fallback[c.campaign_id] || 0
+  return raw > 0 ? Math.max(raw, c.revenue) : 0
+}
 
 function dCol(d: number, inv = false) {
   const good = inv ? d < -5 : d > 5
@@ -219,12 +227,19 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
       .finally(() => setLoading(false))
   }, [shopId, dateFrom, dateTo])
 
+  // Days in period for avg daily spend
+  const periodDays = useMemo(() => {
+    if (!dateFrom || !dateTo) return 7
+    const d1 = new Date(dateFrom), d2 = new Date(dateTo)
+    return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86400000) + 1)
+  }, [dateFrom, dateTo])
+
   const a = useMemo(() => {
     const active = campaigns.filter(c => c.status !== 'archived')
     const totalSpend = active.reduce((s, c) => s + c.spend, 0)
     const totalRev = active.reduce((s, c) => s + c.revenue, 0)
     const totalOrders = active.reduce((s, c) => s + c.orders, 0)
-    const totalTotalRev = active.reduce((s, c) => s + (c.total_revenue || 0), 0)
+    const totalTotalRev = active.reduce((s, c) => s + getTotalRev(c, campaignTotalRev), 0)
     const withOrders = active.filter(c => c.orders > 0)
     const withoutOrders = active.filter(c => c.orders === 0 && c.spend > 0)
     const wastedSpend = withoutOrders.reduce((s, c) => s + c.spend, 0)
@@ -233,8 +248,15 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
     const avgDrr = withOrders.length ? withOrders.reduce((s, c) => s + c.drr, 0) / withOrders.length : 0
     const avgCpo = withOrders.length ? withOrders.reduce((s, c) => s + c.spend / c.orders, 0) / withOrders.length : 0
 
-    // 1. Burning money — ALL with no orders, sorted by spend
-    const burning = withoutOrders.sort((a, b) => b.spend - a.spend)
+    // 0. Low spend — campaigns with negligible daily spend (< 30₽/day avg)
+    const lowSpendThreshold = 30 * periodDays // e.g. 210₽ for 7 days
+    const lowSpend = active.filter(c =>
+      c.spend > 0 && c.spend < lowSpendThreshold && c.views < 500 * periodDays
+    ).sort((a, b) => a.spend - b.spend)
+    const lowSpendIds = new Set(lowSpend.map(c => c.campaign_id))
+
+    // 1. Burning money — with no orders, but NOT low-spend (those go to separate section)
+    const burning = withoutOrders.filter(c => !lowSpendIds.has(c.campaign_id)).sort((a, b) => b.spend - a.spend)
 
     // 2. Unprofitable (DRR > 50%) — ALL
     const unprofitable = withOrders.filter(c => c.drr > 50).sort((a, b) => b.drr - a.drr)
@@ -260,8 +282,8 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
       wastePct: totalSpend > 0 ? wastedSpend / totalSpend * 100 : 0,
       avgCpc, avgDrr, avgCpo,
       count: active.length, withOrdersN: withOrders.length, withoutN: withoutOrders.length,
-      burning, unprofitable, lowCtr, effective, withEvents, evtSum }
-  }, [campaigns, eventsByDay, eventsByCampaign, campaignDaily])
+      burning, unprofitable, lowCtr, effective, withEvents, evtSum, lowSpend }
+  }, [campaigns, eventsByDay, eventsByCampaign, campaignDaily, campaignTotalRev, periodDays])
 
   if (!campaigns.length) return null
 
@@ -292,16 +314,39 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
         </div>
       </div>
 
-      {/* 1. Burning budget */}
+      {/* 0. Low spend — campaigns barely spending */}
+      {a.lowSpend.length > 0 && (
+        <Sec icon={<Gauge className="h-4 w-4 text-zinc-400" />} title="Нет откруток" count={a.lowSpend.length} cc="text-zinc-400" accent="rgb(161 161 170)">
+          <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)] mt-1 mb-2">Мизерный расход — ставка слишком низкая, алгоритм не показывает объявление. Повысьте ставку.</p>
+          <div className="space-y-1.5">
+            {a.lowSpend.map(c => {
+              const dailySpend = c.spend / periodDays
+              return (
+                <CRow key={c.campaign_id} c={c} border="border-zinc-500/15" bg="bg-zinc-500/[0.02]">
+                  <Metrics items={[
+                    { l: 'Расход', v: fmtM(c.spend) },
+                    { l: '₽/день', v: fmtM(dailySpend), bad: true },
+                    { l: 'Показы', v: fmt(c.views) },
+                    { l: 'Клики', v: fmt(c.clicks) },
+                    ...(c.orders > 0 ? [{ l: 'Заказы', v: c.orders }] : []),
+                  ]} />
+                </CRow>
+              )
+            })}
+          </div>
+        </Sec>
+      )}
+
+      {/* 1. Burning budget (excluding low-spend) */}
       {a.burning.length > 0 && (
         <Sec icon={<Ban className="h-4 w-4 text-red-400" />} title="Сливают бюджет" count={a.burning.length} cc="text-red-400" accent="rgb(239 68 68)"
-          badge={<span className="rounded-md bg-red-500/10 px-2 py-0.5 text-[12px] font-semibold text-red-400">−{fmtM(a.wastedSpend)}</span>}>
+          badge={<span className="rounded-md bg-red-500/10 px-2 py-0.5 text-[12px] font-semibold text-red-400">−{fmtM(a.burning.reduce((s, c) => s + c.spend, 0))}</span>}>
           <div className="space-y-1.5 mt-2">
             {a.burning.map(c => {
               const reason = c.cart === 0
                 ? `${fmt(c.views)} показов, ${c.clicks} кликов, 0 корзин — товар не интересен`
                 : `${c.cart} корзин → 0 заказов — проблема с ценой/доставкой`
-              const tRev = c.total_revenue || campaignTotalRev[c.campaign_id] || 0
+              const tRev = getTotalRev(c, campaignTotalRev)
               return (
                 <CRow key={c.campaign_id} c={c} border="border-red-500/15" bg="bg-red-500/[0.02]">
                   <Metrics items={[
@@ -323,7 +368,7 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
         <Sec icon={<AlertTriangle className="h-4 w-4 text-amber-400" />} title="Высокий ДРР" count={a.unprofitable.length} cc="text-amber-400" accent="rgb(245 158 11)">
           <div className="space-y-1.5 mt-2">
             {a.unprofitable.map(c => {
-              const tRev = c.total_revenue || campaignTotalRev[c.campaign_id] || 0
+              const tRev = getTotalRev(c, campaignTotalRev)
               const tDrr = tRev > 0 ? c.spend / tRev * 100 : 0
               return (
                 <CRow key={c.campaign_id} c={c} border="border-amber-500/15" bg="bg-amber-500/[0.02]">
@@ -368,7 +413,7 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
             {a.effective.map(c => {
               const romi = c.spend > 0 ? c.revenue / c.spend * 100 : 0
               const cpo = c.orders > 0 ? c.spend / c.orders : 0
-              const tRev = c.total_revenue || campaignTotalRev[c.campaign_id] || 0
+              const tRev = getTotalRev(c, campaignTotalRev)
               const tDrr = tRev > 0 ? c.spend / tRev * 100 : 0
               return (
                 <CRow key={c.campaign_id} c={c} border="border-emerald-500/15" bg="bg-emerald-500/[0.02]">
@@ -423,7 +468,7 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
                   campaign={c}
                   dailyData={campaignDaily[c.campaign_id] || []}
                   events={eventsByCampaign[c.campaign_id] || []}
-                  totalRevenue={c.total_revenue || campaignTotalRev[c.campaign_id] || 0}
+                  totalRevenue={getTotalRev(c, campaignTotalRev)}
                 />
               ))}
             </div>
@@ -434,7 +479,8 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
       {/* 6. Recommendations */}
       <Sec icon={<Info className="h-4 w-4 text-[hsl(var(--primary))]" />} title="Рекомендации" accent="hsl(var(--primary))">
         <div className="space-y-2 mt-2">
-          {a.burning.length > 0 && <Rec s="c" t={`Отключите ${a.burning.length} кампаний без заказов — ${fmtM(a.wastedSpend)} впустую`} />}
+          {a.lowSpend.length > 0 && <Rec s="i" t={`${a.lowSpend.length} кампаний без откруток — повысьте ставку, алгоритм не показывает объявления`} />}
+          {a.burning.length > 0 && <Rec s="c" t={`Отключите ${a.burning.length} кампаний без заказов — ${fmtM(a.burning.reduce((s, c) => s + c.spend, 0))} впустую`} />}
           {a.unprofitable.length > 0 && <Rec s="w" t={`${a.unprofitable.length} кампаний убыточны (ДРР > 50%) — снизьте ставки`} />}
           {a.effective.length > 0 && <Rec s="s" t={`Масштабируйте ${a.effective.length} эффективных кампаний — увеличьте бюджет`} />}
           {a.evtSum.t > 50 && <Rec s="i" t={`${a.evtSum.t} событий — частые изменения мешают алгоритмам Ozon оптимизировать показы`} />}
