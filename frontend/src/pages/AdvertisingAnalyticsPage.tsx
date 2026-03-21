@@ -1285,7 +1285,8 @@ function CampaignsTable({
                         <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0" />
                       )}
                       <div className="min-w-0">
-                        <p className="text-[14px] font-semibold truncate max-w-[200px]">{p.offer_id || p.name || String(p.sku)}</p>
+                        <p className="text-[14px] font-semibold truncate max-w-[220px]">{p.offer_id || String(p.sku)}</p>
+                        {p.name && <p className="text-[12px] text-[hsl(var(--foreground)/0.7)] truncate max-w-[220px]">{p.name}</p>}
                         <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
                           ID: {p.product_id} · SKU: {p.sku}
                         </p>
