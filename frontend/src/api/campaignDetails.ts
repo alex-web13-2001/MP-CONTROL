@@ -66,6 +66,7 @@ export interface KpiPeriod {
 export interface CampaignKpiResponse {
   current: KpiPeriod
   previous: KpiPeriod
+  first_date?: string | null
 }
 
 export const getCampaignKpi = async (

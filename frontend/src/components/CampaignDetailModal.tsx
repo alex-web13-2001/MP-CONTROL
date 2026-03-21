@@ -369,7 +369,7 @@ export function CampaignDetailModal({
   ]
 
   // First stat date = approximate campaign creation date
-  const firstStatDate = stats.length > 0 ? [...stats].sort((a, b) => a.dt.localeCompare(b.dt))[0].dt : null
+  const firstStatDate = kpiData?.first_date || (stats.length > 0 ? [...stats].sort((a, b) => a.dt.localeCompare(b.dt))[0].dt : null)
 
   /* ── EVENT DATE → events per day for chart markers ── */
   const eventsByDate: Record<string, CampaignEventRow[]> = {}

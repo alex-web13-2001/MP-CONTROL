@@ -66,6 +66,7 @@ class KpiPeriod(BaseModel):
 class CampaignKpiResponse(BaseModel):
     current: KpiPeriod
     previous: KpiPeriod
+    first_date: Optional[str] = None  # earliest date with stats (campaign launch date)
 
 # --- Endpoints ---
 
@@ -196,9 +197,31 @@ async def get_campaign_kpi(
             pr = ch.query(pq_prev, parameters=pp_prev).result_rows
             prod_rev_prev = float(pr[0][0] or 0) if pr else 0
     
+    # First date (campaign launch date)
+    first_date_val = None
+    if marketplace.lower() == "ozon":
+        fd_rows = ch.query(
+            "SELECT min(dt) FROM mms_analytics.fact_ozon_ad_daily FINAL WHERE campaign_id = {cid:UInt64}",
+            parameters={"cid": campaign_id}
+        ).result_rows
+    else:
+        fd_rows = ch.query(
+            "SELECT min(date) FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64}",
+            parameters={"cid": campaign_id}
+        ).result_rows
+    if fd_rows and fd_rows[0][0]:
+        fd_val = fd_rows[0][0]
+        if isinstance(fd_val, dt_datetime):
+            first_date_val = fd_val.strftime("%Y-%m-%d")
+        elif hasattr(fd_val, 'isoformat'):
+            first_date_val = fd_val.isoformat()
+        else:
+            first_date_val = str(fd_val)
+
     return CampaignKpiResponse(
         current=make_kpi(ad_cur_row, prod_rev_cur),
         previous=make_kpi(ad_prev_row, prod_rev_prev),
+        first_date=first_date_val,
     )
 
 @router.get("/{marketplace}/{campaign_id}/stats", response_model=List[CampaignStatsRow])
