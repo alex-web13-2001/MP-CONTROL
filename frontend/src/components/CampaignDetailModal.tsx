@@ -229,10 +229,16 @@ export function CampaignDetailModal({
           break
         }
         case 'events': {
+          const promises: Promise<void>[] = []
           if (events.length === 0) {
-            const ev = await getCampaignEvents(marketplace, campaignId, selectedSku)
-            setEvents(ev)
+            promises.push(getCampaignEvents(marketplace, campaignId, selectedSku).then(ev => setEvents(ev)))
           }
+          if (stats.length === 0) {
+            promises.push(
+              getCampaignStats(marketplace, campaignId, startDate, endDate, selectedSku).then(s => setStats(s))
+            )
+          }
+          await Promise.all(promises)
           break
         }
         case 'phrases': {
@@ -254,7 +260,7 @@ export function CampaignDetailModal({
       setLoadedTabs(prev => new Set(prev).add(cacheKey))
     } catch (err) { console.error(`Failed to load ${tab}:`, err) }
     finally { setLoading(false) }
-  }, [marketplace, campaignId, startDate, endDate, selectedSku, loadedTabs, events.length])
+  }, [marketplace, campaignId, startDate, endDate, selectedSku, loadedTabs, events.length, stats.length])
 
   useEffect(() => { setLoadedTabs(new Set()) }, [period, selectedSku])
   useEffect(() => { if (isOpen) loadTabData(activeTab) }, [isOpen, activeTab, loadTabData])
@@ -683,6 +689,7 @@ export function CampaignDetailModal({
         orders: pct('orders'),
         drr: pct('drr'),
         revenue: pct('revenue'),
+        product_revenue: pct('product_revenue'),
       }
     }
 
@@ -804,7 +811,8 @@ export function CampaignDetailModal({
                     <ImpactLabel label="Показы" d={impact.views!} />
                     <ImpactLabel label="Клики" d={impact.clicks!} />
                     <ImpactLabel label="Заказы" d={impact.orders!} />
-                    <ImpactLabel label="Выручка" d={impact.revenue!} />
+                    <ImpactLabel label="Рекл. выр." d={impact.revenue!} />
+                    <ImpactLabel label="Общ. выр." d={impact.product_revenue!} />
                     <ImpactLabel label="ДРР" d={impact.drr!} inv />
                   </div>
                 </div>
