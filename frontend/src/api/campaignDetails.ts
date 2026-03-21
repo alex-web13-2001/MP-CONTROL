@@ -149,3 +149,95 @@ export const getCampaignPurchases = async (
   )
   return data
 }
+
+// ── AI Campaign Analysis (SSE streaming) ─────────────────────
+
+export async function streamCampaignAiAnalysis(
+  params: {
+    marketplace: string
+    campaignId: number
+    startDate: string
+    endDate: string
+    sku?: number
+  },
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (error: string) => void,
+): Promise<AbortController> {
+  const controller = new AbortController()
+
+  const baseUrl = import.meta.env.VITE_API_URL || '/api/v1'
+  const qs = new URLSearchParams()
+  qs.set('start_date', params.startDate)
+  qs.set('end_date', params.endDate)
+  if (params.sku) qs.set('sku', String(params.sku))
+
+  const { useAuthStore } = await import('@/stores/authStore')
+  const token = useAuthStore.getState().token
+
+  try {
+    const response = await fetch(
+      `${baseUrl}/campaign-details/${params.marketplace}/${params.campaignId}/ai-analysis?${qs.toString()}`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      }
+    )
+
+    if (!response.ok) {
+      onError(`HTTP ${response.status}`)
+      return controller
+    }
+
+    const reader = response.body?.getReader()
+    if (!reader) {
+      onError('No response body')
+      return controller
+    }
+
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const payload = line.slice(6).trim()
+        if (payload === '[DONE]') {
+          onDone()
+          return controller
+        }
+        try {
+          const data = JSON.parse(payload)
+          if (data.error) {
+            onError(data.error)
+            return controller
+          }
+          if (data.content) {
+            onChunk(data.content)
+          }
+        } catch {
+          // skip malformed JSON
+        }
+      }
+    }
+
+    onDone()
+  } catch (err: unknown) {
+    if ((err as Error).name !== 'AbortError') {
+      onError((err as Error).message || 'Unknown error')
+    }
+  }
+
+  return controller
+}

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair,
-  CalendarDays, ChevronLeft, ChevronRight as ChevronRightIcon,
+  CalendarDays, ChevronLeft, ChevronRight as ChevronRightIcon, Sparkles,
   TrendingUp, TrendingDown, Activity, DollarSign, Palette,
   Image, Plus, Minus, AlertTriangle, Rocket, ArrowRight, ArrowUp, ArrowDown,
   type LucideIcon,
@@ -36,6 +36,7 @@ import {
   type CampaignHeatmapRow,
   type CampaignPurchaseRow,
   type CampaignKpiResponse,
+  streamCampaignAiAnalysis,
 } from '@/api/campaignDetails'
 import type { CampaignSkuItem } from '@/api/advertising'
 
@@ -265,6 +266,12 @@ export function CampaignDetailModal({
   const [showSkuDropdown, setShowSkuDropdown] = useState(false)
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
+
+  // AI analysis state
+  const [aiText, setAiText] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const [showAiPanel, setShowAiPanel] = useState(false)
+  const [aiController, setAiController] = useState<AbortController | null>(null)
 
   // Visible chart metrics
   const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(new Set(['spend', 'revenue', 'orders', 'cart']))
@@ -1174,6 +1181,27 @@ export function CampaignDetailModal({
               )}
             </div>
           )}
+          <button
+            onClick={async () => {
+              if (aiLoading && aiController) { aiController.abort(); setAiLoading(false); return }
+              setShowAiPanel(true); setAiText(''); setAiLoading(true)
+              const ctrl = await streamCampaignAiAnalysis(
+                { marketplace, campaignId, startDate, endDate, sku: selectedSku },
+                (chunk) => setAiText(prev => prev + chunk),
+                () => setAiLoading(false),
+                (err) => { setAiText(prev => prev + `\n\n❌ Ошибка: ${err}`); setAiLoading(false) },
+              )
+              setAiController(ctrl)
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium rounded-lg border transition-all ${
+              aiLoading
+                ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))] animate-pulse'
+                : 'border-[hsl(var(--border))] bg-gradient-to-r from-[hsl(var(--primary)/0.08)] to-[hsl(var(--primary)/0.02)] text-[hsl(var(--primary))] hover:from-[hsl(var(--primary)/0.15)] hover:to-[hsl(var(--primary)/0.08)]'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            {aiLoading ? 'Остановить' : 'ИИ-анализ'}
+          </button>
           <span className="text-[11px] text-[hsl(var(--muted-foreground))] ml-auto">
             {(() => { try { return `${format(parseISO(startDate), 'dd.MM.yy')} – ${format(parseISO(endDate), 'dd.MM.yy')}` } catch { return '' } })()}
           </span>
@@ -1190,6 +1218,37 @@ export function CampaignDetailModal({
             )
           })}
         </div>
+
+        {/* AI Analysis Panel */}
+        {showAiPanel && (
+          <div className="border-b border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.05)]">
+            <div className="px-6 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[hsl(var(--primary))]" />
+                <span className="text-[14px] font-semibold text-[hsl(var(--foreground))]">ИИ-анализ кампании</span>
+                {aiLoading && <Loader2 className="w-4 h-4 animate-spin text-[hsl(var(--primary))]" />}
+              </div>
+              <button onClick={() => { setShowAiPanel(false); if (aiController) aiController.abort(); setAiLoading(false) }} className="text-[12px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">Скрыть</button>
+            </div>
+            <div className="px-6 pb-4 max-h-[50vh] overflow-y-auto">
+              {aiText ? (
+                <div
+                  className="text-[13px] leading-relaxed text-[hsl(var(--foreground)/0.85)] whitespace-pre-wrap [&_h2]:text-[16px] [&_h2]:font-bold [&_h2]:mt-4 [&_h2]:mb-2"
+                  dangerouslySetInnerHTML={{ __html: aiText
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/^## (.+)$/gm, '<h2 class="text-[16px] font-bold mt-5 mb-2 text-[hsl(var(--foreground))]">$1</h2>')
+                    .replace(/^### (.+)$/gm, '<h3 class="text-[14px] font-semibold mt-3 mb-1 text-[hsl(var(--foreground))]">$1</h3>')
+                    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-[hsl(var(--foreground))]">$1</strong>')
+                    .replace(/^- (.+)$/gm, '<div class="ml-4 mb-0.5">• $1</div>')
+                    .replace(/\n/g, '<br/>')
+                  }}
+                />
+              ) : (
+                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] italic">Ожидание ответа от ИИ...</div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Content */}
         <div className="p-6 overflow-y-auto flex-1">
