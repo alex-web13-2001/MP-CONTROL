@@ -1069,8 +1069,8 @@ function CampaignsTable({
     })
   }
 
-  const thCls = "px-3 py-2.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap text-right"
-  const tdCls = "px-3 py-2.5 text-right text-[13px] whitespace-nowrap"
+  const thCls = "px-3 py-3 text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap text-right"
+  const tdCls = "px-3 py-3 text-right text-[14px] whitespace-nowrap"
 
   const SortIcon = ({ k }: { k: string }) => sortKey === k ? <span className="ml-0.5 text-[10px]">{sortDir === 'desc' ? '▼' : '▲'}</span> : null
 
@@ -1129,7 +1129,7 @@ function CampaignsTable({
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder="Поиск по названию, ID, артикулу, SKU или товару..."
-            className="w-full pl-9 pr-8 py-2 text-[14px] rounded-lg border-none bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.3)] transition-all"
+            className="w-full pl-9 pr-8 py-2.5 text-[14px] rounded-lg border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] focus:border-[hsl(var(--primary)/0.3)] transition-all"
           />
           {searchQuery && (
             <button
@@ -1150,7 +1150,7 @@ function CampaignsTable({
         <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
           <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
             <tr className="bg-[hsl(var(--card))]">
-              <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
+              <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
                 Кампания<SortIcon k="campaign_id" />
               </th>
               <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
@@ -1585,7 +1585,14 @@ export default function AdvertisingAnalyticsPage() {
       >
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-lg">Кампании за период</CardTitle>
+            <div className="flex items-baseline gap-3">
+              <CardTitle className="text-lg">Кампании за период</CardTitle>
+              <span className="text-[15px] font-semibold text-[hsl(var(--foreground)/0.8)]">
+                {new Date(data.date_from).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
+                {' — '}
+                {new Date(data.date_to).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
+              </span>
+            </div>
           </CardHeader>
           <CardContent>
             <CampaignsTable 
