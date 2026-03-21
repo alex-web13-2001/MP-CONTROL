@@ -146,22 +146,30 @@ function InlineEventImpact({ campaign, dailyData, events, totalRevenue }: {
   if (events.length === 0) return null
 
   return (
-    <div className="rounded-lg border border-blue-500/15 bg-blue-500/[0.02] p-3">
-      <div className="flex items-baseline gap-2 mb-2">
-        <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">{campaign.title}</span>
-        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)] ml-auto">
-          расход {fmtM(campaign.spend)} · рекл. {fmtM(campaign.revenue)} · общая {fmtM(totalRevenue)}
-        </span>
+    <div className="rounded-lg border border-blue-500/15 bg-blue-500/[0.02] p-4">
+      {/* Campaign header */}
+      <div className="mb-3">
+        <div className="text-[15px] font-bold text-[hsl(var(--foreground))]">{campaign.title}</div>
+        <div className="flex flex-wrap gap-x-4 mt-1 text-[13px]">
+          <span><span className="text-[hsl(var(--muted-foreground)/0.5)]">Расход: </span><span className="font-semibold text-[hsl(var(--foreground))]">{fmtM(campaign.spend)}</span></span>
+          <span><span className="text-[hsl(var(--muted-foreground)/0.5)]">Рекл. выручка: </span><span className="font-semibold text-[hsl(var(--foreground))]">{fmtM(campaign.revenue)}</span></span>
+          {totalRevenue > 0 && <span><span className="text-[hsl(var(--muted-foreground)/0.5)]">Общая: </span><span className="font-semibold text-[hsl(var(--foreground))]">{fmtM(totalRevenue)}</span></span>}
+        </div>
       </div>
-      <div className="space-y-1.5">
+
+      {/* Events */}
+      <div className="space-y-2">
         {eventDates.map(([evDate, dayEvents]) => {
           const idx = dateIdx.get(evDate)
-          const dateStr = new Date(evDate + 'T00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+          const dateStr = new Date(evDate + 'T00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })
           let delta: Record<string, number> | null = null
+          let afterDays = 0
           if (idx !== undefined) {
-            const before = sorted.slice(Math.max(0, idx - 3), idx)
-            const after = sorted.slice(idx + 1, Math.min(sorted.length, idx + 4))
-            if (before.length >= 1 && after.length >= 1) {
+            // 7 дней до, до 7 дней после (минимум 3)
+            const before = sorted.slice(Math.max(0, idx - 7), idx)
+            const after = sorted.slice(idx + 1, Math.min(sorted.length, idx + 8))
+            afterDays = after.length
+            if (before.length >= 3 && after.length >= 3) {
               const bS = avg(before.map(d => d.spend)), aS = avg(after.map(d => d.spend))
               const bV = avg(before.map(d => d.views)), aV = avg(after.map(d => d.views))
               const bC = avg(before.map(d => d.clicks)), aC = avg(after.map(d => d.clicks))
@@ -178,31 +186,36 @@ function InlineEventImpact({ campaign, dailyData, events, totalRevenue }: {
           }
           const hasChange = delta && Object.values(delta).some(v => Math.abs(v) > 5)
           return (
-            <div key={evDate} className="rounded-md border border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.04)] p-2">
+            <div key={evDate} className="rounded-lg border border-[hsl(var(--border)/0.2)] bg-[hsl(var(--card))] p-3">
+              {/* Events on this date */}
               {dayEvents.map(e => (
-                <div key={e.id} className="flex items-baseline gap-2 text-[12px] leading-relaxed">
-                  <span className="text-[hsl(var(--muted-foreground)/0.4)] shrink-0">{dateStr} {e.time}</span>
-                  <span className={
+                <div key={e.id} className="flex items-baseline gap-2 text-[14px] leading-relaxed mb-1">
+                  <span className="font-semibold text-[hsl(var(--foreground))] shrink-0">{dateStr}</span>
+                  <span className="text-[hsl(var(--muted-foreground)/0.5)]">{e.time}</span>
+                  <span className={`font-semibold ${
                     e.category === 'advertising' ? 'text-blue-400' :
                     e.category === 'price' ? 'text-amber-400' :
                     e.category === 'content' ? 'text-purple-400' : 'text-cyan-400'
-                  }>{e.label}</span>
-                  {e.detail && <span className="text-[hsl(var(--muted-foreground)/0.6)]">{e.detail}</span>}
+                  }`}>{e.label}</span>
+                  {e.detail && <span className="text-[13px] text-[hsl(var(--foreground)/0.7)]">{e.detail}</span>}
                 </div>
               ))}
+
+              {/* Delta metrics */}
               {hasChange && delta ? (
-                <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px]">
-                  <span className="text-[hsl(var(--muted-foreground)/0.35)]">→</span>
-                  <InD label="расход" d={delta.spend} inv />
-                  <InD label="показы" d={delta.views} />
-                  <InD label="клики" d={delta.clicks} />
-                  <InD label="заказы" d={delta.orders} />
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 pt-2 border-t border-[hsl(var(--border)/0.15)]">
+                  <InD label="Расход" d={delta.spend} inv />
+                  <InD label="Показы" d={delta.views} />
+                  <InD label="Клики" d={delta.clicks} />
+                  <InD label="Заказы" d={delta.orders} />
                   <InD label="ДРР" d={delta.drr} inv />
                 </div>
+              ) : afterDays < 3 ? (
+                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.4)] mt-1">Мало данных после события (нужно ≥3 дней)</div>
               ) : delta === null ? (
-                <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.3)] mt-0.5">→ нет данных для сравнения</div>
+                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.4)] mt-1">Нет данных для сравнения</div>
               ) : (
-                <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.3)] mt-0.5">→ незначительные изменения</div>
+                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.4)] mt-1">Незначительные изменения</div>
               )}
             </div>
           )
@@ -214,9 +227,9 @@ function InlineEventImpact({ campaign, dailyData, events, totalRevenue }: {
 
 function InD({ label, d, inv = false }: { label: string; d: number; inv?: boolean }) {
   return (
-    <span className="whitespace-nowrap">
-      <span className="text-[hsl(var(--muted-foreground)/0.4)]">{label} </span>
-      <span className={`font-medium ${dCol(d, inv)}`}><DArr d={d} inv={inv} /> {d > 0 ? '+' : ''}{d.toFixed(0)}%</span>
+    <span className="whitespace-nowrap text-[14px]">
+      <span className="text-[hsl(var(--muted-foreground)/0.5)]">{label} </span>
+      <span className={`font-bold ${dCol(d, inv)}`}><DArr d={d} inv={inv} /> {d > 0 ? '+' : ''}{d.toFixed(0)}%</span>
     </span>
   )
 }
@@ -552,7 +565,7 @@ function TabEvents({ loading, withEvents, evtSum, campaignDaily, eventsByCampaig
   return (
     <>
       <p className="text-[13px] text-[hsl(var(--muted-foreground))] mb-2">
-        Для каждой кампании: событие → изменение метрик (3 дня до/после).
+        Для каждой кампании: событие → изменение метрик (7 дней до/после).
       </p>
       <div className="flex gap-3 mb-3 text-[12px]">
         {evtSum.a > 0 && <span className="text-blue-400">● Рекламные {evtSum.a}</span>}
