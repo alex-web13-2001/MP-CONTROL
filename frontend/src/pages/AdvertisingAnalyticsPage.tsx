@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Fragment, useRef } from 'react'
+import { useState, useEffect, useCallback, Fragment, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
@@ -1022,6 +1022,79 @@ function CampaignsTable({
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   const [modalState, setModalState] = useState<{isOpen: boolean, campaignId: number, title: string, items: CampaignSkuItem[], sku?: number} | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const [viewMode, setViewMode] = useState<'campaigns' | 'products'>('campaigns')
+  const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
+
+  // Aggregate all items by SKU for products view
+  const aggregatedProducts = useMemo(() => {
+    const map = new Map<number, {
+      sku: number; product_id: number; offer_id: string; name: string; image_url: string
+      spend: number; views: number; clicks: number; cart: number; orders: number
+      direct_orders: number; model_orders: number; revenue: number
+      direct_revenue: number; model_revenue: number; total_revenue: number
+      campaigns: string[]
+    }>()
+    for (const c of campaigns) {
+      for (const item of (c.items || [])) {
+        const key = item.sku
+        const existing = map.get(key)
+        if (existing) {
+          existing.spend += item.spend
+          existing.views += item.views
+          existing.clicks += item.clicks
+          existing.cart += item.cart
+          existing.orders += item.orders
+          existing.direct_orders += item.direct_orders
+          existing.model_orders += item.model_orders
+          existing.revenue += item.revenue
+          existing.direct_revenue += item.direct_revenue
+          existing.model_revenue += item.model_revenue
+          existing.total_revenue = Math.max(existing.total_revenue, item.total_revenue)
+          if (!existing.campaigns.includes(c.title)) existing.campaigns.push(c.title)
+        } else {
+          map.set(key, {
+            sku: item.sku, product_id: item.product_id, offer_id: item.offer_id,
+            name: item.name, image_url: item.image_url,
+            spend: item.spend, views: item.views, clicks: item.clicks, cart: item.cart,
+            orders: item.orders, direct_orders: item.direct_orders, model_orders: item.model_orders,
+            revenue: item.revenue, direct_revenue: item.direct_revenue, model_revenue: item.model_revenue,
+            total_revenue: item.total_revenue,
+            campaigns: [c.title],
+          })
+        }
+      }
+    }
+    return [...map.values()].map(p => ({
+      ...p,
+      ctr: p.views > 0 ? +(p.clicks / p.views * 100).toFixed(2) : 0,
+      avg_cpc: p.clicks > 0 ? +(p.spend / p.clicks).toFixed(2) : 0,
+      drr: p.revenue > 0 ? +(p.spend / p.revenue * 100).toFixed(1) : 0,
+      total_drr: p.total_revenue > 0 ? +(p.spend / p.total_revenue * 100).toFixed(1) : 0,
+      cart_conv: p.clicks > 0 ? +(p.cart / p.clicks * 100).toFixed(1) : 0,
+      order_conv: p.cart > 0 ? +(p.orders / p.cart * 100).toFixed(1) : 0,
+      halo_pct: p.orders > 0 ? +(p.model_orders / p.orders * 100).toFixed(1) : 0,
+    }))
+  }, [campaigns])
+
+  // Filter & sort products
+  const filteredProducts = searchQuery.trim()
+    ? aggregatedProducts.filter(p => {
+        const q = searchQuery.trim().toLowerCase()
+        return (
+          p.offer_id?.toLowerCase().includes(q) ||
+          p.name?.toLowerCase().includes(q) ||
+          String(p.sku).includes(q) ||
+          String(p.product_id).includes(q)
+        )
+      })
+    : aggregatedProducts
+
+  const sortedProducts = [...filteredProducts].sort((a, b) => {
+    const va = (a as any)[sortKey] ?? 0
+    const vb = (b as any)[sortKey] ?? 0
+    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
+    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+  })
 
   if (!campaigns.length) {
     return (
@@ -1120,15 +1193,38 @@ function CampaignsTable({
 
   return (
     <div className="overflow-hidden">
-      {/* Search input */}
-      <div className="px-4 pt-1 pb-3">
+      {/* View mode toggle + Search */}
+      <div className="px-4 pt-1 pb-3 space-y-3">
+        <div className="flex items-center gap-1 p-0.5 bg-[hsl(var(--muted)/0.15)] rounded-lg w-fit">
+          <button
+            onClick={() => setViewMode('campaigns')}
+            className={`px-4 py-1.5 text-[14px] font-medium rounded-md transition-all ${
+              viewMode === 'campaigns'
+                ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm'
+                : 'text-[hsl(var(--muted-foreground)/0.6)] hover:text-[hsl(var(--foreground))]'
+            }`}
+          >
+            По кампаниям
+          </button>
+          <button
+            onClick={() => setViewMode('products')}
+            className={`px-4 py-1.5 text-[14px] font-medium rounded-md transition-all ${
+              viewMode === 'products'
+                ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm'
+                : 'text-[hsl(var(--muted-foreground)/0.6)] hover:text-[hsl(var(--foreground))]'
+            }`}
+          >
+            По товарам <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">({aggregatedProducts.length})</span>
+          </button>
+        </div>
+
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
           <input
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Поиск по названию, ID, артикулу, SKU или товару..."
+            placeholder={viewMode === 'campaigns' ? 'Поиск по названию, ID, артикулу, SKU или товару...' : 'Поиск по артикулу, названию, SKU или Ozon ID...'}
             className="w-full pl-9 pr-8 py-2.5 text-[14px] rounded-lg border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--muted)/0.1)] text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] focus:border-[hsl(var(--primary)/0.3)] transition-all"
           />
           {searchQuery && (
@@ -1141,11 +1237,101 @@ function CampaignsTable({
           )}
         </div>
         {searchQuery.trim() && (
-          <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] mt-1 ml-1">
-            Найдено: {filtered.length} из {campaigns.length} кампаний
+          <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] ml-1">
+            Найдено: {viewMode === 'campaigns' ? `${filtered.length} из ${campaigns.length} кампаний` : `${filteredProducts.length} из ${aggregatedProducts.length} товаров`}
           </div>
         )}
       </div>
+
+      {viewMode === 'products' ? (
+        /* ═══ Products Table ═══ */
+        <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
+          <table className="w-full min-w-[1300px]" style={{ borderCollapse: 'collapse' }}>
+            <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+              <tr className="bg-[hsl(var(--card))]">
+                <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('offer_id')}>
+                  Товар<SortIcon k="offer_id" />
+                </th>
+                <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
+                <th className={thCls} onClick={() => handleSort('views')}>Показы<SortIcon k="views" /></th>
+                <th className={thCls} onClick={() => handleSort('clicks')}>Клики<SortIcon k="clicks" /></th>
+                <th className={thCls} onClick={() => handleSort('ctr')}>CTR<SortIcon k="ctr" /></th>
+                <th className={thCls} onClick={() => handleSort('cart')}>Корз.<SortIcon k="cart" /></th>
+                <th className={thCls} onClick={() => handleSort('orders')}>Заказы<SortIcon k="orders" /></th>
+                <th className={thCls} onClick={() => handleSort('revenue')}>Рекл. выр.<SortIcon k="revenue" /></th>
+                <th className={thCls} onClick={() => handleSort('drr')}>ДРР рекл.<SortIcon k="drr" /></th>
+                <th className={thCls} onClick={() => handleSort('total_revenue')}>Общ. выр.<SortIcon k="total_revenue" /></th>
+                <th className={thCls} onClick={() => handleSort('total_drr')}>Общ. ДРР<SortIcon k="total_drr" /></th>
+                <th className={thCls} onClick={() => handleSort('avg_cpc')}>CPC<SortIcon k="avg_cpc" /></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedProducts.map(p => (
+                <tr key={p.sku} className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.1)]">
+                  <td className="sticky left-0 z-20 bg-[hsl(var(--card))] pl-4 pr-2 py-3">
+                    <div className="flex items-center gap-3">
+                      {p.image_url ? (
+                        <img
+                          src={p.image_url}
+                          alt={p.name}
+                          className="h-12 w-10 rounded-lg object-cover shrink-0 cursor-pointer"
+                          onMouseEnter={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setHoverImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
+                          }}
+                          onMouseLeave={() => setHoverImg(null)}
+                        />
+                      ) : (
+                        <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-[14px] font-semibold truncate max-w-[200px]">{p.offer_id || p.name || String(p.sku)}</p>
+                        <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
+                          ID: {p.product_id} · SKU: {p.sku}
+                        </p>
+                        {p.campaigns.length > 0 && (
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)] truncate max-w-[200px]" title={p.campaigns.join(', ')}>
+                            {p.campaigns.length} кампан{p.campaigns.length === 1 ? 'ия' : p.campaigns.length < 5 ? 'ии' : 'ий'}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.spend)}</td>
+                  <td className={tdCls}>{formatNumber(p.views)}</td>
+                  <td className={tdCls}>{formatNumber(p.clicks)}</td>
+                  <td className={tdCls}>{p.ctr.toFixed(2)}%</td>
+                  <td className={tdCls}>{formatNumber(p.cart)}</td>
+                  <td className={`${tdCls} font-semibold`}>{formatNumber(p.orders)}</td>
+                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.revenue)}</td>
+                  <td className={tdCls}>
+                    <span className={drrColor(p.drr)}>{p.drr.toFixed(1)}%</span>
+                  </td>
+                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.total_revenue)}</td>
+                  <td className={tdCls}>
+                    <span className={drrColor(p.total_drr)}>{p.total_drr.toFixed(1)}%</span>
+                  </td>
+                  <td className={tdCls}>{formatMoney(p.avg_cpc)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {/* Hover preview */}
+          {hoverImg && (
+            <div
+              className="fixed z-[100] pointer-events-none animate-in fade-in-0 duration-150"
+              style={{ left: hoverImg.x, top: hoverImg.y }}
+            >
+              <div className="rounded-xl shadow-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5">
+                <img src={hoverImg.url} alt="Preview" className="h-52 w-40 rounded-lg object-cover" />
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+      /* ═══ Campaigns Table (original) ═══ */
+      <>
       <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
         <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
           <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
@@ -1308,6 +1494,8 @@ function CampaignsTable({
           items={modalState.items}
           sku={modalState.sku}
         />
+      )}
+      </>
       )}
     </div>
   )

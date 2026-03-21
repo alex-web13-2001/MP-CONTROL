@@ -710,7 +710,8 @@ async def _build_ozon_analytics(
             sku_list = [int(s) for s in all_skus]
             sku_result = await db.execute(
                 sa_text("""
-                    SELECT product_id, sku, offer_id, name
+                    SELECT product_id, sku, offer_id, name,
+                           COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
                     FROM dim_ozon_products
                     WHERE shop_id = :shop_id
                       AND (product_id = ANY(:skus) OR sku = ANY(:skus))
@@ -720,7 +721,7 @@ async def _build_ozon_analytics(
             for row in sku_result:
                 pid = int(row[0])
                 s = int(row[1]) if row[1] else pid
-                info = {"product_id": pid, "offer_id": row[2] or "", "name": row[3] or ""}
+                info = {"product_id": pid, "offer_id": row[2] or "", "name": row[3] or "", "image_url": row[4] or ""}
                 sku_name_map[pid] = info
                 if s != pid:
                     sku_name_map[s] = info
@@ -764,6 +765,7 @@ async def _build_ozon_analytics(
             "product_id": info.get("product_id", sku),
             "offer_id": info.get("offer_id", ""),
             "name": info.get("name", ""),
+            "image_url": info.get("image_url", ""),
             "spend": s["spend"],
             "views": s["views"],
             "clicks": s["clicks"],
@@ -780,6 +782,7 @@ async def _build_ozon_analytics(
             "ctr": round(s["clicks"] / s["views"] * 100, 2) if s["views"] > 0 else 0,
             "avg_cpc": round(s["spend"] / s["clicks"], 2) if s["clicks"] > 0 else 0,
             "drr": ad_drr,
+            "total_revenue": round(total_rev, 2),
             "total_drr": total_drr,
             "bid": float(bids_map.get(str(sku), 0)) if bids_map else 0,
         }

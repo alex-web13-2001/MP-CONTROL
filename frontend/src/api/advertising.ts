@@ -53,6 +53,7 @@ export interface CampaignSkuItem {
   product_id: number
   offer_id: string
   name: string
+  image_url: string
   spend: number
   views: number
   clicks: number
@@ -69,6 +70,7 @@ export interface CampaignSkuItem {
   ctr: number
   avg_cpc: number
   drr: number
+  total_revenue: number
   total_drr: number
   bid: number
 }
