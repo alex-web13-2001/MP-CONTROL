@@ -803,6 +803,13 @@ async def _build_ozon_analytics(
         info = campaign_info_map.get(cid, {})
         campaign_bids = info.get("bids", {})
         items = [build_sku_item(s, campaign_bids) for s in sku_stats_by_campaign.get(cid, [])]
+        
+        # Calculate total revenue by summing sku_total_rev for this campaign's SKUs
+        campaign_total_rev = 0.0
+        for s in sku_stats_by_campaign.get(cid, []):
+            campaign_total_rev += sku_total_rev_map.get(s["sku"], 0)
+        campaign_total_drr = round(float(row[1]) / campaign_total_rev * 100, 1) if campaign_total_rev > 0 else 0
+
         campaigns_table.append({
             "campaign_id": cid,
             "title": info.get("title", ""),
@@ -826,6 +833,8 @@ async def _build_ozon_analytics(
             "ctr": float(row[9]),
             "avg_cpc": float(row[10]),
             "drr": float(row[11]),
+            "total_revenue": round(campaign_total_rev, 2),
+            "total_drr": campaign_total_drr,
         })
 
     # ── 4. Top SKUs ───────────────────────────────────
@@ -1014,27 +1023,6 @@ async def campaign_daily_stats(
             "drr": float(row[9]),
         })
 
-    # Fetch events for this period with campaign and product info
-    events_result = await db.execute(
-        sa_text("""
-            SELECT id, created_at, event_type, advert_id, nm_id,
-                   old_value, new_value, event_metadata
-            FROM event_log
-            WHERE shop_id = :shop_id
-              AND created_at >= :date_from
-              AND created_at < :date_to_excl
-              AND event_type = ANY(:event_types)
-            ORDER BY created_at
-        """),
-        {
-            "shop_id": shop_id,
-            "date_from": start_date,
-            "date_to_excl": end_date + timedelta(days=1),
-            "event_types": AD_CHART_EVENT_TYPES,
-        },
-    )
-    raw_events = events_result.fetchall()
-
     # Build campaign_id -> SKU mapping from fact_ozon_ad_daily for product event matching
     sku_map_rows = ch.query("""
         SELECT DISTINCT campaign_id, sku
@@ -1048,7 +1036,6 @@ async def campaign_daily_stats(
         "end": end_date,
     }).result_rows
     
-    # Also get product_id mapping from dim_ozon_products
     sku_to_product = {}
     product_to_campaigns: dict = {}  # product_id -> [campaign_ids]
     campaign_skus: dict = {}  # campaign_id -> [skus]
@@ -1080,6 +1067,84 @@ async def campaign_daily_stats(
                 if pid not in product_to_campaigns:
                     product_to_campaigns[pid] = set()
                 product_to_campaigns[pid].add(cid)
+
+    # Fetch total revenue per campaign per day from fact_ozon_orders
+    campaign_total_rev_agg: dict = {}
+    if campaign_skus:
+        all_camp_skus = list({s for sks in campaign_skus.values() for s in sks})
+        if all_camp_skus:
+            try:
+                total_rev_rows = ch.query("""
+                    SELECT
+                        sku,
+                        toDate(addHours(in_process_at, 3)) AS day,
+                        sum(price * quantity) AS total_revenue
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(in_process_at, 3)) >= {start:Date}
+                      AND toDate(addHours(in_process_at, 3)) <= {end:Date}
+                      AND sku IN ({skus:Array(UInt64)})
+                    GROUP BY sku, day
+                    ORDER BY sku, day
+                """, parameters={
+                    "shop_id": shop_id,
+                    "start": start_date,
+                    "end": end_date,
+                    "skus": all_camp_skus,
+                }).result_rows
+
+                # Build sku,day -> revenue map
+                sku_day_rev: dict = {}
+                for row in total_rev_rows:
+                    key = (int(row[0]), str(row[1]))
+                    sku_day_rev[key] = float(row[2])
+
+                # Aggregate per campaign per day
+                campaign_total_rev_daily: dict = {}
+                for cid, skus in campaign_skus.items():
+                    daily_rev: dict = {}
+                    for sku in skus:
+                        for (sk, day), rev in sku_day_rev.items():
+                            if sk == sku:
+                                daily_rev[day] = daily_rev.get(day, 0) + rev
+                    if daily_rev:
+                        campaign_total_rev_daily[cid] = daily_rev
+
+                # Merge total_revenue into campaigns_daily
+                for cid, days_data in campaigns_daily.items():
+                    total_rev_for_campaign = campaign_total_rev_daily.get(cid, {})
+                    for dp in days_data:
+                        dp["total_revenue"] = round(total_rev_for_campaign.get(dp["date"], 0), 2)
+                        dp["total_drr"] = round(dp["spend"] / dp["total_revenue"] * 100, 1) if dp["total_revenue"] > 0 else 0
+            except Exception:
+                pass
+    
+    # Compute total_revenue aggregate per campaign  
+    for cid, days_data in campaigns_daily.items():
+        total = sum(dp.get("total_revenue", 0) for dp in days_data)
+        if total > 0:
+            campaign_total_rev_agg[cid] = round(total, 2)
+
+    # Fetch events for this period
+    events_result = await db.execute(
+        sa_text("""
+            SELECT id, created_at, event_type, advert_id, nm_id,
+                   old_value, new_value, event_metadata
+            FROM event_log
+            WHERE shop_id = :shop_id
+              AND created_at >= :date_from
+              AND created_at < :date_to_excl
+              AND event_type = ANY(:event_types)
+            ORDER BY created_at
+        """),
+        {
+            "shop_id": shop_id,
+            "date_from": start_date,
+            "date_to_excl": end_date + timedelta(days=1),
+            "event_types": AD_CHART_EVENT_TYPES,
+        },
+    )
+    raw_events = events_result.fetchall()
 
     # Process events and match to campaigns
     events_by_campaign: dict = {}  # campaign_id -> [{date, type, detail}]
@@ -1160,6 +1225,7 @@ async def campaign_daily_stats(
     return {
         "campaigns_daily": campaigns_daily,
         "events_by_campaign": events_by_campaign,
+        "campaign_total_revenue": campaign_total_rev_agg,
     }
 
 

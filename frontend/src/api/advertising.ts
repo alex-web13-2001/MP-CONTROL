@@ -96,6 +96,8 @@ export interface CampaignRow {
   ctr: number
   avg_cpc: number
   drr: number
+  total_revenue: number
+  total_drr: number
 }
 
 export interface TopSkuRow {
@@ -195,6 +197,8 @@ export interface CampaignDailyPoint {
   revenue: number
   ctr: number
   drr: number
+  total_revenue?: number
+  total_drr?: number
 }
 
 export interface CampaignEvent {
@@ -212,6 +216,7 @@ export interface CampaignEvent {
 export interface CampaignDailyStatsResponse {
   campaigns_daily: Record<number, CampaignDailyPoint[]>
   events_by_campaign: Record<number, CampaignEvent[]>
+  campaign_total_revenue: Record<number, number>
 }
 
 export async function getCampaignDailyStats(
