@@ -226,7 +226,7 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
   const [eventsByCampaign, setEventsByCampaign] = useState<Record<number, CampaignEvent[]>>({})
   const [campaignTotalRev, setCampaignTotalRev] = useState<Record<number, number>>({})
   const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<TabId>('burning')
+  const [activeTab, setActiveTab] = useState<TabId>('recs')
 
   useEffect(() => {
     if (!shopId || !dateFrom || !dateTo) return
@@ -282,33 +282,37 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
 
     const wastedSpend = burning.reduce((s, c) => s + c.spend, 0)
 
+    // Unique problem campaigns count
+    const problemIds = new Set([
+      ...lowSpend.map(c => c.campaign_id),
+      ...burning.map(c => c.campaign_id),
+      ...unprofitable.map(c => c.campaign_id),
+      ...lowCtr.map(c => c.campaign_id),
+    ])
+    const problemCount = problemIds.size
+
     return { totalSpend, totalRev, totalTotalRev, totalOrders, wastedSpend,
       avgCpc, avgDrr, avgCpo,
       count: active.length, withOrdersN: withOrders.length, withoutN: withoutOrders.length,
-      burning, unprofitable, lowCtr, effective, withEvents, evtSum, lowSpend }
+      burning, unprofitable, lowCtr, effective, withEvents, evtSum, lowSpend, problemCount }
   }, [campaigns, eventsByDay, eventsByCampaign, campaignDaily, campaignTotalRev, periodDays])
 
-  // Auto-select first non-empty tab
+  // Always start on recommendations
   useEffect(() => {
-    if (a.lowSpend.length > 0 && activeTab === 'burning' && a.burning.length === 0) setActiveTab('lowSpend')
-    else if (a.burning.length > 0) setActiveTab('burning')
-    else if (a.unprofitable.length > 0) setActiveTab('highDrr')
-    else if (a.effective.length > 0) setActiveTab('effective')
-    else if (a.evtSum.t > 0) setActiveTab('events')
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a.burning.length, a.lowSpend.length])
+    setActiveTab('recs')
+  }, [campaigns])
 
   if (!campaigns.length) return null
 
   /* ═══ Tab definitions ═══ */
   const tabs: Array<{ id: TabId; icon: React.ReactNode; label: string; count: number; cc: string }> = [
+    { id: 'recs' as TabId, icon: <AlertCircle className="h-3.5 w-3.5" />, label: 'Рекомендации', count: a.problemCount, cc: a.problemCount > 0 ? 'text-red-400' : 'text-emerald-400' },
     ...(a.lowSpend.length > 0 ? [{ id: 'lowSpend' as TabId, icon: <Gauge className="h-3.5 w-3.5" />, label: 'Мало показов', count: a.lowSpend.length, cc: 'text-zinc-400' }] : []),
     ...(a.burning.length > 0 ? [{ id: 'burning' as TabId, icon: <Ban className="h-3.5 w-3.5" />, label: 'Сливают', count: a.burning.length, cc: 'text-red-400' }] : []),
     ...(a.unprofitable.length > 0 ? [{ id: 'highDrr' as TabId, icon: <AlertTriangle className="h-3.5 w-3.5" />, label: 'Высокий ДРР', count: a.unprofitable.length, cc: 'text-amber-400' }] : []),
     ...(a.lowCtr.length > 0 ? [{ id: 'lowCtr' as TabId, icon: <Eye className="h-3.5 w-3.5" />, label: 'Низкий CTR', count: a.lowCtr.length, cc: 'text-orange-400' }] : []),
     ...(a.effective.length > 0 ? [{ id: 'effective' as TabId, icon: <Trophy className="h-3.5 w-3.5" />, label: 'Эффективные', count: a.effective.length, cc: 'text-emerald-400' }] : []),
     { id: 'events' as TabId, icon: <Zap className="h-3.5 w-3.5" />, label: 'События', count: a.evtSum.t, cc: 'text-blue-400' },
-    { id: 'recs' as TabId, icon: <Info className="h-3.5 w-3.5" />, label: 'Рекомендации', count: 0, cc: 'text-[hsl(var(--primary))]' },
   ]
 
   return (
@@ -532,13 +536,62 @@ function TabEvents({ loading, withEvents, evtSum, campaignDaily, eventsByCampaig
 }
 
 function TabRecs({ a }: { a: { lowSpend: CampaignRow[]; burning: CampaignRow[]; unprofitable: CampaignRow[]; effective: CampaignRow[]; evtSum: { t: number } } }) {
+  const noProblems = a.lowSpend.length === 0 && a.burning.length === 0 && a.unprofitable.length === 0
   return (
-    <div className="space-y-2">
-      {a.lowSpend.length > 0 && <Rec s="i" t={`${a.lowSpend.length} кампаний с мизерными показами — повысьте ставку`} />}
-      {a.burning.length > 0 && <Rec s="c" t={`Отключите ${a.burning.length} кампаний без заказов — ${fmtM(a.burning.reduce((s, c) => s + c.spend, 0))} впустую`} />}
-      {a.unprofitable.length > 0 && <Rec s="w" t={`${a.unprofitable.length} кампаний убыточны (ДРР > 50%) — снизьте ставки`} />}
-      {a.effective.length > 0 && <Rec s="s" t={`Масштабируйте ${a.effective.length} эффективных кампаний — увеличьте бюджет`} />}
-      {a.evtSum.t > 50 && <Rec s="i" t={`${a.evtSum.t} событий — частые изменения мешают алгоритмам Ozon`} />}
+    <div className="space-y-3">
+      {noProblems && (
+        <div className="flex items-center gap-2 text-[14px] text-emerald-400 py-2">
+          <CheckCircle2 className="h-4 w-4" /> Проблем не обнаружено
+        </div>
+      )}
+
+      {/* Мало показов */}
+      {a.lowSpend.length > 0 && (
+        <RecGroup
+          s="i"
+          title="Мало показов — повысьте ставку"
+          desc="Мизерный расход, алгоритм Ozon не показывает объявления:"
+          items={a.lowSpend}
+          detail={c => `${fmtM(c.spend)}, ${fmt(c.views)} показов`}
+        />
+      )}
+
+      {/* Сливают бюджет */}
+      {a.burning.length > 0 && (
+        <RecGroup
+          s="c"
+          title={`Сливают бюджет — ${fmtM(a.burning.reduce((s, c) => s + c.spend, 0))} впустую`}
+          desc="Есть расход, но 0 заказов — отключите или пересмотрите:"
+          items={a.burning}
+          detail={c => c.cart === 0 ? `${fmtM(c.spend)}, 0 корзин` : `${fmtM(c.spend)}, ${c.cart} корзин → 0 заказов`}
+        />
+      )}
+
+      {/* Высокий ДРР */}
+      {a.unprofitable.length > 0 && (
+        <RecGroup
+          s="w"
+          title="Высокий ДРР — снизьте ставки"
+          desc="ДРР > 50%, реклама убыточна:"
+          items={a.unprofitable}
+          detail={c => `ДРР ${pct(c.drr)}, ${fmtM(c.spend)} расход, ${c.orders} заказов`}
+        />
+      )}
+
+      {/* Эффективные */}
+      {a.effective.length > 0 && (
+        <RecGroup
+          s="s"
+          title="Эффективные — масштабируйте"
+          desc="Низкий ДРР, хорошая конверсия — увеличьте бюджет:"
+          items={a.effective}
+          detail={c => `ДРР ${pct(c.drr)}, ${c.orders} заказов, ROMI ${fmt(c.spend > 0 ? c.revenue / c.spend * 100 : 0)}%`}
+        />
+      )}
+
+      {a.evtSum.t > 50 && (
+        <Rec s="i" t={`${a.evtSum.t} событий за период — частые изменения мешают алгоритмам Ozon оптимизировать показы`} />
+      )}
     </div>
   )
 }
@@ -550,6 +603,33 @@ function SC({ icon, l, v, vc }: { icon: React.ReactNode; l: string; v: string | 
     <div>
       <div className="flex items-center gap-1 mb-0.5">{icon}<span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{l}</span></div>
       <div className={`text-[16px] font-bold ${vc || 'text-[hsl(var(--foreground))]'}`}>{v}</div>
+    </div>
+  )
+}
+
+function RecGroup({ s, title, desc, items, detail }: {
+  s: 'c' | 'w' | 's' | 'i'; title: string; desc: string
+  items: CampaignRow[]; detail: (c: CampaignRow) => string
+}) {
+  const cfg = {
+    c: { c: 'text-red-400', bg: 'bg-red-500/[0.04]', b: 'border-red-500/15', dot: 'bg-red-400' },
+    w: { c: 'text-amber-400', bg: 'bg-amber-500/[0.04]', b: 'border-amber-500/15', dot: 'bg-amber-400' },
+    s: { c: 'text-emerald-400', bg: 'bg-emerald-500/[0.04]', b: 'border-emerald-500/15', dot: 'bg-emerald-400' },
+    i: { c: 'text-blue-400', bg: 'bg-blue-500/[0.04]', b: 'border-blue-500/15', dot: 'bg-blue-400' },
+  }[s]
+  return (
+    <div className={`rounded-lg border ${cfg.b} ${cfg.bg} px-4 py-3`}>
+      <div className={`text-[14px] font-semibold ${cfg.c} mb-1`}>{title}</div>
+      <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)] mb-2">{desc}</div>
+      <div className="space-y-1">
+        {items.map(c => (
+          <div key={c.campaign_id} className="flex items-baseline gap-2 text-[13px]">
+            <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot} shrink-0 mt-1.5`} />
+            <span className="text-[hsl(var(--foreground))] font-medium">{c.title}</span>
+            <span className="text-[hsl(var(--muted-foreground)/0.5)] text-[12px]">— {detail(c)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
