@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Fragment, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, Fragment, useRef, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
@@ -12,6 +12,7 @@ import {
   ArrowDownRight,
   RefreshCw,
   ChevronDown,
+  ChevronRight,
   Megaphone,
   Target,
   XCircle,
@@ -1024,6 +1025,8 @@ function CampaignsTable({
   const [searchQuery, setSearchQuery] = useState('')
   const [viewMode, setViewMode] = useState<'campaigns' | 'products'>('campaigns')
   const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
+  const [expandedProductSku, setExpandedProductSku] = useState<Set<number>>(new Set())
+  const [copiedId, setCopiedId] = useState<string | null>(null)
 
   // Aggregate all items by SKU for products view
   const aggregatedProducts = useMemo(() => {
@@ -1033,6 +1036,7 @@ function CampaignsTable({
       direct_orders: number; model_orders: number; revenue: number
       direct_revenue: number; model_revenue: number; total_revenue: number
       campaigns: string[]
+      campaignInfos: { id: number; title: string; items: CampaignSkuItem[] }[]
     }>()
     for (const c of campaigns) {
       for (const item of (c.items || [])) {
@@ -1050,7 +1054,10 @@ function CampaignsTable({
           existing.direct_revenue += item.direct_revenue
           existing.model_revenue += item.model_revenue
           existing.total_revenue = Math.max(existing.total_revenue, item.total_revenue)
-          if (!existing.campaigns.includes(c.title)) existing.campaigns.push(c.title)
+          if (!existing.campaigns.includes(c.title)) {
+            existing.campaigns.push(c.title)
+            existing.campaignInfos.push({ id: c.campaign_id, title: c.title || `Campaign #${c.campaign_id}`, items: c.items || [] })
+          }
         } else {
           map.set(key, {
             sku: item.sku, product_id: item.product_id, offer_id: item.offer_id,
@@ -1060,6 +1067,7 @@ function CampaignsTable({
             revenue: item.revenue, direct_revenue: item.direct_revenue, model_revenue: item.model_revenue,
             total_revenue: item.total_revenue,
             campaigns: [c.title],
+            campaignInfos: [{ id: c.campaign_id, title: c.title || `Campaign #${c.campaign_id}`, items: c.items || [] }],
           })
         }
       }
@@ -1266,55 +1274,122 @@ function CampaignsTable({
               </tr>
             </thead>
             <tbody>
-              {sortedProducts.map(p => (
-                <tr key={p.sku} className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.1)]">
-                  <td className="sticky left-0 z-20 bg-[hsl(var(--card))] pl-4 pr-2 py-3">
-                    <div className="flex items-center gap-3">
-                      {p.image_url ? (
-                        <img
-                          src={p.image_url}
-                          alt={p.name}
-                          className="h-12 w-10 rounded-lg object-cover shrink-0 cursor-pointer"
-                          onMouseEnter={(e) => {
-                            const rect = e.currentTarget.getBoundingClientRect()
-                            setHoverImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
-                          }}
-                          onMouseLeave={() => setHoverImg(null)}
-                        />
-                      ) : (
-                        <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-[14px] font-semibold truncate max-w-[220px]">{p.offer_id || String(p.sku)}</p>
-                        {p.name && <p className="text-[12px] text-[hsl(var(--foreground)/0.7)] leading-tight">{p.name}</p>}
-                        <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
-                          SKU: {p.sku}
-                        </p>
-                        {p.campaigns.length > 0 && (
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)] truncate max-w-[200px]" title={p.campaigns.join(', ')}>
-                            {p.campaigns.length} кампан{p.campaigns.length === 1 ? 'ия' : p.campaigns.length < 5 ? 'ии' : 'ий'}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.spend)}</td>
-                  <td className={tdCls}>{formatNumber(p.views)}</td>
-                  <td className={tdCls}>{formatNumber(p.clicks)}</td>
-                  <td className={tdCls}>{p.ctr.toFixed(2)}%</td>
-                  <td className={tdCls}>{formatNumber(p.cart)}</td>
-                  <td className={`${tdCls} font-semibold`}>{formatNumber(p.orders)}</td>
-                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.revenue)}</td>
-                  <td className={tdCls}>
-                    <span className={drrColor(p.drr)}>{p.drr.toFixed(1)}%</span>
-                  </td>
-                  <td className={`${tdCls} font-semibold`}>{formatMoney(p.total_revenue)}</td>
-                  <td className={tdCls}>
-                    <span className={drrColor(p.total_drr)}>{p.total_drr.toFixed(1)}%</span>
-                  </td>
-                  <td className={tdCls}>{formatMoney(p.avg_cpc)}</td>
-                </tr>
-              ))}
+              {sortedProducts.map(p => {
+                const isExpanded = expandedProductSku.has(p.sku)
+                const toggleExpand = () => {
+                  setExpandedProductSku(prev => {
+                    const next = new Set(prev)
+                    next.has(p.sku) ? next.delete(p.sku) : next.add(p.sku)
+                    return next
+                  })
+                }
+                const copyToClipboard = (text: string) => {
+                  navigator.clipboard.writeText(text)
+                  setCopiedId(text)
+                  setTimeout(() => setCopiedId(null), 1500)
+                }
+                return (
+                  <React.Fragment key={p.sku}>
+                    <tr
+                      className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.1)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
+                      onClick={toggleExpand}
+                    >
+                      <td className="sticky left-0 z-20 bg-[hsl(var(--card))] pl-4 pr-2 py-3">
+                        <div className="flex items-center gap-3">
+                          {/* Expand arrow */}
+                          <ChevronRight className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.4)] transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
+                          {p.image_url ? (
+                            <img
+                              src={p.image_url}
+                              alt={p.name}
+                              className="h-12 w-10 rounded-lg object-cover shrink-0 cursor-pointer"
+                              onMouseEnter={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect()
+                                setHoverImg({ url: p.image_url, x: rect.right + 8, y: rect.top })
+                              }}
+                              onMouseLeave={() => setHoverImg(null)}
+                            />
+                          ) : (
+                            <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0" />
+                          )}
+                          <div className="min-w-0">
+                            {/* Product name on top */}
+                            {p.name && <p className="text-[13px] text-[hsl(var(--foreground)/0.8)] leading-tight mb-0.5" title={p.name}>{p.name.length > 60 ? p.name.slice(0, 60) + '…' : p.name}</p>}
+                            {/* Offer ID + SKU side by side with copy */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {p.offer_id && (
+                                <span
+                                  className={`text-[13px] font-semibold font-mono uppercase cursor-pointer px-1.5 py-0.5 rounded transition-all ${copiedId === p.offer_id ? 'bg-emerald-500/20 text-emerald-400' : 'hover:bg-[hsl(var(--muted)/0.3)]'}`}
+                                  onClick={(e) => { e.stopPropagation(); copyToClipboard(p.offer_id) }}
+                                  title="Скопировать артикул"
+                                >
+                                  {copiedId === p.offer_id ? '✓ Скопировано' : p.offer_id}
+                                </span>
+                              )}
+                              <span
+                                className={`text-[12px] text-[hsl(var(--muted-foreground)/0.5)] cursor-pointer px-1 py-0.5 rounded transition-all ${copiedId === String(p.sku) ? 'bg-emerald-500/20 text-emerald-400' : 'hover:bg-[hsl(var(--muted)/0.3)]'}`}
+                                onClick={(e) => { e.stopPropagation(); copyToClipboard(String(p.sku)) }}
+                                title="Скопировать SKU"
+                              >
+                                {copiedId === String(p.sku) ? '✓' : `SKU: ${p.sku}`}
+                              </span>
+                            </div>
+                            {p.campaigns.length > 0 && (
+                              <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)] mt-0.5">
+                                {p.campaigns.length} кампан{p.campaigns.length === 1 ? 'ия' : p.campaigns.length < 5 ? 'ии' : 'ий'}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className={`${tdCls} font-semibold`}>{formatMoney(p.spend)}</td>
+                      <td className={tdCls}>{formatNumber(p.views)}</td>
+                      <td className={tdCls}>{formatNumber(p.clicks)}</td>
+                      <td className={tdCls}>{p.ctr.toFixed(2)}%</td>
+                      <td className={tdCls}>{formatNumber(p.cart)}</td>
+                      <td className={`${tdCls} font-semibold`}>{formatNumber(p.orders)}</td>
+                      <td className={`${tdCls} font-semibold`}>{formatMoney(p.revenue)}</td>
+                      <td className={tdCls}>
+                        <span className={drrColor(p.drr)}>{p.drr.toFixed(1)}%</span>
+                      </td>
+                      <td className={`${tdCls} font-semibold`}>{formatMoney(p.total_revenue)}</td>
+                      <td className={tdCls}>
+                        <span className={drrColor(p.total_drr)}>{p.total_drr.toFixed(1)}%</span>
+                      </td>
+                      <td className={tdCls}>{formatMoney(p.avg_cpc)}</td>
+                    </tr>
+                    {/* Expanded campaigns */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={12} className="p-0">
+                          <div className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)] px-6 py-3">
+                            <div className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.5)] mb-2">Кампании с этим товаром</div>
+                            <div className="space-y-1.5">
+                              {p.campaignInfos.map(ci => (
+                                <div key={ci.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-[hsl(var(--card))] border border-[hsl(var(--border)/0.2)] hover:border-[hsl(var(--border)/0.5)] transition-colors">
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">#{ci.id}</span>
+                                    <span className="text-[13px] font-medium truncate">{ci.title}</span>
+                                  </div>
+                                  <button
+                                    className="shrink-0 text-[12px] font-medium px-3 py-1.5 rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.2)] transition-colors"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      setModalState({ isOpen: true, campaignId: ci.id, title: ci.title, items: ci.items, sku: p.sku })
+                                    }}
+                                  >
+                                    📊 Статистика
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                )
+              })}
             </tbody>
           </table>
 
