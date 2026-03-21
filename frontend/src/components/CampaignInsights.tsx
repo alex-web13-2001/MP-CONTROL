@@ -19,7 +19,7 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import type { CampaignRow, EventDaySummary, CampaignDailyPoint, CampaignEvent } from '@/api/advertising'
-import { getCampaignDailyStats } from '@/api/advertising'
+import { getCampaignDailyStats, getAdvertisingAnalytics } from '@/api/advertising'
 
 /* ═══ Helpers ═══ */
 
@@ -44,6 +44,15 @@ function DArr({ d, inv = false }: { d: number; inv?: boolean }) {
   const Icon = good ? ArrowUp : bad ? ArrowDown : Minus
   const c = good ? 'text-emerald-400' : bad ? 'text-red-400' : 'text-[hsl(var(--muted-foreground)/0.3)]'
   return <Icon className={`h-3 w-3 ${c} inline`} />
+}
+
+/* ═══ Period helpers ═══ */
+const PERIODS = [{ days: 7, label: '7 дней' }, { days: 14, label: '14 дней' }, { days: 30, label: '30 дней' }] as const
+function calcDateRange(days: number) {
+  const to = new Date()
+  const from = new Date()
+  from.setDate(from.getDate() - days + 1)
+  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }
 }
 
 /* ═══ Tab button ═══ */
@@ -216,19 +225,36 @@ function InD({ label, d, inv = false }: { label: string; d: number; inv?: boolea
 type TabId = 'lowSpend' | 'burning' | 'highDrr' | 'lowCtr' | 'effective' | 'events' | 'recs'
 
 /* ═══ Main Component ═══ */
-export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dateTo }: {
-  campaigns: CampaignRow[]; eventsByDay: Record<string, EventDaySummary>
-  shopId: number; dateFrom: string; dateTo: string
-}) {
+export function CampaignInsights({ shopId }: { shopId: number }) {
+  const [analysisPeriod, setAnalysisPeriod] = useState(7)
+  const [campaigns, setCampaigns] = useState<CampaignRow[]>([])
+  const [eventsByDay, setEventsByDay] = useState<Record<string, EventDaySummary>>({})
   const [campaignDaily, setCampaignDaily] = useState<Record<number, CampaignDailyPoint[]>>({})
   const [eventsByCampaign, setEventsByCampaign] = useState<Record<number, CampaignEvent[]>>({})
   const [campaignTotalRev, setCampaignTotalRev] = useState<Record<number, number>>({})
-  const [loading, setLoading] = useState(false)
+  const [loadingMain, setLoadingMain] = useState(false)
+  const [loadingDaily, setLoadingDaily] = useState(false)
   const [activeTab, setActiveTab] = useState<TabId>('recs')
 
+  const { from: dateFrom, to: dateTo } = useMemo(() => calcDateRange(analysisPeriod), [analysisPeriod])
+
+  // Load campaign data for selected analysis period
+  useEffect(() => {
+    if (!shopId) return
+    setLoadingMain(true)
+    getAdvertisingAnalytics(shopId, 'custom', dateFrom, dateTo)
+      .then(d => {
+        setCampaigns(d.campaigns_table || [])
+        setEventsByDay(d.events_by_day || {})
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMain(false))
+  }, [shopId, dateFrom, dateTo])
+
+  // Load daily stats for event impact
   useEffect(() => {
     if (!shopId || !dateFrom || !dateTo) return
-    setLoading(true)
+    setLoadingDaily(true)
     getCampaignDailyStats(shopId, dateFrom, dateTo)
       .then(d => {
         setCampaignDaily(d.campaigns_daily || {})
@@ -236,14 +262,10 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
         setCampaignTotalRev(d.campaign_total_revenue || {})
       })
       .catch(() => {})
-      .finally(() => setLoading(false))
+      .finally(() => setLoadingDaily(false))
   }, [shopId, dateFrom, dateTo])
 
-  const periodDays = useMemo(() => {
-    if (!dateFrom || !dateTo) return 7
-    const d1 = new Date(dateFrom), d2 = new Date(dateTo)
-    return Math.max(1, Math.round((d2.getTime() - d1.getTime()) / 86400000) + 1)
-  }, [dateFrom, dateTo])
+  const periodDays = analysisPeriod
 
   const a = useMemo(() => {
     const active = campaigns.filter(c => c.status !== 'archived')
@@ -300,6 +322,9 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
     setActiveTab('recs')
   }, [campaigns])
 
+  if (loadingMain) return (
+    <div className="py-8 text-center text-[14px] text-[hsl(var(--muted-foreground)/0.4)]">Загрузка аналитики...</div>
+  )
   if (!campaigns.length) return null
 
   /* ═══ Tab definitions ═══ */
@@ -315,10 +340,27 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
 
   return (
     <div className="space-y-4">
-      {/* Title */}
-      <div className="flex items-center gap-2">
-        <Activity className="h-5 w-5 text-[hsl(var(--primary))]" />
-        <h3 className="text-[18px] font-bold text-[hsl(var(--foreground))]">Анализ рекламных кампаний</h3>
+      {/* Title + Period selector */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Activity className="h-5 w-5 text-[hsl(var(--primary))]" />
+          <h3 className="text-[18px] font-bold text-[hsl(var(--foreground))]">Анализ рекламных кампаний</h3>
+        </div>
+        <div className="flex gap-1 rounded-lg bg-[hsl(var(--muted)/0.1)] p-1">
+          {PERIODS.map(p => (
+            <button
+              key={p.days}
+              onClick={() => setAnalysisPeriod(p.days)}
+              className={`px-3 py-1.5 rounded-md text-[13px] font-medium transition-all ${
+                analysisPeriod === p.days
+                  ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
+                  : 'text-[hsl(var(--muted-foreground)/0.6)] hover:text-[hsl(var(--foreground))]'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Summary */}
@@ -360,7 +402,7 @@ export function CampaignInsights({ campaigns, eventsByDay, shopId, dateFrom, dat
             {activeTab === 'effective' && <TabEffective items={a.effective} campaignTotalRev={campaignTotalRev} />}
             {activeTab === 'events' && (
               <TabEvents
-                loading={loading} withEvents={a.withEvents} evtSum={a.evtSum}
+                loading={loadingDaily} withEvents={a.withEvents} evtSum={a.evtSum}
                 campaignDaily={campaignDaily} eventsByCampaign={eventsByCampaign}
                 campaignTotalRev={campaignTotalRev}
               />
