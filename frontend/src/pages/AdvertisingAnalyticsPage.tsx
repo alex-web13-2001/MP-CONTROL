@@ -1660,6 +1660,9 @@ export default function AdvertisingAnalyticsPage() {
             <CampaignInsights
               campaigns={data.campaigns_table}
               eventsByDay={data.events_by_day || {}}
+              shopId={currentShop!.id}
+              dateFrom={data.date_from}
+              dateTo={data.date_to}
             />
           </CardContent>
         </Card>
