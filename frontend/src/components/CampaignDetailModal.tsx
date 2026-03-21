@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair,
+  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair, CalendarDays,
   TrendingUp, TrendingDown, Activity, DollarSign, Palette,
   Image, Plus, Minus, AlertTriangle, Rocket, ArrowRight, ArrowUp, ArrowDown,
   type LucideIcon,
@@ -158,7 +158,10 @@ const PERIOD_OPTIONS = [
   { value: '90d', label: '90 дней', days: 90 },
 ]
 
-function computeDates(periodValue: string) {
+function computeDates(periodValue: string, customFrom?: string, customTo?: string) {
+  if (periodValue === 'custom' && customFrom && customTo) {
+    return { startDate: customFrom, endDate: customTo }
+  }
   const opt = PERIOD_OPTIONS.find(p => p.value === periodValue) || PERIOD_OPTIONS[2]
   const end = new Date()
   const start = subDays(end, opt.days - 1)
@@ -196,11 +199,13 @@ export function CampaignDetailModal({
   const [period, setPeriod] = useState('30d')
   const [selectedSku, setSelectedSku] = useState<number | undefined>(initialSku)
   const [showSkuDropdown, setShowSkuDropdown] = useState(false)
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
 
   // Visible chart metrics
   const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(new Set(['spend', 'revenue', 'orders', 'cart']))
 
-  const { startDate, endDate } = computeDates(period)
+  const { startDate, endDate } = computeDates(period, customFrom, customTo)
 
   // Data
   const [stats, setStats] = useState<CampaignStatsRow[]>([])
@@ -1079,6 +1084,23 @@ export function CampaignDetailModal({
             {PERIOD_OPTIONS.map(opt => (
               <button key={opt.value} onClick={() => setPeriod(opt.value)} className={`px-3 py-1.5 text-[14px] font-medium rounded-md transition-all ${period === opt.value ? 'bg-[hsl(var(--background))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>{opt.label}</button>
             ))}
+          </div>
+          {/* Custom date range */}
+          <div className="flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+            <input
+              type="date"
+              value={period === 'custom' ? customFrom : startDate}
+              onChange={(e) => { setCustomFrom(e.target.value); setCustomTo(prev => prev || endDate); setPeriod('custom') }}
+              className="px-2 py-1 text-[13px] bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border))] rounded-lg text-[hsl(var(--foreground))] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
+            />
+            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>
+            <input
+              type="date"
+              value={period === 'custom' ? customTo : endDate}
+              onChange={(e) => { setCustomTo(e.target.value); setCustomFrom(prev => prev || startDate); setPeriod('custom') }}
+              className="px-2 py-1 text-[13px] bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border))] rounded-lg text-[hsl(var(--foreground))] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
+            />
           </div>
           {items.length > 0 && (
             <div className="relative">
