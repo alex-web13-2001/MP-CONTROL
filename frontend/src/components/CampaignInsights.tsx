@@ -1,7 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import {
   AlertTriangle,
-  TrendingUp,
   Zap,
   Ban,
   Trophy,
@@ -12,7 +11,6 @@ import {
   Target,
   AlertCircle,
   CheckCircle2,
-  Info,
   Activity,
   ArrowUp,
   ArrowDown,
@@ -535,62 +533,69 @@ function TabEvents({ loading, withEvents, evtSum, campaignDaily, eventsByCampaig
   )
 }
 
-function TabRecs({ a }: { a: { lowSpend: CampaignRow[]; burning: CampaignRow[]; unprofitable: CampaignRow[]; effective: CampaignRow[]; evtSum: { t: number } } }) {
+function TabRecs({ a }: { a: { lowSpend: CampaignRow[]; burning: CampaignRow[]; unprofitable: CampaignRow[]; effective: CampaignRow[] } }) {
   const noProblems = a.lowSpend.length === 0 && a.burning.length === 0 && a.unprofitable.length === 0
   return (
     <div className="space-y-3">
       {noProblems && (
-        <div className="flex items-center gap-2 text-[14px] text-emerald-400 py-2">
-          <CheckCircle2 className="h-4 w-4" /> Проблем не обнаружено
+        <div className="flex items-center gap-2 text-[15px] text-emerald-400 py-2">
+          <CheckCircle2 className="h-5 w-5" /> Проблем не обнаружено
         </div>
       )}
 
-      {/* Мало показов */}
       {a.lowSpend.length > 0 && (
         <RecGroup
           s="i"
           title="Мало показов — повысьте ставку"
           desc="Мизерный расход, алгоритм Ozon не показывает объявления:"
           items={a.lowSpend}
-          detail={c => `${fmtM(c.spend)}, ${fmt(c.views)} показов`}
+          metrics={c => [
+            { l: 'Расход', v: fmtM(c.spend), hi: true },
+            { l: 'Показы', v: fmt(c.views), hi: true },
+          ]}
         />
       )}
 
-      {/* Сливают бюджет */}
       {a.burning.length > 0 && (
         <RecGroup
           s="c"
           title={`Сливают бюджет — ${fmtM(a.burning.reduce((s, c) => s + c.spend, 0))} впустую`}
           desc="Есть расход, но 0 заказов — отключите или пересмотрите:"
           items={a.burning}
-          detail={c => c.cart === 0 ? `${fmtM(c.spend)}, 0 корзин` : `${fmtM(c.spend)}, ${c.cart} корзин → 0 заказов`}
+          metrics={c => [
+            { l: 'Расход', v: fmtM(c.spend), hi: true },
+            { l: 'Корзин', v: String(c.cart), hi: c.cart === 0 },
+            { l: 'Заказов', v: '0', hi: true },
+          ]}
         />
       )}
 
-      {/* Высокий ДРР */}
       {a.unprofitable.length > 0 && (
         <RecGroup
           s="w"
           title="Высокий ДРР — снизьте ставки"
           desc="ДРР > 50%, реклама убыточна:"
           items={a.unprofitable}
-          detail={c => `ДРР ${pct(c.drr)}, ${fmtM(c.spend)} расход, ${c.orders} заказов`}
+          metrics={c => [
+            { l: 'ДРР', v: pct(c.drr), hi: true },
+            { l: 'Расход', v: fmtM(c.spend) },
+            { l: 'Заказов', v: String(c.orders) },
+          ]}
         />
       )}
 
-      {/* Эффективные */}
       {a.effective.length > 0 && (
         <RecGroup
           s="s"
           title="Эффективные — масштабируйте"
           desc="Низкий ДРР, хорошая конверсия — увеличьте бюджет:"
           items={a.effective}
-          detail={c => `ДРР ${pct(c.drr)}, ${c.orders} заказов, ROMI ${fmt(c.spend > 0 ? c.revenue / c.spend * 100 : 0)}%`}
+          metrics={c => [
+            { l: 'ДРР', v: pct(c.drr), hi: true },
+            { l: 'Заказов', v: String(c.orders), hi: true },
+            { l: 'ROMI', v: `${fmt(c.spend > 0 ? c.revenue / c.spend * 100 : 0)}%` },
+          ]}
         />
-      )}
-
-      {a.evtSum.t > 50 && (
-        <Rec s="i" t={`${a.evtSum.t} событий за период — частые изменения мешают алгоритмам Ozon оптимизировать показы`} />
       )}
     </div>
   )
@@ -607,44 +612,39 @@ function SC({ icon, l, v, vc }: { icon: React.ReactNode; l: string; v: string | 
   )
 }
 
-function RecGroup({ s, title, desc, items, detail }: {
+function RecGroup({ s, title, desc, items, metrics }: {
   s: 'c' | 'w' | 's' | 'i'; title: string; desc: string
-  items: CampaignRow[]; detail: (c: CampaignRow) => string
+  items: CampaignRow[]; metrics: (c: CampaignRow) => Array<{ l: string; v: string; hi?: boolean }>
 }) {
   const cfg = {
-    c: { c: 'text-red-400', bg: 'bg-red-500/[0.04]', b: 'border-red-500/15', dot: 'bg-red-400' },
-    w: { c: 'text-amber-400', bg: 'bg-amber-500/[0.04]', b: 'border-amber-500/15', dot: 'bg-amber-400' },
-    s: { c: 'text-emerald-400', bg: 'bg-emerald-500/[0.04]', b: 'border-emerald-500/15', dot: 'bg-emerald-400' },
-    i: { c: 'text-blue-400', bg: 'bg-blue-500/[0.04]', b: 'border-blue-500/15', dot: 'bg-blue-400' },
+    c: { c: 'text-red-400', bg: 'bg-red-500/[0.04]', b: 'border-red-500/15', hi: 'text-red-400' },
+    w: { c: 'text-amber-400', bg: 'bg-amber-500/[0.04]', b: 'border-amber-500/15', hi: 'text-amber-400' },
+    s: { c: 'text-emerald-400', bg: 'bg-emerald-500/[0.04]', b: 'border-emerald-500/15', hi: 'text-emerald-400' },
+    i: { c: 'text-blue-400', bg: 'bg-blue-500/[0.04]', b: 'border-blue-500/15', hi: 'text-blue-400' },
   }[s]
   return (
     <div className={`rounded-lg border ${cfg.b} ${cfg.bg} px-4 py-3`}>
-      <div className={`text-[14px] font-semibold ${cfg.c} mb-1`}>{title}</div>
-      <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)] mb-2">{desc}</div>
-      <div className="space-y-1">
-        {items.map(c => (
-          <div key={c.campaign_id} className="flex items-baseline gap-2 text-[13px]">
-            <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot} shrink-0 mt-1.5`} />
-            <span className="text-[hsl(var(--foreground))] font-medium">{c.title}</span>
-            <span className="text-[hsl(var(--muted-foreground)/0.5)] text-[12px]">— {detail(c)}</span>
-          </div>
-        ))}
+      <div className={`text-[15px] font-bold ${cfg.c} mb-1`}>{title}</div>
+      <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)] mb-3">{desc}</div>
+      <div className="space-y-2">
+        {items.map(c => {
+          const m = metrics(c)
+          return (
+            <div key={c.campaign_id} className="rounded-md border border-[hsl(var(--border)/0.15)] bg-[hsl(var(--card))] px-3 py-2">
+              <div className="text-[14px] font-semibold text-[hsl(var(--foreground))] mb-1 truncate" title={c.title}>{c.title}</div>
+              <div className="flex flex-wrap gap-x-5 gap-y-1">
+                {m.map((item, i) => (
+                  <span key={i} className="text-[14px]">
+                    <span className="text-[hsl(var(--muted-foreground)/0.5)]">{item.l}: </span>
+                    <span className={`font-bold ${item.hi ? cfg.hi : 'text-[hsl(var(--foreground))]'}`}>{item.v}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
 }
 
-function Rec({ s, t }: { s: 'c' | 'w' | 's' | 'i'; t: string }) {
-  const cfg = {
-    c: { i: <AlertCircle className="h-3.5 w-3.5" />, c: 'text-red-400', bg: 'bg-red-500/[0.04]', b: 'border-red-500/15' },
-    w: { i: <AlertTriangle className="h-3.5 w-3.5" />, c: 'text-amber-400', bg: 'bg-amber-500/[0.04]', b: 'border-amber-500/15' },
-    s: { i: <TrendingUp className="h-3.5 w-3.5" />, c: 'text-emerald-400', bg: 'bg-emerald-500/[0.04]', b: 'border-emerald-500/15' },
-    i: { i: <Info className="h-3.5 w-3.5" />, c: 'text-blue-400', bg: 'bg-blue-500/[0.04]', b: 'border-blue-500/15' },
-  }[s]
-  return (
-    <div className={`flex items-start gap-2 rounded-lg border ${cfg.b} ${cfg.bg} px-3 py-2`}>
-      <span className={`mt-0.5 shrink-0 ${cfg.c}`}>{cfg.i}</span>
-      <span className="text-[13px] text-[hsl(var(--foreground))]">{t}</span>
-    </div>
-  )
-}
