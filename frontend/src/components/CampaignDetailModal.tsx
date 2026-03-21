@@ -658,6 +658,46 @@ export function CampaignDetailModal({
     })
     const sortedDays = Object.keys(byDay).sort((a, b) => b.localeCompare(a))
 
+    // Build impact data from daily stats
+    const sortedStats = [...stats].sort((a, b) => a.dt.localeCompare(b.dt))
+    const dateIdx = new Map(sortedStats.map((d, i) => [d.dt, i]))
+    const avgArr = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+
+    const calcImpact = (eventDate: string) => {
+      const idx = dateIdx.get(eventDate)
+      if (idx === undefined) return null
+      const before = sortedStats.slice(Math.max(0, idx - 7), idx)
+      const after = sortedStats.slice(idx + 1, Math.min(sortedStats.length, idx + 8))
+      if (before.length < 3 || after.length < 3) return { insufficient: true, afterDays: after.length }
+      const pct = (key: keyof CampaignStatsRow) => {
+        const bv = avgArr(before.map(d => Number(d[key])))
+        const av = avgArr(after.map(d => Number(d[key])))
+        return bv > 0 ? ((av - bv) / bv) * 100 : 0
+      }
+      return {
+        insufficient: false,
+        afterDays: after.length,
+        spend: pct('spend'),
+        views: pct('views'),
+        clicks: pct('clicks'),
+        orders: pct('orders'),
+        drr: pct('drr'),
+        revenue: pct('revenue'),
+      }
+    }
+
+    const ImpactLabel = ({ label, d, inv }: { label: string; d: number; inv?: boolean }) => {
+      const color = inv
+        ? (d < -5 ? 'text-emerald-400' : d > 5 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground)/0.5)]')
+        : (d > 5 ? 'text-emerald-400' : d < -5 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground)/0.5)]')
+      return (
+        <span className="text-[13px]">
+          <span className="text-[hsl(var(--muted-foreground)/0.5)]">{label}</span>{' '}
+          <span className={`font-semibold ${color}`}>{d > 0 ? '+' : ''}{d.toFixed(0)}%</span>
+        </span>
+      )
+    }
+
     return (
       <div className="space-y-5 max-h-[450px] overflow-y-auto pr-1">
         {sortedDays.map(day => {
@@ -672,6 +712,9 @@ export function CampaignDetailModal({
             else if (same(d, yesterday)) dayLabel = 'Вчера'
             else dayLabel = format(d, 'dd MMMM — EEEE', { locale: ru })
           } catch { dayLabel = day }
+
+          // Calculate impact for this day's events
+          const impact = calcImpact(day)
 
           return (
             <div key={day}>
@@ -749,6 +792,28 @@ export function CampaignDetailModal({
                   )
                 })}
               </div>
+
+              {/* Event Impact — after all events of this day */}
+              {impact && !impact.insufficient && (
+                <div className="mt-2 ml-11 rounded-lg border border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.05)] px-4 py-2.5">
+                  <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)] mb-1.5">
+                    📊 Влияние (7 дн. до → {impact.afterDays} дн. после)
+                  </div>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    <ImpactLabel label="Расход" d={impact.spend!} inv />
+                    <ImpactLabel label="Показы" d={impact.views!} />
+                    <ImpactLabel label="Клики" d={impact.clicks!} />
+                    <ImpactLabel label="Заказы" d={impact.orders!} />
+                    <ImpactLabel label="Выручка" d={impact.revenue!} />
+                    <ImpactLabel label="ДРР" d={impact.drr!} inv />
+                  </div>
+                </div>
+              )}
+              {impact && impact.insufficient && (
+                <div className="mt-2 ml-11 text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">
+                  Мало данных после события (нужно ≥3 дней)
+                </div>
+              )}
             </div>
           )
         })}
