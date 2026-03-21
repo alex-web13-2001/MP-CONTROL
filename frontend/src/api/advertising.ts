@@ -182,3 +182,45 @@ export async function getEventsDetail(
   })
   return res.data
 }
+
+// ── Per-campaign daily stats ─────────────────────────────────────
+
+export interface CampaignDailyPoint {
+  date: string
+  spend: number
+  views: number
+  clicks: number
+  cart: number
+  orders: number
+  revenue: number
+  ctr: number
+  drr: number
+}
+
+export interface CampaignEvent {
+  id: number
+  date: string
+  time: string
+  event_type: string
+  category: string
+  label: string
+  detail: string
+  campaign_title: string
+  nm_id: number | null
+}
+
+export interface CampaignDailyStatsResponse {
+  campaigns_daily: Record<number, CampaignDailyPoint[]>
+  events_by_campaign: Record<number, CampaignEvent[]>
+}
+
+export async function getCampaignDailyStats(
+  shopId: number,
+  dateFrom: string,
+  dateTo: string,
+): Promise<CampaignDailyStatsResponse> {
+  const res = await apiClient.get<CampaignDailyStatsResponse>('/advertising-analytics/campaign-daily-stats', {
+    params: { shop_id: shopId, date_from: dateFrom, date_to: dateTo },
+  })
+  return res.data
+}

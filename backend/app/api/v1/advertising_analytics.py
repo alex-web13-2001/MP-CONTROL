@@ -930,8 +930,239 @@ async def _build_ozon_analytics(
 
 
 # ══════════════════════════════════════════════════════════════════
-# Wildberries Analytics (fact_advert_stats_v3)
+# Per-campaign daily stats for before/after event analysis
 # ══════════════════════════════════════════════════════════════════
+
+@router.get("/campaign-daily-stats")
+async def campaign_daily_stats(
+    shop_id: int = Query(...),
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Per-campaign daily metrics from fact_ozon_ad_daily.
+    Returns daily spend/views/clicks/cart/orders/revenue/ctr/drr per campaign.
+    Also returns events matched to campaigns (via campaign_id and product nm_id).
+    """
+    shop_result = await db.execute(
+        sa_text("SELECT id, marketplace FROM shops WHERE id = :shop_id AND user_id = :user_id"),
+        {"shop_id": shop_id, "user_id": str(current_user.id)},
+    )
+    shop_row = shop_result.fetchone()
+    if not shop_row:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+    marketplace = shop_row[1]
+
+    if marketplace != "ozon":
+        return {"campaigns": {}, "events": []}
+
+    try:
+        start_date = date.fromisoformat(date_from)
+        end_date = date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format")
+
+    from app.core.clickhouse import get_clickhouse_client
+    ch = get_clickhouse_client()
+
+    # Fetch per-campaign daily stats
+    rows = ch.query("""
+        SELECT
+            campaign_id,
+            dt AS day,
+            sum(money_spent) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(add_to_cart) AS t_cart,
+            sum(orders) + sum(model_orders) AS t_orders,
+            sum(revenue) + sum(model_revenue) AS t_revenue,
+            CASE WHEN sum(views) > 0
+                THEN round(sum(clicks) / sum(views) * 100, 2) ELSE 0
+            END AS t_ctr,
+            CASE WHEN (sum(revenue) + sum(model_revenue)) > 0
+                THEN round(sum(money_spent) / (sum(revenue) + sum(model_revenue)) * 100, 1) ELSE 0
+            END AS t_drr
+        FROM mms_analytics.fact_ozon_ad_daily FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND dt >= {start:Date}
+          AND dt <= {end:Date}
+        GROUP BY campaign_id, day
+        ORDER BY campaign_id, day
+    """, parameters={
+        "shop_id": shop_id,
+        "start": start_date,
+        "end": end_date,
+    }).result_rows
+
+    # Build per-campaign daily map: {campaign_id: [{date, metrics...}]}
+    campaigns_daily: dict = {}
+    for row in rows:
+        cid = int(row[0])
+        if cid not in campaigns_daily:
+            campaigns_daily[cid] = []
+        campaigns_daily[cid].append({
+            "date": str(row[1]),
+            "spend": round(float(row[2]), 2),
+            "views": int(row[3]),
+            "clicks": int(row[4]),
+            "cart": int(row[5]),
+            "orders": int(row[6]),
+            "revenue": round(float(row[7]), 2),
+            "ctr": float(row[8]),
+            "drr": float(row[9]),
+        })
+
+    # Fetch events for this period with campaign and product info
+    events_result = await db.execute(
+        sa_text("""
+            SELECT id, created_at, event_type, advert_id, nm_id,
+                   old_value, new_value, event_metadata
+            FROM event_log
+            WHERE shop_id = :shop_id
+              AND created_at >= :date_from
+              AND created_at < :date_to_excl
+              AND event_type = ANY(:event_types)
+            ORDER BY created_at
+        """),
+        {
+            "shop_id": shop_id,
+            "date_from": start_date,
+            "date_to_excl": end_date + timedelta(days=1),
+            "event_types": AD_CHART_EVENT_TYPES,
+        },
+    )
+    raw_events = events_result.fetchall()
+
+    # Build campaign_id -> SKU mapping from fact_ozon_ad_daily for product event matching
+    sku_map_rows = ch.query("""
+        SELECT DISTINCT campaign_id, sku
+        FROM mms_analytics.fact_ozon_ad_daily FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND dt >= {start:Date}
+          AND dt <= {end:Date}
+    """, parameters={
+        "shop_id": shop_id,
+        "start": start_date,
+        "end": end_date,
+    }).result_rows
+    
+    # Also get product_id mapping from dim_ozon_products
+    sku_to_product = {}
+    product_to_campaigns: dict = {}  # product_id -> [campaign_ids]
+    campaign_skus: dict = {}  # campaign_id -> [skus]
+    
+    for row in sku_map_rows:
+        cid, sku = int(row[0]), int(row[1])
+        if cid not in campaign_skus:
+            campaign_skus[cid] = []
+        campaign_skus[cid].append(sku)
+    
+    # Get product_id for all SKUs
+    all_skus = list({s for sks in campaign_skus.values() for s in sks})
+    if all_skus:
+        prod_result = await db.execute(
+            sa_text("""
+                SELECT sku, product_id FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND sku = ANY(:skus)
+            """),
+            {"shop_id": shop_id, "skus": all_skus},
+        )
+        for row in prod_result:
+            sku_to_product[int(row[0])] = int(row[1])
+    
+    # Build product_id -> campaign_ids mapping
+    for cid, skus in campaign_skus.items():
+        for sku in skus:
+            pid = sku_to_product.get(sku)
+            if pid:
+                if pid not in product_to_campaigns:
+                    product_to_campaigns[pid] = set()
+                product_to_campaigns[pid].add(cid)
+
+    # Process events and match to campaigns
+    events_by_campaign: dict = {}  # campaign_id -> [{date, type, detail}]
+    
+    for ev in raw_events:
+        ev_id, created_at, event_type, advert_id, nm_id, old_val, new_val, metadata = ev
+        
+        cat = EVENT_TYPE_TO_CATEGORY.get(event_type, "other")
+        label = EVENT_LABELS.get(event_type, event_type)
+        ev_date = created_at.strftime("%Y-%m-%d") if created_at else ""
+        ev_time = created_at.strftime("%H:%M") if created_at else ""
+        
+        meta = {}
+        if metadata:
+            if isinstance(metadata, str):
+                try:
+                    meta = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            elif isinstance(metadata, dict):
+                meta = metadata
+        
+        # Build detail string
+        detail = ""
+        if event_type in ("OZON_BID_CHANGE", "BID_CHANGE"):
+            old_fmt = f"{float(old_val):.2f} ₽" if old_val else ""
+            new_fmt = f"{float(new_val):.2f} ₽" if new_val else ""
+            detail = f"{old_fmt} → {new_fmt}"
+        elif event_type in ("OZON_BUDGET_CHANGE",):
+            old_fmt = f"{float(old_val):,.0f} ₽" if old_val else ""
+            new_fmt = f"{float(new_val):,.0f} ₽" if new_val else ""
+            detail = f"{old_fmt} → {new_fmt}"
+        elif event_type in ("OZON_STATUS_CHANGE", "STATUS_CHANGE"):
+            sl = {"CAMPAIGN_STATE_RUNNING": "Активна", "CAMPAIGN_STATE_STOPPED": "Остановлена", "CAMPAIGN_STATE_INACTIVE": "Неактивна"}
+            detail = f"{sl.get(old_val, old_val or '')} → {sl.get(new_val, new_val or '')}"
+        elif event_type in ("OZON_PRICE_CHANGE", "PRICE_CHANGE"):
+            old_fmt = f"{float(old_val):,.0f} ₽" if old_val else ""
+            new_fmt = f"{float(new_val):,.0f} ₽" if new_val else ""
+            detail = f"{old_fmt} → {new_fmt}"
+        
+        campaign_title = meta.get("campaign_title", "") or meta.get("title", "")
+        
+        event_data = {
+            "id": ev_id,
+            "date": ev_date,
+            "time": ev_time,
+            "event_type": event_type,
+            "category": cat,
+            "label": label,
+            "detail": detail,
+            "campaign_title": campaign_title,
+            "nm_id": int(nm_id) if nm_id else None,
+        }
+        
+        # Match event to campaigns
+        matched_campaigns = set()
+        
+        # Direct match via advert_id (advertising events)
+        if advert_id:
+            matched_campaigns.add(int(advert_id))
+        
+        # Match via product_id (price, content, stock events)
+        if nm_id:
+            nm_int = int(nm_id)
+            # nm_id could be product_id directly
+            if nm_int in product_to_campaigns:
+                matched_campaigns.update(product_to_campaigns[nm_int])
+            # or it could be a SKU
+            pid = sku_to_product.get(nm_int)
+            if pid and pid in product_to_campaigns:
+                matched_campaigns.update(product_to_campaigns[pid])
+        
+        for cid in matched_campaigns:
+            if cid not in events_by_campaign:
+                events_by_campaign[cid] = []
+            events_by_campaign[cid].append(event_data)
+
+    return {
+        "campaigns_daily": campaigns_daily,
+        "events_by_campaign": events_by_campaign,
+    }
+
+
 
 async def _build_wb_analytics(
     ch, db: AsyncSession,
