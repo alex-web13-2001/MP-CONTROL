@@ -1,12 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair, CalendarDays,
+  X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair,
   TrendingUp, TrendingDown, Activity, DollarSign, Palette,
   Image, Plus, Minus, AlertTriangle, Rocket, ArrowRight, ArrowUp, ArrowDown,
   type LucideIcon,
 } from 'lucide-react'
 import { format, parseISO, subDays } from 'date-fns'
 import { ru } from 'date-fns/locale'
+import { DateRangePicker } from './DateRangePicker'
 import {
   ComposedChart,
   Area,
@@ -1086,22 +1087,11 @@ export function CampaignDetailModal({
             ))}
           </div>
           {/* Custom date range */}
-          <div className="flex items-center gap-2">
-            <CalendarDays className="w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
-            <input
-              type="date"
-              value={period === 'custom' ? customFrom : startDate}
-              onChange={(e) => { setCustomFrom(e.target.value); setCustomTo(prev => prev || endDate); setPeriod('custom') }}
-              className="px-2 py-1 text-[13px] bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border))] rounded-lg text-[hsl(var(--foreground))] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
-            />
-            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)]">—</span>
-            <input
-              type="date"
-              value={period === 'custom' ? customTo : endDate}
-              onChange={(e) => { setCustomTo(e.target.value); setCustomFrom(prev => prev || startDate); setPeriod('custom') }}
-              className="px-2 py-1 text-[13px] bg-[hsl(var(--muted)/0.2)] border border-[hsl(var(--border))] rounded-lg text-[hsl(var(--foreground))] focus:outline-none focus:ring-1 focus:ring-[hsl(var(--primary)/0.5)]"
-            />
-          </div>
+          <DateRangePicker
+            from={startDate}
+            to={endDate}
+            onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); setPeriod('custom') }}
+          />
           {items.length > 0 && (
             <div className="relative">
               <button onClick={() => setShowSkuDropdown(!showSkuDropdown)} className="flex items-center gap-2 px-3 py-1.5 text-[12px] border border-[hsl(var(--border))] rounded-lg hover:bg-[hsl(var(--muted)/0.3)] transition-colors">
