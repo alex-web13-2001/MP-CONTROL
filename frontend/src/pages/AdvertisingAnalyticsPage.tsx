@@ -44,6 +44,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CampaignDetailModal } from '@/components/CampaignDetailModal'
+import { CampaignInsights } from '@/components/CampaignInsights'
 import { useAppStore } from '@/stores/appStore'
 import {
   getAdvertisingAnalytics,
@@ -1644,6 +1645,22 @@ export default function AdvertisingAnalyticsPage() {
           </CardHeader>
           <CardContent>
             <AdsChart data={data.chart_daily} eventsByDay={data.events_by_day || {}} shopId={currentShop!.id} />
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* ── Campaign Insights ── */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.35 }}
+      >
+        <Card>
+          <CardContent className="pt-5">
+            <CampaignInsights
+              campaigns={data.campaigns_table}
+              eventsByDay={data.events_by_day || {}}
+            />
           </CardContent>
         </Card>
       </motion.div>
