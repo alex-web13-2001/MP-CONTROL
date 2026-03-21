@@ -1286,9 +1286,9 @@ function CampaignsTable({
                       )}
                       <div className="min-w-0">
                         <p className="text-[14px] font-semibold truncate max-w-[220px]">{p.offer_id || String(p.sku)}</p>
-                        {p.name && <p className="text-[12px] text-[hsl(var(--foreground)/0.7)] truncate max-w-[220px]">{p.name}</p>}
+                        {p.name && <p className="text-[12px] text-[hsl(var(--foreground)/0.7)] leading-tight">{p.name}</p>}
                         <p className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
-                          ID: {p.product_id} · SKU: {p.sku}
+                          SKU: {p.sku}
                         </p>
                         {p.campaigns.length > 0 && (
                           <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)] truncate max-w-[200px]" title={p.campaigns.join(', ')}>
