@@ -557,34 +557,130 @@ function TabEvents({ loading, withEvents, evtSum, campaignDaily, eventsByCampaig
   eventsByCampaign: Record<number, CampaignEvent[]>
   campaignTotalRev: Record<number, number>
 }) {
+  const [eventsGroupBy, setEventsGroupBy] = useState<'campaigns' | 'dates'>('dates')
+
   if (loading) return <div className="py-4 text-center text-[13px] text-[hsl(var(--muted-foreground)/0.4)]">Загрузка...</div>
   if (withEvents.length === 0) return (
     <div className="py-3 text-center text-[13px] text-[hsl(var(--muted-foreground)/0.4)]">
       {evtSum.t > 0 ? 'Недостаточно данных (нужно ≥3 дня статистики)' : 'Нет событий'}
     </div>
   )
+
+  // Build chronological data: group all events by date
+  const chronoData = (() => {
+    const dateMap = new Map<string, Array<{ campaign: CampaignRow; event: CampaignEvent; delta: Record<string, number> | null; afterDays: number }>>()
+    for (const c of withEvents) {
+      const events = eventsByCampaign[c.campaign_id] || []
+      const daily = campaignDaily[c.campaign_id] || []
+      const sorted = [...daily].sort((a, b) => a.date.localeCompare(b.date))
+      const dateIdx = new Map(sorted.map((d, i) => [d.date, i]))
+
+      for (const ev of events) {
+        const idx = dateIdx.get(ev.date)
+        let delta: Record<string, number> | null = null
+        let afterDays = 0
+        if (idx !== undefined) {
+          const before = sorted.slice(Math.max(0, idx - 7), idx)
+          const after = sorted.slice(idx + 1, Math.min(sorted.length, idx + 8))
+          afterDays = after.length
+          if (before.length >= 3 && after.length >= 3) {
+            const bS = avg(before.map(d => d.spend)), aS = avg(after.map(d => d.spend))
+            const bV = avg(before.map(d => d.views)), aV = avg(after.map(d => d.views))
+            const bC = avg(before.map(d => d.clicks)), aC = avg(after.map(d => d.clicks))
+            const bO = avg(before.map(d => d.orders)), aO = avg(after.map(d => d.orders))
+            const bD = avg(before.map(d => d.drr)), aD = avg(after.map(d => d.drr))
+            delta = {
+              spend: bS > 0 ? ((aS - bS) / bS) * 100 : 0,
+              views: bV > 0 ? ((aV - bV) / bV) * 100 : 0,
+              clicks: bC > 0 ? ((aC - bC) / bC) * 100 : 0,
+              orders: bO > 0 ? ((aO - bO) / bO) * 100 : 0,
+              drr: bD > 0 ? ((aD - bD) / bD) * 100 : 0,
+            }
+          }
+        }
+        if (!dateMap.has(ev.date)) dateMap.set(ev.date, [])
+        dateMap.get(ev.date)!.push({ campaign: c, event: ev, delta, afterDays })
+      }
+    }
+    return [...dateMap.entries()].sort((a, b) => b[0].localeCompare(a[0])) // newest first
+  })()
+
   return (
     <>
-      <p className="text-[13px] text-[hsl(var(--muted-foreground))] mb-2">
-        Для каждой кампании: событие → изменение метрик (7 дней до/после).
-      </p>
-      <div className="flex gap-3 mb-3 text-[12px]">
-        {evtSum.a > 0 && <span className="text-blue-400">● Рекламные {evtSum.a}</span>}
-        {evtSum.c > 0 && <span className="text-purple-400">● Контент {evtSum.c}</span>}
-        {evtSum.p > 0 && <span className="text-amber-400">● Цена {evtSum.p}</span>}
-        {evtSum.s > 0 && <span className="text-cyan-400">● Склад {evtSum.s}</span>}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex gap-3 text-[12px]">
+          {evtSum.a > 0 && <span className="text-blue-400">● Рекламные {evtSum.a}</span>}
+          {evtSum.c > 0 && <span className="text-purple-400">● Контент {evtSum.c}</span>}
+          {evtSum.p > 0 && <span className="text-amber-400">● Цена {evtSum.p}</span>}
+          {evtSum.s > 0 && <span className="text-cyan-400">● Склад {evtSum.s}</span>}
+        </div>
+        <div className="flex items-center gap-0.5 p-0.5 bg-[hsl(var(--muted)/0.15)] rounded-md">
+          <button onClick={() => setEventsGroupBy('dates')} className={`px-2.5 py-1 text-[12px] font-medium rounded transition-all ${eventsGroupBy === 'dates' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground)/0.5)]'}`}>По датам</button>
+          <button onClick={() => setEventsGroupBy('campaigns')} className={`px-2.5 py-1 text-[12px] font-medium rounded transition-all ${eventsGroupBy === 'campaigns' ? 'bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground)/0.5)]'}`}>По кампаниям</button>
+        </div>
       </div>
-      <div className="space-y-2">
-        {withEvents.map(c => (
-          <InlineEventImpact
-            key={c.campaign_id}
-            campaign={c}
-            dailyData={campaignDaily[c.campaign_id] || []}
-            events={eventsByCampaign[c.campaign_id] || []}
-            totalRevenue={getTotalRev(c, campaignTotalRev)}
-          />
-        ))}
-      </div>
+
+      {eventsGroupBy === 'campaigns' ? (
+        <div className="space-y-2">
+          {withEvents.map(c => (
+            <InlineEventImpact
+              key={c.campaign_id}
+              campaign={c}
+              dailyData={campaignDaily[c.campaign_id] || []}
+              events={eventsByCampaign[c.campaign_id] || []}
+              totalRevenue={getTotalRev(c, campaignTotalRev)}
+            />
+          ))}
+        </div>
+      ) : (
+        /* Chronological by date */
+        <div className="space-y-3">
+          {chronoData.map(([date, items]) => {
+            const dateStr = new Date(date + 'T00:00').toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', weekday: 'short' })
+            return (
+              <div key={date} className="rounded-lg border border-[hsl(var(--border)/0.2)] bg-[hsl(var(--card))] p-4">
+                <div className="text-[16px] font-bold text-[hsl(var(--foreground))] mb-3 pb-2 border-b border-[hsl(var(--border)/0.15)]">
+                  {dateStr}
+                  <span className="ml-2 text-[13px] font-normal text-[hsl(var(--muted-foreground)/0.5)]">{items.length} событ{items.length === 1 ? 'ие' : items.length < 5 ? 'ия' : 'ий'}</span>
+                </div>
+                <div className="space-y-2">
+                  {items.map(({ campaign, event: e, delta, afterDays }) => {
+                    const hasChange = delta && Object.values(delta).some(v => Math.abs(v) > 5)
+                    return (
+                      <div key={e.id} className="rounded-md border border-[hsl(var(--border)/0.1)] bg-[hsl(var(--muted)/0.03)] p-3">
+                        <div className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 text-[14px] leading-relaxed">
+                          <span className="text-[hsl(var(--muted-foreground)/0.5)]">{e.time}</span>
+                          <span className={`font-semibold ${
+                            e.category === 'advertising' ? 'text-blue-400' :
+                            e.category === 'price' ? 'text-amber-400' :
+                            e.category === 'content' ? 'text-purple-400' : 'text-cyan-400'
+                          }`}>{e.label}</span>
+                          {e.offer_id && <span className="text-[13px] font-medium text-[hsl(var(--foreground)/0.8)] bg-[hsl(var(--muted)/0.15)] px-1.5 py-0.5 rounded">{e.offer_id}</span>}
+                          {e.detail && <span className="text-[13px] text-[hsl(var(--foreground)/0.7)]">{e.detail}</span>}
+                        </div>
+                        <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">
+                          {campaign.title}
+                        </div>
+                        {hasChange && delta ? (
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 pt-2 border-t border-[hsl(var(--border)/0.1)]">
+                            <InD label="Расход" d={delta.spend} inv />
+                            <InD label="Показы" d={delta.views} />
+                            <InD label="Клики" d={delta.clicks} />
+                            <InD label="Заказы" d={delta.orders} />
+                            <InD label="ДРР" d={delta.drr} inv />
+                          </div>
+                        ) : afterDays < 3 ? (
+                          <div className="text-[12px] text-[hsl(var(--muted-foreground)/0.4)] mt-1">Мало данных после события</div>
+                        ) : null}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </>
   )
 }
