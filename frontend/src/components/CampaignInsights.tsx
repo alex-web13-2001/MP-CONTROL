@@ -1,187 +1,164 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import {
   AlertTriangle,
-  TrendingDown,
+  TrendingUp,
   Zap,
   ShoppingCart,
   Ban,
   Trophy,
   ThumbsUp,
-  ArrowDown,
   DollarSign,
   BarChart2,
+  ChevronDown,
+  ChevronUp,
+  ArrowRight,
+  Activity,
+  Target,
+  AlertCircle,
+  CheckCircle2,
+  Info,
 } from 'lucide-react'
 import type { CampaignRow, EventDaySummary } from '@/api/advertising'
 
 /* ═══════════════════════════════════════════════════════════
-   Types
+   Helpers
    ═══════════════════════════════════════════════════════════ */
 
-type Severity = 'critical' | 'warning' | 'success' | 'info'
-
-interface Insight {
-  id: string
-  severity: Severity
-  icon: React.ReactNode
-  title: string
-  description: string
-  campaigns: string[]
-  metric?: string
+function fmt(v: number): string {
+  return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 })
+}
+function fmtMoney(v: number): string {
+  return fmt(v) + ' ₽'
+}
+function pct(v: number): string {
+  return v.toFixed(1) + '%'
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Rule engine
+   Analysis logic
    ═══════════════════════════════════════════════════════════ */
 
-function formatMoney(v: number): string {
-  return v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
+interface ProblemCampaign {
+  campaign: CampaignRow
+  problems: string[]
+  severity: 'critical' | 'warning'
+  wastedSpend: number
 }
 
-function generateInsights(
+interface GoodCampaign {
+  campaign: CampaignRow
+  romi: number
+  cpo: number
+  highlights: string[]
+}
+
+interface AnalysisResult {
+  problemCampaigns: ProblemCampaign[]
+  goodCampaigns: GoodCampaign[]
+  totalWasted: number
+  totalSpend: number
+  wastePercent: number
+  avgCpc: number
+  avgDrr: number
+  avgCpo: number
+  totalOrders: number
+  totalRevenue: number
+  eventsSummary: { advertising: number; content: number; price: number; stock: number; total: number }
+  activeCampaigns: number
+  campaignsWithOrders: number
+  campaignsWithoutOrders: number
+}
+
+function analyzeAll(
   campaigns: CampaignRow[],
   eventsByDay: Record<string, EventDaySummary>,
-): Insight[] {
-  const insights: Insight[] = []
-  const active = campaigns.filter((c) => c.status !== 'archived' && c.status !== 'stopped')
-  if (active.length === 0) return insights
-
-  const avgCpc = active.reduce((s, c) => s + c.avg_cpc, 0) / active.length
+): AnalysisResult {
+  const active = campaigns.filter((c) => c.status !== 'archived')
   const totalSpend = active.reduce((s, c) => s + c.spend, 0)
+  const totalRevenue = active.reduce((s, c) => s + c.revenue, 0)
+  const totalOrders = active.reduce((s, c) => s + c.orders, 0)
+  const withOrders = active.filter((c) => c.orders > 0)
+  const withoutOrders = active.filter((c) => c.orders === 0 && c.spend > 0)
 
-  // 1. Слив бюджета без заказов
-  const noOrders = active.filter((c) => c.spend > 1500 && c.orders === 0)
-  if (noOrders.length > 0) {
-    const wastedSpend = noOrders.reduce((s, c) => s + c.spend, 0)
-    insights.push({
-      id: 'no-orders',
-      severity: 'critical',
-      icon: <Ban className="h-4 w-4" />,
-      title: `${noOrders.length} ${noOrders.length === 1 ? 'кампания' : noOrders.length < 5 ? 'кампании' : 'кампаний'} без заказов`,
-      description: `Потрачено ${formatMoney(wastedSpend)} без единого заказа. Рекомендуется отключить или снизить ставки.`,
-      campaigns: noOrders.map((c) => c.title),
-      metric: formatMoney(wastedSpend),
-    })
-  }
-
-  // 2. Слив без корзин
-  const noCarts = active.filter((c) => c.spend > 800 && c.cart === 0 && c.orders === 0)
-  if (noCarts.length > 0 && noCarts.length !== noOrders.length) {
-    insights.push({
-      id: 'no-carts',
-      severity: 'critical',
-      icon: <ShoppingCart className="h-4 w-4" />,
-      title: `${noCarts.length} ${noCarts.length === 1 ? 'кампания' : 'кампаний'} без корзин`,
-      description: `Нет ни одного добавления в корзину — проблема скорее всего в карточке товара (фото, цена, отзывы), а не в рекламе.`,
-      campaigns: noCarts.map((c) => c.title),
-    })
-  }
-
-  // 3. Убыточные кампании (DRR > 100%)
-  const unprofitable = active.filter((c) => c.drr > 100 && c.spend > 500)
-  if (unprofitable.length > 0) {
-    const lossSpend = unprofitable.reduce((s, c) => s + c.spend, 0)
-    const lossRevenue = unprofitable.reduce((s, c) => s + c.revenue, 0)
-    insights.push({
-      id: 'unprofitable',
-      severity: 'critical',
-      icon: <TrendingDown className="h-4 w-4" />,
-      title: `${unprofitable.length} убыточн${unprofitable.length === 1 ? 'ая' : 'ых'} кампани${unprofitable.length === 1 ? 'я' : 'й'}`,
-      description: `ДРР > 100% — расход (${formatMoney(lossSpend)}) превышает выручку (${formatMoney(lossRevenue)}). Снизьте ставки.`,
-      campaigns: unprofitable.map((c) => `${c.title} (ДРР ${c.drr.toFixed(1)}%)`),
-      metric: `${formatMoney(lossSpend - lossRevenue)} убыток`,
-    })
-  }
-
-  // 4. Высокий DRR (50-100%)
-  const highDrr = active.filter((c) => c.drr >= 50 && c.drr <= 100 && c.spend > 500)
-  if (highDrr.length > 0) {
-    insights.push({
-      id: 'high-drr',
-      severity: 'warning',
-      icon: <AlertTriangle className="h-4 w-4" />,
-      title: `${highDrr.length} кампани${highDrr.length === 1 ? 'я' : 'й'} с высоким ДРР`,
-      description: `ДРР от 50% до 100% — реклама на грани рентабельности. Следите за динамикой.`,
-      campaigns: highDrr.map((c) => `${c.title} (ДРР ${c.drr.toFixed(1)}%)`),
-    })
-  }
-
-  // 5. Дорогой клик без конверсии
-  const expensiveClicks = active.filter(
-    (c) => c.avg_cpc > avgCpc * 1.8 && c.avg_cpc > 10 && c.orders === 0 && c.clicks > 10,
-  )
-  if (expensiveClicks.length > 0) {
-    insights.push({
-      id: 'expensive-clicks',
-      severity: 'warning',
-      icon: <DollarSign className="h-4 w-4" />,
-      title: `Дорогие клики без конверсии`,
-      description: `CPC выше среднего (${avgCpc.toFixed(1)}₽) при нулевых заказах. Снизьте ставку.`,
-      campaigns: expensiveClicks.map((c) => `${c.title} (CPC ${c.avg_cpc.toFixed(1)}₽)`),
-    })
-  }
-
-  // 6. Лучшие кампании по ROMI
-  const withRevenue = active
-    .filter((c) => c.orders >= 2 && c.spend > 100 && c.revenue > 0)
-    .sort((a, b) => b.revenue / b.spend - a.revenue / a.spend)
-    .slice(0, 3)
-
-  if (withRevenue.length > 0) {
-    insights.push({
-      id: 'best-romi',
-      severity: 'success',
-      icon: <Trophy className="h-4 w-4" />,
-      title: `Топ ${withRevenue.length} по эффективности`,
-      description: `Лучшие кампании по соотношению выручка/расход.`,
-      campaigns: withRevenue.map(
-        (c) =>
-          `${c.title} — ROMI ${((c.revenue / c.spend) * 100).toFixed(0)}%, ДРР ${c.drr.toFixed(1)}%, ${c.orders} заказов`,
-      ),
-    })
-  }
-
-  // 7. Дешёвые заказы
+  const avgCpc = active.length > 0 ? active.reduce((s, c) => s + c.avg_cpc, 0) / active.length : 0
+  const avgDrr =
+    withOrders.length > 0 ? withOrders.reduce((s, c) => s + c.drr, 0) / withOrders.length : 0
   const avgCpo =
-    active.filter((c) => c.orders > 0).reduce((s, c) => s + c.spend / c.orders, 0) /
-    (active.filter((c) => c.orders > 0).length || 1)
+    withOrders.length > 0
+      ? withOrders.reduce((s, c) => s + c.spend / c.orders, 0) / withOrders.length
+      : 0
 
-  const cheapOrders = active
-    .filter((c) => c.orders >= 2 && c.spend / c.orders < avgCpo * 0.6)
-    .sort((a, b) => a.spend / a.orders - b.spend / b.orders)
-    .slice(0, 3)
+  const totalWasted = withoutOrders.reduce((s, c) => s + c.spend, 0)
 
-  if (cheapOrders.length > 0) {
-    insights.push({
-      id: 'cheap-orders',
-      severity: 'success',
-      icon: <ThumbsUp className="h-4 w-4" />,
-      title: `Дешёвые заказы`,
-      description: `CPO значительно ниже среднего (${formatMoney(avgCpo)}).`,
-      campaigns: cheapOrders.map(
-        (c) => `${c.title} — CPO ${formatMoney(c.spend / c.orders)} (${c.orders} заказов)`,
-      ),
-    })
+  // Problem campaigns
+  const problemCampaigns: ProblemCampaign[] = []
+
+  for (const c of active) {
+    if (c.spend < 100) continue
+    const problems: string[] = []
+    let severity: 'critical' | 'warning' = 'warning'
+
+    if (c.orders === 0 && c.spend > 500) {
+      problems.push(`Расход ${fmtMoney(c.spend)} без единого заказа`)
+      severity = 'critical'
+    }
+    if (c.cart === 0 && c.orders === 0 && c.spend > 300) {
+      problems.push(`Нет добавлений в корзину — проблема в карточке товара`)
+      if (c.spend > 500) severity = 'critical'
+    }
+    if (c.drr > 100 && c.orders > 0) {
+      problems.push(
+        `ДРР ${pct(c.drr)} — расход (${fmtMoney(c.spend)}) превышает выручку (${fmtMoney(c.revenue)})`,
+      )
+      severity = 'critical'
+    }
+    if (c.drr >= 50 && c.drr <= 100 && c.orders > 0) {
+      problems.push(`ДРР ${pct(c.drr)} — на грани рентабельности`)
+    }
+    if (c.ctr < 0.5 && c.views > 3000) {
+      problems.push(`CTR ${pct(c.ctr)} при ${fmt(c.views)} показах — карточка не привлекает`)
+    }
+    if (c.avg_cpc > avgCpc * 2 && c.avg_cpc > 15 && c.orders === 0) {
+      problems.push(`CPC ${fmtMoney(c.avg_cpc)} — в ${(c.avg_cpc / avgCpc).toFixed(1)}x выше среднего`)
+    }
+
+    if (problems.length > 0) {
+      problemCampaigns.push({
+        campaign: c,
+        problems,
+        severity,
+        wastedSpend: c.orders === 0 ? c.spend : 0,
+      })
+    }
   }
 
-  // 8. Низкий CTR при большом кол-ве показов
-  const lowCtr = active.filter(
-    (c) => c.ctr < 0.5 && c.views > 3000 && c.spend > 300,
-  )
-  if (lowCtr.length > 0) {
-    insights.push({
-      id: 'low-ctr',
-      severity: 'warning',
-      icon: <BarChart2 className="h-4 w-4" />,
-      title: `Низкий CTR`,
-      description: `CTR ниже 0.5% при большом числе показов — карточка не привлекает внимание. Проверьте фото и цену.`,
-      campaigns: lowCtr.map(
-        (c) => `${c.title} — CTR ${c.ctr.toFixed(2)}%, ${c.views.toLocaleString()} показов`,
-      ),
-    })
-  }
+  // Sort: critical first, then by spend
+  problemCampaigns.sort((a, b) => {
+    if (a.severity !== b.severity) return a.severity === 'critical' ? -1 : 1
+    return b.campaign.spend - a.campaign.spend
+  })
 
-  // 9. События за период
-  const totalEvents = Object.values(eventsByDay).reduce(
+  // Good campaigns
+  const goodCampaigns: GoodCampaign[] = withOrders
+    .filter((c) => c.orders >= 2 && c.spend > 100)
+    .map((c) => {
+      const romi = c.spend > 0 ? (c.revenue / c.spend) * 100 : 0
+      const cpo = c.orders > 0 ? c.spend / c.orders : 0
+      const highlights: string[] = []
+
+      if (c.drr < 30 && c.drr > 0) highlights.push(`Низкий ДРР ${pct(c.drr)}`)
+      if (romi > 300) highlights.push(`ROMI ${fmt(romi)}%`)
+      if (cpo < avgCpo * 0.6 && avgCpo > 0) highlights.push(`Дешёвый CPO`)
+      if (c.ctr > 3) highlights.push(`Высокий CTR ${pct(c.ctr)}`)
+      if (c.cart_conv > 30) highlights.push(`Конверсия в корзину ${pct(c.cart_conv)}`)
+
+      return { campaign: c, romi, cpo, highlights }
+    })
+    .filter((g) => g.highlights.length > 0)
+    .sort((a, b) => b.romi - a.romi)
+
+  // Events summary
+  const eventsSummary = Object.values(eventsByDay).reduce(
     (acc, d) => ({
       advertising: acc.advertising + d.advertising,
       content: acc.content + d.content,
@@ -192,79 +169,78 @@ function generateInsights(
     { advertising: 0, content: 0, price: 0, stock: 0, total: 0 },
   )
 
-  if (totalEvents.total > 0) {
-    const parts: string[] = []
-    if (totalEvents.advertising > 0) parts.push(`${totalEvents.advertising} рекламных`)
-    if (totalEvents.content > 0) parts.push(`${totalEvents.content} контентных`)
-    if (totalEvents.price > 0) parts.push(`${totalEvents.price} ценовых`)
-    if (totalEvents.stock > 0) parts.push(`${totalEvents.stock} складских`)
-
-    insights.push({
-      id: 'events-summary',
-      severity: 'info',
-      icon: <Zap className="h-4 w-4" />,
-      title: `${totalEvents.total} событий за период`,
-      description: parts.join(', ') + '. Наведите на маркеры на графике для деталей.',
-      campaigns: [],
-    })
+  return {
+    problemCampaigns,
+    goodCampaigns,
+    totalWasted,
+    totalSpend,
+    wastePercent: totalSpend > 0 ? (totalWasted / totalSpend) * 100 : 0,
+    avgCpc,
+    avgDrr,
+    avgCpo,
+    totalOrders,
+    totalRevenue,
+    eventsSummary,
+    activeCampaigns: active.length,
+    campaignsWithOrders: withOrders.length,
+    campaignsWithoutOrders: withoutOrders.filter((c) => c.spend > 0).length,
   }
-
-  // 10. Общая сводка — доля расхода без заказов
-  const wasteRatio =
-    totalSpend > 0
-      ? active.filter((c) => c.orders === 0).reduce((s, c) => s + c.spend, 0) / totalSpend
-      : 0
-
-  if (wasteRatio > 0.3 && totalSpend > 3000) {
-    insights.push({
-      id: 'waste-ratio',
-      severity: 'warning',
-      icon: <ArrowDown className="h-4 w-4" />,
-      title: `${(wasteRatio * 100).toFixed(0)}% бюджета — без заказов`,
-      description: `${formatMoney(wasteRatio * totalSpend)} из ${formatMoney(totalSpend)} потрачено на кампании, которые не принесли ни одного заказа.`,
-      campaigns: [],
-    })
-  }
-
-  return insights
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Styles
+   Section components
    ═══════════════════════════════════════════════════════════ */
 
-const severityConfig: Record<
-  Severity,
-  { bg: string; border: string; icon: string; badge: string }
-> = {
-  critical: {
-    bg: 'bg-red-500/5',
-    border: 'border-red-500/20',
-    icon: 'text-red-400',
-    badge: 'bg-red-500/15 text-red-400',
-  },
-  warning: {
-    bg: 'bg-amber-500/5',
-    border: 'border-amber-500/20',
-    icon: 'text-amber-400',
-    badge: 'bg-amber-500/15 text-amber-400',
-  },
-  success: {
-    bg: 'bg-emerald-500/5',
-    border: 'border-emerald-500/20',
-    icon: 'text-emerald-400',
-    badge: 'bg-emerald-500/15 text-emerald-400',
-  },
-  info: {
-    bg: 'bg-blue-500/5',
-    border: 'border-blue-500/20',
-    icon: 'text-blue-400',
-    badge: 'bg-blue-500/15 text-blue-400',
-  },
+function SectionHeader({
+  icon,
+  title,
+  count,
+  color,
+  defaultOpen = true,
+  children,
+}: {
+  icon: React.ReactNode
+  title: string
+  count?: number
+  color: string
+  defaultOpen?: boolean
+  children: React.ReactNode
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  return (
+    <div className="rounded-xl border border-[hsl(var(--border)/0.5)] overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`w-full flex items-center justify-between px-4 py-3 text-left transition-colors hover:bg-[hsl(var(--muted)/0.15)]`}
+      >
+        <div className="flex items-center gap-2.5">
+          <span className={color}>{icon}</span>
+          <span className="text-[14px] font-semibold text-[hsl(var(--foreground))]">{title}</span>
+          {count !== undefined && (
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${color} bg-current/10`}
+              style={{ backgroundColor: 'currentcolor', opacity: 0.1 }}
+            >
+              <span style={{ opacity: 10 }}>{count}</span>
+            </span>
+          )}
+          {count !== undefined && (
+            <span className={`text-[12px] font-medium ${color}`}>{count}</span>
+          )}
+        </div>
+        {open ? (
+          <ChevronUp className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+        ) : (
+          <ChevronDown className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+        )}
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </div>
+  )
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Component
+   Main component
    ═══════════════════════════════════════════════════════════ */
 
 export function CampaignInsights({
@@ -274,98 +250,407 @@ export function CampaignInsights({
   campaigns: CampaignRow[]
   eventsByDay: Record<string, EventDaySummary>
 }) {
-  const insights = useMemo(
-    () => generateInsights(campaigns, eventsByDay),
-    [campaigns, eventsByDay],
-  )
+  const analysis = useMemo(() => analyzeAll(campaigns, eventsByDay), [campaigns, eventsByDay])
 
-  if (insights.length === 0) return null
+  if (campaigns.length === 0) return null
 
-  const criticalCount = insights.filter((i) => i.severity === 'critical').length
-  const warningCount = insights.filter((i) => i.severity === 'warning').length
-  const successCount = insights.filter((i) => i.severity === 'success').length
+  const {
+    problemCampaigns,
+    goodCampaigns,
+    totalWasted,
+    totalSpend,
+    wastePercent,
+    avgCpc,
+    avgDrr,
+    avgCpo,
+    totalOrders,
+    totalRevenue,
+    eventsSummary,
+    activeCampaigns,
+    campaignsWithOrders,
+    campaignsWithoutOrders,
+  } = analysis
 
   return (
-    <div className="space-y-3">
-      {/* Header row */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <h3 className="text-[15px] font-semibold text-[hsl(var(--foreground))]">
-            Анализ кампаний
-          </h3>
-          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
-            {insights.length} {insights.length === 1 ? 'наблюдение' : insights.length < 5 ? 'наблюдения' : 'наблюдений'}
-          </span>
+    <div className="space-y-4">
+      {/* ── Title ── */}
+      <div className="flex items-center gap-2.5">
+        <Activity className="h-5 w-5 text-[hsl(var(--primary))]" />
+        <h3 className="text-[16px] font-bold text-[hsl(var(--foreground))]">
+          Анализ рекламных кампаний
+        </h3>
+      </div>
+
+      {/* ── Summary bar ── */}
+      <div className="rounded-xl border border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.08)] p-4">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">Кампаний</div>
+            <div className="text-[15px] font-bold">{activeCampaigns}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">С заказами</div>
+            <div className="text-[15px] font-bold text-emerald-400">{campaignsWithOrders}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">Без заказов</div>
+            <div className="text-[15px] font-bold text-red-400">{campaignsWithoutOrders}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">Ср. CPC</div>
+            <div className="text-[15px] font-bold">{fmtMoney(avgCpc)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">Ср. ДРР</div>
+            <div className="text-[15px] font-bold">{pct(avgDrr)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mb-0.5">Ср. CPO</div>
+            <div className="text-[15px] font-bold">{fmtMoney(avgCpo)}</div>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          {criticalCount > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-400">
-              {criticalCount} критичн.
-            </span>
-          )}
-          {warningCount > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-400">
-              {warningCount} вним.
-            </span>
-          )}
-          {successCount > 0 && (
-            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
-              {successCount} хорошо
-            </span>
-          )}
+
+        {/* Text summary */}
+        <div className="mt-3 pt-3 border-t border-[hsl(var(--border)/0.3)] text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]">
+          <p>
+            За период потрачено <strong className="text-[hsl(var(--foreground))]">{fmtMoney(totalSpend)}</strong> на рекламу,
+            получено <strong className="text-[hsl(var(--foreground))]">{totalOrders} заказов</strong> на сумму{' '}
+            <strong className="text-[hsl(var(--foreground))]">{fmtMoney(totalRevenue)}</strong>.
+            {totalWasted > 0 && (
+              <>
+                {' '}Из них{' '}
+                <strong className="text-red-400">{fmtMoney(totalWasted)} ({pct(wastePercent)})</strong>{' '}
+                потрачено на кампании без заказов.
+              </>
+            )}
+            {campaignsWithOrders > 0 && avgDrr > 0 && (
+              <>
+                {' '}Средний ДРР по кампаниям с заказами — <strong className="text-[hsl(var(--foreground))]">{pct(avgDrr)}</strong>.
+              </>
+            )}
+          </p>
         </div>
       </div>
 
-      {/* Insights grid */}
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-        {insights.map((ins) => {
-          const cfg = severityConfig[ins.severity]
-          return (
-            <div
-              key={ins.id}
-              className={`group relative rounded-xl border ${cfg.border} ${cfg.bg} p-3.5 transition-all duration-200 hover:shadow-sm`}
-            >
-              <div className="flex items-start gap-3">
-                <div className={`mt-0.5 shrink-0 ${cfg.icon}`}>{ins.icon}</div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
-                      {ins.title}
-                    </span>
-                    {ins.metric && (
-                      <span
-                        className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold ${cfg.badge}`}
-                      >
-                        {ins.metric}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-[12px] leading-relaxed text-[hsl(var(--muted-foreground))]">
-                    {ins.description}
-                  </p>
-                  {ins.campaigns.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {ins.campaigns.slice(0, 4).map((name, i) => (
-                        <span
-                          key={i}
-                          className="inline-block max-w-[260px] truncate rounded-md bg-[hsl(var(--muted)/0.3)] px-1.5 py-0.5 text-[10px] text-[hsl(var(--muted-foreground)/0.7)]"
-                          title={name}
-                        >
-                          {name}
-                        </span>
-                      ))}
-                      {ins.campaigns.length > 4 && (
-                        <span className="rounded-md bg-[hsl(var(--muted)/0.2)] px-1.5 py-0.5 text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">
-                          +{ins.campaigns.length - 4}
-                        </span>
+      {/* ── Problem campaigns ── */}
+      {problemCampaigns.length > 0 && (
+        <SectionHeader
+          icon={<AlertCircle className="h-4.5 w-4.5" />}
+          title="Проблемные кампании"
+          count={problemCampaigns.length}
+          color="text-red-400"
+        >
+          <div className="space-y-1.5">
+            {/* Table header */}
+            <div className="grid grid-cols-[1fr_100px_80px_70px_70px_70px] gap-2 px-2 py-1.5 text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)] uppercase tracking-wider">
+              <div>Кампания</div>
+              <div className="text-right">Расход</div>
+              <div className="text-right">Показы</div>
+              <div className="text-right">Клики</div>
+              <div className="text-right">Корзины</div>
+              <div className="text-right">Заказы</div>
+            </div>
+
+            {problemCampaigns.map(({ campaign: c, problems, severity }) => (
+              <div
+                key={c.campaign_id}
+                className={`rounded-lg border px-2 py-2.5 ${
+                  severity === 'critical'
+                    ? 'border-red-500/20 bg-red-500/[0.03]'
+                    : 'border-amber-500/20 bg-amber-500/[0.03]'
+                }`}
+              >
+                <div className="grid grid-cols-[1fr_100px_80px_70px_70px_70px] gap-2 items-center">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      {severity === 'critical' ? (
+                        <Ban className="h-3 w-3 shrink-0 text-red-400" />
+                      ) : (
+                        <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />
                       )}
+                      <span className="truncate text-[12px] font-medium text-[hsl(var(--foreground))]" title={c.title}>
+                        {c.title}
+                      </span>
                     </div>
-                  )}
+                  </div>
+                  <div className="text-right text-[12px] font-semibold text-[hsl(var(--foreground))]">
+                    {fmtMoney(c.spend)}
+                  </div>
+                  <div className="text-right text-[12px] text-[hsl(var(--muted-foreground))]">
+                    {fmt(c.views)}
+                  </div>
+                  <div className="text-right text-[12px] text-[hsl(var(--muted-foreground))]">
+                    {fmt(c.clicks)}
+                  </div>
+                  <div className={`text-right text-[12px] ${c.cart === 0 ? 'text-red-400 font-medium' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                    {c.cart}
+                  </div>
+                  <div className={`text-right text-[12px] ${c.orders === 0 ? 'text-red-400 font-medium' : 'text-[hsl(var(--muted-foreground))]'}`}>
+                    {c.orders}
+                  </div>
+                </div>
+                {/* Problems list */}
+                <div className="mt-1.5 ml-5 space-y-0.5">
+                  {problems.map((p, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <ArrowRight className="h-3 w-3 shrink-0 mt-0.5 text-[hsl(var(--muted-foreground)/0.35)]" />
+                      <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.7)]">{p}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
+            ))}
+
+            {/* Total wasted */}
+            {totalWasted > 0 && (
+              <div className="flex items-center justify-between rounded-lg bg-red-500/[0.06] px-3 py-2 mt-2">
+                <span className="text-[12px] font-medium text-red-400">
+                  Итого потрачено без заказов
+                </span>
+                <span className="text-[14px] font-bold text-red-400">{fmtMoney(totalWasted)}</span>
+              </div>
+            )}
+          </div>
+        </SectionHeader>
+      )}
+
+      {/* ── Good campaigns ── */}
+      {goodCampaigns.length > 0 && (
+        <SectionHeader
+          icon={<CheckCircle2 className="h-4.5 w-4.5" />}
+          title="Эффективные кампании"
+          count={goodCampaigns.length}
+          color="text-emerald-400"
+        >
+          <div className="space-y-1.5">
+            {/* Table header */}
+            <div className="grid grid-cols-[1fr_90px_80px_70px_80px_80px] gap-2 px-2 py-1.5 text-[10px] font-medium text-[hsl(var(--muted-foreground)/0.5)] uppercase tracking-wider">
+              <div>Кампания</div>
+              <div className="text-right">Расход</div>
+              <div className="text-right">Заказы</div>
+              <div className="text-right">ДРР</div>
+              <div className="text-right">CPO</div>
+              <div className="text-right">ROMI</div>
             </div>
-          )
-        })}
+
+            {goodCampaigns.map(({ campaign: c, romi, cpo, highlights }) => (
+              <div
+                key={c.campaign_id}
+                className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.03] px-2 py-2.5"
+              >
+                <div className="grid grid-cols-[1fr_90px_80px_70px_80px_80px] gap-2 items-center">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <Trophy className="h-3 w-3 shrink-0 text-emerald-400" />
+                      <span className="truncate text-[12px] font-medium text-[hsl(var(--foreground))]" title={c.title}>
+                        {c.title}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right text-[12px] text-[hsl(var(--muted-foreground))]">
+                    {fmtMoney(c.spend)}
+                  </div>
+                  <div className="text-right text-[12px] font-semibold text-emerald-400">
+                    {c.orders}
+                  </div>
+                  <div className="text-right text-[12px] font-semibold text-emerald-400">
+                    {pct(c.drr)}
+                  </div>
+                  <div className="text-right text-[12px] text-[hsl(var(--muted-foreground))]">
+                    {fmtMoney(cpo)}
+                  </div>
+                  <div className="text-right text-[12px] font-semibold text-emerald-400">
+                    {fmt(romi)}%
+                  </div>
+                </div>
+                {/* Highlights */}
+                <div className="mt-1.5 ml-5 flex flex-wrap gap-1">
+                  {highlights.map((h, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400"
+                    >
+                      <ThumbsUp className="h-2.5 w-2.5" />
+                      {h}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </SectionHeader>
+      )}
+
+      {/* ── Events summary ── */}
+      {eventsSummary.total > 0 && (
+        <SectionHeader
+          icon={<Zap className="h-4.5 w-4.5" />}
+          title="Активность за период"
+          count={eventsSummary.total}
+          color="text-blue-400"
+          defaultOpen={false}
+        >
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              {eventsSummary.advertising > 0 && (
+                <div className="rounded-lg border border-blue-500/15 bg-blue-500/[0.03] p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <Target className="h-3.5 w-3.5 text-blue-400" />
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Рекламные</span>
+                  </div>
+                  <div className="text-[18px] font-bold text-blue-400">{eventsSummary.advertising}</div>
+                  <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">
+                    Смены ставок, статусов кампаний
+                  </div>
+                </div>
+              )}
+              {eventsSummary.content > 0 && (
+                <div className="rounded-lg border border-purple-500/15 bg-purple-500/[0.03] p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <BarChart2 className="h-3.5 w-3.5 text-purple-400" />
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Контент</span>
+                  </div>
+                  <div className="text-[18px] font-bold text-purple-400">{eventsSummary.content}</div>
+                  <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">
+                    Изменения карточек товаров
+                  </div>
+                </div>
+              )}
+              {eventsSummary.price > 0 && (
+                <div className="rounded-lg border border-amber-500/15 bg-amber-500/[0.03] p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <DollarSign className="h-3.5 w-3.5 text-amber-400" />
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Ценовые</span>
+                  </div>
+                  <div className="text-[18px] font-bold text-amber-400">{eventsSummary.price}</div>
+                  <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">
+                    Изменения цен на товары
+                  </div>
+                </div>
+              )}
+              {eventsSummary.stock > 0 && (
+                <div className="rounded-lg border border-cyan-500/15 bg-cyan-500/[0.03] p-3">
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <ShoppingCart className="h-3.5 w-3.5 text-cyan-400" />
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">Складские</span>
+                  </div>
+                  <div className="text-[18px] font-bold text-cyan-400">{eventsSummary.stock}</div>
+                  <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] mt-0.5">
+                    Изменения остатков
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
+              Наведите на маркеры 📌 на графике выше, чтобы увидеть детали каждого события.
+            </p>
+          </div>
+        </SectionHeader>
+      )}
+
+      {/* ── Recommendations ── */}
+      <SectionHeader
+        icon={<Info className="h-4.5 w-4.5" />}
+        title="Рекомендации"
+        color="text-[hsl(var(--primary))]"
+        defaultOpen={true}
+      >
+        <div className="space-y-2">
+          {problemCampaigns.filter((p) => p.severity === 'critical').length > 0 && (
+            <RecommendationRow
+              severity="critical"
+              title="Отключите убыточные кампании"
+              text={`${problemCampaigns.filter((p) => p.campaign.orders === 0 && p.campaign.spend > 500).length} кампаний тратят бюджет без заказов. Отключите их или снизьте ставки до минимума. Экономия: до ${fmtMoney(totalWasted)} за период.`}
+            />
+          )}
+          {problemCampaigns.filter((p) => p.campaign.cart === 0 && p.campaign.orders === 0).length > 0 && (
+            <RecommendationRow
+              severity="warning"
+              title="Проверьте карточки товаров"
+              text="Кампании без корзин — проблема не в рекламе, а в самом товаре. Проверьте фото, цену, отзывы и описание."
+            />
+          )}
+          {problemCampaigns.filter((p) => p.campaign.drr > 100).length > 0 && (
+            <RecommendationRow
+              severity="warning"
+              title="Снизьте ставки на убыточных"
+              text={`Кампании с ДРР > 100% тратят больше, чем приносят выручки. Снизьте ставку за клик.`}
+            />
+          )}
+          {goodCampaigns.length > 0 && avgCpo > 0 && (
+            <RecommendationRow
+              severity="success"
+              title="Масштабируйте эффективные"
+              text={`${goodCampaigns.length} кампаний показывают хороший ROMI. Рассмотрите увеличение бюджета на лучших — они окупаются.`}
+            />
+          )}
+          {wastePercent > 30 && totalSpend > 3000 && (
+            <RecommendationRow
+              severity="critical"
+              title={`${pct(wastePercent)} бюджета — без результата`}
+              text={`${fmtMoney(totalWasted)} из ${fmtMoney(totalSpend)} потрачено на кампании без единого заказа. Перераспределите бюджет на эффективные кампании.`}
+            />
+          )}
+          {eventsSummary.total > 50 && (
+            <RecommendationRow
+              severity="info"
+              title="Высокая активность изменений"
+              text={`${eventsSummary.total} событий за период. Частые изменения ставок и контента могут дестабилизировать алгоритмы Ozon. Дайте кампаниям 2-3 дня без изменений для набора статистики.`}
+            />
+          )}
+        </div>
+      </SectionHeader>
+    </div>
+  )
+}
+
+function RecommendationRow({
+  severity,
+  title,
+  text,
+}: {
+  severity: 'critical' | 'warning' | 'success' | 'info'
+  title: string
+  text: string
+}) {
+  const cfg = {
+    critical: {
+      icon: <AlertTriangle className="h-3.5 w-3.5" />,
+      color: 'text-red-400',
+      bg: 'bg-red-500/[0.04]',
+      border: 'border-red-500/15',
+    },
+    warning: {
+      icon: <AlertTriangle className="h-3.5 w-3.5" />,
+      color: 'text-amber-400',
+      bg: 'bg-amber-500/[0.04]',
+      border: 'border-amber-500/15',
+    },
+    success: {
+      icon: <TrendingUp className="h-3.5 w-3.5" />,
+      color: 'text-emerald-400',
+      bg: 'bg-emerald-500/[0.04]',
+      border: 'border-emerald-500/15',
+    },
+    info: {
+      icon: <Info className="h-3.5 w-3.5" />,
+      color: 'text-blue-400',
+      bg: 'bg-blue-500/[0.04]',
+      border: 'border-blue-500/15',
+    },
+  }[severity]
+
+  return (
+    <div className={`rounded-lg border ${cfg.border} ${cfg.bg} px-3 py-2.5`}>
+      <div className="flex items-start gap-2">
+        <span className={`mt-0.5 shrink-0 ${cfg.color}`}>{cfg.icon}</span>
+        <div>
+          <div className="text-[12px] font-semibold text-[hsl(var(--foreground))]">{title}</div>
+          <div className="mt-0.5 text-[11px] leading-relaxed text-[hsl(var(--muted-foreground)/0.7)]">
+            {text}
+          </div>
+        </div>
       </div>
     </div>
   )
