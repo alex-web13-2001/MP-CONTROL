@@ -1048,16 +1048,19 @@ async def campaign_daily_stats(
     
     # Get product_id for all SKUs
     all_skus = list({s for sks in campaign_skus.values() for s in sks})
+    product_to_offer: dict = {}  # product_id -> offer_id
     if all_skus:
         prod_result = await db.execute(
             sa_text("""
-                SELECT sku, product_id FROM dim_ozon_products
+                SELECT sku, product_id, offer_id FROM dim_ozon_products
                 WHERE shop_id = :shop_id AND sku = ANY(:skus)
             """),
             {"shop_id": shop_id, "skus": all_skus},
         )
         for row in prod_result:
             sku_to_product[int(row[0])] = int(row[1])
+            if row[1] and row[2]:
+                product_to_offer[int(row[1])] = str(row[2])
     
     # Build product_id -> campaign_ids mapping
     for cid, skus in campaign_skus.items():
@@ -1187,6 +1190,17 @@ async def campaign_daily_stats(
         
         campaign_title = meta.get("campaign_title", "") or meta.get("title", "")
         
+        # Build offer_id from nm_id
+        event_offer_id = ""
+        if nm_id:
+            nm_int = int(nm_id)
+            event_offer_id = product_to_offer.get(nm_int, "")
+            if not event_offer_id:
+                # nm_id might be a SKU, look up product_id first
+                pid = sku_to_product.get(nm_int)
+                if pid:
+                    event_offer_id = product_to_offer.get(pid, "")
+        
         event_data = {
             "id": ev_id,
             "date": ev_date,
@@ -1197,6 +1211,7 @@ async def campaign_daily_stats(
             "detail": detail,
             "campaign_title": campaign_title,
             "nm_id": int(nm_id) if nm_id else None,
+            "offer_id": event_offer_id,
         }
         
         # Match event to campaigns

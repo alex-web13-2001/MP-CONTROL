@@ -211,6 +211,7 @@ export interface CampaignEvent {
   detail: string
   campaign_title: string
   nm_id: number | null
+  offer_id: string
 }
 
 export interface CampaignDailyStatsResponse {

@@ -189,7 +189,7 @@ function InlineEventImpact({ campaign, dailyData, events, totalRevenue }: {
             <div key={evDate} className="rounded-lg border border-[hsl(var(--border)/0.2)] bg-[hsl(var(--card))] p-3">
               {/* Events on this date */}
               {dayEvents.map(e => (
-                <div key={e.id} className="flex items-baseline gap-2 text-[14px] leading-relaxed mb-1">
+                <div key={e.id} className="flex items-baseline flex-wrap gap-x-2 gap-y-0.5 text-[14px] leading-relaxed mb-1">
                   <span className="font-semibold text-[hsl(var(--foreground))] shrink-0">{dateStr}</span>
                   <span className="text-[hsl(var(--muted-foreground)/0.5)]">{e.time}</span>
                   <span className={`font-semibold ${
@@ -197,6 +197,7 @@ function InlineEventImpact({ campaign, dailyData, events, totalRevenue }: {
                     e.category === 'price' ? 'text-amber-400' :
                     e.category === 'content' ? 'text-purple-400' : 'text-cyan-400'
                   }`}>{e.label}</span>
+                  {e.offer_id && <span className="text-[13px] font-medium text-[hsl(var(--foreground)/0.8)] bg-[hsl(var(--muted)/0.15)] px-1.5 py-0.5 rounded">{e.offer_id}</span>}
                   {e.detail && <span className="text-[13px] text-[hsl(var(--foreground)/0.7)]">{e.detail}</span>}
                 </div>
               ))}
