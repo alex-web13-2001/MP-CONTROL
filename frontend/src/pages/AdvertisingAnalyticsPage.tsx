@@ -1366,9 +1366,9 @@ function CampaignsTable({
                             <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.4)] mb-1.5">Кампании с этим товаром:</div>
                             <div className="space-y-1">
                               {p.campaignInfos.map(ci => (
-                                <div key={ci.id} className="flex items-center gap-2 group">
+                                <div key={ci.id} className="inline-flex items-center gap-2 group">
                                   <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.3)] font-mono">#{ci.id}</span>
-                                  <span className="text-[13px] font-medium truncate flex-1">{ci.title}</span>
+                                  <span className="text-[13px] font-medium">{ci.title}</span>
                                   <button
                                     className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors opacity-60 group-hover:opacity-100"
                                     title="Статистика кампании"
