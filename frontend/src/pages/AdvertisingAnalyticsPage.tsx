@@ -1313,95 +1313,8 @@ function CampaignsTable({
   )
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Top SKUs Table
-   ═══════════════════════════════════════════════════════════ */
 
-function TopSkusTable({ skus }: { skus: AdvertisingAnalyticsResponse['top_skus'] }) {
-  const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
 
-  if (!skus.length) {
-    return (
-      <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-[hsl(var(--border)/0.5)] bg-[hsl(var(--muted)/0.15)]">
-        <p className="text-sm text-[hsl(var(--muted-foreground)/0.5)]">Нет данных по SKU</p>
-      </div>
-    )
-  }
-
-  return (
-    <>
-      <div className="overflow-x-auto -mx-5">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-[hsl(var(--border)/0.5)]">
-              <th className="px-5 py-3 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-              <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Расход</th>
-              <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-              <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Выручка</th>
-              <th className="px-3 py-3 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">ДРР</th>
-            </tr>
-          </thead>
-          <tbody>
-            {skus.map((s, i) => (
-              <tr
-                key={s.sku}
-                className="border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.2)]"
-              >
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] w-5 text-center">{i + 1}</span>
-                    {s.image_url ? (
-                      <img
-                        src={s.image_url}
-                        alt={s.name}
-                        className="h-12 w-10 rounded-lg object-cover shrink-0 cursor-pointer"
-                        onMouseEnter={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect()
-                          setHoverImg({ url: s.image_url, x: rect.right + 8, y: rect.top })
-                        }}
-                        onMouseLeave={() => setHoverImg(null)}
-                      />
-                    ) : (
-                      <div className="h-12 w-10 rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0" />
-                    )}
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium truncate max-w-[260px]">{s.name || s.offer_id}</p>
-                      <p className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)]">{s.offer_id}</p>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-3 py-3 text-right">{formatMoney(s.spend)}</td>
-                <td className="px-3 py-3 text-right font-medium">{formatNumber(s.orders)}</td>
-                <td className="px-3 py-3 text-right">{formatMoney(s.revenue)}</td>
-                <td className="px-3 py-3 text-right">
-                  <span className={s.drr > 20 ? 'text-red-400 font-semibold' : s.drr > 10 ? 'text-yellow-400' : 'text-emerald-400'}>
-                    {s.drr.toFixed(1)}%
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Fixed-position hover preview */}
-      {hoverImg && (
-        <div
-          className="fixed z-[100] pointer-events-none animate-in fade-in-0 duration-150"
-          style={{ left: hoverImg.x, top: hoverImg.y }}
-        >
-          <div className="rounded-xl shadow-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5">
-            <img
-              src={hoverImg.url}
-              alt="Preview"
-              className="h-52 w-40 rounded-lg object-cover"
-            />
-          </div>
-        </div>
-      )}
-    </>
-  )
-}
 
 /* ═══════════════════════════════════════════════════════════
    Loading Skeleton
@@ -1685,21 +1598,7 @@ export default function AdvertisingAnalyticsPage() {
         </Card>
       </motion.div>
 
-      {/* ── Top SKUs ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.5 }}
-      >
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg">Топ товаров по рекламному расходу</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <TopSkusTable skus={data.top_skus} />
-          </CardContent>
-        </Card>
-      </motion.div>
+
     </div>
   )
 }
