@@ -1,13 +1,13 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import {
   X, Loader2, BarChart3, Calendar, Package, Search, Flame, ChevronDown, Crosshair,
+  CalendarDays, ChevronLeft, ChevronRight as ChevronRightIcon,
   TrendingUp, TrendingDown, Activity, DollarSign, Palette,
   Image, Plus, Minus, AlertTriangle, Rocket, ArrowRight, ArrowUp, ArrowDown,
   type LucideIcon,
 } from 'lucide-react'
 import { format, parseISO, subDays } from 'date-fns'
 import { ru } from 'date-fns/locale'
-import { DateRangePicker } from './DateRangePicker'
 import {
   ComposedChart,
   Area,
@@ -150,6 +150,69 @@ const CHART_METRICS = [
   { key: 'ctr', label: 'CTR %', color: '#14b8a6', type: 'line' },
   { key: 'drr', label: 'ДРР %', color: '#ec4899', type: 'line' },
 ] as const
+
+/* ── Inline ModalDatePicker ──────────────────────────── */
+const MONTHS_RU_CAL = ['Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь']
+const DAYS_CAL = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс']
+function padN(n: number) { return String(n).padStart(2, '0') }
+function toDS(y: number, m: number, d: number) { return `${y}-${padN(m+1)}-${padN(d)}` }
+function fmtD(s: string) { if(!s) return '—'; const [y,m,d]=s.split('-'); return `${d}.${m}.${y}` }
+
+function ModalDatePicker({ from, to, onChange }: { from: string; to: string; onChange: (f: string, t: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const [sel, setSel] = useState<'from'|'to'>('from')
+  const ref = useRef<HTMLDivElement>(null)
+  const ad = sel === 'from' ? from : to
+  const id = ad ? new Date(ad) : new Date()
+  const [vY, setVY] = useState(id.getFullYear())
+  const [vM, setVM] = useState(id.getMonth())
+  useEffect(() => { const d = sel === 'from' ? from : to; if(d){ const dt=new Date(d); setVY(dt.getFullYear()); setVM(dt.getMonth()) } }, [sel, from, to])
+  useEffect(() => { if(!open) return; const h=(e:MouseEvent)=>{ if(ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }; document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h) }, [open])
+  const prev = () => { if(vM===0){setVM(11);setVY(y=>y-1)} else setVM(m=>m-1) }
+  const next = () => { if(vM===11){setVM(0);setVY(y=>y+1)} else setVM(m=>m+1) }
+  const pick = (day: number) => {
+    const ds = toDS(vY, vM, day)
+    if(sel==='from'){ onChange(to && ds > to ? ds : ds, to && ds > to ? ds : to); setSel('to') }
+    else { onChange(from && ds < from ? ds : from, from && ds < from ? ds : ds); setOpen(false); setSel('from') }
+  }
+  const dim = new Date(vY,vM+1,0).getDate()
+  const fd = (()=>{ const d=new Date(vY,vM,1).getDay(); return d===0?6:d-1 })()
+  const now = new Date(); const tds = toDS(now.getFullYear(),now.getMonth(),now.getDate())
+  return (
+    <div className="relative" ref={ref}>
+      <div className="flex items-center gap-1.5">
+        <CalendarDays className="w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+        <button onClick={()=>{setSel('from');setOpen(true)}} className={`px-2.5 py-1.5 text-[13px] font-medium rounded-lg border transition-all ${open&&sel==='from'?'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]':'border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'}`}>{fmtD(from)}</button>
+        <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.3)]">—</span>
+        <button onClick={()=>{setSel('to');setOpen(true)}} className={`px-2.5 py-1.5 text-[13px] font-medium rounded-lg border transition-all ${open&&sel==='to'?'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]':'border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'}`}>{fmtD(to)}</button>
+      </div>
+      {open && (
+        <div className="absolute top-full left-0 mt-2 z-[60] animate-in fade-in-0 zoom-in-95 duration-150">
+          <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-xl shadow-2xl p-4 w-[280px]">
+            <div className="flex items-center justify-between mb-3">
+              <button onClick={prev} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] transition-colors"><ChevronLeft className="w-4 h-4"/></button>
+              <span className="text-[14px] font-semibold text-[hsl(var(--foreground))]">{MONTHS_RU_CAL[vM]} {vY}</span>
+              <button onClick={next} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] transition-colors"><ChevronRightIcon className="w-4 h-4"/></button>
+            </div>
+            <div className="text-center text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mb-2">{sel==='from'?'Выберите начало периода':'Выберите конец периода'}</div>
+            <div className="grid grid-cols-7 gap-0 mb-1">{DAYS_CAL.map(d=><div key={d} className="text-center text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.5)] py-1">{d}</div>)}</div>
+            <div className="grid grid-cols-7 gap-0">
+              {Array.from({length:fd}).map((_,i)=><div key={`e${i}`} className="h-8"/>)}
+              {Array.from({length:dim}).map((_,i)=>{
+                const day=i+1, ds=toDS(vY,vM,day), inR=from&&to&&ds>=from&&ds<=to, isS=ds===from, isE=ds===to, isT=ds===tds, isF=ds>tds
+                return <button key={day} onClick={()=>pick(day)} disabled={isF} className={`h-8 text-[13px] font-medium rounded-lg transition-all relative ${isF?'text-[hsl(var(--muted-foreground)/0.2)] cursor-not-allowed':'hover:bg-[hsl(var(--muted)/0.3)] cursor-pointer'} ${isS||isE?'bg-[hsl(var(--primary))] text-white hover:bg-[hsl(var(--primary)/0.9)]':''} ${inR&&!isS&&!isE?'bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))]':''} ${!inR&&!isS&&!isE&&!isF?'text-[hsl(var(--foreground))]':''}`}>{day}{isT&&!isS&&!isE&&<span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-[hsl(var(--primary))]"/>}</button>
+              })}
+            </div>
+            <div className="mt-3 pt-2 border-t border-[hsl(var(--border)/0.3)] flex items-center justify-between">
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)]">{fmtD(from)} — {fmtD(to)}</span>
+              <button onClick={()=>setOpen(false)} className="text-[12px] font-medium px-2.5 py-1 rounded-md bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.2)] transition-colors">Готово</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 /* ── Period options ──────────────────────────────────────── */
 const PERIOD_OPTIONS = [
@@ -1087,7 +1150,7 @@ export function CampaignDetailModal({
             ))}
           </div>
           {/* Custom date range */}
-          <DateRangePicker
+          <ModalDatePicker
             from={startDate}
             to={endDate}
             onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); setPeriod('custom') }}

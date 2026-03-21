@@ -1,209 +1,243 @@
+/**
+ * PeriodSelector — единый виджет выбора периода.
+ * Содержит кнопки быстрого выбора (7д / 30д) и календарь произвольного диапазона.
+ * Всё в одном стилизованном блоке.
+ */
 import { useState, useRef, useEffect } from 'react'
-import { ChevronLeft, ChevronRight, CalendarDays } from 'lucide-react'
+import { DayPicker, type DateRange } from 'react-day-picker'
+import { ru } from 'date-fns/locale/ru'
+import { CalendarDays, Check, X } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
-const MONTHS_RU = [
-  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
-  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь',
-]
-const DAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+export type { DateRange }
 
-function getDaysInMonth(year: number, month: number) {
-  return new Date(year, month + 1, 0).getDate()
-}
-function getFirstDayOfWeek(year: number, month: number) {
-  const d = new Date(year, month, 1).getDay()
-  return d === 0 ? 6 : d - 1 // Monday = 0
-}
-function pad(n: number) { return String(n).padStart(2, '0') }
-function toDateStr(y: number, m: number, d: number) { return `${y}-${pad(m + 1)}-${pad(d)}` }
-function formatDisplay(dateStr: string) {
-  if (!dateStr) return '—'
-  const [y, m, d] = dateStr.split('-')
-  return `${d}.${m}.${y}`
+export interface PeriodValue {
+  mode: 'quick' | 'custom'
+  period: 7 | 30          // используется при mode='quick'
+  dateRange: DateRange | null  // используется при mode='custom'
 }
 
-interface Props {
-  from: string // yyyy-MM-dd
-  to: string
-  onChange: (from: string, to: string) => void
+interface PeriodSelectorProps {
+  value: PeriodValue
+  onChange: (v: PeriodValue) => void
+  className?: string
+  popupAlign?: 'left' | 'right'
 }
 
-export function DateRangePicker({ from, to, onChange }: Props) {
-  const [open, setOpen] = useState(false)
-  const [selecting, setSelecting] = useState<'from' | 'to'>('from')
-  const ref = useRef<HTMLDivElement>(null)
+function fmt(d: Date) {
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })
+}
+function isSameDay(a: Date, b: Date) {
+  return a.toDateString() === b.toDateString()
+}
 
-  // Calendar state — derive from the active date
-  const activeDate = selecting === 'from' ? from : to
-  const initDate = activeDate ? new Date(activeDate) : new Date()
-  const [viewYear, setViewYear] = useState(initDate.getFullYear())
-  const [viewMonth, setViewMonth] = useState(initDate.getMonth())
+export function PeriodSelector({ value, onChange, className, popupAlign = 'right' }: PeriodSelectorProps) {
+  const [calOpen, setCalOpen] = useState(false)
+  const [draft, setDraft] = useState<DateRange | undefined>(undefined)
+  const popRef = useRef<HTMLDivElement>(null)
 
-  // Update view when switching selecting mode
+  // Закрыть попап при клике снаружи
   useEffect(() => {
-    const d = selecting === 'from' ? from : to
-    if (d) {
-      const dt = new Date(d)
-      setViewYear(dt.getFullYear())
-      setViewMonth(dt.getMonth())
-    }
-  }, [selecting, from, to])
-
-  // Close on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    if (open) document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [open])
-
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
-    else setViewMonth(m => m - 1)
-  }
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1) }
-    else setViewMonth(m => m + 1)
-  }
-
-  const handleDayClick = (day: number) => {
-    const dateStr = toDateStr(viewYear, viewMonth, day)
-    if (selecting === 'from') {
-      if (to && dateStr > to) {
-        onChange(dateStr, dateStr)
-      } else {
-        onChange(dateStr, to)
+    if (!calOpen) return
+    const h = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) {
+        setCalOpen(false)
+        setDraft(undefined)
       }
-      setSelecting('to')
-    } else {
-      if (from && dateStr < from) {
-        onChange(dateStr, dateStr)
-      } else {
-        onChange(from, dateStr)
-      }
-      setOpen(false)
-      setSelecting('from')
     }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [calOpen])
+
+  const openCalendar = () => {
+    setDraft(value.dateRange ?? undefined)
+    setCalOpen(true)
   }
 
-  const daysInMonth = getDaysInMonth(viewYear, viewMonth)
-  const firstDay = getFirstDayOfWeek(viewYear, viewMonth)
-  const today = new Date()
-  const todayStr = toDateStr(today.getFullYear(), today.getMonth(), today.getDate())
+  const applyCustom = () => {
+    if (!draft?.from) return
+    onChange({
+      mode: 'custom',
+      period: value.period,
+      dateRange: { from: draft.from, to: draft.to ?? draft.from },
+    })
+    setCalOpen(false)
+    setDraft(undefined)
+  }
 
-  const isInRange = (dateStr: string) => from && to && dateStr >= from && dateStr <= to
-  const isStart = (dateStr: string) => dateStr === from
-  const isEnd = (dateStr: string) => dateStr === to
+  const clearCustom = () => {
+    onChange({ mode: 'quick', period: value.period, dateRange: null })
+    setCalOpen(false)
+    setDraft(undefined)
+  }
+
+  // Подсказка для черновика
+  const hint = !draft?.from
+    ? 'Выберите начальную дату'
+    : !draft.to || isSameDay(draft.from, draft.to)
+      ? `${fmt(draft.from)} — один день`
+      : `${fmt(draft.from)} — ${fmt(draft.to)}`
+
+  // Лейбл кнопки «Даты»
+  const customLabel = value.mode === 'custom' && value.dateRange?.from
+    ? value.dateRange.to && !isSameDay(value.dateRange.from, value.dateRange.to)
+      ? `${fmt(value.dateRange.from)} — ${fmt(value.dateRange.to)}`
+      : fmt(value.dateRange.from)
+    : null
 
   return (
-    <div className="relative" ref={ref}>
-      {/* Trigger buttons */}
-      <div className="flex items-center gap-1.5">
-        <CalendarDays className="w-4 h-4 text-[hsl(var(--muted-foreground)/0.5)]" />
+    <div className={cn('relative', className)} ref={popRef}>
+      {/* ── Единый блок с кнопками ── */}
+      <div className="inline-flex items-center rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 gap-0.5">
+        {/* 7 дней */}
         <button
-          onClick={() => { setSelecting('from'); setOpen(true) }}
-          className={`px-2.5 py-1.5 text-[13px] font-medium rounded-lg border transition-all ${
-            open && selecting === 'from'
-              ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]'
-              : 'border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
-          }`}
+          onClick={() => { onChange({ mode: 'quick', period: 7, dateRange: null }); setCalOpen(false) }}
+          className={cn(
+            'rounded-lg px-4 py-1.5 text-sm font-medium transition-all duration-200',
+            value.mode === 'quick' && value.period === 7
+              ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
+              : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5',
+          )}
         >
-          {formatDisplay(from)}
+          7 дней
         </button>
-        <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.3)]">—</span>
+
+        {/* 30 дней */}
         <button
-          onClick={() => { setSelecting('to'); setOpen(true) }}
-          className={`px-2.5 py-1.5 text-[13px] font-medium rounded-lg border transition-all ${
-            open && selecting === 'to'
-              ? 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]'
-              : 'border-[hsl(var(--border))] bg-[hsl(var(--muted)/0.15)] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted)/0.3)]'
-          }`}
+          onClick={() => { onChange({ mode: 'quick', period: 30, dateRange: null }); setCalOpen(false) }}
+          className={cn(
+            'rounded-lg px-4 py-1.5 text-sm font-medium transition-all duration-200',
+            value.mode === 'quick' && value.period === 30
+              ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
+              : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5',
+          )}
         >
-          {formatDisplay(to)}
+          30 дней
         </button>
+
+        {/* Разделитель */}
+        <div className="h-5 w-px bg-[hsl(var(--border))] mx-0.5" />
+
+        {/* Кнопка произвольных дат */}
+        <button
+          onClick={openCalendar}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-200',
+            value.mode === 'custom'
+              ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
+              : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5',
+            calOpen && value.mode !== 'custom' && 'bg-white/5 text-[hsl(var(--foreground))]',
+          )}
+        >
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+          <span>{customLabel ?? 'Даты'}</span>
+        </button>
+
+        {/* Крестик сброса кастомного диапазона */}
+        {value.mode === 'custom' && (
+          <button
+            onClick={clearCustom}
+            className="rounded-lg p-1.5 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5 transition-colors"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
-      {/* Calendar dropdown */}
-      {open && (
-        <div className="absolute top-full left-0 mt-2 z-[60] animate-in fade-in-0 zoom-in-95 duration-150">
-          <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-xl shadow-2xl p-4 w-[280px]">
-            {/* Month navigation */}
-            <div className="flex items-center justify-between mb-3">
-              <button onClick={prevMonth} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] transition-colors">
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <span className="text-[14px] font-semibold text-[hsl(var(--foreground))]">
-                {MONTHS_RU[viewMonth]} {viewYear}
-              </span>
-              <button onClick={nextMonth} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] transition-colors">
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
+      {/* ── Попап календаря ── */}
+      {calOpen && (
+        <div
+          className={`absolute ${popupAlign === 'left' ? 'left-0' : 'right-0'} top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4`}
+          style={{ animation: 'dpPop 160ms ease-out', minWidth: 580 }}
+        >
+          <style>{`
+            .rdp-root { --rdp-accent-color: hsl(var(--primary)); font-family: inherit; }
+            .rdp-months { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 24px; }
+            .rdp-month { }
+            .rdp-month_caption { display: flex; align-items: center; justify-content: center; padding-bottom: 10px; }
+            .rdp-caption_label { font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); text-transform: capitalize; }
+            .rdp-nav { display: flex; align-items: center; gap: 4px; }
+            .rdp-button_previous, .rdp-button_next {
+              width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+              color: hsl(var(--muted-foreground)); background: transparent; border: none; cursor: pointer;
+              transition: background 150ms, color 150ms;
+            }
+            .rdp-button_previous:hover, .rdp-button_next:hover { background: rgba(255,255,255,0.08); color: hsl(var(--foreground)); }
+            .rdp-weekdays { display: flex; }
+            .rdp-weekday { width: 36px; text-align: center; font-size: 11px; font-weight: 500; color: hsl(var(--muted-foreground) / 0.45); padding-bottom: 4px; }
+            .rdp-weeks { }
+            .rdp-week { display: flex; margin-top: 2px; }
+            .rdp-day { position: relative; padding: 0; }
+            .rdp-day_button {
+              width: 36px; height: 36px; border-radius: 8px; border: none; background: transparent; cursor: pointer;
+              font-size: 13px; font-weight: 500; color: hsl(var(--foreground) / 0.85);
+              transition: background 120ms, color 120ms;
+              display: flex; align-items: center; justify-content: center;
+            }
+            .rdp-day_button:hover { background: rgba(255,255,255,0.08); }
+            .rdp-day_button:focus-visible { outline: 2px solid hsl(var(--primary) / 0.5); outline-offset: 1px; }
+            /* Selected single */
+            .rdp-selected .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; }
+            /* Range start */
+            .rdp-range_start .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; border-radius: 8px 0 0 8px; }
+            /* Range end */
+            .rdp-range_end .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; border-radius: 0 8px 8px 0; }
+            /* Range middle */
+            .rdp-range_middle .rdp-day_button { background: hsl(var(--primary) / 0.15) !important; color: hsl(var(--primary)) !important; border-radius: 0; }
+            /* Range start+end same day (single) */
+            .rdp-range_start.rdp-range_end .rdp-day_button { border-radius: 8px !important; }
+            /* Today */
+            .rdp-today .rdp-day_button { font-weight: 700; text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; }
+            /* Outside month */
+            .rdp-outside { opacity: 0; pointer-events: none; }
+            /* Disabled */
+            .rdp-disabled .rdp-day_button { opacity: 0.2; cursor: not-allowed; }
+            @keyframes dpPop { from { opacity:0; transform:translateY(-4px) scale(.98) } to { opacity:1; transform:none } }
+          `}</style>
 
-            {/* Selecting hint */}
-            <div className="text-center text-[11px] text-[hsl(var(--muted-foreground)/0.5)] mb-2">
-              {selecting === 'from' ? 'Выберите начало периода' : 'Выберите конец периода'}
-            </div>
+          <DayPicker
+            mode="range"
+            selected={draft}
+            onSelect={setDraft}
+            locale={ru}
+            numberOfMonths={2}
+            showOutsideDays={false}
+            disabled={{ after: new Date() }}
+            defaultMonth={
+              draft?.from
+                ? new Date(draft.from.getFullYear(), draft.from.getMonth() - 1)
+                : new Date(new Date().getFullYear(), new Date().getMonth() - 1)
+            }
+          />
 
-            {/* Day names */}
-            <div className="grid grid-cols-7 gap-0 mb-1">
-              {DAYS_SHORT.map(d => (
-                <div key={d} className="text-center text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.5)] py-1">{d}</div>
-              ))}
-            </div>
-
-            {/* Days grid */}
-            <div className="grid grid-cols-7 gap-0">
-              {Array.from({ length: firstDay }).map((_, i) => (
-                <div key={`e-${i}`} className="h-8" />
-              ))}
-              {Array.from({ length: daysInMonth }).map((_, i) => {
-                const day = i + 1
-                const dateStr = toDateStr(viewYear, viewMonth, day)
-                const inRange = isInRange(dateStr)
-                const start = isStart(dateStr)
-                const end = isEnd(dateStr)
-                const isToday = dateStr === todayStr
-                const isFuture = dateStr > todayStr
-
-                return (
-                  <button
-                    key={day}
-                    onClick={() => handleDayClick(day)}
-                    disabled={isFuture}
-                    className={`
-                      h-8 text-[13px] font-medium rounded-lg transition-all relative
-                      ${isFuture ? 'text-[hsl(var(--muted-foreground)/0.2)] cursor-not-allowed' : 'hover:bg-[hsl(var(--muted)/0.3)] cursor-pointer'}
-                      ${start || end ? 'bg-[hsl(var(--primary))] text-white hover:bg-[hsl(var(--primary)/0.9)]' : ''}
-                      ${inRange && !start && !end ? 'bg-[hsl(var(--primary)/0.15)] text-[hsl(var(--primary))]' : ''}
-                      ${!inRange && !start && !end && !isFuture ? 'text-[hsl(var(--foreground))]' : ''}
-                    `}
-                  >
-                    {day}
-                    {isToday && !start && !end && (
-                      <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-[hsl(var(--primary))]" />
-                    )}
-                  </button>
-                )
-              })}
-            </div>
-
-            {/* Footer */}
-            <div className="mt-3 pt-2 border-t border-[hsl(var(--border)/0.3)] flex items-center justify-between">
-              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.4)]">
-                {formatDisplay(from)} — {formatDisplay(to)}
-              </span>
+          {/* Подсказка + кнопки */}
+          <div className="mt-3 pt-3 border-t border-[hsl(var(--border)/0.4)] flex items-center justify-between gap-3">
+            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.55)]">{hint}</span>
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setOpen(false)}
-                className="text-[12px] font-medium px-2.5 py-1 rounded-md bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.2)] transition-colors"
+                onClick={() => { setCalOpen(false); setDraft(undefined) }}
+                className="rounded-lg border border-[hsl(var(--border))] px-3 py-1.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
               >
-                Готово
+                Отмена
+              </button>
+              <button
+                onClick={applyCustom}
+                disabled={!draft?.from}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all',
+                  draft?.from
+                    ? 'bg-[hsl(var(--primary))] text-white hover:opacity-90'
+                    : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground)/0.35)] cursor-not-allowed',
+                )}
+              >
+                <Check className="h-3.5 w-3.5" />
+                Применить
               </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   )
 }
