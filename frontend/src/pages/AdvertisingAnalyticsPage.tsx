@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, Fragment, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
@@ -23,7 +23,11 @@ import {
   Clock,
   Tag,
   Search,
+  CalendarDays,
+  Check,
 } from 'lucide-react'
+import { DayPicker, type DateRange } from 'react-day-picker'
+import { ru } from 'date-fns/locale/ru'
 import {
   ComposedChart,
   Bar,
@@ -203,25 +207,172 @@ function KpiCard({
 function PeriodSelector({
   current,
   onChange,
+  customRange,
+  onCustomRange,
 }: {
   current: string
   onChange: (period: string) => void
+  customRange: DateRange | null
+  onCustomRange: (range: DateRange | null) => void
 }) {
+  const [calOpen, setCalOpen] = useState(false)
+  const [draft, setDraft] = useState<DateRange | undefined>(undefined)
+  const popRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!calOpen) return
+    const h = (e: MouseEvent) => {
+      if (popRef.current && !popRef.current.contains(e.target as Node)) {
+        setCalOpen(false)
+        setDraft(undefined)
+      }
+    }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [calOpen])
+
+  const fmtDate = (d: Date) => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' })
+  const isSameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString()
+
+  const applyCustom = () => {
+    if (!draft?.from) return
+    onCustomRange({ from: draft.from, to: draft.to ?? draft.from })
+    setCalOpen(false)
+    setDraft(undefined)
+  }
+
+  const customLabel = customRange?.from
+    ? customRange.to && !isSameDay(customRange.from, customRange.to)
+      ? `${fmtDate(customRange.from)} — ${fmtDate(customRange.to)}`
+      : fmtDate(customRange.from)
+    : null
+
+  const isCustom = current === 'custom'
+
+  const hint = !draft?.from
+    ? 'Выберите начальную дату'
+    : !draft.to || isSameDay(draft.from, draft.to)
+      ? `${fmtDate(draft.from)} — один день`
+      : `${fmtDate(draft.from)} — ${fmtDate(draft.to)}`
+
   return (
-    <div className="inline-flex rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1">
-      {PERIODS.map((p) => (
+    <div className="relative" ref={popRef}>
+      <div className="inline-flex rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1 gap-0.5">
+        {PERIODS.map((p) => (
+          <button
+            key={p.key}
+            onClick={() => { onChange(p.key); onCustomRange(null); setCalOpen(false) }}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
+              current === p.key && !isCustom
+                ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
+                : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+
+        <div className="h-5 w-px bg-[hsl(var(--border))] mx-0.5 self-center" />
+
         <button
-          key={p.key}
-          onClick={() => onChange(p.key)}
-          className={`rounded-md px-5 py-2 text-sm font-medium transition-all duration-200 ${
-            current === p.key
+          onClick={() => { setDraft(customRange ?? undefined); setCalOpen(true) }}
+          className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-200 ${
+            isCustom
               ? 'bg-[hsl(var(--primary))] text-white shadow-sm'
-              : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
-          }`}
+              : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5'
+          } ${calOpen && !isCustom ? 'bg-white/5 text-[hsl(var(--foreground))]' : ''}`}
         >
-          {p.label}
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+          <span>{customLabel ?? 'Даты'}</span>
         </button>
-      ))}
+
+        {isCustom && (
+          <button
+            onClick={() => { onCustomRange(null); onChange('today') }}
+            className="rounded-lg p-1.5 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-white/5 transition-colors"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+
+      {calOpen && (
+        <div className="absolute right-0 top-full z-50 mt-2 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl p-4"
+             style={{ animation: 'dpPop 160ms ease-out', minWidth: 580 }}>
+          <style>{`
+            .rdp-root { --rdp-accent-color: hsl(var(--primary)); font-family: inherit; }
+            .rdp-months { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 24px; }
+            .rdp-month_caption { display: flex; align-items: center; justify-content: center; padding-bottom: 10px; }
+            .rdp-caption_label { font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); text-transform: capitalize; }
+            .rdp-nav { display: flex; align-items: center; gap: 4px; }
+            .rdp-button_previous, .rdp-button_next {
+              width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+              color: hsl(var(--muted-foreground)); background: transparent; border: none; cursor: pointer;
+              transition: background 150ms, color 150ms;
+            }
+            .rdp-button_previous:hover, .rdp-button_next:hover { background: rgba(255,255,255,0.08); color: hsl(var(--foreground)); }
+            .rdp-weekdays { display: flex; }
+            .rdp-weekday { width: 36px; text-align: center; font-size: 11px; font-weight: 500; color: hsl(var(--muted-foreground) / 0.45); padding-bottom: 4px; }
+            .rdp-week { display: flex; margin-top: 2px; }
+            .rdp-day { position: relative; padding: 0; }
+            .rdp-day_button {
+              width: 36px; height: 36px; border-radius: 8px; border: none; background: transparent; cursor: pointer;
+              font-size: 13px; font-weight: 500; color: hsl(var(--foreground) / 0.85);
+              transition: background 120ms, color 120ms;
+              display: flex; align-items: center; justify-content: center;
+            }
+            .rdp-day_button:hover { background: rgba(255,255,255,0.08); }
+            .rdp-selected .rdp-day_button { background: hsl(var(--primary)) !important; color: white !important; }
+            .rdp-range_start .rdp-day_button { border-radius: 8px 0 0 8px; }
+            .rdp-range_end .rdp-day_button { border-radius: 0 8px 8px 0; }
+            .rdp-range_middle .rdp-day_button { background: hsl(var(--primary) / 0.15) !important; color: hsl(var(--primary)) !important; border-radius: 0; }
+            .rdp-range_start.rdp-range_end .rdp-day_button { border-radius: 8px !important; }
+            .rdp-today .rdp-day_button { font-weight: 700; text-decoration: underline; text-underline-offset: 2px; text-decoration-style: dotted; }
+            .rdp-outside { opacity: 0; pointer-events: none; }
+            .rdp-disabled .rdp-day_button { opacity: 0.2; cursor: not-allowed; }
+            @keyframes dpPop { from { opacity:0; transform:translateY(-4px) scale(.98) } to { opacity:1; transform:none } }
+          `}</style>
+
+          <DayPicker
+            mode="range"
+            selected={draft}
+            onSelect={setDraft}
+            locale={ru}
+            numberOfMonths={2}
+            showOutsideDays={false}
+            disabled={{ after: new Date() }}
+            defaultMonth={
+              draft?.from
+                ? new Date(draft.from.getFullYear(), draft.from.getMonth() - 1)
+                : new Date(new Date().getFullYear(), new Date().getMonth() - 1)
+            }
+          />
+
+          <div className="mt-3 pt-3 border-t border-[hsl(var(--border)/0.4)] flex items-center justify-between gap-3">
+            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.55)]">{hint}</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setCalOpen(false); setDraft(undefined) }}
+                className="rounded-lg border border-[hsl(var(--border))] px-3 py-1.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+              >
+                Отмена
+              </button>
+              <button
+                onClick={applyCustom}
+                disabled={!draft?.from}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold transition-all ${
+                  draft?.from
+                    ? 'bg-[hsl(var(--primary))] text-white hover:opacity-90'
+                    : 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground)/0.35)] cursor-not-allowed'
+                }`}
+              >
+                <Check className="h-3.5 w-3.5" />
+                Применить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -1283,6 +1434,7 @@ function AnalyticsSkeleton() {
 export default function AdvertisingAnalyticsPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const [period, setPeriod] = useState('today')
+  const [customRange, setCustomRange] = useState<DateRange | null>(null)
   const [data, setData] = useState<AdvertisingAnalyticsResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1292,7 +1444,14 @@ export default function AdvertisingAnalyticsPage() {
     setLoading(true)
     setError(null)
     try {
-      const result = await getAdvertisingAnalytics(currentShop.id, period)
+      let dateFrom: string | undefined
+      let dateTo: string | undefined
+      if (customRange?.from) {
+        const toDate = customRange.to ?? customRange.from
+        dateFrom = customRange.from.toISOString().slice(0, 10)
+        dateTo = toDate.toISOString().slice(0, 10)
+      }
+      const result = await getAdvertisingAnalytics(currentShop.id, customRange ? 'custom' : period, dateFrom, dateTo)
       setData(result)
     } catch (err: any) {
       const msg = err?.response?.data?.detail || err?.message || 'Ошибка загрузки данных'
@@ -1300,7 +1459,7 @@ export default function AdvertisingAnalyticsPage() {
     } finally {
       setLoading(false)
     }
-  }, [currentShop, period])
+  }, [currentShop, period, customRange])
 
   useEffect(() => {
     fetchData()
@@ -1357,7 +1516,7 @@ export default function AdvertisingAnalyticsPage() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <PeriodSelector current={period} onChange={setPeriod} />
+          <PeriodSelector current={customRange ? 'custom' : period} onChange={setPeriod} customRange={customRange} onCustomRange={setCustomRange} />
         </div>
       </div>
 

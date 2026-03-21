@@ -69,8 +69,16 @@ PERIOD_DAYS = {
 }
 
 
-def _parse_period(period: str) -> tuple[date, date, date, date]:
+def _parse_period(period: str, date_from: date | None = None, date_to: date | None = None) -> tuple[date, date, date, date]:
     """Return (current_start, current_end, prev_start, prev_end) dates."""
+    if date_from and date_to:
+        # Custom date range
+        days = (date_to - date_from).days + 1
+        current_start = date_from
+        current_end = date_to
+        prev_end = current_start - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=days - 1)
+        return current_start, current_end, prev_start, prev_end
     days = PERIOD_DAYS.get(period, 7)
     today = date.today()
     if period == "today":
@@ -101,6 +109,8 @@ def _safe_delta(current: float, previous: float) -> float:
 async def get_advertising_analytics(
     shop_id: int = Query(..., description="Shop ID"),
     period: str = Query("7d", description="Period: today, 7d, 14d, 30d, 90d"),
+    date_from: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -125,7 +135,17 @@ async def get_advertising_analytics(
         )
 
     marketplace = shop.marketplace  # "ozon" or "wildberries"
-    cur_start, cur_end, prev_start, prev_end = _parse_period(period)
+    # Parse custom dates if provided
+    _date_from = None
+    _date_to = None
+    if date_from and date_to:
+        try:
+            _date_from = date.fromisoformat(date_from)
+            _date_to = date.fromisoformat(date_to)
+            period = "custom"
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format, use YYYY-MM-DD")
+    cur_start, cur_end, prev_start, prev_end = _parse_period(period, _date_from, _date_to)
 
     from app.core.clickhouse import get_clickhouse_client
 

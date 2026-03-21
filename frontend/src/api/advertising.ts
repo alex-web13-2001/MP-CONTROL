@@ -158,9 +158,16 @@ export interface EventDetailResponse {
 export async function getAdvertisingAnalytics(
   shopId: number,
   period: string = '7d',
+  dateFrom?: string,
+  dateTo?: string,
 ): Promise<AdvertisingAnalyticsResponse> {
+  const params: Record<string, unknown> = { shop_id: shopId, period }
+  if (dateFrom && dateTo) {
+    params.date_from = dateFrom
+    params.date_to = dateTo
+  }
   const res = await apiClient.get<AdvertisingAnalyticsResponse>('/advertising-analytics', {
-    params: { shop_id: shopId, period },
+    params,
   })
   return res.data
 }
