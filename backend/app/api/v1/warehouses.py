@@ -12024,15 +12024,14 @@ async def ozon_cross_excel(
     shop = await db.get(Shop, shop_id)
     shop_name = shop.name if shop else f"Shop {shop_id}"
 
-    # Try to get AI analysis (from cache or fresh call)
+    # Try to get AI analysis from cache (populated when user views AI on the page)
     ai_data = None
-    try:
-        ai_data = await get_ozon_cross_ai_analysis(
-            shop_id=shop_id, period=period, force=False,
-            current_user=current_user, db=db,
-        )
-    except Exception as e:
-        logger.warning("AI analysis for cross-excel failed (non-critical): %s", e)
+    import time as _time
+    cache_key = f"ozon_cross_ai_{shop_id}_{period}"
+    if cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if _time.time() - ts < _AI_CACHE_TTL:
+            ai_data = cached
 
     buf = _build_cross_excel(analytics, shop_name, period, "ozon", ai_data=ai_data)
 
