@@ -1272,7 +1272,10 @@ export async function getOzonCrossAIAnalysis(params: {
   period?: number
   force?: boolean
 }): Promise<OzonCrossAIAnalysis> {
-  const { data } = await apiClient.post<OzonCrossAIAnalysis>('/warehouses/ozon/cross/ai-analysis', null, { params })
+  const { data } = await apiClient.post<OzonCrossAIAnalysis>('/warehouses/ozon/cross/ai-analysis', null, {
+    params,
+    timeout: 150_000,  // Gemini can take up to 120s
+  })
   return data
 }
 

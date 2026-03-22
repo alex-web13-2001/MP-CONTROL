@@ -11694,36 +11694,53 @@ def _build_cross_excel(
 
         short = lambda s: s.replace(" федеральный округ", "").replace("Центральный", "ЦФО").replace("Северо-Западный", "СЗФО").replace("Южный", "ЮФО").replace("Приволжский", "ПФО").replace("Уральский", "УФО").replace("Сибирский", "СФО").replace("Дальневосточный", "ДФО").replace("Северо-Кавказский", "СКФО")
 
-        ws4.cell(1, 1, "Склад ↓ / Регион →").font = Font(bold=True, size=11)
-        ws4.column_dimensions["A"].width = 25
+        # Row 1: Headers
+        ws4.cell(1, 1, "Склад").font = Font(bold=True, size=11, color="FFFFFF")
+        ws4.cell(1, 1).fill = hdr_fill
+        ws4.cell(1, 1).alignment = Alignment(horizontal="center")
+        ws4.column_dimensions["A"].width = 24
 
-        for ci, reg in enumerate(region_list, 2):
+        ws4.cell(1, 2, "Дом. регион").font = Font(bold=True, size=10, color="FFFFFF")
+        ws4.cell(1, 2).fill = PatternFill("solid", fgColor="548235")
+        ws4.cell(1, 2).alignment = Alignment(horizontal="center")
+        ws4.column_dimensions["B"].width = 14
+
+        for ci, reg in enumerate(region_list, 3):
             c = ws4.cell(1, ci, short(reg))
             c.font = Font(bold=True, size=10, color="FFFFFF")
             c.fill = hdr_fill
             c.alignment = Alignment(horizontal="center", wrap_text=True)
-            ws4.column_dimensions[get_column_letter(ci)].width = 12
+            ws4.column_dimensions[get_column_letter(ci)].width = 11
 
-        total_col = len(region_list) + 2
-        ws4.cell(1, total_col, "ИТОГО").font = hdr_font
-        ws4.cell(1, total_col).fill = hdr_fill
-        ws4.cell(1, total_col).alignment = Alignment(horizontal="center")
-        ws4.column_dimensions[get_column_letter(total_col)].width = 10
+        total_col = len(region_list) + 3
+        local_col = total_col + 1
+        cross_col_idx = total_col + 2
+        pct_col = total_col + 3
 
-        cross_col = total_col + 1
-        ws4.cell(1, cross_col, "Кросс %").font = hdr_font
-        ws4.cell(1, cross_col).fill = hdr_fill_red
-        ws4.cell(1, cross_col).alignment = Alignment(horizontal="center")
-        ws4.column_dimensions[get_column_letter(cross_col)].width = 10
+        for ci, (lbl, clr) in [(total_col, ("Всего", "2F5496")), (local_col, ("Локал.", "548235")), (cross_col_idx, ("Кросс", "C00000")), (pct_col, ("Кросс %", "C00000"))]:
+            c = ws4.cell(1, ci, lbl)
+            c.font = Font(bold=True, size=10, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor=clr)
+            c.alignment = Alignment(horizontal="center")
+            ws4.column_dimensions[get_column_letter(ci)].width = 10
 
-        ws4.freeze_panes = "B2"
+        ws4.freeze_panes = "C2"
+
+        # Column totals accumulator
+        col_totals = {reg: {"local": 0, "cross": 0} for reg in region_list}
+        grand_total = grand_local = grand_cross = 0
 
         for ri, row in enumerate(cross_map, 2):
             ws4.cell(ri, 1, row["warehouse"]).font = Font(bold=True, size=10)
+            home = row.get("home_region", "")
+            ws4.cell(ri, 2, short(home)).font = Font(bold=True, size=9, color="548235")
+            ws4.cell(ri, 2).alignment = Alignment(horizontal="center")
+
             row_total = row["total_orders"]
+            row_local = 0
             row_cross = 0
 
-            for ci, reg in enumerate(region_list, 2):
+            for ci, reg in enumerate(region_list, 3):
                 cell_data = row["regions"].get(reg, {})
                 count = cell_data.get("count", 0) if isinstance(cell_data, dict) else 0
                 is_local = cell_data.get("is_local", False) if isinstance(cell_data, dict) else False
@@ -11734,20 +11751,66 @@ def _build_cross_excel(
                     c.alignment = Alignment(horizontal="center")
                     c.font = Font(bold=True, color="006600" if is_local else "CC0000")
                     c.fill = local_fill if is_local else cross_fill
-                    if not is_local:
+                    if is_local:
+                        row_local += count
+                        col_totals[reg]["local"] += count
+                    else:
                         row_cross += count
+                        col_totals[reg]["cross"] += count
                 else:
-                    ws4.cell(ri, ci, "—").alignment = Alignment(horizontal="center")
+                    c = ws4.cell(ri, ci, "")
+                    c.alignment = Alignment(horizontal="center")
 
             ws4.cell(ri, total_col, row_total).number_format = num_fmt
             ws4.cell(ri, total_col).font = totals_font
             ws4.cell(ri, total_col).alignment = Alignment(horizontal="center")
 
+            ws4.cell(ri, local_col, row_local).number_format = num_fmt
+            ws4.cell(ri, local_col).font = green_font
+            ws4.cell(ri, local_col).alignment = Alignment(horizontal="center")
+
+            ws4.cell(ri, cross_col_idx, row_cross).number_format = num_fmt
+            ws4.cell(ri, cross_col_idx).font = red_font
+            ws4.cell(ri, cross_col_idx).alignment = Alignment(horizontal="center")
+
             cross_pct_val = round(row_cross / row_total * 100, 1) if row_total > 0 else 0
-            pc = ws4.cell(ri, cross_col, cross_pct_val)
+            pc = ws4.cell(ri, pct_col, cross_pct_val)
             pc.number_format = pct_fmt
             pc.font = red_font if cross_pct_val > 50 else (amber_font if cross_pct_val > 25 else green_font)
             pc.alignment = Alignment(horizontal="center")
+
+            grand_total += row_total
+            grand_local += row_local
+            grand_cross += row_cross
+
+        # Totals row
+        tr = len(cross_map) + 2
+        ws4.cell(tr, 1, "ИТОГО").font = Font(bold=True, size=11)
+        ws4.cell(tr, 1).fill = totals_fill
+        ws4.cell(tr, 2).fill = totals_fill
+        for ci, reg in enumerate(region_list, 3):
+            ct = col_totals[reg]["local"] + col_totals[reg]["cross"]
+            if ct > 0:
+                c = ws4.cell(tr, ci, ct)
+                c.number_format = num_fmt
+                c.font = totals_font
+            c = ws4.cell(tr, ci)
+            c.fill = totals_fill
+            c.alignment = Alignment(horizontal="center")
+
+        ws4.cell(tr, total_col, grand_total).number_format = num_fmt
+        ws4.cell(tr, total_col).font = totals_font
+        ws4.cell(tr, total_col).fill = totals_fill
+        ws4.cell(tr, local_col, grand_local).number_format = num_fmt
+        ws4.cell(tr, local_col).font = green_font
+        ws4.cell(tr, local_col).fill = totals_fill
+        ws4.cell(tr, cross_col_idx, grand_cross).number_format = num_fmt
+        ws4.cell(tr, cross_col_idx).font = red_font
+        ws4.cell(tr, cross_col_idx).fill = totals_fill
+        gp = round(grand_cross / grand_total * 100, 1) if grand_total > 0 else 0
+        ws4.cell(tr, pct_col, gp).number_format = pct_fmt
+        ws4.cell(tr, pct_col).font = totals_font
+        ws4.cell(tr, pct_col).fill = totals_fill
 
     # ═══════════════════════════════════════════
     # Sheet 4: По товарам (SKU) + география
