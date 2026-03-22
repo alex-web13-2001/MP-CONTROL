@@ -1315,13 +1315,14 @@ async def export_ozon_excel(
     except Exception:
         pass
 
-    # 2. SKU + barcode from dim_ozon_products by offer_id
+    # 2. SKU + barcode + NAME from dim_ozon_products by offer_id
     offer_to_sku: Dict[str, int] = {}
     offer_to_barcode: Dict[str, str] = {}
+    offer_to_name: Dict[str, str] = {}
     try:
         prod_result = await db.execute(
             text("""
-                SELECT offer_id, sku, barcode
+                SELECT offer_id, sku, barcode, name
                 FROM dim_ozon_products
                 WHERE shop_id = :shop_id AND offer_id = ANY(:offer_ids)
             """),
@@ -1333,6 +1334,8 @@ async def export_ozon_excel(
                 offer_to_sku[oid] = int(r[1])
             if r[2]:
                 offer_to_barcode[oid] = str(r[2])
+            if r[3]:
+                offer_to_name[oid] = str(r[3])
     except Exception:
         pass
 
@@ -1358,7 +1361,7 @@ async def export_ozon_excel(
         is_alt = ((len(sku_rows) + j) % 2 == 1)
         so_sku = offer_to_sku.get(oid, 0)
         so_barcode = offer_to_barcode.get(oid, "")
-        so_name = placement_names.get(oid, "")
+        so_name = offer_to_name.get(oid, "") or placement_names.get(oid, "")
         profit_so = -cost
 
         ws5.cell(row=row_num, column=1, value=so_sku if so_sku else "—")
