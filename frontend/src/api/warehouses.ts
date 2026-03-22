@@ -1272,11 +1272,45 @@ export async function getOzonCrossAIAnalysis(params: {
   period?: number
   force?: boolean
 }): Promise<OzonCrossAIAnalysis> {
-  const { data } = await apiClient.post<OzonCrossAIAnalysis>('/warehouses/ozon/cross/ai-analysis', null, {
-    params,
-    timeout: 150_000,  // Gemini can take up to 120s
-  })
-  return data
+  // Use native fetch instead of axios — Safari kills axios requests after ~60s
+  // but keeps fetch alive for longer, matching the pattern used in campaign AI.
+  const { useAuthStore } = await import('@/stores/authStore')
+  const token = useAuthStore.getState().token
+  const baseUrl = import.meta.env.VITE_API_URL || '/api/v1'
+
+  const qs = new URLSearchParams()
+  qs.set('shop_id', String(params.shop_id))
+  if (params.period) qs.set('period', String(params.period))
+  if (params.force) qs.set('force', 'true')
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 180_000) // 3 min hard limit
+
+  try {
+    const response = await fetch(`${baseUrl}/warehouses/ozon/cross/ai-analysis?${qs.toString()}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      signal: controller.signal,
+    })
+
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({ detail: `HTTP ${response.status}` }))
+      throw new Error(errBody.detail || `HTTP ${response.status}`)
+    }
+
+    return await response.json()
+  } catch (err: any) {
+    clearTimeout(timeoutId)
+    if (err.name === 'AbortError') {
+      throw new Error('Таймаут — ИИ-анализ занял больше 3 минут')
+    }
+    throw err
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════

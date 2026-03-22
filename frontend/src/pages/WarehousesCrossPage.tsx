@@ -1020,15 +1020,13 @@ function OzonCrossAIInsight({ shopId, period }: { shopId: number; period: number
       setData(result)
       setRetryCount(0)
     } catch (e: any) {
-      const isTimeout = e?.code === 'ECONNABORTED' || e?.message?.includes('timeout')
-      const errMsg = isTimeout
-        ? 'Таймаут — ИИ-анализ занял слишком долго'
-        : (e?.response?.data?.detail || 'Ошибка ИИ-анализа')
+      const isTimeout = e?.name === 'AbortError' || e?.message?.includes('таймаут') || e?.message?.includes('timeout')
+      const isServerError = e?.message?.includes('HTTP 5')
+      const errMsg = e?.message || 'Ошибка ИИ-анализа'
 
-      if (retry < MAX_RETRIES && (isTimeout || e?.response?.status >= 500)) {
+      if (retry < MAX_RETRIES && (isTimeout || isServerError)) {
         setRetryCount(retry + 1)
         clearInterval(timer)
-        // Auto-retry after 2 seconds
         setTimeout(() => fetchAI(force, retry + 1), 2000)
         return
       }
@@ -1064,24 +1062,35 @@ function OzonCrossAIInsight({ shopId, period }: { shopId: number; period: number
   if ((loading || refreshing) && !data) {
     return (
       <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 flex items-center justify-center">
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-purple-500/20 bg-[hsl(var(--card))]">
+          <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-purple-600 to-blue-500 shadow-md shadow-purple-500/20 flex items-center justify-center shrink-0">
             <Brain className="h-4 w-4 text-white animate-pulse" />
           </div>
-          <div className="flex flex-col">
-            <span className="text-[13px] font-medium text-[hsl(var(--foreground))]">
-              {retryCount > 0 ? `Повторная попытка ${retryCount}/${MAX_RETRIES}...` : 'ИИ-анализ загружается...'}
-            </span>
-            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)]">
-              Gemini 2.5 Flash • {elapsed > 0 ? `${elapsed} сек` : 'подключение...'}
-              {elapsed > 30 && ' • анализ данных'}
-              {elapsed > 60 && ' • формирование рекомендаций'}
-            </span>
-          </div>
-          <div className="ml-auto flex items-center gap-2">
-            <div className="h-1.5 w-24 rounded-full bg-[hsl(var(--muted)/0.3)] overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full animate-pulse"
-                style={{ width: `${Math.min(95, elapsed * 0.8)}%`, transition: 'width 1s ease' }} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[13px] font-semibold text-[hsl(var(--foreground))]">
+                {retryCount > 0 ? `Повторная попытка ${retryCount}/${MAX_RETRIES}...` : 'ИИ-анализ загружается...'}
+              </span>
+              <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
+                {elapsed > 0 ? `${elapsed} сек` : ''}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-3 w-32" />
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className="h-3 w-16" />
+            </div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <div className="h-1 flex-1 max-w-[200px] rounded-full bg-[hsl(var(--muted)/0.2)] overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full transition-all duration-1000"
+                  style={{ width: `${Math.min(95, elapsed * 0.8)}%` }} />
+              </div>
+              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">
+                Gemini 2.5 Flash
+                {elapsed > 15 && ' • сбор данных'}
+                {elapsed > 40 && ' • анализ'}
+                {elapsed > 70 && ' • рекомендации'}
+              </span>
             </div>
           </div>
         </div>
