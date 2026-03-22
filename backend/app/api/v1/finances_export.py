@@ -1362,7 +1362,8 @@ async def export_ozon_excel(
         so_sku = offer_to_sku.get(oid, 0)
         so_barcode = offer_to_barcode.get(oid, "")
         so_name = offer_to_name.get(oid, "") or placement_names.get(oid, "")
-        profit_so = -cost
+        so_cogs = offer_to_cost_unit.get(oid, 0)  # unit cost (no qty for unsold items)
+        profit_so = -cost - so_cogs
 
         ws5.cell(row=row_num, column=1, value=so_sku if so_sku else "—")
         ws5.cell(row=row_num, column=2, value=oid)
@@ -1377,13 +1378,14 @@ async def export_ozon_excel(
         ws5.cell(row=row_num, column=11, value=0).number_format = '0.0"%"'
         ws5.cell(row=row_num, column=12, value=round(cost, 2)).number_format = MONEY_FMT
         ws5.cell(row=row_num, column=13, value=0).number_format = MONEY_FMT
-        ws5.cell(row=row_num, column=14, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=14, value=round(so_cogs, 2)).number_format = MONEY_FMT
         pc = ws5.cell(row=row_num, column=15, value=round(profit_so, 2))
         pc.number_format = MONEY_FMT
         pc.font = RED_FONT
         mc = ws5.cell(row=row_num, column=16, value=0)
         mc.number_format = '0.0"%"'
         sku_totals["storage"] += cost
+        sku_totals["cogs"] += so_cogs
         sku_totals["profit"] += profit_so
         _style_data_row(ws5, row_num, len(sku_headers), is_alt=is_alt)
 
