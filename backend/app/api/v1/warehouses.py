@@ -11660,18 +11660,16 @@ async def wb_cross_excel(
     current_user: User = Depends(get_current_user),
 ):
     """Download WB cross-logistics analysis as formatted Excel workbook."""
-    shop_result = await db.execute(
-        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
-    )
-    shop = shop_result.scalar_one_or_none()
-    if not shop or shop.marketplace != "wildberries":
-        raise HTTPException(status_code=404, detail="Shop not found")
-
+    # Get analytics data (validates shop inside)
     analytics = await wb_warehouse_analytics(
         shop_id=shop_id, period=period, db=db, current_user=current_user
     )
 
-    buf = _build_cross_excel(analytics, shop.name, period, "wildberries")
+    # Get shop name
+    shop = await db.get(Shop, shop_id)
+    shop_name = shop.name if shop else f"Shop {shop_id}"
+
+    buf = _build_cross_excel(analytics, shop_name, period, "wildberries")
 
     filename = f"cross_logistics_wb_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
@@ -11689,18 +11687,16 @@ async def ozon_cross_excel(
     current_user: User = Depends(get_current_user),
 ):
     """Download Ozon cross-logistics analysis as formatted Excel workbook."""
-    shop_result = await db.execute(
-        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
-    )
-    shop = shop_result.scalar_one_or_none()
-    if not shop or shop.marketplace != "ozon":
-        raise HTTPException(status_code=404, detail="Shop not found")
-
+    # Get analytics data (validates shop inside)
     analytics = await ozon_warehouse_analytics(
         shop_id=shop_id, period=period, db=db, current_user=current_user
     )
 
-    buf = _build_cross_excel(analytics, shop.name, period, "ozon")
+    # Get shop name
+    shop = await db.get(Shop, shop_id)
+    shop_name = shop.name if shop else f"Shop {shop_id}"
+
+    buf = _build_cross_excel(analytics, shop_name, period, "ozon")
 
     filename = f"cross_logistics_ozon_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
