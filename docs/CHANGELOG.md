@@ -1,3 +1,23 @@
+## 2026-03-23 (v17.17)
+
+### feat(geography): Excel отчёт географии продаж + фикс AI timeout
+
+**Backend** (`warehouses.py`):
+- `_build_geo_excel()` — Excel-отчёт географии (4 листа):
+  - **Сводка**: KPI + округа/кластеры с выручкой, заказами, стабильностью
+  - **Регионы**: детализация по регионам/городам внутри округов
+  - **Топ товары**: продукты с охватом округов/регионов
+  - **ИИ-анализ**: diagnosis, рекомендации, инсайты (из кеша)
+- `GET /wb/geography/excel` — скачивание WB
+- `GET /ozon/geography/excel` — скачивание Ozon + нормализация данных (clusters→regions)
+- **AI timeout**: 60с → 120с для всех geography AI endpoints (WB, Ozon, warehouse)
+
+**Frontend** (`warehouses.ts`, `WarehousesGeographyPage.tsx`, `OzonGeographyPage.tsx`):
+- `downloadGeoExcel()` — API функция скачивания
+- Кнопка «📥 Скачать Excel» на страницах WB и Ozon географии
+
+---
+
 ## 2026-03-23 (v17.16)
 
 ### feat(cross-ai-wb): ИИ-анализ кросс-логистики Wildberries
