@@ -233,8 +233,9 @@ def get_placement_costs_by_sku(
     """
     Get per-offer_id storage placement costs from fact_ozon_placement_cost.
 
-    Migration 006 changed schema: period_end → period_to,
-    ORDER BY now (shop_id, offer_id, warehouse_name, dt).
+    Uses dt BETWEEN d_start AND d_end to sum actual daily placement costs
+    for the user-selected period. Falls back to latest period if no data
+    exists in the requested range.
 
     IMPORTANT: fact_ozon_placement_cost has sku=0 for ~95% of rows.
     Ozon Placement Report binds data to offer_id, not sku.
@@ -244,29 +245,87 @@ def get_placement_costs_by_sku(
     """
     costs: Dict[str, float] = {}
     try:
+        # Primary: filter by dt within user-selected period
         result = ch.query("""
             SELECT
                 offer_id,
                 round(sum(placement_cost), 2) AS total_cost
             FROM mms_analytics.fact_ozon_placement_cost FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND period_to = (
-                  SELECT max(period_to)
-                  FROM mms_analytics.fact_ozon_placement_cost FINAL
-                  WHERE shop_id = {shop_id:UInt32}
-              )
+              AND dt >= {d_start:Date}
+              AND dt <= {d_end:Date}
             GROUP BY offer_id
             HAVING total_cost != 0
         """, parameters={
             "shop_id": shop_id,
+            "d_start": d_start,
+            "d_end": d_end,
         })
         for r in result.result_rows:
             oid = str(r[0] or "").strip()
             if oid:
                 costs[oid] = float(r[1] or 0)
+
+        # Fallback: if no data in date range, use latest period
+        if not costs:
+            result = ch.query("""
+                SELECT
+                    offer_id,
+                    round(sum(placement_cost), 2) AS total_cost
+                FROM mms_analytics.fact_ozon_placement_cost FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND period_to = (
+                      SELECT max(period_to)
+                      FROM mms_analytics.fact_ozon_placement_cost FINAL
+                      WHERE shop_id = {shop_id:UInt32}
+                  )
+                GROUP BY offer_id
+                HAVING total_cost != 0
+            """, parameters={
+                "shop_id": shop_id,
+            })
+            for r in result.result_rows:
+                oid = str(r[0] or "").strip()
+                if oid:
+                    costs[oid] = float(r[1] or 0)
     except Exception as e:
         logger.warning("Placement cost query failed: %s", e)
     return costs
+
+
+# ── SKU → offer_id mapping from ClickHouse ───────────────
+
+def get_sku_to_offer_map_ch(
+    ch,
+    shop_id: int,
+) -> Dict[int, str]:
+    """
+    Build SKU → offer_id mapping from fact_ozon_orders (ClickHouse).
+
+    This is a FALLBACK for dim_ozon_products (PostgreSQL).
+    fact_ozon_orders always has offer_id populated from Ozon API,
+    whereas dim_ozon_products may be missing some products.
+
+    Returns: {sku: offer_id}
+    """
+    sku_offer: Dict[int, str] = {}
+    try:
+        result = ch.query("""
+            SELECT sku, any(offer_id) AS offer_id
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND sku > 0
+              AND offer_id != ''
+            GROUP BY sku
+        """, parameters={"shop_id": shop_id})
+        for r in result.result_rows:
+            sku = int(r[0] or 0)
+            oid = str(r[1] or "").strip()
+            if sku > 0 and oid:
+                sku_offer[sku] = oid
+    except Exception as e:
+        logger.warning("CH sku→offer_id mapping failed: %s", e)
+    return sku_offer
 
 
 # ── Ad spend from fact_ozon_ad_daily ─────────────────────

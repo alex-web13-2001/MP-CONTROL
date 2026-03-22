@@ -1200,13 +1200,24 @@ async def export_ozon_excel(
     # ── Per-SKU ad spend from fact_ozon_ad_daily ──────────────
     # Ozon transaction API has sku=0 for Marketing. Real per-SKU ad
     # data comes from Ozon Performance API → fact_ozon_ad_daily.
-    from app.services.ozon_finance_queries import get_ad_costs_by_sku, get_placement_costs_by_sku
+    from app.services.ozon_finance_queries import get_ad_costs_by_sku, get_placement_costs_by_sku, get_sku_to_offer_map_ch
     sku_ad_map = get_ad_costs_by_sku(ch, shop_id, d_start, d_end)
 
     # ── Per-SKU storage from fact_ozon_placement_cost ─────────
     # Ozon transaction API has sku=0 for Storage. Real per-SKU storage
     # data comes from Ozon placement report → fact_ozon_placement_cost.
     offer_storage_map = get_placement_costs_by_sku(ch, shop_id, d_start, d_end)
+
+    # ── Enrich sku→offer_id with CH fallback ──────────────────
+    # dim_ozon_products may miss some SKUs. fact_ozon_orders always
+    # has offer_id, so merge CH mapping for better storage matching.
+    try:
+        ch_sku_offer = get_sku_to_offer_map_ch(ch, shop_id)
+        for sku, oid in ch_sku_offer.items():
+            if sku not in sku_to_offer:
+                sku_to_offer[sku] = oid
+    except Exception:
+        pass
 
     sku_totals = {"qty": 0, "revenue": 0, "commission": 0, "services": 0,
                   "logistics": 0, "ad_spend": 0, "storage": 0, "payout": 0,
@@ -1271,8 +1282,40 @@ async def export_ozon_excel(
 
         _style_data_row(ws5, row_num, len(sku_headers), is_alt=(i % 2 == 1))
 
+    # ── Add storage-only rows (offer_ids with placement cost but no revenue) ──
+    # Track which offer_ids were already matched to revenue SKUs
+    matched_offer_ids = set()
+    for _, r in sku_rows:
+        sku = int(r[0] or 0)
+        oid = sku_to_offer.get(sku, "")
+        if oid:
+            matched_offer_ids.add(oid)
+
+    storage_only_rows = []
+    for oid, cost in sorted(offer_storage_map.items(), key=lambda x: -x[1]):
+        if oid not in matched_offer_ids and cost > 0:
+            storage_only_rows.append((oid, cost))
+
+    for j, (oid, cost) in enumerate(storage_only_rows):
+        row_num = len(sku_rows) + 2 + j
+        is_alt = ((len(sku_rows) + j) % 2 == 1)
+        ws5.cell(row=row_num, column=1, value="—")  # no SKU
+        ws5.cell(row=row_num, column=2, value=oid)  # offer_id as Артикул
+        ws5.cell(row=row_num, column=4, value="(нет продаж)")
+        ws5.cell(row=row_num, column=5, value=0)
+        ws5.cell(row=row_num, column=12, value=round(cost, 2)).number_format = MONEY_FMT
+        profit_so = -cost
+        pc = ws5.cell(row=row_num, column=15, value=round(profit_so, 2))
+        pc.number_format = MONEY_FMT
+        pc.font = RED_FONT
+        sku_totals["storage"] += cost
+        sku_totals["profit"] += profit_so
+        _style_data_row(ws5, row_num, len(sku_headers), is_alt=is_alt)
+
+    total_items = len(sku_rows) + len(storage_only_rows)
+
     # Totals
-    total_row = len(sku_rows) + 2
+    total_row = total_items + 2
     ws5.cell(row=total_row, column=1, value="ИТОГО")
     ws5.cell(row=total_row, column=4, value=f"{len(sku_rows)} товаров")
     ws5.cell(row=total_row, column=5, value=sku_totals["qty"])
