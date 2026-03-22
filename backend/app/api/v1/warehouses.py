@@ -10026,7 +10026,7 @@ async def get_wb_cross_ai_analysis(
             nm_list = ", ".join(str(x) for x in batch)
             pg_rows = (await db.execute(
                 text(f"""
-                    SELECT nm_id, offer_id, name, subject
+                    SELECT nm_id, vendor_code, name, category
                     FROM dim_products
                     WHERE shop_id = :sid AND nm_id IN ({nm_list})
                 """),
