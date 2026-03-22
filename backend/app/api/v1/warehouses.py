@@ -11432,7 +11432,7 @@ def _build_cross_excel(
     period: int,
     marketplace: str,
 ):
-    """Build a 3-sheet Excel workbook for cross-logistics analysis."""
+    """Build a 5-sheet Excel workbook for cross-logistics analysis."""
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -11441,6 +11441,8 @@ def _build_cross_excel(
 
     hdr_font = Font(bold=True, size=11, color="FFFFFF")
     hdr_fill = PatternFill("solid", fgColor="2F5496")
+    hdr_fill_green = PatternFill("solid", fgColor="548235")
+    hdr_fill_red = PatternFill("solid", fgColor="C00000")
     totals_fill = PatternFill("solid", fgColor="D9E2F3")
     totals_font = Font(bold=True, size=11)
     red_font = Font(bold=True, color="CC0000")
@@ -11454,69 +11456,175 @@ def _build_cross_excel(
     money_fmt = '#,##0" ₽"'
     pct_fmt = '0.0"%"'
     alt_fill = PatternFill("solid", fgColor="F5F7FA")
+    local_fill = PatternFill("solid", fgColor="E2EFDA")
+    cross_fill = PatternFill("solid", fgColor="FCE4EC")
 
     is_wb = marketplace == "wildberries"
     kpi = analytics_data.get("kpi", {})
-    warehouses = analytics_data.get("warehouses", [])
+    raw_warehouses = analytics_data.get("warehouses", [])
+    cross_map_raw = analytics_data.get("cross_map", [])
+    region_list = analytics_data.get("okrug_list" if is_wb else "cluster_list", [])
+
+    # ── Normalize warehouses (Ozon uses different field names) ──
+    warehouses = []
+    for w in raw_warehouses:
+        if is_wb:
+            wh = {
+                "warehouse_name": w.get("warehouse_name", ""),
+                "region": w.get("okrug", ""),
+                "orders": w.get("orders", 0),
+                "cross_orders": w.get("cross_orders", 0),
+                "local_orders": w.get("local_orders", 0),
+                "cross_pct": w.get("cross_pct", 0),
+                "logistics_cost": w.get("logistics_cost", 0),
+                "stock": w.get("stock", 0),
+                "sku_count": w.get("sku_count", 0),
+                "turnover_days": w.get("turnover_days"),
+                "status": w.get("status", "ok"),
+                "revenue": w.get("revenue", 0),
+                "geography": w.get("geography", []),
+                "skus": w.get("skus", []),
+            }
+        else:
+            costs = w.get("costs", {})
+            logistics = abs(costs.get("crossdocking", 0)) + abs(costs.get("fbo_processing", 0))
+            wh = {
+                "warehouse_name": w.get("warehouse_name", ""),
+                "region": w.get("cluster", ""),
+                "orders": w.get("orders_period", w.get("orders", 0)),
+                "cross_orders": w.get("cross_orders", 0),
+                "local_orders": w.get("local_orders", 0),
+                "cross_pct": w.get("cross_pct", 0),
+                "logistics_cost": logistics,
+                "stock": w.get("stock_free", w.get("stock", 0)),
+                "sku_count": w.get("sku_count", 0),
+                "turnover_days": w.get("turnover_days"),
+                "status": w.get("status", "ok"),
+                "revenue": w.get("revenue_period", w.get("revenue", 0)),
+                "geography": [
+                    {"okrug": cs.get("cluster", cs.get("okrug", "")),
+                     "orders": cs.get("orders", 0),
+                     "share": cs.get("share", 0),
+                     "is_local": cs.get("is_local", False)}
+                    for cs in w.get("clusters_served", w.get("geography", []))
+                ],
+                "skus": [],
+            }
+            # Normalize SKUs
+            for s in w.get("skus", []):
+                geo = s.get("geography", [])
+                norm_geo = [
+                    {"okrug": g.get("cluster", g.get("okrug", "")),
+                     "orders": g.get("orders", 0),
+                     "share": g.get("share", 0),
+                     "is_local": g.get("is_local", False)}
+                    for g in geo
+                ]
+                wh["skus"].append({
+                    "nm_id": s.get("nm_id", s.get("sku", 0)),
+                    "vendor_code": s.get("vendor_code", s.get("offer_id", "")),
+                    "name": s.get("name", ""),
+                    "stock": s.get("stock", 0),
+                    "daily_sales": s.get("daily_sales", 0),
+                    "days_supply": s.get("days_supply"),
+                    "orders": s.get("orders", 0),
+                    "cross_orders": s.get("cross_orders", 0),
+                    "cross_pct": s.get("cross_pct", 0),
+                    "geography": norm_geo,
+                })
+        warehouses.append(wh)
+
+    # Normalize cross_map
+    cross_map = []
+    for row in cross_map_raw:
+        regions_data = row.get("okrugs", row.get("clusters", {}))
+        cross_map.append({
+            "warehouse": row.get("warehouse", ""),
+            "home_region": row.get("home_okrug", row.get("home_cluster", "")),
+            "total_orders": row.get("total_orders", 0),
+            "regions": regions_data,
+        })
+
+    # If region_list is empty, build from cross_map
+    if not region_list:
+        rl_set = set()
+        for row in cross_map:
+            for k in row["regions"]:
+                rl_set.add(k)
+        region_list = sorted(rl_set)
 
     workbook = openpyxl.Workbook()
 
-    # ═══ Sheet 1: Сводка ═══
-    ws1 = workbook.active
-    ws1.title = "Сводка"
-    ws1.column_dimensions["A"].width = 35
-    ws1.column_dimensions["B"].width = 25
-
-    ws1.cell(1, 1, f"Кросс-логистика — {shop_name}").font = title_font
-    ws1.cell(2, 1, f"Период: {period} дней • {datetime.now().strftime('%d.%m.%Y')}").font = subtitle_font
-
+    # ── Aggregate metrics ──
     cross_cost = 0
     total_cross_orders = 0
     total_orders = 0
+    total_logistics = 0
     for w in warehouses:
-        w_orders = w.get("orders", 0)
-        w_cross = w.get("cross_orders", 0)
+        w_orders = w["orders"]
+        w_cross = w["cross_orders"]
         total_cross_orders += w_cross
         total_orders += w_orders
-        w_logistics = w.get("logistics_cost", 0)
-        if w_orders > 0 and w_logistics > 0:
-            cross_cost += w_logistics * (w_cross / w_orders)
+        w_log = w["logistics_cost"]
+        total_logistics += w_log
+        if w_orders > 0 and w_log > 0:
+            cross_cost += w_log * (w_cross / w_orders)
 
     all_skus = []
     for w in warehouses:
-        wh_name = w.get("warehouse_name", "")
-        for s in w.get("skus", []):
-            all_skus.append({**s, "_wh": wh_name})
+        for s in w["skus"]:
+            all_skus.append({**s, "_wh": w["warehouse_name"], "_wh_region": w["region"]})
 
     problem_skus = [s for s in all_skus if s.get("orders", 0) >= 5 and s.get("cross_pct", 0) > 40]
-    critical_whs = [w for w in warehouses if w.get("cross_pct", 0) > 50 and w.get("orders", 0) >= 5]
+    critical_whs = [w for w in warehouses if w["cross_pct"] > 50 and w["orders"] >= 5]
+
+    # ═══════════════════════════════════════════
+    # Sheet 1: Сводка
+    # ═══════════════════════════════════════════
+    ws1 = workbook.active
+    ws1.title = "Сводка"
+    ws1.column_dimensions["A"].width = 40
+    ws1.column_dimensions["B"].width = 25
+
+    ws1.cell(1, 1, f"Кросс-логистика — {shop_name}").font = title_font
+    mp_label = "Wildberries" if is_wb else "Ozon"
+    ws1.cell(2, 1, f"Маркетплейс: {mp_label} • Период: {period} дней • {datetime.now().strftime('%d.%m.%Y')}").font = subtitle_font
 
     kpi_rows = [
         ("Средний кросс %", f"{kpi.get('cross_pct', 0)}%"),
-        ("Кросс-заказов", total_cross_orders),
-        ("Всего заказов", total_orders),
-        ("Оценка кросс-логистики (₽)", round(cross_cost)),
-        ("Складов", kpi.get("total_warehouses", len(warehouses))),
-        ("Критических складов (>50%)", len(critical_whs)),
-        ("Проблемных SKU (>40%, ≥5 заказов)", len(problem_skus)),
-        ("Общий остаток", kpi.get("total_stock", 0)),
+        ("Кросс-заказов (межрегионых)", total_cross_orders),
+        ("Всего заказов за период", total_orders),
+        ("Локальных заказов", total_orders - total_cross_orders),
+        ("", ""),
+        ("Общая логистика ₽", round(total_logistics)),
+        ("≈ Оценка кросс-логистики ₽", round(cross_cost)),
+        ("≈ Потери на кросс (доля)", f"{round(cross_cost / total_logistics * 100, 1)}%" if total_logistics > 0 else "—"),
+        ("", ""),
+        ("Складов активных", len(warehouses)),
+        ("Критических складов (кросс >50%)", len(critical_whs)),
+        ("Проблемных SKU (кросс >40%)", len(problem_skus)),
+        ("Общий остаток (шт)", kpi.get("total_stock", sum(w["stock"] for w in warehouses))),
     ]
 
     for ri, (label, value) in enumerate(kpi_rows, 4):
+        if not label:
+            continue
         ws1.cell(ri, 1, label).font = Font(bold=True, size=11)
         c = ws1.cell(ri, 2, value)
         c.font = Font(bold=True, size=11)
         if isinstance(value, (int, float)):
             c.number_format = num_fmt
 
-    # ═══ Sheet 2: По складам ═══
+    # ═══════════════════════════════════════════
+    # Sheet 2: По складам
+    # ═══════════════════════════════════════════
     ws2 = workbook.create_sheet("По складам")
 
-    region_col_name = "Округ" if is_wb else "Кластер"
+    region_col = "Округ" if is_wb else "Кластер"
     wh_headers = [
-        ("Склад", 25), (region_col_name, 22), ("Заказов", 12), ("Кросс-заказов", 14),
-        ("Кросс %", 10), ("Логистика ₽", 14), ("Кросс-стоимость ₽", 16),
-        ("Остаток", 12), ("SKU", 8), ("Оборачиваемость, дн", 16), ("Статус", 12),
+        ("Склад", 24), (region_col, 20), ("Заказов", 10), ("Локальных", 10),
+        ("Кросс", 10), ("Кросс %", 10), ("Логистика ₽", 14), ("≈ Кросс ₽", 14),
+        ("Выручка ₽", 14), ("Остаток", 10), ("SKU", 8), ("Оборот, дн", 10),
     ]
 
     for ci, (name, w) in enumerate(wh_headers, 1):
@@ -11530,71 +11638,128 @@ def _build_cross_excel(
     ws2.freeze_panes = "A2"
     ws2.auto_filter.ref = f"A1:{get_column_letter(len(wh_headers))}1"
 
-    sorted_whs = sorted(warehouses, key=lambda w: w.get("cross_pct", 0), reverse=True)
-    t_orders = t_cross = t_logistics = t_crosscost = t_stock = 0
+    sorted_whs = sorted(warehouses, key=lambda w: w["cross_pct"], reverse=True)
+    t_o = t_l = t_c = t_log = t_cc = t_rev = t_st = 0
 
     for ri, w in enumerate(sorted_whs, 2):
-        w_orders = w.get("orders", 0)
-        w_cross = w.get("cross_orders", 0)
-        w_cross_pct = w.get("cross_pct", 0)
-        w_logistics = w.get("logistics_cost", 0)
-        w_crosscost = round(w_logistics * (w_cross / w_orders)) if w_orders > 0 and w_logistics > 0 else 0
-        w_stock = w.get("stock", 0)
-        w_sku_count = w.get("sku_count", 0)
-        w_turnover = w.get("turnover_days", None)
-        w_status = w.get("status", "ok")
+        o = w["orders"]
+        c_ord = w["cross_orders"]
+        l_ord = w["local_orders"] or (o - c_ord)
+        cp = w["cross_pct"]
+        log = w["logistics_cost"]
+        cc = round(log * (c_ord / o)) if o > 0 and log > 0 else 0
+        rev = w["revenue"]
 
-        ws2.cell(ri, 1, w.get("warehouse_name", ""))
-        ws2.cell(ri, 2, w.get("okrug", w.get("cluster", "")))
-        ws2.cell(ri, 3, w_orders).number_format = num_fmt
-        ws2.cell(ri, 4, w_cross).number_format = num_fmt
-        pc = ws2.cell(ri, 5, w_cross_pct)
+        ws2.cell(ri, 1, w["warehouse_name"])
+        ws2.cell(ri, 2, w["region"])
+        ws2.cell(ri, 3, o).number_format = num_fmt
+        ws2.cell(ri, 4, l_ord).number_format = num_fmt
+        ws2.cell(ri, 5, c_ord).number_format = num_fmt
+        pc = ws2.cell(ri, 6, cp)
         pc.number_format = pct_fmt
-        pc.font = red_font if w_cross_pct > 50 else (amber_font if w_cross_pct > 25 else green_font)
-        ws2.cell(ri, 6, round(w_logistics)).number_format = money_fmt
-        ws2.cell(ri, 7, w_crosscost).number_format = money_fmt
-        ws2.cell(ri, 8, w_stock).number_format = num_fmt
-        ws2.cell(ri, 9, w_sku_count)
-        ws2.cell(ri, 10, round(w_turnover) if w_turnover else "—")
-        ws2.cell(ri, 11, w_status)
+        pc.font = red_font if cp > 50 else (amber_font if cp > 25 else green_font)
+        ws2.cell(ri, 7, round(log)).number_format = money_fmt
+        ws2.cell(ri, 8, cc).number_format = money_fmt
+        ws2.cell(ri, 9, round(rev)).number_format = money_fmt
+        ws2.cell(ri, 10, w["stock"]).number_format = num_fmt
+        ws2.cell(ri, 11, w["sku_count"])
+        ws2.cell(ri, 12, round(w["turnover_days"]) if w["turnover_days"] else "—")
 
         if ri % 2 == 0:
             for ci in range(1, len(wh_headers) + 1):
                 ws2.cell(ri, ci).fill = alt_fill
 
-        t_orders += w_orders
-        t_cross += w_cross
-        t_logistics += w_logistics
-        t_crosscost += w_crosscost
-        t_stock += w_stock
+        t_o += o; t_l += l_ord; t_c += c_ord; t_log += log; t_cc += cc; t_rev += rev; t_st += w["stock"]
 
     tr = len(sorted_whs) + 2
-    ws2.cell(tr, 1, "ИТОГО").font = totals_font
-    ws2.cell(tr, 3, t_orders).number_format = num_fmt
-    ws2.cell(tr, 3).font = totals_font
-    ws2.cell(tr, 4, t_cross).number_format = num_fmt
-    ws2.cell(tr, 4).font = totals_font
-    total_cross_pct = round(t_cross / t_orders * 100, 1) if t_orders > 0 else 0
-    ws2.cell(tr, 5, total_cross_pct).number_format = pct_fmt
-    ws2.cell(tr, 5).font = totals_font
-    ws2.cell(tr, 6, round(t_logistics)).number_format = money_fmt
-    ws2.cell(tr, 6).font = totals_font
-    ws2.cell(tr, 7, round(t_crosscost)).number_format = money_fmt
-    ws2.cell(tr, 7).font = totals_font
-    ws2.cell(tr, 8, t_stock).number_format = num_fmt
-    ws2.cell(tr, 8).font = totals_font
     for ci in range(1, len(wh_headers) + 1):
         ws2.cell(tr, ci).fill = totals_fill
+        ws2.cell(tr, ci).font = totals_font
+    ws2.cell(tr, 1, "ИТОГО")
+    ws2.cell(tr, 3, t_o).number_format = num_fmt
+    ws2.cell(tr, 4, t_l).number_format = num_fmt
+    ws2.cell(tr, 5, t_c).number_format = num_fmt
+    ws2.cell(tr, 6, round(t_c / t_o * 100, 1) if t_o > 0 else 0).number_format = pct_fmt
+    ws2.cell(tr, 7, round(t_log)).number_format = money_fmt
+    ws2.cell(tr, 8, round(t_cc)).number_format = money_fmt
+    ws2.cell(tr, 9, round(t_rev)).number_format = money_fmt
+    ws2.cell(tr, 10, t_st).number_format = num_fmt
 
-    # ═══ Sheet 3: По товарам (SKU) ═══
+    # ═══════════════════════════════════════════
+    # Sheet 3: Кросс-карта (Склад × Регион)
+    # ═══════════════════════════════════════════
+    if cross_map and region_list:
+        ws4 = workbook.create_sheet("Кросс-карта")
+
+        short = lambda s: s.replace(" федеральный округ", "").replace("Центральный", "ЦФО").replace("Северо-Западный", "СЗФО").replace("Южный", "ЮФО").replace("Приволжский", "ПФО").replace("Уральский", "УФО").replace("Сибирский", "СФО").replace("Дальневосточный", "ДФО").replace("Северо-Кавказский", "СКФО")
+
+        ws4.cell(1, 1, "Склад ↓ / Регион →").font = Font(bold=True, size=11)
+        ws4.column_dimensions["A"].width = 25
+
+        for ci, reg in enumerate(region_list, 2):
+            c = ws4.cell(1, ci, short(reg))
+            c.font = Font(bold=True, size=10, color="FFFFFF")
+            c.fill = hdr_fill
+            c.alignment = Alignment(horizontal="center", wrap_text=True)
+            ws4.column_dimensions[get_column_letter(ci)].width = 12
+
+        total_col = len(region_list) + 2
+        ws4.cell(1, total_col, "ИТОГО").font = hdr_font
+        ws4.cell(1, total_col).fill = hdr_fill
+        ws4.cell(1, total_col).alignment = Alignment(horizontal="center")
+        ws4.column_dimensions[get_column_letter(total_col)].width = 10
+
+        cross_col = total_col + 1
+        ws4.cell(1, cross_col, "Кросс %").font = hdr_font
+        ws4.cell(1, cross_col).fill = hdr_fill_red
+        ws4.cell(1, cross_col).alignment = Alignment(horizontal="center")
+        ws4.column_dimensions[get_column_letter(cross_col)].width = 10
+
+        ws4.freeze_panes = "B2"
+
+        for ri, row in enumerate(cross_map, 2):
+            ws4.cell(ri, 1, row["warehouse"]).font = Font(bold=True, size=10)
+            row_total = row["total_orders"]
+            row_cross = 0
+
+            for ci, reg in enumerate(region_list, 2):
+                cell_data = row["regions"].get(reg, {})
+                count = cell_data.get("count", 0) if isinstance(cell_data, dict) else 0
+                is_local = cell_data.get("is_local", False) if isinstance(cell_data, dict) else False
+
+                if count > 0:
+                    c = ws4.cell(ri, ci, count)
+                    c.number_format = num_fmt
+                    c.alignment = Alignment(horizontal="center")
+                    c.font = Font(bold=True, color="006600" if is_local else "CC0000")
+                    c.fill = local_fill if is_local else cross_fill
+                    if not is_local:
+                        row_cross += count
+                else:
+                    ws4.cell(ri, ci, "—").alignment = Alignment(horizontal="center")
+
+            ws4.cell(ri, total_col, row_total).number_format = num_fmt
+            ws4.cell(ri, total_col).font = totals_font
+            ws4.cell(ri, total_col).alignment = Alignment(horizontal="center")
+
+            cross_pct_val = round(row_cross / row_total * 100, 1) if row_total > 0 else 0
+            pc = ws4.cell(ri, cross_col, cross_pct_val)
+            pc.number_format = pct_fmt
+            pc.font = red_font if cross_pct_val > 50 else (amber_font if cross_pct_val > 25 else green_font)
+            pc.alignment = Alignment(horizontal="center")
+
+    # ═══════════════════════════════════════════
+    # Sheet 4: По товарам (SKU) + география
+    # ═══════════════════════════════════════════
     ws3 = workbook.create_sheet("По товарам (SKU)")
 
     id_col = "Артикул" if is_wb else "Offer ID"
     id2_col = "nm_id" if is_wb else "SKU"
     sku_headers = [
-        (id_col, 22), (id2_col, 14), ("Название", 40), ("Склад", 20),
-        ("Заказов", 10), ("Кросс", 10), ("Кросс %", 10),
-        ("Потери ≈ ₽", 14), ("Куда довезти", 30),
+        (id_col, 22), (id2_col, 14), ("Название", 38), ("Склад", 18),
+        ("Остаток", 8), ("Заказов", 8), ("Кросс", 8), ("Кросс %", 8),
+        ("≈ Потери ₽", 12), ("Откуда", 15), ("→ Куда (кросс-регионы)", 35),
+        ("Рекомендация", 30),
     ]
 
     for ci, (name, w) in enumerate(sku_headers, 1):
@@ -11608,43 +11773,100 @@ def _build_cross_excel(
     ws3.freeze_panes = "A2"
     ws3.auto_filter.ref = f"A1:{get_column_letter(len(sku_headers))}1"
 
-    sorted_skus = sorted(all_skus, key=lambda s: s.get("cross_pct", 0), reverse=True)
+    sorted_skus = sorted(all_skus, key=lambda s: s.get("cross_orders", 0), reverse=True)
 
     for ri, s in enumerate(sorted_skus, 2):
         s_orders = s.get("orders", 0)
         s_cross = s.get("cross_orders", 0)
         s_cross_pct = s.get("cross_pct", 0)
-        vendor_code = s.get("vendor_code", s.get("offer_id", ""))
-        nm_id = s.get("nm_id", s.get("sku", 0))
+        vendor_code = s.get("vendor_code", "")
+        nm_id = s.get("nm_id", 0)
         name = s.get("name", "")
         wh_name = s.get("_wh", "")
+        wh_region = s.get("_wh_region", "")
+        stock = s.get("stock", 0)
 
-        wh_data = next((w for w in warehouses if w.get("warehouse_name", "") == wh_name), None)
+        wh_data = next((w for w in warehouses if w["warehouse_name"] == wh_name), None)
         sku_loss = 0
-        if wh_data and wh_data.get("orders", 0) > 0 and wh_data.get("logistics_cost", 0) > 0:
+        if wh_data and wh_data["orders"] > 0 and wh_data["logistics_cost"] > 0:
             sku_loss = round(wh_data["logistics_cost"] * (s_cross / wh_data["orders"]))
 
         geography = s.get("geography", [])
-        cross_okrugs = [
-            g.get("okrug", g.get("cluster", "")).replace(" федеральный округ", "")
-            for g in geography if not g.get("is_local", True)
-        ][:3]
+        cross_geos = [g for g in geography if not g.get("is_local", True)]
+        cross_details = []
+        for g in cross_geos[:5]:
+            okr = g.get("okrug", "").replace(" федеральный округ", "")
+            cross_details.append(f"{okr} ({g.get('orders', 0)} зак.)")
+
+        # Recommendation
+        rec = ""
+        if s_cross_pct > 50 and s_orders >= 5:
+            top_cross = [g.get("okrug", "").replace(" федеральный округ", "") for g in cross_geos[:2]]
+            rec = f"Довезти на склад в {', '.join(top_cross)}" if top_cross else "Перераспределить"
+        elif s_cross_pct > 25 and s_orders >= 5:
+            rec = "Мониторить, возможен довоз"
 
         ws3.cell(ri, 1, vendor_code)
         ws3.cell(ri, 2, nm_id)
         ws3.cell(ri, 3, name)
         ws3.cell(ri, 4, wh_name)
-        ws3.cell(ri, 5, s_orders).number_format = num_fmt
-        ws3.cell(ri, 6, s_cross).number_format = num_fmt
-        pc = ws3.cell(ri, 7, s_cross_pct)
+        ws3.cell(ri, 5, stock).number_format = num_fmt
+        ws3.cell(ri, 6, s_orders).number_format = num_fmt
+        ws3.cell(ri, 7, s_cross).number_format = num_fmt
+        pc = ws3.cell(ri, 8, s_cross_pct)
         pc.number_format = pct_fmt
         pc.font = red_font if s_cross_pct > 50 else (amber_font if s_cross_pct > 25 else green_font)
-        ws3.cell(ri, 8, sku_loss).number_format = money_fmt
-        ws3.cell(ri, 9, ", ".join(cross_okrugs) if cross_okrugs else "—")
+        ws3.cell(ri, 9, sku_loss).number_format = money_fmt
+        ws3.cell(ri, 10, wh_region.replace(" федеральный округ", ""))
+        ws3.cell(ri, 11, "; ".join(cross_details) if cross_details else "—")
+        ws3.cell(ri, 12, rec)
 
         if ri % 2 == 0:
             for ci in range(1, len(sku_headers) + 1):
                 ws3.cell(ri, ci).fill = alt_fill
+
+    # ═══════════════════════════════════════════
+    # Sheet 5: География складов (распределение заказов)
+    # ═══════════════════════════════════════════
+    ws5 = workbook.create_sheet("География складов")
+
+    geo_headers = [
+        ("Склад", 24), ("Домашний регион", 18), ("Регион доставки", 22),
+        ("Тип", 8), ("Заказов", 10), ("Доля %", 8),
+    ]
+
+    for ci, (name, w) in enumerate(geo_headers, 1):
+        c = ws5.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = border
+        ws5.column_dimensions[get_column_letter(ci)].width = w
+
+    ws5.freeze_panes = "A2"
+    ws5.auto_filter.ref = f"A1:{get_column_letter(len(geo_headers))}1"
+
+    ri = 2
+    for w in sorted(warehouses, key=lambda w: w["cross_pct"], reverse=True):
+        if not w["geography"]:
+            continue
+        sorted_geo = sorted(w["geography"], key=lambda g: g.get("orders", 0), reverse=True)
+        for g in sorted_geo:
+            okrug = g.get("okrug", "").replace(" федеральный округ", "")
+            is_local = g.get("is_local", False)
+            ws5.cell(ri, 1, w["warehouse_name"])
+            ws5.cell(ri, 2, w["region"].replace(" федеральный округ", ""))
+            ws5.cell(ri, 3, okrug)
+            type_cell = ws5.cell(ri, 4, "СВОЙ" if is_local else "КРОСС")
+            type_cell.font = green_font if is_local else red_font
+            type_cell.fill = local_fill if is_local else cross_fill
+            ws5.cell(ri, 5, g.get("orders", 0)).number_format = num_fmt
+            ws5.cell(ri, 6, g.get("share", 0)).number_format = pct_fmt
+
+            if ri % 2 == 0:
+                for ci in [1, 2, 3, 5, 6]:
+                    ws5.cell(ri, ci).fill = alt_fill
+            ri += 1
 
     buf = io.BytesIO()
     workbook.save(buf)
