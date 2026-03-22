@@ -9998,11 +9998,11 @@ async def get_wb_cross_ai_analysis(
 
         # ── 3. Stocks per nm_id per warehouse ──
         stock_rows = ch.query("""
-            SELECT warehouse_name, nm_id, sum(quantity) AS stock
-            FROM mms_analytics.fact_wb_warehouse_stocks FINAL
+            SELECT warehouse_name, nm_id,
+                   argMax(quantity, fetched_at) AS stock
+            FROM mms_analytics.fact_inventory_snapshot
             WHERE shop_id = {shop_id:UInt32}
-              AND dt = (SELECT max(dt) FROM mms_analytics.fact_wb_warehouse_stocks
-                        WHERE shop_id = {shop_id:UInt32})
+              AND warehouse_name NOT LIKE 'FBS:%'
             GROUP BY warehouse_name, nm_id
             HAVING stock > 0
             ORDER BY stock DESC
