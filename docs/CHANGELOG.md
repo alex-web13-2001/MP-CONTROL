@@ -1,3 +1,26 @@
+## 2026-03-22 (v17.14)
+
+### feat(cross): Excel экспорт кросс-логистики (WB + Ozon)
+
+**Backend** (`warehouses.py`):
+- `GET /warehouses/wb/cross/excel` — Excel отчёт кросс-логистики WB
+- `GET /warehouses/ozon/cross/excel` — Excel отчёт кросс-логистики Ozon
+- `_build_cross_excel()` — общая функция генерации, 3 листа:
+  - **Сводка** — KPI: средний кросс%, кросс-стоимость, проблемные SKU, критические склады
+  - **По складам** — таблица складов сортирванная по кросс% с логистикой и оценкой кросс-стоимости
+  - **По товарам (SKU)** — все SKU с кросс-данными, потерями и рекомендациями «куда довезти»
+
+**Frontend** (`warehouses.ts`, `WarehousesCrossPage.tsx`):
+- `downloadCrossExcel()` — API функция скачивания (WB/Ozon автоматически)
+- Кнопка «📥 Скачать Excel» на странице кросс-логистики
+
+### fix(ozon): storage-only rows — реальные названия товаров + себестоимость
+
+- Названия товаров теперь берутся из `dim_ozon_products.name` (ранее: только категория из `fact_ozon_placement_cost`)
+- Себестоимость storage-only строк подставляется из `product_costs`
+
+---
+
 ## 2026-03-22 (v17.13.1)
 
 ### fix(ozon): Excel экспорт хранения — корректный per-SKU + storage-only строки
