@@ -1,3 +1,18 @@
+## 2026-03-22 (v17.13.1)
+
+### fix(ozon): Excel экспорт хранения — корректный per-SKU + storage-only строки
+
+**Backend** (`ozon_finance_queries.py`):
+- `get_placement_costs_by_sku()`: фильтр `dt BETWEEN d_start AND d_end` вместо `period_to = max(period_to)` — суммирует фактические дневные затраты за выбранный период с fallback на последний отчёт
+- `get_sku_to_offer_map_ch()`: новая функция — маппинг `sku → offer_id` из `fact_ozon_orders` (ClickHouse) как fallback для `dim_ozon_products` (PostgreSQL). Покрывает SKU, отсутствующие в PG-каталоге
+
+**Backend** (`finances_export.py`):
+- Per-SKU sheet: CH fallback маппинг обогащает `sku_to_offer` перед распределением хранения — покрытие ~100% вместо ~16%
+- Storage-only rows: товары с платным хранением но без продаж отображаются в конце таблицы как «(нет продаж)» с красной маржой
+- ИТОГО включает ВСЕ затраты на хранение (ранее: 20K → теперь: 123K)
+
+---
+
 ## 2026-03-22 (v17.13)
 
 ### feat(campaign-ai): ИИ-анализ кампаний — retention, P&L fix, промпт Ozon
