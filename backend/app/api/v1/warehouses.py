@@ -11421,3 +11421,290 @@ async def ozon_stock_report_excel(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+
+# ═══════════════════════════════════════════════════════════════
+# Cross-logistics Excel export (WB + Ozon)
+# ═══════════════════════════════════════════════════════════════
+
+def _build_cross_excel(
+    analytics_data: dict,
+    shop_name: str,
+    period: int,
+    marketplace: str,
+):
+    """Build a 3-sheet Excel workbook for cross-logistics analysis."""
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from datetime import datetime
+
+    hdr_font = Font(bold=True, size=11, color="FFFFFF")
+    hdr_fill = PatternFill("solid", fgColor="2F5496")
+    totals_fill = PatternFill("solid", fgColor="D9E2F3")
+    totals_font = Font(bold=True, size=11)
+    red_font = Font(bold=True, color="CC0000")
+    green_font = Font(bold=True, color="006600")
+    amber_font = Font(bold=True, color="CC6600")
+    title_font = Font(bold=True, size=14)
+    subtitle_font = Font(bold=True, size=11, color="444444")
+    thin = Side(style="thin", color="D0D0D0")
+    border = Border(bottom=thin, left=thin, right=thin)
+    num_fmt = "#,##0"
+    money_fmt = '#,##0" ₽"'
+    pct_fmt = '0.0"%"'
+    alt_fill = PatternFill("solid", fgColor="F5F7FA")
+
+    is_wb = marketplace == "wildberries"
+    kpi = analytics_data.get("kpi", {})
+    warehouses = analytics_data.get("warehouses", [])
+
+    workbook = openpyxl.Workbook()
+
+    # ═══ Sheet 1: Сводка ═══
+    ws1 = workbook.active
+    ws1.title = "Сводка"
+    ws1.column_dimensions["A"].width = 35
+    ws1.column_dimensions["B"].width = 25
+
+    ws1.cell(1, 1, f"Кросс-логистика — {shop_name}").font = title_font
+    ws1.cell(2, 1, f"Период: {period} дней • {datetime.now().strftime('%d.%m.%Y')}").font = subtitle_font
+
+    cross_cost = 0
+    total_cross_orders = 0
+    total_orders = 0
+    for w in warehouses:
+        w_orders = w.get("orders", 0)
+        w_cross = w.get("cross_orders", 0)
+        total_cross_orders += w_cross
+        total_orders += w_orders
+        w_logistics = w.get("logistics_cost", 0)
+        if w_orders > 0 and w_logistics > 0:
+            cross_cost += w_logistics * (w_cross / w_orders)
+
+    all_skus = []
+    for w in warehouses:
+        wh_name = w.get("warehouse_name", "")
+        for s in w.get("skus", []):
+            all_skus.append({**s, "_wh": wh_name})
+
+    problem_skus = [s for s in all_skus if s.get("orders", 0) >= 5 and s.get("cross_pct", 0) > 40]
+    critical_whs = [w for w in warehouses if w.get("cross_pct", 0) > 50 and w.get("orders", 0) >= 5]
+
+    kpi_rows = [
+        ("Средний кросс %", f"{kpi.get('cross_pct', 0)}%"),
+        ("Кросс-заказов", total_cross_orders),
+        ("Всего заказов", total_orders),
+        ("Оценка кросс-логистики (₽)", round(cross_cost)),
+        ("Складов", kpi.get("total_warehouses", len(warehouses))),
+        ("Критических складов (>50%)", len(critical_whs)),
+        ("Проблемных SKU (>40%, ≥5 заказов)", len(problem_skus)),
+        ("Общий остаток", kpi.get("total_stock", 0)),
+    ]
+
+    for ri, (label, value) in enumerate(kpi_rows, 4):
+        ws1.cell(ri, 1, label).font = Font(bold=True, size=11)
+        c = ws1.cell(ri, 2, value)
+        c.font = Font(bold=True, size=11)
+        if isinstance(value, (int, float)):
+            c.number_format = num_fmt
+
+    # ═══ Sheet 2: По складам ═══
+    ws2 = workbook.create_sheet("По складам")
+
+    region_col_name = "Округ" if is_wb else "Кластер"
+    wh_headers = [
+        ("Склад", 25), (region_col_name, 22), ("Заказов", 12), ("Кросс-заказов", 14),
+        ("Кросс %", 10), ("Логистика ₽", 14), ("Кросс-стоимость ₽", 16),
+        ("Остаток", 12), ("SKU", 8), ("Оборачиваемость, дн", 16), ("Статус", 12),
+    ]
+
+    for ci, (name, w) in enumerate(wh_headers, 1):
+        c = ws2.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = border
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+
+    ws2.freeze_panes = "A2"
+    ws2.auto_filter.ref = f"A1:{get_column_letter(len(wh_headers))}1"
+
+    sorted_whs = sorted(warehouses, key=lambda w: w.get("cross_pct", 0), reverse=True)
+    t_orders = t_cross = t_logistics = t_crosscost = t_stock = 0
+
+    for ri, w in enumerate(sorted_whs, 2):
+        w_orders = w.get("orders", 0)
+        w_cross = w.get("cross_orders", 0)
+        w_cross_pct = w.get("cross_pct", 0)
+        w_logistics = w.get("logistics_cost", 0)
+        w_crosscost = round(w_logistics * (w_cross / w_orders)) if w_orders > 0 and w_logistics > 0 else 0
+        w_stock = w.get("stock", 0)
+        w_sku_count = w.get("sku_count", 0)
+        w_turnover = w.get("turnover_days", None)
+        w_status = w.get("status", "ok")
+
+        ws2.cell(ri, 1, w.get("warehouse_name", ""))
+        ws2.cell(ri, 2, w.get("okrug", w.get("cluster", "")))
+        ws2.cell(ri, 3, w_orders).number_format = num_fmt
+        ws2.cell(ri, 4, w_cross).number_format = num_fmt
+        pc = ws2.cell(ri, 5, w_cross_pct)
+        pc.number_format = pct_fmt
+        pc.font = red_font if w_cross_pct > 50 else (amber_font if w_cross_pct > 25 else green_font)
+        ws2.cell(ri, 6, round(w_logistics)).number_format = money_fmt
+        ws2.cell(ri, 7, w_crosscost).number_format = money_fmt
+        ws2.cell(ri, 8, w_stock).number_format = num_fmt
+        ws2.cell(ri, 9, w_sku_count)
+        ws2.cell(ri, 10, round(w_turnover) if w_turnover else "—")
+        ws2.cell(ri, 11, w_status)
+
+        if ri % 2 == 0:
+            for ci in range(1, len(wh_headers) + 1):
+                ws2.cell(ri, ci).fill = alt_fill
+
+        t_orders += w_orders
+        t_cross += w_cross
+        t_logistics += w_logistics
+        t_crosscost += w_crosscost
+        t_stock += w_stock
+
+    tr = len(sorted_whs) + 2
+    ws2.cell(tr, 1, "ИТОГО").font = totals_font
+    ws2.cell(tr, 3, t_orders).number_format = num_fmt
+    ws2.cell(tr, 3).font = totals_font
+    ws2.cell(tr, 4, t_cross).number_format = num_fmt
+    ws2.cell(tr, 4).font = totals_font
+    total_cross_pct = round(t_cross / t_orders * 100, 1) if t_orders > 0 else 0
+    ws2.cell(tr, 5, total_cross_pct).number_format = pct_fmt
+    ws2.cell(tr, 5).font = totals_font
+    ws2.cell(tr, 6, round(t_logistics)).number_format = money_fmt
+    ws2.cell(tr, 6).font = totals_font
+    ws2.cell(tr, 7, round(t_crosscost)).number_format = money_fmt
+    ws2.cell(tr, 7).font = totals_font
+    ws2.cell(tr, 8, t_stock).number_format = num_fmt
+    ws2.cell(tr, 8).font = totals_font
+    for ci in range(1, len(wh_headers) + 1):
+        ws2.cell(tr, ci).fill = totals_fill
+
+    # ═══ Sheet 3: По товарам (SKU) ═══
+    ws3 = workbook.create_sheet("По товарам (SKU)")
+
+    id_col = "Артикул" if is_wb else "Offer ID"
+    id2_col = "nm_id" if is_wb else "SKU"
+    sku_headers = [
+        (id_col, 22), (id2_col, 14), ("Название", 40), ("Склад", 20),
+        ("Заказов", 10), ("Кросс", 10), ("Кросс %", 10),
+        ("Потери ≈ ₽", 14), ("Куда довезти", 30),
+    ]
+
+    for ci, (name, w) in enumerate(sku_headers, 1):
+        c = ws3.cell(1, ci, name)
+        c.font = hdr_font
+        c.fill = hdr_fill
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+        c.border = border
+        ws3.column_dimensions[get_column_letter(ci)].width = w
+
+    ws3.freeze_panes = "A2"
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(sku_headers))}1"
+
+    sorted_skus = sorted(all_skus, key=lambda s: s.get("cross_pct", 0), reverse=True)
+
+    for ri, s in enumerate(sorted_skus, 2):
+        s_orders = s.get("orders", 0)
+        s_cross = s.get("cross_orders", 0)
+        s_cross_pct = s.get("cross_pct", 0)
+        vendor_code = s.get("vendor_code", s.get("offer_id", ""))
+        nm_id = s.get("nm_id", s.get("sku", 0))
+        name = s.get("name", "")
+        wh_name = s.get("_wh", "")
+
+        wh_data = next((w for w in warehouses if w.get("warehouse_name", "") == wh_name), None)
+        sku_loss = 0
+        if wh_data and wh_data.get("orders", 0) > 0 and wh_data.get("logistics_cost", 0) > 0:
+            sku_loss = round(wh_data["logistics_cost"] * (s_cross / wh_data["orders"]))
+
+        geography = s.get("geography", [])
+        cross_okrugs = [
+            g.get("okrug", g.get("cluster", "")).replace(" федеральный округ", "")
+            for g in geography if not g.get("is_local", True)
+        ][:3]
+
+        ws3.cell(ri, 1, vendor_code)
+        ws3.cell(ri, 2, nm_id)
+        ws3.cell(ri, 3, name)
+        ws3.cell(ri, 4, wh_name)
+        ws3.cell(ri, 5, s_orders).number_format = num_fmt
+        ws3.cell(ri, 6, s_cross).number_format = num_fmt
+        pc = ws3.cell(ri, 7, s_cross_pct)
+        pc.number_format = pct_fmt
+        pc.font = red_font if s_cross_pct > 50 else (amber_font if s_cross_pct > 25 else green_font)
+        ws3.cell(ri, 8, sku_loss).number_format = money_fmt
+        ws3.cell(ri, 9, ", ".join(cross_okrugs) if cross_okrugs else "—")
+
+        if ri % 2 == 0:
+            for ci in range(1, len(sku_headers) + 1):
+                ws3.cell(ri, ci).fill = alt_fill
+
+    buf = io.BytesIO()
+    workbook.save(buf)
+    buf.seek(0)
+    return buf
+
+
+@router.get("/wb/cross/excel")
+async def wb_cross_excel(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download WB cross-logistics analysis as formatted Excel workbook."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    analytics = await wb_warehouse_analytics(
+        shop_id=shop_id, period=period, db=db, current_user=current_user
+    )
+
+    buf = _build_cross_excel(analytics, shop.name, period, "wildberries")
+
+    filename = f"cross_logistics_wb_shop{shop_id}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/ozon/cross/excel")
+async def ozon_cross_excel(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Download Ozon cross-logistics analysis as formatted Excel workbook."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "ozon":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    analytics = await ozon_warehouse_analytics(
+        shop_id=shop_id, period=period, db=db, current_user=current_user
+    )
+
+    buf = _build_cross_excel(analytics, shop.name, period, "ozon")
+
+    filename = f"cross_logistics_ozon_shop{shop_id}_{period}d.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

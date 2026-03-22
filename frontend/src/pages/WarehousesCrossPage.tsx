@@ -15,6 +15,7 @@ import {
   ArrowRightLeft,
   RefreshCw,
   AlertTriangle,
+  Download,
   MapPin,
   Package,
   ChevronRight,
@@ -40,6 +41,7 @@ import {
   getWBWarehouseAnalytics,
   getOzonWarehouseAnalytics,
   getOzonCrossAIAnalysis,
+  downloadCrossExcel,
   type WBWarehouseAnalyticsResponse,
   type WBAnalyticsWarehouse,
   type WBAnalyticsSkuDetail,
@@ -1375,14 +1377,35 @@ export default function WarehousesCrossPage() {
             Анализ кросс-отправок, потери и рекомендации по оптимизации размещения товаров
           </p>
         </div>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Обновить
-        </button>
+        <div className="flex items-center gap-2">
+          {data && currentShop && (
+            <button
+              onClick={async () => {
+                try {
+                  await downloadCrossExcel({
+                    shop_id: currentShop.id,
+                    period,
+                    marketplace: isWB ? 'wildberries' : 'ozon',
+                  })
+                } catch (e) {
+                  console.error('Excel download failed:', e)
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 transition-all"
+            >
+              <Download className="h-4 w-4" />
+              Скачать Excel
+            </button>
+          )}
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Обновить
+          </button>
+        </div>
       </div>
 
       {/* Period */}
