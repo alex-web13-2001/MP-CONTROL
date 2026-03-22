@@ -991,9 +991,9 @@ function normalizeOzonToCrossData(ozon: WarehouseAnalyticsResponse): WBWarehouse
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Ozon Cross AI Analysis — Overview Banner + Modal
+   Cross AI Analysis — Overview Banner + Modal (Ozon + WB)
    ═══════════════════════════════════════════════════════════ */
-function OzonCrossAIInsight({ shopId, period }: { shopId: number; period: number }) {
+function CrossAIInsight({ shopId, period, marketplace }: { shopId: number; period: number; marketplace: 'ozon' | 'wildberries' }) {
   const [data, setData] = useState<OzonCrossAIAnalysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1016,7 +1016,9 @@ function OzonCrossAIInsight({ shopId, period }: { shopId: number; period: number
     }, 1000)
 
     try {
-      const result = await getOzonCrossAIAnalysis({ shop_id: shopId, period, force })
+      const result = marketplace === 'ozon'
+        ? await getOzonCrossAIAnalysis({ shop_id: shopId, period, force })
+        : await (await import('@/api/warehouses')).getWbCrossAIAnalysis({ shop_id: shopId, period, force })
       setData(result)
       setRetryCount(0)
     } catch (e: any) {
@@ -1493,9 +1495,9 @@ export default function WarehousesCrossPage() {
           {/* KPI summary */}
           <CrossKpiCards data={data} />
 
-          {/* AI Analysis (Ozon only) */}
-          {isOzon && currentShop && (
-            <OzonCrossAIInsight shopId={currentShop.id} period={period} />
+          {/* AI Analysis */}
+          {currentShop && (
+            <CrossAIInsight shopId={currentShop.id} period={period} marketplace={isOzon ? 'ozon' : 'wildberries'} />
           )}
 
           {/* Top Problem SKUs */}

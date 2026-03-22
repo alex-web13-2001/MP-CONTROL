@@ -9814,6 +9814,377 @@ async def get_ozon_cross_ai_analysis(
 
 
 # ═══════════════════════════════════════════════════════════════
+# WB Cross-Logistics AI Analysis
+# ═══════════════════════════════════════════════════════════════
+
+_AI_PROMPT_WB_CROSS = """Ты — эксперт по КРОСС-ЛОГИСТИКЕ на Wildberries. Твоя задача — дать ОБЗОР кросс-проблем и ОЦЕНКУ складов.
+
+## ВВОДНЫЕ
+- **Кросс-доставка** — заказ из федерального округа X обслуживается складом из округа Y (не ближайшим). Увеличивает стоимость и время.
+- **nm_id** — артикул ВБ.
+- **Питание** — товары из категорий «Корма», «Товары для животных», «Продукты питания» ДОЛЖНЫ поставляться только на склады с пометкой ": Питание" (например «Электросталь: Питание», «Казань: Питание»). Обычный склад «Электросталь» НЕ подходит для кормов. Это ВАЖНО для рекомендаций по довозу!
+- **Округа** — Центральный, Северо-Западный, Приволжский, Южный, Уральский, Сибирский, Дальневосточный.
+
+## ТЫ ОБЯЗАН
+1. Оценить общую ситуацию с кросс-доставкой (severity, diagnosis)
+2. Выделить проблемные SKU (где кросс выше 25%)
+3. Оценить каждый склад — сколько кросса генерирует и почему
+4. Дать текстовые рекомендации — что сделать, БЕЗ конкретных штук
+5. ЕСЛИ товар из категории «Корма»/«Товары для животных» — указывать что нужна поставка на склад ": Питание" в рекомендациях
+
+## ФОРМАТ ОТВЕТА — строго JSON:
+{
+  "severity": "critical" | "warning" | "ok",
+  "diagnosis": "1-3 предложения. Конкретные цифры кросса, кол-во проблемных SKU.",
+  "key_metrics": {
+    "cross_pct": 45,
+    "cross_orders": 120,
+    "total_orders": 267,
+    "warehouses_with_cross": 5,
+    "skus_with_high_cross": 8
+  },
+  "problem_skus": [
+    {
+      "offer_id": "АРТ-789",
+      "name": "Название товара",
+      "total_orders": 50,
+      "cross_orders": 30,
+      "cross_pct": 60,
+      "is_food": true,
+      "stock_distribution": [
+        {"warehouse": "Электросталь: Питание", "stock": 150}
+      ],
+      "top_cross_routes": [
+        {"from_warehouse": "Электросталь: Питание", "to_okrug": "Приволжский", "orders": 15}
+      ],
+      "recommendation": "Корм сконцентрирован на Электросталь: Питание, а 60% заказов из Приволжского округа. Нужен довоз на склады Питание в Казани или Новосемейкино."
+    }
+  ],
+  "warehouse_assessments": [
+    {
+      "warehouse": "Электросталь: Питание",
+      "okrug": "Центральный федеральный округ",
+      "status": "critical" | "warning" | "ok",
+      "total_orders": 200,
+      "cross_orders": 80,
+      "cross_pct": 40,
+      "main_cross_destinations": ["Приволжский", "Уральский"],
+      "assessment": "Склад генерирует 40% кросс — основной спрос из Приволжского и Уральского округов."
+    }
+  ],
+  "priority_actions": [
+    {
+      "action": "Сформировать поставку на склады Питание в Поволжье (Казань/Новосемейкино) для закрытия кросс-спроса",
+      "impact": "Снизит кросс на ~80 заказов/месяц",
+      "link_to_supply": true
+    }
+  ],
+  "general_tips": [
+    "Конкретный совет с цифрами."
+  ]
+}
+
+## АБСОЛЮТНЫЕ ЗАПРЕТЫ
+- ❌ НЕ СЧИТАЙ конкретные штуки для перемещений и поставок
+- ❌ НЕ выдумывай данные
+- ❌ НИКОГДА: «например», «допустим», «альтернативно»
+- ✅ severity: "critical" если cross_pct > 40%, "warning" если 20-40%, "ok" если < 20%
+- ✅ warehouse_assessments.status: "critical" если cross_pct склада > 50%, "warning" если 25-50%, "ok" если < 25%
+- ✅ Пиши НА РУССКОМ
+- ✅ В priority_actions ставь link_to_supply=true для действий, которые решаются через довоз
+- ✅ Для кормов/товаров для животных ВСЕГДА указывай что нужна поставка на склад ": Питание"
+"""
+
+
+@router.post("/wb/cross/ai-analysis")
+async def get_wb_cross_ai_analysis(
+    shop_id: int = Query(...),
+    period: int = Query(30, ge=7, le=90),
+    force: bool = Query(False, description="Skip cache"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """AI-powered WB cross-logistics analysis using Gemini 2.5 Flash."""
+    shop_result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="Shop not found")
+
+    cache_key = f"wb_cross_ai_{shop_id}_{period}"
+    if not force and cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if time.time() - ts < _AI_CACHE_TTL:
+            return {**cached, "cached": True}
+
+    api_key = os.getenv("KIE_AI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="AI API key not configured")
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        params = {"shop_id": shop_id, "d_start": d_start}
+
+        # ── 1. Cross-delivery matrix: nm_id × warehouse × okrug ──
+        cross_matrix_rows = ch.query("""
+            SELECT
+                nm_id, warehouse_name, oblast_okrug_name,
+                count() AS orders
+            FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+              AND warehouse_name != '' AND oblast_okrug_name != ''
+            GROUP BY nm_id, warehouse_name, oblast_okrug_name
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        # Build per-SKU cross data
+        nm_cross: dict[int, dict] = {}
+        for r in cross_matrix_rows:
+            nm_id = int(r[0])
+            wh = str(r[1])
+            okrug = str(r[2])
+            orders = int(r[3])
+            wh_okrug = WAREHOUSE_TO_OKRUG.get(wh, "")
+            is_cross = wh_okrug != okrug and wh_okrug != ""
+
+            if nm_id not in nm_cross:
+                nm_cross[nm_id] = {"total": 0, "cross": 0, "routes": []}
+            nm_cross[nm_id]["total"] += orders
+            if is_cross:
+                nm_cross[nm_id]["cross"] += orders
+                nm_cross[nm_id]["routes"].append({
+                    "from_wh": wh, "to_okrug": okrug, "orders": orders
+                })
+
+        # ── 2. Per-warehouse cross summary ──
+        wh_cross_rows = ch.query("""
+            SELECT
+                warehouse_name,
+                oblast_okrug_name,
+                count() AS orders
+            FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+              AND warehouse_name != '' AND oblast_okrug_name != ''
+            GROUP BY warehouse_name, oblast_okrug_name
+            ORDER BY orders DESC
+        """, parameters=params).result_rows
+
+        wh_summary: dict[str, dict] = {}
+        total_orders = 0
+        total_cross = 0
+        for r in wh_cross_rows:
+            wh = str(r[0])
+            okrug = str(r[1])
+            orders = int(r[2])
+            wh_okrug = WAREHOUSE_TO_OKRUG.get(wh, "")
+            is_cross = wh_okrug != okrug and wh_okrug != ""
+
+            if wh not in wh_summary:
+                wh_summary[wh] = {"okrug": wh_okrug, "total": 0, "cross": 0}
+            wh_summary[wh]["total"] += orders
+            total_orders += orders
+            if is_cross:
+                wh_summary[wh]["cross"] += orders
+                total_cross += orders
+
+        # ── 3. Stocks per nm_id per warehouse ──
+        stock_rows = ch.query("""
+            SELECT warehouse_name, nm_id, sum(quantity) AS stock
+            FROM mms_analytics.fact_wb_warehouse_stocks FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt = (SELECT max(dt) FROM mms_analytics.fact_wb_warehouse_stocks
+                        WHERE shop_id = {shop_id:UInt32})
+            GROUP BY warehouse_name, nm_id
+            HAVING stock > 0
+            ORDER BY stock DESC
+        """, parameters=params).result_rows
+
+        nm_stock: dict[int, dict[str, int]] = {}
+        for r in stock_rows:
+            wh = str(r[0])
+            nm_id = int(r[1])
+            stock = int(r[2])
+            if nm_id not in nm_stock:
+                nm_stock[nm_id] = {}
+            nm_stock[nm_id][wh] = stock
+
+        # ── 4. Product metadata from PostgreSQL ──
+        all_nm_set = set(nm_cross.keys()) | set(nm_stock.keys())
+        all_nms = list(all_nm_set)
+        prod_map: dict[int, dict] = {}
+        for i in range(0, len(all_nms), 500):
+            batch = all_nms[i:i+500]
+            nm_list = ", ".join(str(x) for x in batch)
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT nm_id, offer_id, name, subject
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({nm_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {
+                    "offer_id": r[1] or "",
+                    "name": (r[2] or "")[:60],
+                    "subject": r[3] or "",
+                }
+
+        # ── 5. Daily sales per nm_id ──
+        daily_sales_rows = ch.query("""
+            SELECT nm_id,
+                   count() AS total_orders
+            FROM mms_analytics.fact_orders_raw
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+            GROUP BY nm_id
+        """, parameters=params).result_rows
+
+        nm_daily_sales: dict[int, float] = {}
+        for r in daily_sales_rows:
+            nm_id = int(r[0])
+            nm_daily_sales[nm_id] = round(int(r[1]) / period, 2) if period > 0 else 0
+
+        ch.close()
+
+        # ── 6. Build prompt ──
+        overall_cross_pct = round(total_cross / total_orders * 100, 1) if total_orders > 0 else 0
+
+        prompt = f"""Магазин: {shop.name} (Wildberries)
+Период: {period} дней (с {d_start} по {today})
+Всего заказов: {total_orders}
+Кросс-заказов: {total_cross} ({overall_cross_pct}%)
+Складов: {len(wh_summary)}
+
+## СКЛАДЫ И КРОСС-СТАТИСТИКА:
+"""
+        for wh_name, wh_data in sorted(wh_summary.items(), key=lambda x: x[1]["total"], reverse=True):
+            wh_cross_pct = round(wh_data["cross"] / wh_data["total"] * 100) if wh_data["total"] > 0 else 0
+            is_food_wh = ": Питание" in wh_name
+            food_tag = " [ПИТАНИЕ]" if is_food_wh else ""
+            prompt += f"- {wh_name}{food_tag} (округ: {wh_data['okrug']}): {wh_data['total']} заказов, {wh_data['cross']} кросс ({wh_cross_pct}%)\n"
+
+        prompt += "\n## ПРОБЛЕМНЫЕ SKU (с кросс-заказами):\n"
+        problem_skus = [
+            (nm, data) for nm, data in nm_cross.items()
+            if data["total"] >= 3 and data["cross"] > 0
+        ]
+        problem_skus.sort(key=lambda x: x[1]["cross"], reverse=True)
+
+        for nm_id, data in problem_skus[:20]:
+            prod = prod_map.get(nm_id, {})
+            cross_pct = round(data["cross"] / data["total"] * 100) if data["total"] > 0 else 0
+            stocks = nm_stock.get(nm_id, {})
+            stock_str = ", ".join(f"{wh}: {s}" for wh, s in sorted(stocks.items(), key=lambda x: x[1], reverse=True)[:8])
+            if not stock_str:
+                stock_str = "нет стока"
+            ds = nm_daily_sales.get(nm_id, 0)
+            total_stock = sum(stocks.values())
+
+            # Determine if food product
+            subject = prod.get("subject", "")
+            is_food = any(cat.lower() in subject.lower() for cat in _FOOD_CATEGORIES) if subject else False
+            food_label = " [КОРМ/ПИТАНИЕ]" if is_food else ""
+
+            prompt += f"\n### {prod.get('offer_id', str(nm_id))} ({prod.get('name', f'NM {nm_id}')[:45]}){food_label}\n"
+            prompt += f"  Заказов: {data['total']}, кросс: {data['cross']} ({cross_pct}%), daily_sales: {ds}\n"
+            prompt += f"  Сток: {total_stock} шт → {stock_str}\n"
+
+            # Top cross routes
+            routes = sorted(data["routes"], key=lambda x: x["orders"], reverse=True)[:7]
+            if routes:
+                prompt += "  Кросс-маршруты:\n"
+                for route in routes:
+                    prompt += f"    {route['from_wh']} → {route['to_okrug']}: {route['orders']} кросс-заказов\n"
+
+        skus_high_cross = sum(1 for _, d in nm_cross.items() if d["total"] >= 3 and d["cross"] / d["total"] > 0.3)
+        whs_with_cross = sum(1 for _, d in wh_summary.items() if d["cross"] > 0)
+
+        prompt += f"""
+## ЗАДАНИЕ:
+Период анализа: {period} дней.
+1. Оцени общую ситуацию (severity, diagnosis) — конкретные цифры.
+2. Выбери 5-10 проблемных SKU — где кросс > 25%. Для каждого: маршруты, стоки, текстовая рекомендация (БЕЗ конкретных штук). Если товар из категории корм/питание — ОБЯЗАТЕЛЬНО укажи что нужен склад ": Питание".
+3. Оцени каждый склад (warehouse_assessments) — сколько кросса, куда идёт, почему проблема.
+4. Дай 3-5 приоритетных действий (priority_actions). Если действие решается через довоз — link_to_supply=true.
+5. Выдай ТОЛЬКО JSON."""
+
+        # ── 7. Call Gemini ──
+        KIE_AI_URL = "https://api.kie.ai/gemini-2.5-flash/v1/chat/completions"
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                KIE_AI_URL,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                json={
+                    "messages": [
+                        {"role": "system", "content": [{"type": "text", "text": _AI_PROMPT_WB_CROSS}]},
+                        {"role": "user", "content": [{"type": "text", "text": prompt}]},
+                    ],
+                    "stream": False,
+                    "include_thoughts": False,
+                },
+            )
+
+        if resp.status_code != 200:
+            logger.error("Gemini API error %s: %s", resp.status_code, resp.text[:500])
+            raise HTTPException(status_code=502, detail="AI API error")
+
+        resp_json = resp.json()
+        content = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        # Strip markdown code fences
+        content = content.strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        if content.startswith("json"):
+            content = content[4:].strip()
+
+        try:
+            ai_result = json.loads(content)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse WB cross AI JSON: %s", content[:500])
+            raise HTTPException(status_code=502, detail="AI returned invalid JSON")
+
+        # Enrich with context
+        ai_result["period_days"] = period
+        ai_result["analyzed_at"] = int(time.time())
+        ai_result["context"] = {
+            "total_orders": total_orders,
+            "total_cross": total_cross,
+            "cross_pct": overall_cross_pct,
+            "warehouses_count": len(wh_summary),
+            "skus_analyzed": len(nm_cross),
+        }
+
+        # Cache
+        _ai_cache[cache_key] = (time.time(), ai_result)
+
+        return ai_result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("WB Cross AI analysis failed")
+        raise HTTPException(status_code=500, detail=f"Ошибка анализа: {str(e)}")
+
+# ═══════════════════════════════════════════════════════════════
 # AI Storage Analysis
 # ═══════════════════════════════════════════════════════════════
 
