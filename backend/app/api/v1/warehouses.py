@@ -12018,7 +12018,7 @@ def _build_cross_excel(
         w_log = w["logistics_cost"]
         total_logistics += w_log
         if w_orders > 0 and w_log > 0:
-            cross_cost += w_log * (w_cross / w_orders)
+            cross_cost += float(w_log) * (w_cross / w_orders)
 
     all_skus = []
     for w in warehouses:
