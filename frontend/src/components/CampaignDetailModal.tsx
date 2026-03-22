@@ -272,6 +272,26 @@ export function CampaignDetailModal({
   const [aiLoading, setAiLoading] = useState(false)
   const [showAiPanel, setShowAiPanel] = useState(false)
   const [aiController, setAiController] = useState<AbortController | null>(null)
+  const [savedAiAnalysis, setSavedAiAnalysis] = useState<string | null>(null)
+  const [savedAiDate, setSavedAiDate] = useState<string | null>(null)
+  const [savedAiPeriod, setSavedAiPeriod] = useState<string | null>(null)
+
+  // Load saved analysis from localStorage on mount
+  const aiStorageKey = `ai_campaign_${marketplace}_${campaignId}`
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(aiStorageKey)
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        setSavedAiAnalysis(parsed.text)
+        setSavedAiDate(parsed.date)
+        setSavedAiPeriod(parsed.period)
+        setAiText(parsed.text)
+        setShowAiPanel(true)
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiStorageKey])
 
   // Visible chart metrics
   const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(new Set(['spend', 'revenue', 'orders', 'cart']))
@@ -1183,12 +1203,32 @@ export function CampaignDetailModal({
           )}
           <button
             onClick={async () => {
-              if (aiLoading && aiController) { aiController.abort(); setAiLoading(false); return }
+              if (aiLoading && aiController) { aiController.abort(); setAiLoading(false); setShowAiPanel(false); return }
+              // Toggle: if panel is visible, hide it
+              if (showAiPanel) { setShowAiPanel(false); return }
+              // If we have saved text, just show it
+              if (aiText) { setShowAiPanel(true); return }
+              // Otherwise start new analysis
               setShowAiPanel(true); setAiText(''); setAiLoading(true)
               const ctrl = await streamCampaignAiAnalysis(
-                { marketplace, campaignId, startDate, endDate, sku: selectedSku },
+                { marketplace, campaignId, startDate, endDate, sku: selectedSku, previousAnalysis: savedAiAnalysis || undefined },
                 (chunk) => setAiText(prev => prev + chunk),
-                () => setAiLoading(false),
+                () => {
+                  setAiLoading(false)
+                  // Save to localStorage
+                  setAiText(finalText => {
+                    const saveData = {
+                      text: finalText,
+                      date: new Date().toISOString(),
+                      period: `${startDate} — ${endDate}`
+                    }
+                    try { localStorage.setItem(aiStorageKey, JSON.stringify(saveData)) } catch {}
+                    setSavedAiDate(saveData.date)
+                    setSavedAiPeriod(saveData.period)
+                    setSavedAiAnalysis(finalText)
+                    return finalText
+                  })
+                },
                 (err) => { setAiText(prev => prev + `\n\n❌ Ошибка: ${err}`); setAiLoading(false) },
               )
               setAiController(ctrl)
@@ -1200,7 +1240,7 @@ export function CampaignDetailModal({
             }`}
           >
             <Sparkles className="w-4 h-4" />
-            {aiLoading ? 'Остановить' : 'ИИ-анализ'}
+            {aiLoading ? 'Остановить' : showAiPanel ? 'Скрыть анализ' : aiText ? 'Показать анализ' : 'ИИ-анализ'}
           </button>
           <span className="text-[11px] text-[hsl(var(--muted-foreground))] ml-auto">
             {(() => { try { return `${format(parseISO(startDate), 'dd.MM.yy')} – ${format(parseISO(endDate), 'dd.MM.yy')}` } catch { return '' } })()}
@@ -1227,24 +1267,191 @@ export function CampaignDetailModal({
                 <Sparkles className="w-4 h-4 text-[hsl(var(--primary))]" />
                 <span className="text-[14px] font-semibold text-[hsl(var(--foreground))]">ИИ-анализ кампании</span>
                 {aiLoading && <Loader2 className="w-4 h-4 animate-spin text-[hsl(var(--primary))]" />}
+                {savedAiDate && !aiLoading && (
+                  <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
+                    {(() => { try { return `${new Date(savedAiDate).toLocaleDateString('ru-RU')} ${new Date(savedAiDate).toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'})}` } catch { return '' } })()}
+                    {savedAiPeriod && ` · период: ${savedAiPeriod}`}
+                  </span>
+                )}
               </div>
-              <button onClick={() => { setShowAiPanel(false); if (aiController) aiController.abort(); setAiLoading(false) }} className="text-[12px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">Скрыть</button>
+              <div className="flex items-center gap-3">
+                {!aiLoading && aiText && (
+                  <button
+                    onClick={async () => {
+                      setAiText(''); setAiLoading(true)
+                      const ctrl = await streamCampaignAiAnalysis(
+                        { marketplace, campaignId, startDate, endDate, sku: selectedSku, previousAnalysis: savedAiAnalysis || undefined },
+                        (chunk) => setAiText(prev => prev + chunk),
+                        () => {
+                          setAiLoading(false)
+                          setAiText(finalText => {
+                            const saveData = { text: finalText, date: new Date().toISOString(), period: `${startDate} — ${endDate}` }
+                            try { localStorage.setItem(aiStorageKey, JSON.stringify(saveData)) } catch {}
+                            setSavedAiDate(saveData.date); setSavedAiPeriod(saveData.period); setSavedAiAnalysis(finalText)
+                            return finalText
+                          })
+                        },
+                        (err) => { setAiText(prev => prev + `\n\n❌ Ошибка: ${err}`); setAiLoading(false) },
+                      )
+                      setAiController(ctrl)
+                    }}
+                    className="text-[12px] text-[hsl(var(--primary))] hover:text-[hsl(var(--primary)/0.7)] transition-colors font-medium"
+                  >🔄 Обновить</button>
+                )}
+                <button onClick={() => { setShowAiPanel(false) }} className="text-[12px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">Скрыть</button>
+              </div>
             </div>
             <div className="px-6 pb-4 max-h-[50vh] overflow-y-auto">
-              {aiText ? (
-                <div
-                  className="text-[13px] leading-relaxed text-[hsl(var(--foreground)/0.85)] whitespace-pre-wrap [&_h2]:text-[16px] [&_h2]:font-bold [&_h2]:mt-4 [&_h2]:mb-2"
-                  dangerouslySetInnerHTML={{ __html: aiText
-                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                    .replace(/^## (.+)$/gm, '<h2 class="text-[16px] font-bold mt-5 mb-2 text-[hsl(var(--foreground))]">$1</h2>')
-                    .replace(/^### (.+)$/gm, '<h3 class="text-[14px] font-semibold mt-3 mb-1 text-[hsl(var(--foreground))]">$1</h3>')
-                    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-[hsl(var(--foreground))]">$1</strong>')
-                    .replace(/^- (.+)$/gm, '<div class="ml-4 mb-0.5">• $1</div>')
-                    .replace(/\n/g, '<br/>')
-                  }}
-                />
-              ) : (
-                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] italic">Ожидание ответа от ИИ...</div>
+              {aiLoading ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3 text-[14px] text-[hsl(var(--primary))]">
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="font-medium">Анализирую кампанию...</span>
+                  </div>
+                  <div className="space-y-2">
+                    {['Сбор данных...', 'Юнит-экономика...', 'Конверсия и Price Index...', 'Формирование стратегии...'].map((step, i) => (
+                      <div key={i} className="flex items-center gap-2 text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[hsl(var(--primary)/0.3)] animate-pulse" style={{animationDelay: `${i * 300}ms`}} />
+                        {step}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : aiText ? (() => {
+                // Try to parse JSON sections
+                let sections: Array<{id: string; title: string; content: string; type: string; status?: string; actions?: Array<{action: string; value: string; priority: string}>}> | null = null
+                try {
+                  let jsonStr = aiText.trim()
+                  const jsonMatch = jsonStr.match(/```json\s*([\s\S]*?)\s*```/)
+                  if (jsonMatch) jsonStr = jsonMatch[1]
+                  const arrStart = jsonStr.indexOf('[')
+                  const arrEnd = jsonStr.lastIndexOf(']')
+                  if (arrStart !== -1 && arrEnd !== -1) {
+                    jsonStr = jsonStr.substring(arrStart, arrEnd + 1)
+                  }
+                  const parsed = JSON.parse(jsonStr)
+                  if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].id) {
+                    sections = parsed
+                  }
+                } catch {}
+
+                if (sections) {
+                  return (
+                    <div className="space-y-3">
+                      {sections.map((sec) => {
+                        const statusColors: Record<string, string> = {
+                          negative: 'border-l-red-500 bg-red-500/5',
+                          positive: 'border-l-green-500 bg-green-500/5',
+                          neutral: 'border-l-yellow-500 bg-yellow-500/5',
+                        }
+                        const cardClass = sec.status && statusColors[sec.status]
+                          ? `border-l-4 ${statusColors[sec.status]}`
+                          : sec.type === 'strategy' ? 'border-l-4 border-l-blue-500 bg-blue-500/5'
+                          : sec.type === 'verdict' ? 'border-l-4 border-l-purple-500 bg-purple-500/5'
+                          : ''
+
+                        return (
+                          <div key={sec.id} className={`rounded-xl border border-[hsl(var(--border))] p-4 ${cardClass}`}>
+                            <h3 className="text-[15px] font-bold mb-2 text-[hsl(var(--foreground))]">{sec.title}</h3>
+                            <div
+                              className="text-[13px] leading-relaxed text-[hsl(var(--foreground)/0.85)]"
+                              dangerouslySetInnerHTML={{ __html: (() => {
+                                // First, parse markdown tables into HTML tables
+                                const lines = sec.content.split('\n')
+                                const result: string[] = []
+                                let i = 0
+                                while (i < lines.length) {
+                                  // Detect table: line with | and next line is separator (---|---)
+                                  if (lines[i]?.includes('|') && i + 1 < lines.length && /^\|?[\s-:|]+\|/.test(lines[i + 1])) {
+                                    // Parse table
+                                    const headerCells = lines[i].split('|').map(c => c.trim()).filter(Boolean)
+                                    i += 2 // skip header + separator
+                                    const rows: string[][] = []
+                                    while (i < lines.length && lines[i]?.includes('|')) {
+                                      const cells = lines[i].split('|').map(c => c.trim()).filter(Boolean)
+                                      if (cells.length > 0) rows.push(cells)
+                                      i++
+                                    }
+                                    // Build HTML table
+                                    let table = '<table style="width:100%;border-collapse:collapse;margin:8px 0;font-size:13px">'
+                                    table += '<thead><tr>'
+                                    headerCells.forEach(h => {
+                                      const escaped = h.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                                        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                                      table += `<th style="text-align:left;padding:6px 10px;border-bottom:2px solid hsl(var(--border));font-weight:600;white-space:nowrap">${escaped}</th>`
+                                    })
+                                    table += '</tr></thead><tbody>'
+                                    rows.forEach((row, ri) => {
+                                      const bgColor = ri % 2 === 0 ? 'transparent' : 'hsl(var(--muted)/0.15)'
+                                      table += `<tr style="background:${bgColor}">`
+                                      row.forEach((cell, ci) => {
+                                        const escaped = cell.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                                          .replace(/\*\*(.+?)\*\*/g, '<strong style="color:hsl(var(--foreground))">$1</strong>')
+                                        const isValue = ci > 0
+                                        const align = isValue ? 'right' : 'left'
+                                        table += `<td style="text-align:${align};padding:5px 10px;border-bottom:1px solid hsl(var(--border)/0.3);white-space:nowrap">${escaped}</td>`
+                                      })
+                                      table += '</tr>'
+                                    })
+                                    table += '</tbody></table>'
+                                    result.push(table)
+                                  } else {
+                                    // Regular line — apply standard formatting
+                                    let line = lines[i]
+                                      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                                      .replace(/\*\*(.+?)\*\*/g, '<strong style="color:hsl(var(--foreground))">$1</strong>')
+                                    if (/^- /.test(line)) {
+                                      line = `<div style="margin-left:12px;margin-bottom:2px">• ${line.slice(2)}</div>`
+                                    } else {
+                                      line += '<br/>'
+                                    }
+                                    result.push(line)
+                                    i++
+                                  }
+                                }
+                                return result.join('')
+                              })() }}
+                            />
+                            {sec.actions && sec.actions.length > 0 && (
+                              <div className="mt-3 space-y-1.5">
+                                {sec.actions.map((a, i) => (
+                                  <div key={i} className={`flex items-center gap-2 text-[12px] px-3 py-2 rounded-lg ${
+                                    a.priority === 'high' ? 'bg-red-100 text-gray-800' :
+                                    a.priority === 'medium' ? 'bg-amber-100 text-gray-800' :
+                                    'bg-blue-100 text-gray-800'
+                                  }`}>
+                                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                      a.priority === 'high' ? 'bg-red-500' : a.priority === 'medium' ? 'bg-amber-500' : 'bg-blue-500'
+                                    }`} />
+                                    <span className="font-semibold text-gray-900">{a.action}:</span>
+                                    <span>{a.value}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )
+                }
+
+                // Fallback: render as markdown if JSON parse failed
+                return (
+                  <div
+                    className="text-[13px] leading-relaxed text-[hsl(var(--foreground)/0.85)] whitespace-pre-wrap [&_h2]:text-[16px] [&_h2]:font-bold [&_h2]:mt-4 [&_h2]:mb-2"
+                    dangerouslySetInnerHTML={{ __html: aiText
+                      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                      .replace(/^## (.+)$/gm, '<h2 class="text-[16px] font-bold mt-5 mb-2 text-[hsl(var(--foreground))]">$1</h2>')
+                      .replace(/^### (.+)$/gm, '<h3 class="text-[14px] font-semibold mt-3 mb-1 text-[hsl(var(--foreground))]">$1</h3>')
+                      .replace(/\*\*(.+?)\*\*/g, '<strong class="text-[hsl(var(--foreground))]">$1</strong>')
+                      .replace(/^- (.+)$/gm, '<div class="ml-4 mb-0.5">• $1</div>')
+                      .replace(/\n/g, '<br/>')
+                    }}
+                  />
+                )
+              })() : (
+                <div className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] italic">Нажмите «ИИ-анализ» для запуска</div>
               )}
             </div>
           </div>

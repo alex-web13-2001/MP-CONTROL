@@ -4,8 +4,12 @@ Campaign AI Analysis — ИИ-анализ конкретной рекламно
 POST /campaign-details/{marketplace}/{campaign_id}/ai-analysis  →  SSE streaming response
 
 Анализирует:
-- Прямой эффект рекламы (трафик → конверсии)
-- Косвенный эффект (Halo) — влияние рекламы на органические продажи
+- Полную юнит-экономику (себестоимость, комиссия, логистика, payout)
+- Прямой эффект рекламы (трафик → конверсии) 
+- Конверсионную модель (CR vs цена, порог алгоритма)
+- Price Index (GREEN/YELLOW/RED) и его влияние на алгоритм
+- Ключевые фразы (качество таргетинга)
+- Retention / повторные покупки vs Halo Effect
 - Влияние событий (ставки, цены, контент) на показатели
 """
 import json
@@ -50,66 +54,165 @@ EVENT_LABELS = {
     "STOCK_OUT_FBO_TOTAL": "Нет остатков ФБО", "STOCK_OUT_FBS_TOTAL": "Нет остатков ФБС",
 }
 
-SYSTEM_PROMPT = """Ты — эксперт-аналитик рекламных кампаний на маркетплейсах (Ozon, Wildberries).
+SYSTEM_PROMPT = """Ты — эксперт-аналитик рекламных кампаний на Ozon и Wildberries. Анализируешь данные одной кампании и даёшь конкретную стратегию.
 
-Тебе придут данные ОДНОЙ конкретной рекламной кампании: статистика по дням, события (изменения ставок/цен/контента), общие продажи товаров.
+## ОГРАНИЧЕНИЯ РЕКЛАМЫ НА OZON (СТРОГО СОБЛЮДАЙ!)
 
-ГЛАВНАЯ ЗАДАЧА: Определить реальную ценность кампании для бизнеса.
+### Что МОЖНО настроить:
+- Ставка CPC (одна на всю кампанию)
+- Недельный бюджет (ТОЛЬКО недельный, НЕ дневной!)
+- Включить/выключить кампанию
+- Цена товара (base_price / marketing_price)
+- Стратегия (поиск / рекомендации)
+- БОЛЬШЕ НИЧЕГО! Никаких минус-фраз, никакой фильтрации фраз!
 
-АНАЛИЗ ПРЯМОГО ЭФФЕКТА:
-- Как рекламный трафик конвертируется в заказы
-- Тренды CTR, CPC, CPO, DRR по дням
-- Как изменения ставок повлияли на объём трафика и конверсию
-- Средние значения и аномалии
+### Что НЕЛЬЗЯ сделать:
+- НЕЛЬЗЯ вручную подбирать ключевые фразы! Ozon Performance Max подбирает автоматически
+- НЕЛЬЗЯ задать дневной бюджет — только НЕДЕЛЬНЫЙ
+- НЕЛЬЗЯ создавать группы объявлений
+- НЕЛЬЗЯ отключить Performance Max или переключить тип кампании
+- НЕЛЬЗЯ добавлять минус-фразы — такого функционала НЕТ на Ozon!
+- НЕЛЬЗЯ фильтровать или исключать фразы — НЕВОЗМОЖНО!
+- НЕЛЬЗЯ таргетировать по конкретным фразам
 
-АНАЛИЗ КОСВЕННОГО ЭФФЕКТА (HALO EFFECT) — САМОЕ ВАЖНОЕ:
-- Сравни рекламную выручку (ad_revenue) и общую выручку товара (product_revenue) по дням
-- Если product_revenue значительно больше ad_revenue — реклама разогревает органику
-- Ищи корреляции: больше показов/кликов → больше органических продаж через 1-3 дня
-- Посчитай "мультипликатор": product_revenue / ad_revenue — сколько рублей общих продаж на каждый рубль рекламной выручки
-- Даже если CPO высокий, но общие продажи растут с рекламой — кампания полезна
-- Сравни дни с высоким расходом vs дни с низким расходом — отличается ли product_revenue?
+### Как управлять качеством фраз (ЕДИНСТВЕННЫЙ рычаг!):
+1. Снизить ставку CPC → алгоритм не покупает дорогие общие запросы → остаются точные
+2. Получить GREEN price_index → алгоритм перестаёт подмешивать мусор
 
-АНАЛИЗ СОБЫТИЙ:
-- Для каждого значимого события: что произошло → как изменились метрики в следующие 1-5 дней
-- Изменение ставки → показы/клики/заказы
-- Изменение цены товара → конверсия в заказ (CR)
-- Изменение контента (фото/описание) → CTR
-- Out-of-stock при работающей рекламе = слив бюджета
+## АЛГОРИТМ OZON — КЛЮЧЕВЫЕ ЗНАНИЯ
 
-ФОРМАТ ОТВЕТА (используй emoji и markdown):
+### Цены на Ozon (ВАЖНО — используй правильные названия!)
+- «Ваша цена» (price) — сколько продавец получит на руки. Это payout (после комиссий и логистики). Это НЕ то, что видит покупатель!
+- «Цена до скидки» (old_price) — маркетинговая цена, base_price для расчёта комиссии
+- «Минимальная цена» (min_price) — минимальный порог для участия в автоакциях Ozon. НЕ путай с ценой конкурента!
+- «Цена для покупателя» (marketing_price) — ВНИМАНИЕ: покупатель часто видит ДРУГУЮ, ещё более низкую цену!
+- КРИТИЧЕСКИ ВАЖНО: Ozon применяет свои субсидии (аналог СПП на Wildberries). Покупатель может видеть цену на 30-50% ниже «Цены до скидки». Например: «Цена до скидки» = 6000₽, а покупатель видит 3050₽ или 2761₽ с Ozon Картой. Ozon субсидирует разницу!
+- Мы НЕ можем получить реальную цену для покупателя через API. Она видна только на сайте Ozon.
+- Комиссия = % от «Цена до скидки» (old_price), логистика фиксированная
+- Price Index считается от реальной цены покупателя (с субсидиями Ozon), а НЕ от «Ваша цена»
 
-## 🎯 Вердикт
-(Одно-два предложения: эффективна / частично эффективна / неэффективна. Почему.)
+### Price Index (КРИТИЧЕСКИ ВАЖНО)
+- Формула: реальная_цена_покупателя / min_цена_конкурента (по всем площадкам)
+- GREEN/SUPER (≤0.95): бейдж «Супервыгодный индекс», буст выдачи
+- YELLOW (0.95-1.10): нейтрально
+- RED (>1.10): пессимизация
+- ВАЖНО! min_цена_конкурента часто = цена СВОЕГО ЖЕ товара на WB! Не настоящий конкурент. Решение: поднять цену на WB
+- min_price из API — это НЕ цена конкурента, а порог для автоакций Ozon!
 
-## 📊 Прямой эффект рекламы
-(Средние CTR, CPC, CPO, DRR. Тренды — что растёт, что падает. Ключевые дни.)
+### ПРАВИЛА ЛОГИКИ ПРИ АНАЛИЗЕ (ОБЯЗАТЕЛЬНО!)
+- Снижение цены НЕ МОЖЕТ убивать продажи. Если цена снизилась и продажи упали — это СОВПАДЕНИЕ (корреляция ≠ причинность). Ищи другие причины: сезонность, конкуренция, стоки, изменения в рекламе
+- При малом количестве данных (менее 30 заказов за период) — делай оговорку о статистической незначимости
+- НЕ делай ложных причинно-следственных связей. Если два события совпали по времени — это НЕ значит что одно вызвало другое
+- Повышение цены МОЖЕТ снижать конверсию (ценовая эластичность). Но снижение цены ВСЕГДА нейтрально или положительно для спроса
 
-## 🔄 Косвенный эффект (Halo)
-(Мультипликатор: product_revenue / ad_revenue. Корреляции с лагом. Вывод: разогревает ли реклама органику.)
+### Стратегии рекламы на Ozon
+- Поиск: товар показывается в результатах поиска
+- Рекомендации: товар показывается в карточках конкурентов/похожих
+- Выбор стратегии влияет на тип трафика и конверсию
+- При высоком Price Index лучше работают рекомендации (менее ценозависимые)
 
-## ⚡ Влияние событий
-(Для каждого ключевого события: дата → что изменилось → результат через N дней → вывод)
+### Retention ≠ Halo
+- Часть «органических» = повторные покупки (retention) — им реклама НЕ нужна
+- Halo = НОВЫЕ покупатели через органику благодаря рекламной видимости
+- При расчёте эффективности учитывай LTV (если retention высокий, допустимый CAC выше)
 
-## 💡 Рекомендации
-(Конкретные действия: изменить ставку до X₽, оптимальный расход Y₽/день, изменить цену, обновить контент)
+## ФОРМАТ ОТВЕТА — JSON
 
-## 📈 Оптимальные показатели
-(При каком расходе/ставке лучший результат. Точка diminishing returns если видна.)
+Верни ответ СТРОГО в JSON формате. Каждая секция — отдельный объект. Массив секций.
+Не добавляй текст ВНЕ JSON. Не оборачивай в ```json```. Только чистый JSON-массив.
+
+[
+  {
+    "id": "verdict",
+    "title": "🎯 Вердикт",
+    "content": "2-3 предложения. P&L одной цифрой. Эффективна/убыточна/потенциальна.",
+    "type": "verdict",
+    "status": "negative|neutral|positive"
+  },
+  {
+    "id": "unit_economics",
+    "title": "💰 Юнит-экономика",
+    "content": "Если несколько товаров — делай ОТДЕЛЬНУЮ таблицу для КАЖДОГО товара! Не усредняй!\nДля каждого товара используй markdown-таблицу:\nПараметр | Сумма (₽) | Доля от выручки (%)\n---|---|---\nBase price (выручка) | X | 100\nКомиссия Ozon | -X | -X%\nЛогистика+Обработка | -X | -X%\nЭквайринг | -X | -X%\nБонусы продавца | -X | -X%\nЧистый Payout | X | X%\nСебестоимость | -X | -X%\n**Прибыль до рекламы** | **X** | **X%**\nДопустимый CAC (безубыт.) | X | —\nРеальный CAC (прямой) | X | —\nCAC эффективный (Halo) | X | —",
+    "type": "section"
+  },
+  {
+    "id": "conversion_model",
+    "title": "📊 Конверсия vs Цена",
+    "content": "Краткий текст: при какой цене CR работает, при какой обрывается. Порог.",
+    "type": "section"
+  },
+  {
+    "id": "price_index",
+    "title": "🔍 Price Index",
+    "content": "Текущий индекс. Самоконкуренция с WB? Как получить GREEN — конкретная цена на WB.",
+    "type": "section"
+  },
+  {
+    "id": "keywords",
+    "title": "🔑 Ключевые фразы",
+    "content": "% мусора (по CTR и релевантности). 3-5 примеров нерелевантных фраз. ВАЖНО: мы НЕ знаем заказы/конверсию по конкретным фразам! Только показы, клики, CTR. Не придумывай данные по заказам!",
+    "type": "section"
+  },
+  {
+    "id": "ad_effect",
+    "title": "📈 Реклама",
+    "content": "Средние CTR, CPC, CR, DRR. Ключевые дни.",
+    "type": "section"
+  },
+  {
+    "id": "halo_retention",
+    "title": "🔄 Halo vs Retention",
+    "content": "Используй ДАННЫЕ ПО РЕТЕНШЕНУ из запроса! Укажи: % повторных покупателей, среднее число заказов на покупателя, средний LTV повторного клиента, дни между покупками. Рассчитай эффективный CAC с учётом повторных покупок: если клиент покупает X раз, то CAC за привлечение делится на X. Чем выше retention — тем более оправданы высокие расходы на рекламу.",
+    "type": "section"
+  },
+  {
+    "id": "events",
+    "title": "⚡ События",
+    "content": "Для каждого ключевого: дата → изменение → результат. Кратко.",
+    "type": "section"
+  },
+  {
+    "id": "strategy",
+    "title": "💡 Стратегия",
+    "content": "КОНКРЕТНЫЕ цифры. Цена: X₽ base_price, Y₽ на WB. Ставка: Z₽. Недельный бюджет: W₽. Тактика: постоянная/импульсная. P&L: заказов/мес → прибыль/мес → %.",
+    "type": "strategy",
+    "actions": [
+      {"action": "Описание действия", "value": "конкретное значение", "priority": "high|medium|low"}
+    ]
+  }
+]
 
 ПРАВИЛА:
-- Называй товары по именам/артикулам, а не по ID
-- Указывай конкретные даты и числа
-- Ищи time-lagged корреляции (событие сегодня → эффект через 1-3 дня)
-- Если данных мало — честно скажи, не придумывай корреляции
+- Каждая секция = КРАТКИЙ текст (3-7 предложений, НЕ портянка)
+- Называй товары по именам/артикулам
+- Конкретные даты и числа из данных
+- НЕ рекомендуй ручной подбор фраз — это НЕВОЗМОЖНО на Ozon!
+- НЕ рекомендуй минус-фразы — такого функционала НЕТ на Ozon!
+- НЕ рекомендуй фильтровать фразы — НЕЛЬЗЯ!
+- Рекомендуй ТОЛЬКО: ставку CPC, недельный бюджет, цену товара, стратегию (поиск/рекомендации), вкл/выкл кампанию. БОЛЬШЕ НИЧЕГО!
+- Цель — НЕ фиксированные 20%. Цель — максимальная прибыль при масштабировании! Найди оптимальный баланс цены/ставки/бюджета для макс. прибыли
+- DRR считай и от рекл.выручки, и от ОБЩЕЙ выручки (с учётом органики/Halo)
+- КРИТИЧЕСКИ ВАЖНО — ЗАКАЗЫ: рекламные заказы УЖЕ ВКЛЮЧЕНЫ в общие! Если общих 31, из них 10 рекламных — значит органических 21. НЕ СКЛАДЫВАЙ 31+10! Итого заказов = 31, не 41!
+- Себестоимость: ИСПОЛЬЗУЙ ТОЛЬКО число из данных, НЕ придумывай. Считай: прибыль до рекламы = payout - себестоимость
+- Общая себестоимость за период = себестоимость/шт × ВСЕГО заказов (НЕ × рекламных!)
+- По ключевым фразам: мы НЕ знаем заказы/конверсию по конкретным фразам! Только показы, клики, CTR. НЕ ПРИДУМЫВАЙ!
+- Используй правильные названия цен Ozon. Помни: покупатель видит ДРУГУЮ цену (после субсидий Ozon), мы её не знаем из API!
+- НЕ ПУТАЙ min_price с ценой конкурента! min_price — это порог автоакций Ozon
+- НЕ ДЕЛАЙ ложных выводов из корреляций. Снижение цены НЕ может снижать продажи!
 - Пиши на русском языке
-- Будь кратким но содержательным
+- Будь КРАТКИМ. Бизнесу нужны цифры и действия, не рассуждения.
 """
 
 
 def _to_date(v):
     """Normalize datetime→date."""
     return v.date() if isinstance(v, dt_datetime) else v
+
+
+from pydantic import BaseModel as _PydanticBaseModel
+
+class _AiAnalysisBody(_PydanticBaseModel):
+    previous_analysis: Optional[str] = None
 
 
 @router.post("/{marketplace}/{campaign_id}/ai-analysis")
@@ -119,6 +222,7 @@ async def analyze_campaign_ai(
     start_date: date = Query(...),
     end_date: date = Query(...),
     sku: Optional[int] = Query(None),
+    body: Optional[_AiAnalysisBody] = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -126,6 +230,7 @@ async def analyze_campaign_ai(
     AI-powered analysis of a specific campaign.
     Streams response from Gemini 2.5 Flash as SSE.
     """
+    previous_analysis = body.previous_analysis if body else None
     api_key = os.getenv("KIE_AI_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="KIE_AI_API_KEY not configured")
@@ -183,6 +288,7 @@ async def analyze_campaign_ai(
             """, parameters=params).result_rows
 
         # ── 3. Product revenue by day (total orders, not just ad-attributed) ──
+        prod_orders_by_sku: dict[int, int] = {}
         if mp == "ozon":
             prod_rows = ch.query("""
                 SELECT toDate(order_date) AS d, sum(price * quantity) AS rev, count() AS cnt
@@ -195,6 +301,23 @@ async def analyze_campaign_ai(
                 "shop_id": shop_id, "skus": filter_skus,
                 "start_date": start_date, "end_date": end_date
             }).result_rows
+
+            # Per-SKU order count from fact_ozon_orders (for P&L per product)
+            prod_orders_by_sku: dict[int, int] = {}
+            if len(filter_skus) > 1:
+                sku_orders_rows = ch.query("""
+                    SELECT sku, count() AS cnt
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND sku IN {skus:Array(UInt64)}
+                      AND toDate(order_date) BETWEEN {start_date:Date} AND {end_date:Date}
+                    GROUP BY sku
+                """, parameters={
+                    "shop_id": shop_id, "skus": filter_skus,
+                    "start_date": start_date, "end_date": end_date
+                }).result_rows
+                for r in sku_orders_rows:
+                    prod_orders_by_sku[int(r[0])] = int(r[1])
         else:
             prod_rows = ch.query("""
                 SELECT toDate(date) AS d, sum(finishedPrice * quantity) AS rev, count() AS cnt
@@ -209,6 +332,110 @@ async def analyze_campaign_ai(
                 "start_date": start_date, "end_date": end_date
             }).result_rows
 
+        # ── 4. Financial transactions (payout, commission, logistics) ──
+        finance_data = {}
+        order_fin_rows = []
+        if mp == "ozon":
+            fin_rows = ch.query("""
+                SELECT 
+                    type,
+                    operation_type_name,
+                    round(sum(amount), 0) as total,
+                    count() as cnt,
+                    round(avg(accruals_for_sale), 0) as avg_sale_price,
+                    round(avg(sale_commission), 0) as avg_commission,
+                    round(avg(services_total), 0) as avg_logistics
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND sku IN {skus:Array(UInt64)}
+                  AND toDate(operation_date) BETWEEN {start_date:Date} AND {end_date:Date}
+                GROUP BY type, operation_type_name
+                ORDER BY total DESC
+            """, parameters={
+                "shop_id": shop_id, "skus": filter_skus,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+            
+            for r in fin_rows:
+                typ, op_name = r[0], r[1]
+                finance_data[f"{typ}:{op_name}"] = {
+                    "total": int(r[2]), "count": int(r[3]),
+                    "avg_sale_price": int(r[4]), "avg_commission": int(r[5]),
+                    "avg_logistics": int(r[6])
+                }
+
+            # Get per-SKU detail for payout calculation
+            order_fin_rows = ch.query("""
+                SELECT 
+                    sku,
+                    round(avg(accruals_for_sale), 2) as avg_base_price,
+                    round(avg(sale_commission), 2) as avg_commission,
+                    round(avg(services_total), 2) as avg_logistics,
+                    round(avg(amount), 2) as avg_payout,
+                    count() as order_count,
+                    round(avg(sale_commission / nullIf(accruals_for_sale, 0) * 100), 1) as commission_pct,
+                    round(avg(services_total / nullIf(accruals_for_sale, 0) * 100), 1) as logistics_pct,
+                    round(avg(amount / nullIf(accruals_for_sale, 0) * 100), 1) as payout_pct
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND sku IN {skus:Array(UInt64)}
+                  AND type = 'orders'
+                  AND toDate(operation_date) BETWEEN {start_date:Date} AND {end_date:Date}
+                GROUP BY sku
+                ORDER BY count() DESC
+            """, parameters={
+                "shop_id": shop_id, "skus": filter_skus,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+
+        # ── 5. Top keyword phrases (Ozon) ──
+        phrases_lines = []
+        if mp == "ozon":
+            try:
+                phrases_rows = ch.query("""
+                    SELECT phrase, sum(views) as vw, sum(clicks) as cl,
+                           round(if(sum(views)>0, sum(clicks)/sum(views)*100, 0), 2) as ctr
+                    FROM mms_analytics.fact_advert_phrases_daily FINAL
+                    WHERE marketplace = 2 AND campaign_id = {cid:UInt64}
+                      AND dt BETWEEN {start_date:Date} AND {end_date:Date}
+                    GROUP BY phrase
+                    ORDER BY cl DESC, vw DESC
+                    LIMIT 40
+                """, parameters={
+                    "cid": campaign_id,
+                    "start_date": start_date, "end_date": end_date
+                }).result_rows
+                
+                for r in phrases_rows:
+                    phrases_lines.append(
+                        f"«{r[0]}» — {r[1]} показов, {r[2]} кликов, CTR {r[3]}%"
+                    )
+            except Exception as e:
+                logger.warning("Failed to get phrases: %s", e)
+
+        # ── 6. Repeat buyers (posting_number appears 2+ times = retention) ──
+        repeat_info = ""
+        if mp == "ozon":
+            try:
+                repeat_rows = ch.query("""
+                    SELECT 
+                        countDistinct(posting_number) as total_orders,
+                        count() as tx_count
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND sku IN {skus:Array(UInt64)}
+                      AND type = 'orders'
+                      AND toDate(operation_date) BETWEEN {start_date:Date} AND {end_date:Date}
+                """, parameters={
+                    "shop_id": shop_id, "skus": filter_skus,
+                    "start_date": start_date, "end_date": end_date,
+                }).result_rows
+                if repeat_rows:
+                    total_orders = int(repeat_rows[0][0])
+                    repeat_info = f"Уникальных заказов (posting): {total_orders}"
+            except Exception as e:
+                logger.warning("Failed to get repeat data: %s", e)
+
         ch.close()
     except HTTPException:
         raise
@@ -216,20 +443,156 @@ async def analyze_campaign_ai(
         logger.exception("CH query failed for campaign AI analysis")
         raise HTTPException(status_code=500, detail=f"Ошибка запроса данных: {e}")
 
-    # ── 4. Product names ──
+    # ── 7. Product info from PostgreSQL (price_index, cost_price, competitor) ──
     product_names: dict[int, str] = {}
+    product_info_lines = []
+    cost_price_info = ""
+
     if mp == "ozon":
-        # For Ozon, also map sku → product_id
         pg_res = await db.execute(
-            text("SELECT product_id, sku, name, offer_id FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
+            text("""
+                SELECT product_id, sku, name, offer_id, 
+                       price, old_price, min_price, marketing_price,
+                       price_index_color, price_index_value, competitor_min_price,
+                       stocks_fbo, stocks_fbs, vat
+                FROM dim_ozon_products 
+                WHERE shop_id = :sid AND sku = ANY(:skus)
+            """),
             {"sid": shop_id, "skus": campaign_skus}
         )
         for r in pg_res.fetchall():
             pid, sku_val, name, offer = r[0], r[1], r[2] or "", r[3] or ""
+            price, old_price, min_price, mkt_price = r[4], r[5], r[6], r[7]
+            pi_color, pi_value, comp_min = r[8], r[9], r[10]
+            stocks_fbo, stocks_fbs, vat = r[11], r[12], r[13]
+
             label = f"{name[:50]} ({offer})" if name and offer else name[:60] or offer or str(sku_val)
             product_names[sku_val] = label
             product_names[pid] = label
+
+            # Build product info block
+            pi_str = str(pi_color).upper() if pi_color else ""
+            pi_val = float(pi_value) if pi_value else None
+            # Map Ozon color constants correctly
+            if "SUPER" in pi_str or "GREEN" in pi_str or (pi_val and pi_val <= 0.95):
+                pi_display = "GREEN / SUPER (выгодный)"
+            elif "RED" in pi_str or (pi_val and pi_val > 1.10):
+                pi_display = "RED (невыгодный)"
+            elif pi_str:
+                pi_display = "YELLOW (умеренный)"
+            else:
+                pi_display = "Нет данных"
+            
+            info = f"""Товар: {label}
+  SKU: {sku_val}, Product ID: {pid}
+  «Ваша цена» (на руки продавцу): {price}₽
+  «Цена до скидки» (маркетинговая/base price): {old_price}₽
+  «Минимальная цена» (порог для автоакций): {min_price}₽
+  «Цена для покупателя» (после скидок Ozon): {mkt_price}₽
+  Price Index: {pi_display}, значение: {pi_value}
+  Competitor min price: {comp_min}₽ (ПРОВЕРЬ: это может быть свой же товар на WB!)
+  Остатки FBO: {stocks_fbo} шт, FBS: {stocks_fbs} шт
+  НДС: {vat}"""
+            product_info_lines.append(info)
+
+        # ── Get cost_price from product_costs table (per-SKU as numbers) ──
+        cost_prices: dict[str, float] = {}  # offer_id -> total cost
+        cost_price_info = ""
+        try:
+            cp_res = await db.execute(
+                text("""
+                    SELECT p.sku, pc.offer_id, pc.cost_price, pc.packaging_cost
+                    FROM product_costs pc
+                    JOIN dim_ozon_products p ON p.shop_id = pc.shop_id AND p.offer_id = pc.offer_id
+                    WHERE pc.shop_id = :sid AND p.sku = ANY(:skus)
+                """),
+                {"sid": shop_id, "skus": campaign_skus}
+            )
+            for cp_row in cp_res.fetchall():
+                sku_val = int(cp_row[0])
+                offer_id = cp_row[1]
+                cost = float(cp_row[2] or 0)
+                packaging = float(cp_row[3] or 0)
+                total_cost = cost + packaging
+                cost_prices[str(sku_val)] = total_cost
+                cost_price_info += f"\n  Себестоимость ({offer_id}, SKU {sku_val}): {cost}₽"
+                if packaging > 0:
+                    cost_price_info += f" + упаковка {packaging}₽ = {total_cost:.0f}₽"
+        except Exception as e:
+            logger.warning("Could not get cost_price: %s", e)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+        # ── Get retention/LTV data per SKU from ClickHouse ──
+        retention_info = ""
+        try:
+            retention_rows = ch.query("""
+                WITH
+                    sku_clients AS (
+                        SELECT
+                            sku,
+                            splitByChar('-', posting_number)[1] AS client_id,
+                            order_number,
+                            min(toDate(addHours(in_process_at, 3))) AS order_date,
+                            sum(price * quantity) AS order_revenue,
+                            sum(quantity) AS qty
+                        FROM mms_analytics.fact_ozon_orders FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND sku IN {skus:Array(UInt64)}
+                        GROUP BY sku, client_id, order_number
+                    ),
+                    sku_client_agg AS (
+                        SELECT
+                            sku,
+                            client_id,
+                            count() AS purchases,
+                            sum(order_revenue) AS client_revenue,
+                            min(order_date) AS first_buy,
+                            max(order_date) AS last_buy
+                        FROM sku_clients
+                        GROUP BY sku, client_id
+                    )
+                SELECT
+                    sku,
+                    count() AS total_buyers,
+                    countIf(purchases >= 2) AS repeat_buyers,
+                    round(countIf(purchases >= 2) / nullIf(count(), 0) * 100, 1) AS repeat_rate,
+                    round(avg(if(purchases >= 2, dateDiff('day', first_buy, last_buy) / (purchases - 1), 0)), 0) AS avg_days_between,
+                    round(avgIf(client_revenue, purchases >= 2), 0) AS avg_ltv_repeat,
+                    round(avg(purchases), 2) AS avg_orders_per_buyer
+                FROM sku_client_agg
+                GROUP BY sku
+            """, parameters={
+                "shop_id": shop_id, "skus": filter_skus,
+            }).result_rows
+
+            if retention_rows:
+                retention_info = "\n### ДАННЫЕ ПО РЕТЕНШЕНУ И ПОВТОРНЫМ ПОКУПКАМ (за всё время):\n"
+                for rr in retention_rows:
+                    r_sku = int(rr[0])
+                    r_name = product_names.get(r_sku, str(r_sku))
+                    total_buyers = int(rr[1])
+                    repeat_buyers = int(rr[2])
+                    repeat_rate = float(rr[3])
+                    avg_days = int(rr[4]) if rr[4] else 0
+                    avg_ltv_repeat = float(rr[5]) if rr[5] else 0
+                    avg_orders = float(rr[6])
+                    retention_info += f"""--- {r_name} (SKU {r_sku}) ---
+- Всего покупателей: {total_buyers}
+- Повторных покупателей: {repeat_buyers} ({repeat_rate}%)
+- Среднее кол-во заказов на покупателя: {avg_orders}
+- Среднее дней между повторными покупками: {avg_days} дней
+- Средний LTV повторного покупателя: {avg_ltv_repeat:.0f}₽
+"""
+                retention_info += "ВАЖНО: учитывай ретеншен при оценке CAC! Если покупатель возвращается — CAC окупается за несколько покупок.\n"
+        except Exception as e:
+            logger.warning("Could not get retention data: %s", e)
+
     else:
+        # WB
+        retention_info = ""  # WB retention not yet supported
         pg_res = await db.execute(
             text("SELECT nm_id, imt_name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:skus)"),
             {"sid": shop_id, "skus": campaign_skus}
@@ -241,8 +604,7 @@ async def analyze_campaign_ai(
 
     product_list = ", ".join(product_names[s] for s in campaign_skus if s in product_names)
 
-    # ── 5. Events ──
-    # For Ozon: convert sku → product_id for event_log
+    # ── 8. Events ──
     if mp == "ozon":
         pg_sku_res = await db.execute(
             text("SELECT product_id, sku FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
@@ -289,7 +651,7 @@ async def analyze_campaign_ai(
     if len(events_lines) > 200:
         events_lines = events_lines[:100] + ["... (пропущено) ..."] + events_lines[-100:]
 
-    # ── 6. Build stats table ──
+    # ── 9. Build stats table ──
     ad_by_date = {}
     for r in stats_rows:
         dt_val = _to_date(r[0])
@@ -305,13 +667,16 @@ async def analyze_campaign_ai(
 
     all_dates = sorted(set(list(ad_by_date.keys()) + list(prod_by_date.keys())))
 
-    stats_header = "Дата | Показы | Клики | CTR% | Рекл.заказы | Корзины | Рекл.выручка | Расход | DRR% | CPC | Общ.заказы | Общ.выручка | Мульт."
-    stats_sep = "---|---|---|---|---|---|---|---|---|---|---|---|---"
+    stats_header = "Дата | Показы | Клики | CTR% | Рекл.заказы | Корзины | Рекл.выручка | Расход | CPC | CR% | Общ.заказы | Общ.выручка"
+    stats_sep = "---|---|---|---|---|---|---|---|---|---|---|---"
     stats_lines = [stats_header, stats_sep]
 
     total_spend = 0
     total_ad_rev = 0
     total_prod_rev = 0
+    total_ad_orders = 0
+    total_prod_orders = 0
+    total_clicks = 0
 
     for dt_str in all_dates:
         ad = ad_by_date.get(dt_str, {"views": 0, "clicks": 0, "ad_orders": 0, "cart": 0, "ad_revenue": 0, "spend": 0})
@@ -320,45 +685,156 @@ async def analyze_campaign_ai(
         views, clicks = ad["views"], ad["clicks"]
         ctr = round(clicks / views * 100, 2) if views > 0 else 0
         cpc = round(ad["spend"] / clicks, 1) if clicks > 0 else 0
-        drr = round(ad["spend"] / ad["ad_revenue"] * 100, 1) if ad["ad_revenue"] > 0 else 0
-        mult = round(pr["prod_revenue"] / ad["ad_revenue"], 1) if ad["ad_revenue"] > 0 else 0
+        cr = round(ad["ad_orders"] / clicks * 100, 2) if clicks > 0 else 0
 
         total_spend += ad["spend"]
         total_ad_rev += ad["ad_revenue"]
         total_prod_rev += pr["prod_revenue"]
+        total_ad_orders += ad["ad_orders"]
+        total_prod_orders += pr["prod_orders"]
+        total_clicks += clicks
 
         stats_lines.append(
             f"{dt_str} | {views} | {clicks} | {ctr}% | {ad['ad_orders']} | {ad['cart']} | "
-            f"{ad['ad_revenue']:.0f}₽ | {ad['spend']:.0f}₽ | {drr}% | {cpc}₽ | "
-            f"{pr['prod_orders']} | {pr['prod_revenue']:.0f}₽ | x{mult}"
+            f"{ad['ad_revenue']:.0f}₽ | {ad['spend']:.0f}₽ | {cpc}₽ | {cr}% | "
+            f"{pr['prod_orders']} | {pr['prod_revenue']:.0f}₽"
         )
 
     # Totals
-    total_mult = round(total_prod_rev / total_ad_rev, 1) if total_ad_rev > 0 else 0
     total_drr = round(total_spend / total_ad_rev * 100, 1) if total_ad_rev > 0 else 0
+    total_drr_overall = round(total_spend / total_prod_rev * 100, 1) if total_prod_rev > 0 else 0
+    total_cac = round(total_spend / total_ad_orders, 0) if total_ad_orders > 0 else 0
+    avg_cr = round(total_ad_orders / total_clicks * 100, 2) if total_clicks > 0 else 0
+    organic_orders = total_prod_orders - total_ad_orders
+    halo_pct = round(organic_orders / total_prod_orders * 100, 1) if total_prod_orders > 0 else 0
 
-    # ── 7. Build user prompt ──
+    # ── 10. Build finance summary (per-SKU with cost) ──
+    finance_summary = ""
+    if order_fin_rows:
+        if len(order_fin_rows) == 1:
+            # Single SKU
+            ofr = order_fin_rows[0]
+            sku_id = int(ofr[0])
+            sku_name = product_names.get(sku_id, str(sku_id))
+            cost_per_unit = cost_prices.get(str(sku_id), 0)
+            avg_payout = float(ofr[4])
+            # P&L считаем по total_prod_orders из fact_ozon_orders!
+            total_cost = cost_per_unit * total_prod_orders
+            total_payout_sum = avg_payout * total_prod_orders
+            profit_per_unit = avg_payout - cost_per_unit if cost_per_unit > 0 else None
+            profit_before_ads = total_payout_sum - total_cost if cost_per_unit > 0 else None
+            profit_after_ads = (total_payout_sum - total_cost - total_spend) if cost_per_unit > 0 else None
+            finance_summary = f"""
+### ФИНАНСОВЫЕ ДАННЫЕ ({sku_name}):
+- Средняя «Цена до скидки» (accruals_for_sale): {ofr[1]}₽
+- Средняя комиссия Ozon: {ofr[2]}₽ ({ofr[6]}% от base_price)
+- Средняя логистика+обработка: {ofr[3]}₽ ({ofr[7]}% от base_price)
+- Средний payout (на руки после комиссий и логистики): {ofr[4]}₽ ({ofr[8]}% от base_price)
+- Себестоимость: {cost_per_unit}₽/шт
+
+### ПРЕДРАССЧИТАННЫЙ P&L (не пересчитывай, используй эти числа!):
+- Заказов за период: {total_prod_orders} шт
+- Общий payout: {total_payout_sum:.0f}₽ ({total_prod_orders} × {avg_payout:.0f}₽)
+- Общая себестоимость: -{total_cost:.0f}₽ ({total_prod_orders} × {cost_per_unit}₽)
+- ПРИБЫЛЬ ДО РЕКЛАМЫ: {f'{profit_before_ads:.0f}₽' if profit_before_ads is not None else 'нет данных'}
+- Расход на рекламу: -{total_spend:.0f}₽
+- ЧИСТАЯ ПРИБЫЛЬ: {f'{profit_after_ads:.0f}₽' if profit_after_ads is not None else 'нет данных'}
+- Маржинальность: {f'{round(profit_after_ads / total_payout_sum * 100, 1)}%' if profit_after_ads is not None and total_payout_sum > 0 else 'нет данных'}
+ВАЖНО: payout — это уже ПОСЛЕ комиссии и логистики! НЕ вычитай их повторно!
+{cost_price_info}
+"""
+        else:
+            # Multiple SKUs — per-SKU breakdown
+            finance_summary = "\n### ФИНАНСОВЫЕ ДАННЫЕ ПО КАЖДОМУ ТОВАРУ:\n"
+            finance_summary += "ВАЖНО: юнит-экономику считай ОТДЕЛЬНО для КАЖДОГО товара!\n\n"
+            combined_payout = 0
+            combined_cost = 0
+            for ofr in order_fin_rows:
+                sku_id = int(ofr[0])
+                sku_name = product_names.get(sku_id, str(sku_id))
+                cost_per_unit = cost_prices.get(str(sku_id), 0)
+                avg_payout = float(ofr[4])
+                # Берём заказы из fact_ozon_orders, не из transactions
+                sku_orders = prod_orders_by_sku.get(sku_id, int(ofr[5]))
+                total_cost = cost_per_unit * sku_orders
+                sku_total_payout = avg_payout * sku_orders
+                profit_per_unit = avg_payout - cost_per_unit if cost_per_unit > 0 else None
+                combined_payout += sku_total_payout
+                combined_cost += total_cost
+                finance_summary += f"""--- Товар: {sku_name} (SKU {sku_id}) ---
+- «Цена до скидки»: {ofr[1]}₽
+- Комиссия: {ofr[2]}₽ ({ofr[6]}%)
+- Логистика: {ofr[3]}₽ ({ofr[7]}%)
+- Payout (на руки, после комиссий!): {ofr[4]}₽
+- Заказов: {sku_orders} шт
+- Себестоимость: {cost_per_unit}₽/шт
+- Пр.до рекл./шт: {f'{profit_per_unit:.0f}₽' if profit_per_unit is not None else 'нет'}
+"""
+            combined_profit_before_ads = combined_payout - combined_cost
+            combined_profit_after_ads = combined_profit_before_ads - total_spend
+            finance_summary += f"""
+### ПРЕДРАССЧИТАННЫЙ P&L ПО ВСЕЙ КАМПАНИИ:
+- Заказов: {total_prod_orders} шт
+- Общий payout: {combined_payout:.0f}₽
+- Общая себестоимость: -{combined_cost:.0f}₽
+- ПРИБЫЛЬ ДО РЕКЛАМЫ: {combined_profit_before_ads:.0f}₽
+- Расход на рекламу: -{total_spend:.0f}₽
+- ЧИСТАЯ ПРИБЫЛЬ: {combined_profit_after_ads:.0f}₽
+ВАЖНО: payout — это уже ПОСЛЕ комиссии и логистики! НЕ вычитай их повторно!
+"""
+            finance_summary += cost_price_info + "\n"
+
+        # Add other charges
+        for key, val in finance_data.items():
+            if key.startswith("orders:"):
+                continue
+            finance_summary += f"- {key}: {val['total']}₽ ({val['count']} шт)\n"
+
+    # ── 11. Build user prompt ──
     user_message = f"""Кампания: ID {campaign_id}
 Маркетплейс: {mp_label}
 Период: {start_date} — {end_date} ({len(all_dates)} дней с данными)
 Товары в кампании: {product_list}
 
+### ИНФОРМАЦИЯ О ТОВАРАХ:
+{chr(10).join(product_info_lines) if product_info_lines else "Нет данных"}
+
 ИТОГО за период:
-- Расход: {total_spend:.0f}₽
-- Рекламная выручка: {total_ad_rev:.0f}₽
-- Общая выручка товаров: {total_prod_rev:.0f}₽
-- DRR (рекл.): {total_drr}%
-- Мультипликатор (общая/рекл. выручка): x{total_mult}
+- Расход на рекламу: {total_spend:.0f}₽
+- Рекл. выручка (только рекл.заказы): {total_ad_rev:.0f}₽
+- ОБЩАЯ выручка (ВСЕ заказы, включая рекламные!): {total_prod_rev:.0f}₽
+- ВСЕГО заказов (включая рекламные!): {total_prod_orders}
+- Из них рекламных: {total_ad_orders} (ВНИМАНИЕ: это часть общих, НЕ складывать! {total_prod_orders} уже включает {total_ad_orders} рекламных)
+- Органических (Halo + повторы): {organic_orders} ({halo_pct}% от общих)
+- DRR от рекл.выручки: {total_drr}%
+- DRR от ОБЩЕЙ выручки: {total_drr_overall}% (учитывает Halo-эффект)
+- Средний CR (заказ/клик): {avg_cr}%
+- CAC (расход/рекламный заказ): {total_cac}₽
+- CAC эффективный (расход/ВСЕ заказы): {round(total_spend/total_prod_orders) if total_prod_orders > 0 else 0}₽
+{repeat_info}
+{finance_summary}
+{retention_info}
 
 ### СТАТИСТИКА ПО ДНЯМ:
 {chr(10).join(stats_lines)}
 
+### TOP КЛЮЧЕВЫЕ ФРАЗЫ ({len(phrases_lines)} шт.):
+{chr(10).join(phrases_lines) if phrases_lines else "Данные по фразам не найдены"}
+
 ### СОБЫТИЯ ({len(events_raw)} шт.):
 {chr(10).join(events_lines) if events_lines else "Событий не найдено"}
 
-Проанализируй ВСЕ данные. Особое внимание — косвенному эффекту: как рекламный трафик влияет на общие продажи товара."""
+Проанализируй ВСЕ данные. Рассчитай полную юнит-экономику. Найди оптимальную стратегию масштабирования с МАКСИМАЛЬНОЙ прибылью! Не зацикливайся на 20% — ищи реальный оптимум цена/ставка/бюджет. Рекомендации по бюджету — в НЕДЕЛЬНЫХ суммах."""
 
-    # ── 8. Stream from Gemini ──
+    # ── 12. Stream from Gemini ──
+    messages = [
+        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+    ]
+    if previous_analysis:
+        messages.append({"role": "user", "content": [{"type": "text", "text": f"Предыдущий анализ этой кампании (для сравнения):\n{previous_analysis[:3000]}"}]})
+        messages.append({"role": "assistant", "content": [{"type": "text", "text": "Понял, учту предыдущий анализ для сравнения."}]})
+    messages.append({"role": "user", "content": [{"type": "text", "text": user_message}]})
+
     async def generate():
         async with httpx.AsyncClient(timeout=120.0) as client:
             try:
@@ -370,10 +846,7 @@ async def analyze_campaign_ai(
                         "Authorization": f"Bearer {api_key}",
                     },
                     json={
-                        "messages": [
-                            {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
-                            {"role": "user", "content": [{"type": "text", "text": user_message}]},
-                        ],
+                        "messages": messages,
                         "stream": True,
                         "include_thoughts": False,
                     },

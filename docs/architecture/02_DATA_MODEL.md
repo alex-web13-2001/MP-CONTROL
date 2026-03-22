@@ -65,7 +65,7 @@ graph LR
 
 ---
 
-## PostgreSQL — 12 таблиц
+## PostgreSQL — 14 таблиц
 
 ### ER-диаграмма
 
@@ -279,9 +279,41 @@ SQLAlchemy модель: `app/models/ozon_product.py → DimOzonProductContent`
 | `images_hash`      | VARCHAR(32) | MD5(image URLs JSON, порядок учитывается) |
 | `images_count`     | INTEGER     | Количество фото                           |
 
+#### `dim_ozon_campaigns` — справочник рекламных кампаний Ozon
+
+SQLAlchemy модель: `app/models/dim_ozon_campaigns.py → DimOzonCampaign`
+
+| Поле            | Тип            | Описание                                                                  |
+| --------------- | -------------- | ------------------------------------------------------------------------- |
+| `shop_id`       | INT FK → shops | Магазин (cascade delete)                                                  |
+| `campaign_id`   | BIGINT UK      | ID кампании Ozon (unique с shop_id)                                       |
+| `title`         | VARCHAR        | Название кампании                                                         |
+| `campaign_type` | VARCHAR        | Расшифрованный тип: «Средняя стоимость клика (Поиск и рекомендации)» и др. |
+| `state`         | VARCHAR        | `CAMPAIGN_STATE_RUNNING`, `CAMPAIGN_STATE_INACTIVE` и др.                 |
+| `daily_budget`  | DECIMAL(12,2)  | Дневной бюджет (₽, конвертировано из микрорублей)                         |
+| `payment_type`  | VARCHAR        | `CPC` / `CPM`                                                            |
+| `synced_at`     | TIMESTAMPTZ    | Время последней синхронизации из API                                      |
+
+> **Источник:** Ozon Performance API `GET /api/client/campaign`  
+> **Синхронизация:** Celery task `sync_ozon_campaigns_task` (при каждом sync_all_daily + при начальной синхронизации)
+
+#### `dim_ozon_campaign_products` — товары в кампаниях Ozon (ставки per-SKU)
+
+SQLAlchemy модель: `app/models/dim_ozon_campaigns.py → DimOzonCampaignProduct`
+
+| Поле          | Тип           | Описание                                                    |
+| ------------- | ------------- | ----------------------------------------------------------- |
+| `shop_id`     | INT FK        | Магазин                                                     |
+| `campaign_id` | BIGINT FK     | → dim_ozon_campaigns (cascade)                              |
+| `sku`         | BIGINT UK     | SKU товара (unique с shop_id + campaign_id)                 |
+| `bid`         | DECIMAL(10,2) | Текущая ставка CPC (₽, конвертировано из микрорублей)       |
+
+> **Источник:** Ozon Performance API `GET /api/client/campaign/{id}/v2/products`  
+> **Синхронизация:** `sync_ozon_campaigns_task` → `OzonCampaignsLoader.sync_campaign_products()` (только для активных кампаний)
+
 ---
 
-## ClickHouse — 20 таблиц + views
+## ClickHouse — 21 таблица + views
 
 ### Паттерны движков
 
@@ -433,6 +465,36 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 
 ---
 
+#### `fact_advert_phrases_daily` — поисковые фразы рекламы (универсальная WB + Ozon)
+
+| Engine    | ReplacingMergeTree(updated_at)                                |
+| --------- | ------------------------------------------------------------- |
+| Partition | toYYYYMM(dt)                                                  |
+| ORDER BY  | (shop_id, marketplace, campaign_id, dt, phrase)               |
+| TTL       | 1 год                                                         |
+
+Миграция: `docker/clickhouse/migrations/008_fact_advert_phrases_daily.sql`
+
+| Поле          | Тип           | Описание                                  |
+| ------------- | ------------- | ----------------------------------------- |
+| `dt`          | Date          | Дата                                      |
+| `shop_id`     | UInt32        | ID магазина                               |
+| `marketplace` | Enum8         | 1=wildberries, 2=ozon                     |
+| `campaign_id` | UInt64        | ID рекламной кампании                     |
+| `phrase`       | String        | Поисковая фраза (ключевое слово)          |
+| `views`       | UInt32        | Показы                                    |
+| `clicks`      | UInt32        | Клики                                     |
+| `ctr`         | Decimal(18,2) | CTR %                                     |
+| `orders`      | UInt32        | Заказы (только WB, у Ozon нет per-phrase) |
+| `revenue`     | Decimal(18,2) | Выручка                                   |
+| `spend`       | Decimal(18,2) | Расход                                    |
+
+> **Источник:** Ozon Performance API `POST /api/client/statistics/phrases` (CSV отчёт)  
+> **Синхронизация:** Celery task `sync_ozon_ad_stats` — запрашивает отдельный phrases-отчёт и парсит CSV
+> **Парсер:** `OzonAdsService.parse_phrases_csv_report()` с динамическим header detection
+
+---
+
 #### `fact_wb_acceptance_tariffs` — тарифы приёмки и хранения WB
 
 | Engine    | ReplacingMergeTree(updated_at)  |
@@ -533,8 +595,9 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 
 | Revision                       | Описание                                                 |
 | ------------------------------ | -------------------------------------------------------- |
-| `001_initial_stamp`            | Baseline — помечает существующую схему                   |
-| `002_add_ozon_product_columns` | 18 расширенных колонок dim_ozon_products (IF NOT EXISTS) |
+| `001_initial_stamp`                          | Baseline — помечает существующую схему                   |
+| `002_add_ozon_product_columns`               | 18 расширенных колонок dim_ozon_products (IF NOT EXISTS) |
+| `b81f3ce45f30_add_dim_ozon_campaign`         | Таблицы dim_ozon_campaigns + dim_ozon_campaign_products  |
 
 ### Workflow создания миграций
 
@@ -601,3 +664,16 @@ alembic revision --autogenerate -m "описание"
   - Поля: dt, period_end, offer_id, sku, product_id, volume_liters, avg_daily_stock, placement_cost
   - Источник: Ozon API `/v1/report/placement/by-products/create` (Excel отчёт)
 - Счётчик таблиц ClickHouse обновлён: 17 → 20
+
+### 2026-03-19
+
+- **Новые таблицы PostgreSQL:** `dim_ozon_campaigns` (справочник кампаний Ozon) + `dim_ozon_campaign_products` (товары и ставки per-SKU в кампаниях)
+  - Миграция Alembic: `b81f3ce45f30_add_dim_ozon_campaign.py`
+  - Модель: `app/models/dim_ozon_campaigns.py` (DimOzonCampaign + DimOzonCampaignProduct)
+  - Источник: Ozon Performance API (OAuth2 client_credentials)
+  - Бюджет конвертируется из микрорублей, campaign_type расшифровывается в человекочитаемый формат
+- **Новая таблица ClickHouse:** `fact_advert_phrases_daily` — поисковые фразы рекламы (универсальная WB + Ozon)
+  - Миграция: `docker/clickhouse/migrations/008_fact_advert_phrases_daily.sql`
+  - ReplacingMergeTree, ORDER BY (shop_id, marketplace, campaign_id, dt, phrase), TTL 1 год
+  - Парсер: `OzonAdsService.parse_phrases_csv_report()` — динамическое определение заголовков CSV
+- Счётчик: PostgreSQL 12 → 14, ClickHouse 20 → 21

@@ -4535,6 +4535,16 @@ def backfill_ozon_ads(
                 if not campaign_ids:
                     return {"shop_id": shop_id, "error": "No campaigns found"}
 
+                # Phrases: only SEARCH_PROMO / SKU campaigns have phrase data
+                search_campaign_ids = [
+                    c["id"] for c in campaigns
+                    if c.get("id") and str(c.get("advObjectType", "")).upper() in ("SEARCH_PROMO", "SKU")
+                ]
+                logger.info(
+                    f"Ozon backfill: {len(search_campaign_ids)}/{len(campaign_ids)} "
+                    f"campaigns eligible for phrases backfill"
+                )
+
                 # 2. Build date chunks (newest first — so we get recent data
                 #    before hitting old empty periods that trigger early exit)
                 today = datetime.utcnow().date()
@@ -4563,6 +4573,7 @@ def backfill_ozon_ads(
                 ch_host = os.environ.get("CLICKHOUSE_HOST", "clickhouse")
                 ch_port = int(os.environ.get("CLICKHOUSE_PORT", "8123"))
                 total_rows = 0
+                total_phrases = 0
                 empty_streak = 0
 
                 with OzonBidsLoader(host=ch_host, port=ch_port, username=os.getenv("CLICKHOUSE_USER", "default"), password=os.getenv("CLICKHOUSE_PASSWORD", "")) as loader:
@@ -4606,6 +4617,24 @@ def backfill_ozon_ads(
                                     )
                                     break
 
+                            # 3.5 Phrases backfill (same chunk dates)
+                            if search_campaign_ids:
+                                try:
+                                    phrases_rows = await service.fetch_phrases_statistics(
+                                        shop_id=shop_id,
+                                        campaign_ids=search_campaign_ids,
+                                        date_from=cf.strftime("%Y-%m-%d"),
+                                        date_to=ct.strftime("%Y-%m-%d"),
+                                    )
+                                    if phrases_rows:
+                                        inserted_p = loader.insert_phrases(phrases_rows)
+                                        total_phrases += inserted_p
+                                        logger.info(
+                                            f"Phrases chunk {cf}→{ct}: {inserted_p} rows"
+                                        )
+                                except Exception as pe:
+                                    logger.warning(f"Phrases backfill chunk {cf}→{ct} failed: {pe}")
+
                             # Rate limit: sleep between chunks
                             await asyncio.sleep(2)
 
@@ -4618,8 +4647,10 @@ def backfill_ozon_ads(
             return {
                 "shop_id": shop_id,
                 "campaigns": len(campaign_ids),
+                "phrases_campaigns": len(search_campaign_ids),
                 "chunks": len(chunks),
                 "total_rows": total_rows,
+                "total_phrases": total_phrases,
                 "period": f"{start_date} → {today}",
             }
 

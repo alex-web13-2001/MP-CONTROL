@@ -307,7 +307,7 @@ API для фронтенда — запрос финансовых данных
 
 ---
 
-### `ozon_ads_service.py` (770 строк)
+### `ozon_ads_service.py` (1056 строк)
 
 | Компонент          | Описание                                        |
 | ------------------ | ----------------------------------------------- |
@@ -320,12 +320,22 @@ API для фронтенда — запрос финансовых данных
 - `GET /api/client/campaign` — список кампаний
 - `GET /api/client/campaign/{id}/v2/products` — товары с текущими ставками
 - `GET /api/client/campaign/{id}/products/bids/competitive` — рыночные ставки
-- `POST /api/client/statistics` — заказ CSV отчёта (async)
+- `POST /api/client/statistics` — заказ CSV отчёта (async, campaign stats)
+- `POST /api/client/statistics/phrases` — заказ CSV отчёта поисковых фраз (async)
 - `GET /api/client/statistics/{UUID}` — статус отчёта
 - `GET /api/client/statistics/report?UUID=...` — скачивание CSV/ZIP
 
-**CSV парсинг:** BOM-prefixed, semicolon-separated, campaign IDs в заголовках.
-**Retry:** 5 попыток, 300 сек пауза (strict Ozon Performance limits).
+**CSV парсеры:**
+
+| Метод                       | Назначение                                                                 |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `parse_csv_report()`        | Основной CSV → `fact_ozon_ad_daily` (views, clicks, orders, revenue, DRR)  |
+| `parse_phrases_csv_report()` | CSV фраз → `fact_advert_phrases_daily` (phrase, views, clicks, spend, CTR) |
+
+**Парсер фраз:** динамическое определение заголовков (ищет «ключевая фраза», fallback на «фраз»/«запрос»/«слово»), skip пустых строк (views=0 AND clicks=0 AND spend=0).
+
+**Retry:** 3 попытки, 60 сек пауза + reset rate limiter backoff (strict Ozon Performance limits).  
+**ZIP:** автоматическое определение ZIP (PK\x03\x04) vs plain CSV для batch-отчётов (10+ кампаний).
 
 ---
 
@@ -355,6 +365,28 @@ API для фронтенда — запрос финансовых данных
 
 - `detect_all()` строит `campaign_titles` map из campaigns list → передаёт в `detect_product_changes()`
 - `set_ozon_campaign_state()` сохраняет `title` в Redis для последующего извлечения Events API
+
+---
+
+### `ozon_campaigns_loader.py` (202 строки)
+
+| Компонент                | Описание                                                      |
+| ------------------------ | ------------------------------------------------------------- |
+| **OzonCampaignsLoader**  | Синхронизация справочника кампаний Ozon → PostgreSQL           |
+
+**Ключевые методы:**
+
+| Метод                      | Описание                                                             |
+| -------------------------- | -------------------------------------------------------------------- |
+| `sync_all_campaigns()`     | UPSERT всех кампаний в `dim_ozon_campaigns` (dedup by campaign_id)   |
+| `sync_campaign_products()` | UPSERT товаров/ставок в `dim_ozon_campaign_products` + cleanup old   |
+
+**Расшифровка типа кампании:** SKU → «Средняя стоимость клика (Поиск и рекомендации)», «Фикс. цена - Клики (Карточка товара)» и т.д. Учитывает `advObjectType`, `placement`, `productCampaignMode`, `PaymentType`.
+
+**Бюджет:** конвертация из микрорублей (>100000 → делим на 1_000_000).  
+**Выход:** PostgreSQL `dim_ozon_campaigns` + `dim_ozon_campaign_products` (UPSERT с очисткой удалённых SKU)
+
+---
 
 ### `ozon_funnel_service.py` (8.9 КБ)
 
@@ -459,32 +491,33 @@ FBO + FBS возвраты Ozon.
 
 ## Сводная таблица: Service → API → Storage
 
-| Service                         | Marketplace | API Domain      | Target Storage                                     |
-| ------------------------------- | ----------- | --------------- | -------------------------------------------------- |
-| `wb_finance_loader`             | WB          | Supplier API v5 | CH: `fact_finances`                                |
-| `wb_orders_service`             | WB          | Statistics API  | CH: `fact_orders_raw`                              |
-| `wb_sales_funnel_service`       | WB          | Analytics API   | CH: `fact_sales_funnel`                            |
-| `wb_advertising_loader`         | WB          | Advert API v3   | CH: `ads_raw_history`, `fact_advert_stats_v3`      |
-| `wb_content_service`            | WB          | Content API     | PG: `dim_products`, `dim_product_content`          |
-| `wb_prices_service`             | WB          | Prices API      | PG: `dim_products`, Redis                          |
-| `wb_stocks_service`             | WB          | Marketplace API | CH: `fact_inventory_snapshot`, Redis               |
-| `wb_warehouses_service`         | WB          | Marketplace API | PG: `dim_warehouses`                               |
-| `wb_finance_report_service`     | WB          | — (internal)    | ClickHouse queries                                 |
-| `wb_tariffs_service`            | WB          | Tariffs API     | CH: `fact_wb_acceptance_tariffs`                   |
-| `wb_paid_storage_service`       | WB          | Seller Analytics API | CH: `fact_wb_paid_storage`                    |
-| `event_detector`                | WB          | — (stateful)    | PG: `event_log`, Redis                             |
-| `ozon_products_service`         | Ozon        | Seller API      | PG: `dim_ozon_products`, CH: `fact_ozon_inventory` |
-| `ozon_orders_service`           | Ozon        | Seller API      | CH: `fact_ozon_orders`                             |
-| `ozon_finance_service`          | Ozon        | Seller API      | CH: `fact_ozon_transactions`                       |
-| `ozon_ads_service`              | Ozon        | Performance API | CH: `fact_ozon_ad_daily`, `log_ozon_bids`          |
-| `ozon_ads_event_detector`       | Ozon        | — (stateful)    | PG: `event_log`, Redis                             |
-| `ozon_funnel_service`           | Ozon        | Seller API      | CH: `fact_ozon_funnel`                             |
-| `ozon_returns_service`          | Ozon        | Seller API      | CH: `fact_ozon_returns`                            |
-| `ozon_warehouse_stocks_service` | Ozon        | Seller API      | CH: `fact_ozon_warehouse_stocks`                   |
-| `ozon_price_service`            | Ozon        | Seller API      | CH: `fact_ozon_prices`                             |
-| `ozon_seller_rating_service`    | Ozon        | Seller API      | CH: `fact_ozon_seller_rating`                      |
-| `ozon_placement_service`        | Ozon        | Seller API      | CH: `fact_ozon_placement_cost`                     |
-| `ozon_turnover_service`         | Ozon        | Seller API      | CH: `fact_ozon_turnover`                           |
+| Service                         | Marketplace | API Domain      | Target Storage                                                         |
+| ------------------------------- | ----------- | --------------- | ---------------------------------------------------------------------- |
+| `wb_finance_loader`             | WB          | Supplier API v5 | CH: `fact_finances`                                                    |
+| `wb_orders_service`             | WB          | Statistics API  | CH: `fact_orders_raw`                                                  |
+| `wb_sales_funnel_service`       | WB          | Analytics API   | CH: `fact_sales_funnel`                                                |
+| `wb_advertising_loader`         | WB          | Advert API v3   | CH: `ads_raw_history`, `fact_advert_stats_v3`                          |
+| `wb_content_service`            | WB          | Content API     | PG: `dim_products`, `dim_product_content`                              |
+| `wb_prices_service`             | WB          | Prices API      | PG: `dim_products`, Redis                                              |
+| `wb_stocks_service`             | WB          | Marketplace API | CH: `fact_inventory_snapshot`, Redis                                   |
+| `wb_warehouses_service`         | WB          | Marketplace API | PG: `dim_warehouses`                                                   |
+| `wb_finance_report_service`     | WB          | — (internal)    | ClickHouse queries                                                     |
+| `wb_tariffs_service`            | WB          | Tariffs API     | CH: `fact_wb_acceptance_tariffs`                                       |
+| `wb_paid_storage_service`       | WB          | Seller Analytics API | CH: `fact_wb_paid_storage`                                        |
+| `event_detector`                | WB          | — (stateful)    | PG: `event_log`, Redis                                                 |
+| `ozon_products_service`         | Ozon        | Seller API      | PG: `dim_ozon_products`, CH: `fact_ozon_inventory`                     |
+| `ozon_orders_service`           | Ozon        | Seller API      | CH: `fact_ozon_orders`                                                 |
+| `ozon_finance_service`          | Ozon        | Seller API      | CH: `fact_ozon_transactions`                                           |
+| `ozon_ads_service`              | Ozon        | Performance API | CH: `fact_ozon_ad_daily`, `log_ozon_bids`, `fact_advert_phrases_daily` |
+| `ozon_ads_event_detector`       | Ozon        | — (stateful)    | PG: `event_log`, Redis                                                 |
+| `ozon_campaigns_loader`         | Ozon        | (via OzonAdsService) | PG: `dim_ozon_campaigns`, `dim_ozon_campaign_products`            |
+| `ozon_funnel_service`           | Ozon        | Seller API      | CH: `fact_ozon_funnel`                                                 |
+| `ozon_returns_service`          | Ozon        | Seller API      | CH: `fact_ozon_returns`                                                |
+| `ozon_warehouse_stocks_service` | Ozon        | Seller API      | CH: `fact_ozon_warehouse_stocks`                                       |
+| `ozon_price_service`            | Ozon        | Seller API      | CH: `fact_ozon_prices`                                                 |
+| `ozon_seller_rating_service`    | Ozon        | Seller API      | CH: `fact_ozon_seller_rating`                                          |
+| `ozon_placement_service`        | Ozon        | Seller API      | CH: `fact_ozon_placement_cost`                                         |
+| `ozon_turnover_service`         | Ozon        | Seller API      | CH: `fact_ozon_turnover`                                               |
 
 ---
 
@@ -542,3 +575,14 @@ FBO + FBS возвраты Ozon.
   - API: `POST /v1/analytics/item_turnover`
   - Данные: days_on_site, stock_fbo, avg_daily_sales, days_of_supply
 - Обновлена сводная таблица Service → API → Storage (25 сервисов)
+
+### 2026-03-19
+
+- `ozon_ads_service.py`: обновлено с 770 до 1056 строк — добавлен `order_phrases_report()` (POST `/api/client/statistics/phrases`) + `parse_phrases_csv_report()` для `fact_advert_phrases_daily`
+- `ozon_ads_service.py`: улучшен retry (3 попытки × 60 сек) + reset rate limiter backoff перед каждой попыткой
+- `ozon_ads_service.py`: ZIP detection для batch-отчётов (10+ кампаний)
+- **Новый сервис:** `ozon_campaigns_loader.py` (202 строки) — `OzonCampaignsLoader` синхронизирует кампании Ozon → `dim_ozon_campaigns` + `dim_ozon_campaign_products` (PostgreSQL)
+  - Расшифровка типа кампании из `advObjectType` + `placement` + `productCampaignMode` + `PaymentType`
+  - Бюджет: автоконвертация из микрорублей
+  - Cleanup: удаляет SKU из БД, которых больше нет в API Ozon
+- Обновлена сводная таблица Service → API → Storage (26 сервисов)

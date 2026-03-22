@@ -1,7 +1,7 @@
 # MP-CONTROL — Backend API
 
 > REST API на FastAPI. Все endpoints начинаются с `/api/v1/`.  
-> Файлы: `backend/app/api/v1/` (14 роутеров), `backend/app/schemas/auth.py`
+> Файлы: `backend/app/api/v1/` (16 роутеров), `backend/app/schemas/auth.py`
 
 ---
 
@@ -23,6 +23,8 @@ router.include_router(ltv_router)               # /api/v1/sales/ozon/ltv*
 router.include_router(wb_ltv_router)            # /api/v1/sales/wb/ltv*
 router.include_router(events_router)            # /api/v1/events/*
 router.include_router(warehouses_router)         # /api/v1/warehouses/*
+router.include_router(campaign_ai_router)        # /api/v1/campaign-ai/*
+router.include_router(campaign_details_router)    # /api/v1/campaign-details/*
 ```
 
 ---
@@ -323,6 +325,147 @@ date_from / date_to: date (optional) — кастомный диапазон
 | ------ | ------------------------------- | ----------------------------- | ---- |
 | `POST` | `/advertising/sync`             | Старт рекламной синхронизации | —    |
 | `GET`  | `/advertising/status/{task_id}` | Статус задачи                 | —    |
+
+---
+
+## Детали кампаний — `/api/v1/campaign-details`
+
+> **Файл:** `backend/app/api/v1/campaign_details.py` (758 строк)  
+> **Универсальный:** работает и для Ozon (`marketplace=ozon`), и для WB (`marketplace=wb`)
+
+### Endpoints
+
+| Метод | Path                                            | Описание                                          | Auth |
+| ----- | ----------------------------------------------- | ------------------------------------------------- | ---- |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/kpi`      | KPI agрегаты (текущий + предыдущий период, дельты) | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/stats`    | Time-series (views, clicks, orders, spend, DRR)    | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/events`   | История событий (ставки, статус, контент)           | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/phrases`  | Поисковые фразы (из `fact_advert_phrases_daily`)   | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/heatmap`  | Heatmap заказов (час × день недели)                 | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/purchases`| SKU, купленные через кампанию                       | JWT  |
+
+### Query Parameters (общие)
+
+| Параметр     | Тип    | Описание                                |
+| ------------ | ------ | --------------------------------------- |
+| `start_date` | date   | Начало периода                          |
+| `end_date`   | date   | Конец периода                           |
+| `sku`        | int?   | Фильтр по конкретному SKU внутри кампании |
+
+### Ключевая логика
+
+- **KPI:** ad stats + product revenue (из `fact_ozon_orders` / `fact_orders_raw`), вычисление дельт с предыдущим периодом той же длины
+- **Stats:** merge рекламных данных (`fact_ozon_ad_daily` / `fact_advert_stats_v3`) с product revenue per day
+- **Events:** конвертация Ozon SKU → product_id для поиска в `event_log` (sku и product_id — разные!), enrichment с названиями из `dim_ozon_products`
+- **Phrases:** агрегация из `fact_advert_phrases_daily` (marketplace Enum8: 1=WB, 2=Ozon)
+- **Heatmap:** группировка заказов по `toDayOfWeek()` × `toHour()` из таблиц заказов
+- **Purchases:** фактические покупки по SKU кампании с enrichment названий из PostgreSQL
+
+### Response Schemas
+
+| Schema              | Поля                                                                     |
+| ------------------- | ------------------------------------------------------------------------ |
+| `CampaignKpiResponse` | `current`/`previous` KpiPeriod + `first_date` (дата запуска)            |
+| `CampaignStatsRow`    | dt, views, clicks, orders, cart, revenue, spend, ctr, drr, product_revenue |
+| `CampaignEventRow`    | id, timestamp, event_type, product_id, product_name, old/new_value        |
+| `CampaignPhraseRow`   | phrase, views, clicks, ctr, spend, orders, revenue                        |
+| `CampaignHeatmapRow`  | day_of_week, hour, orders                                                 |
+| `CampaignPurchaseRow` | sku, product_name, offer_id, quantity, revenue, avg_price                  |
+
+---
+
+## ИИ-анализ кампании — `/api/v1/campaign-ai`
+
+### Endpoints
+
+| Метод  | Path                        | Описание                                      | Auth   |
+| ------ | --------------------------- | --------------------------------------------- | ------ |
+| `POST` | `/campaign-ai/analyze`      | SSE streaming ИИ-анализ кампании (Gemini 2.5) | Bearer |
+
+### Request Body
+
+```
+{
+  shop_id: int,
+  campaign_id: int,
+  days: int (default: 30),            // период анализа
+  date_from?: str (YYYY-MM-DD),       // кастомная начальная дата
+  date_to?: str (YYYY-MM-DD),         // кастомная конечная дата
+  previous_analysis?: str             // предыдущий анализ для сравнения
+}
+```
+
+### Response (SSE stream)
+
+```
+Content-Type: text/event-stream
+
+data: {"type": "sections", "data": [...]}      // структура секций для UI
+data: {"type": "chunk", "data": "текст..."}     // streaming текст от Gemini
+data: {"type": "done"}                           // конец стрима
+data: {"type": "error", "data": "..."}           // ошибка
+```
+
+### Структура секций (JSON)
+
+```
+[
+  { id: "unit_economics", title: "📊 Юнит-экономика", type: "section" },
+  { id: "price_conversion", title: "🎯 Конверсия vs Цена", type: "section" },
+  { id: "price_index", title: "🔍 Price Index", type: "section" },
+  { id: "keywords", title: "🔑 Ключевые фразы", type: "section" },
+  { id: "ad_effect", title: "📈 Реклама", type: "section" },
+  { id: "halo_retention", title: "🔄 Halo vs Retention", type: "section" },
+  { id: "events", title: "⚡ События", type: "section" },
+  {
+    id: "strategy", title: "💡 Стратегия", type: "strategy",
+    actions: [
+      { action: "...", value: "...", priority: "high|medium|low" }
+    ]
+  }
+]
+```
+
+### Источники данных (11 запросов)
+
+| # | Источник | Что запрашивается |
+|---|----------|-------------------|
+| 1 | ClickHouse `fact_ozon_ad_daily` | Ежедневная статистика кампании: views, clicks, spend, orders, revenue, carts |
+| 2 | ClickHouse `fact_ozon_orders` | Ежедневные заказы и выручка по SKU кампании (total orders) |
+| 3 | ClickHouse `fact_ozon_orders` | Per-SKU order counts для multi-product P&L |
+| 4 | ClickHouse `fact_ozon_ad_daily` | Топ ключевые фразы: views, clicks, CTR (НЕ orders — недоступно на Ozon) |
+| 5 | ClickHouse `fact_ozon_transactions` | Per-SKU unit economics: base_price, commission, logistics, payout |
+| 6 | PostgreSQL `dim_ozon_products` | Каталог: name, offer_id, image, marketing_price, min_price, old_price, price_index |
+| 7 | PostgreSQL `dim_ozon_campaigns` | Информация о кампании: бюджет, ставка, стратегия, дата создания |
+| 8 | PostgreSQL `product_costs` + `dim_ozon_products` | Себестоимость per-SKU (cost_price + packaging) |
+| 9 | ClickHouse `fact_ozon_orders` | **Retention per-SKU**: total_buyers, repeat_buyers, repeat_rate, avg_days_between, avg_ltv_repeat |
+| 10 | PostgreSQL `event_log` | События за период: изменения ставок, цен, контента |
+| 11 | Gemini 2.5 Flash | Streaming ИИ-анализ через kie.ai API (SSE) |
+
+### Ключевая логика
+
+**P&L расчёт (pre-calculated, не AI):**
+- `total_prod_orders` из `fact_ozon_orders` (все заказы, не только рекламные)
+- `avg_payout` из `fact_ozon_transactions` (финансово точные per-unit данные)
+- `total_payout = total_prod_orders × avg_payout`
+- `total_cost = total_prod_orders × cost_per_unit` (из `product_costs`)
+- `profit_after_ads = total_payout − total_cost − ad_spend`
+- Для multi-SKU: раздельный P&L по каждому товару через `prod_orders_by_sku`
+
+**Retention/LTV (per-SKU, за всё время):**
+- `client_id = splitByChar('-', posting_number)[1]`
+- `repeat_rate = repeat_buyers / total_buyers × 100`
+- `avg_days_between` — средний интервал повторных покупок
+- `avg_ltv_repeat` — средний LTV повторного покупателя
+- Используется для расчёта эффективного CAC: `CAC / avg_orders_per_buyer`
+
+**Системный промпт — ключевые правила:**
+- Ozon Performance Max: нет минус-фраз, нет фильтрации фраз, только CPC и бюджет
+- Субсидии Ozon (аналог СПП WB): покупатель видит цену на 30-50% ниже
+- `min_price` — порог автоакций, НЕ цена конкурента
+- Снижение цены НЕ может убивать продажи (корреляция ≠ причинность)
+- При <30 заказах — оговорка о статистической незначимости
+- Рекламные заказы уже включены в общие (не складывать)
 
 ---
 
@@ -1463,3 +1606,26 @@ data: [DONE]
 - **Общая функция** `_build_stock_report_excel()` — shared логика для обоих маркетплейсов
 - **Fix**: `dim_products` и `dim_ozon_products` — запросы через PostgreSQL (SQLAlchemy), не ClickHouse
 - **WB `products_summary`**: OOS-товары включены в ответ `/wb/analytics` для фильтрации на фронтенде
+
+### 2026-03-19
+
+- **Новый роутер** `campaign_details_router` (16-й роутер): 6 endpoints для детальной аналитики кампаний (kpi, stats, events, phrases, heatmap, purchases)
+  - Универсальный: Ozon (`fact_ozon_ad_daily`/`fact_ozon_orders`) и WB (`fact_advert_stats_v3`/`fact_orders_raw`)
+  - KPI с дельтами (текущий vs предыдущий период), product_revenue из таблиц заказов
+  - Events: конвертация Ozon `sku` → `product_id` для `event_log`, enrichment с названиями из PG
+  - Phrases: агрегация из `fact_advert_phrases_daily` (Enum8 marketplace)
+- **Новая таблица ClickHouse:** `fact_advert_phrases_daily` — поисковые фразы рекламы (миграция 008)
+- **Новые таблицы PostgreSQL:** `dim_ozon_campaigns` + `dim_ozon_campaign_products` (миграция Alembic `b81f3ce45f30`)
+- **Новый сервис:** `ozon_campaigns_loader.py` — синхронизация справочника кампаний Ozon → PostgreSQL
+- **Новый сервис:** `ozon_ads_service.py` расширен: `order_phrases_report()` + `parse_phrases_csv_report()`, ZIP detection, улучшенный retry
+
+### 2026-03-20
+
+- **Рекламная аналитика**: `product_revenue` в `CampaignStatsRow`, поиск по кампаниям, улучшения UI
+
+### 2026-03-22
+
+- **ИИ-анализ кампании** (`campaign_ai_analysis.py`): SSE streaming endpoint, Gemini 2.5 Flash, JSON-секции, pre-calculated P&L
+- **Retention per-SKU**: запрос повторных покупок из `fact_ozon_orders` (total_buyers, repeat_rate, avg_ltv_repeat)
+- **Системный промпт**: правила логики (корреляция ≠ причинность), субсидии Ozon (СПП аналог), min_price ≠ цена конкурента
+- Добавлена секция `campaign_ai_router` в роутинг

@@ -159,6 +159,7 @@ export async function streamCampaignAiAnalysis(
     startDate: string
     endDate: string
     sku?: number
+    previousAnalysis?: string
   },
   onChunk: (text: string) => void,
   onDone: () => void,
@@ -175,6 +176,11 @@ export async function streamCampaignAiAnalysis(
   const { useAuthStore } = await import('@/stores/authStore')
   const token = useAuthStore.getState().token
 
+  // Send previous_analysis in POST body (not query) to avoid HTTP 414
+  const postBody = params.previousAnalysis
+    ? JSON.stringify({ previous_analysis: params.previousAnalysis })
+    : undefined
+
   try {
     const response = await fetch(
       `${baseUrl}/campaign-details/${params.marketplace}/${params.campaignId}/ai-analysis?${qs.toString()}`,
@@ -184,6 +190,7 @@ export async function streamCampaignAiAnalysis(
           'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
+        body: postBody,
         signal: controller.signal,
       }
     )

@@ -1,3 +1,99 @@
+## 2026-03-22 (v17.13)
+
+### feat(campaign-ai): ИИ-анализ кампаний — retention, P&L fix, промпт Ozon
+
+**Backend** (`campaign_ai_analysis.py`):
+- **Retention per-SKU** из `fact_ozon_orders` за всё время: total_buyers, repeat_buyers, repeat_rate, avg_days_between, avg_ltv_repeat, avg_orders_per_buyer
+- Данные передаются ИИ в секции «ДАННЫЕ ПО РЕТЕНШЕНУ И ПОВТОРНЫМ ПОКУПКАМ» для расчёта эффективного CAC
+- **P&L**: переход на `fact_ozon_orders` для подсчёта заказов (было `fact_ozon_transactions`). Per-unit финансовые метрики — по-прежнему из `fact_ozon_transactions` (финансовая точность)
+- **Per-SKU order counts** из `fact_ozon_orders` для multi-product кампаний
+- **Pre-calculated P&L**: бэкенд считает total_payout, total_cost, profit before/after ads — ИИ использует готовые числа
+
+**Системный промпт — критические исправления:**
+- **Субсидии Ozon (СПП аналог)**: покупатель видит цену на 30-50% ниже «Цены до скидки». Пример: old_price=6000₽, покупатель видит 3050₽/2761₽ с Ozon Картой
+- **min_price**: это порог автоакций Ozon, НЕ цена конкурента
+- **Price Index**: считается от реальной цены покупателя (с субсидиями), не от «Ваша цена»
+- **Правила логики**: снижение цены НЕ может убивать продажи (корреляция ≠ причинность)
+- **Малая выборка**: при <30 заказах — оговорка о статистической незначимости
+- **Минус-фразы**: полностью убраны из промпта (нет на Ozon)
+- **Данные по фразам**: только views/clicks/CTR, НЕ orders (нет на Ozon)
+- **Ozon цены**: правильная терминология — «Ваша цена» (payout), «Цена до скидки» (old_price), «Минимальная цена» (порог автоакций), «Цена для покупателя» (marketing_price)
+- **division by zero**: `nullIf()` в ClickHouse для `accruals_for_sale`
+
+**Frontend** (`CampaignDetailModal.tsx`):
+- **UI действий стратегии**: исправлены нечитаемые цвета — `text-yellow-400` → `text-gray-800` на `bg-amber-100`. Тёмный текст на светлых цветных фонах
+- Убрано `opacity-80` с value-текста
+- Цветовые индикаторы кружков: `bg-amber-500` (medium), `bg-red-500` (high), `bg-blue-500` (low)
+
+**Frontend** (`campaignDetails.ts`):
+- `streamCampaignAiAnalysis()` — SSE-клиент для streaming AI analysis с обработкой chunks
+
+---
+
+## 2026-03-20 (v17.12)
+
+### feat(advertising): Общая выручка + реальная дата запуска + DateRangePicker
+
+**Backend** (`campaign_details.py`):
+- Новое поле `product_revenue` в `CampaignStatsRow` — общая выручка товаров кампании
+- Запрос ежедневных заказов из `fact_ozon_orders` / `fact_orders_raw` по SKU кампании
+- SQL: `toDate(order_date)` для корректной группировки по дням
+- Нормализация `datetime → date` через helper `_to_date()`
+
+**Frontend** (`CampaignDetailModal.tsx`):
+- Новая метрика **«Выручка общая»** на графике: голубая area-линия (`#06b6d4`) с gradient fill
+- «Выручка» переименована в **«Выручка рекл.»**
+- **Реальная дата запуска кампании** из `dim_ozon_campaigns` вместо первой даты периода
+- **Стилизованный DateRangePicker** (inline ModalDatePicker) для произвольных дат
+- **Вкладка «Ставки»**: визуализация изменений ставок CPC
+- Увеличены шрифты дельт с 10px до 13px на KPI карточках
+- Поиск по кампаниям (название, ID, SKU, product_id, артикул, название товара)
+- Кампании в столбик, ID крупнее жирный, названия обрезаны
+
+**Frontend** (`AdvertisingAnalyticsPage.tsx`):
+- Кнопка «Статистика»: крупная иконка 📊 (32×32) справа от заголовка
+- Режим «По товарам» в таблице кампаний
+
+---
+
+## 2026-03-19 (v17.11.5)
+
+### feat(campaign-details): Новый роутер детальной аналитики + поисковые фразы + справочник кампаний
+
+**Backend — Новый роутер** (`campaign_details.py`, 758 строк):
+- 6 endpoint'ов: `/kpi`, `/stats`, `/events`, `/phrases`, `/heatmap`, `/purchases`
+- Универсальный для Ozon и WB через `{marketplace}` параметр
+- **KPI**: ad stats + product revenue из `fact_ozon_orders`/`fact_orders_raw`, дельты с предыдущим периодом
+- **Stats**: merge рекламных данных + product revenue per day, `toDate()` группировка
+- **Events**: конвертация Ozon `sku` → `product_id` для `event_log`, enrichment с названиями из PG
+- **Phrases**: агрегация из `fact_advert_phrases_daily` (Enum8: 1=WB, 2=Ozon)
+- **Heatmap**: заказы по `toDayOfWeek()` × `toHour()`
+- **Purchases**: фактические покупки SKU кампании с enrichment
+
+**Backend — Новые таблицы PostgreSQL:**
+- `dim_ozon_campaigns`: справочник кампаний Ozon (title, campaign_type, state, daily_budget, payment_type)
+- `dim_ozon_campaign_products`: товары и ставки per-SKU в кампаниях (bid в рублях)
+- Миграция Alembic: `b81f3ce45f30_add_dim_ozon_campaign.py`
+- Модель: `app/models/dim_ozon_campaigns.py` (DimOzonCampaign + DimOzonCampaignProduct)
+- `campaign_type` расшифровывается из `advObjectType` + `placement` + `productCampaignMode` + `PaymentType`
+
+**Backend — Новая таблица ClickHouse:**
+- `fact_advert_phrases_daily`: поисковые фразы рекламы (универсальная WB + Ozon)
+- Миграция: `docker/clickhouse/migrations/008_fact_advert_phrases_daily.sql`
+- ORDER BY: (shop_id, marketplace, campaign_id, dt, phrase), TTL 1 год
+
+**Backend — Новые/обновлённые сервисы:**
+- `ozon_campaigns_loader.py` (202 строки) — `OzonCampaignsLoader`: UPSERT кампаний + товаров из API, cleanup удалённых SKU
+- `ozon_ads_service.py` (770 → 1056 строк): `order_phrases_report()` + `parse_phrases_csv_report()`, ZIP detection (PK\x03\x04), retry 3×60сек + rate limiter backoff reset
+- Celery: `sync_ozon_campaigns_task` — синхронизация справочника при sync_all_daily + initial sync
+
+**Frontend:**
+- `CampaignDetailModal.tsx`: 6 вкладок (KPI, Stats, Events, Phrases, Heatmap, Purchases)
+- `CampaignInsights.tsx`: новый компонент визуализации инсайтов
+- `campaignDetails.ts`: API-клиент для campaign-details endpoints
+
+---
+
 ## 2026-03-20 (v17.11)
 
 ### feat(advertising): Общая выручка + поиск по кампаниям + UI улучшения
