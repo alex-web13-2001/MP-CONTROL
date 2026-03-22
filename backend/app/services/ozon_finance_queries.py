@@ -311,12 +311,12 @@ def get_sku_to_offer_map_ch(
     sku_offer: Dict[int, str] = {}
     try:
         result = ch.query("""
-            SELECT sku, any(offer_id) AS offer_id
+            SELECT sku, any(offer_id) AS oid
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND sku > 0
-              AND offer_id != ''
             GROUP BY sku
+            HAVING oid != ''
         """, parameters={"shop_id": shop_id})
         for r in result.result_rows:
             sku = int(r[0] or 0)
