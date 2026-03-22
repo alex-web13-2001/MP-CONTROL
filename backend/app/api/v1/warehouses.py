@@ -12009,13 +12009,13 @@ def _build_cross_excel(
     cross_cost = 0
     total_cross_orders = 0
     total_orders = 0
-    total_logistics = 0
+    total_logistics = 0.0
     for w in warehouses:
         w_orders = w["orders"]
         w_cross = w["cross_orders"]
         total_cross_orders += w_cross
         total_orders += w_orders
-        w_log = w["logistics_cost"]
+        w_log = float(w.get("logistics_cost", 0) or 0)
         total_logistics += w_log
         if w_orders > 0 and w_log > 0:
             cross_cost += float(w_log) * (w_cross / w_orders)
