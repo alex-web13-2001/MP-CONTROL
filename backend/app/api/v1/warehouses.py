@@ -5455,6 +5455,7 @@ async def wb_warehouse_analytics(
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
           AND is_cancel = 0
+          AND warehouse_type = 'Склад WB'
         GROUP BY warehouse_name, oblast_okrug_name
     """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
 
@@ -5482,6 +5483,7 @@ async def wb_warehouse_analytics(
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
           AND is_cancel = 0
+          AND warehouse_type = 'Склад WB'
         GROUP BY warehouse_name, nm_id, oblast_okrug_name
     """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
 
@@ -9939,6 +9941,7 @@ async def get_wb_cross_ai_analysis(
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
+              AND warehouse_type = 'Склад WB'
               AND warehouse_name != '' AND oblast_okrug_name != ''
             GROUP BY nm_id, warehouse_name, oblast_okrug_name
             ORDER BY orders DESC
@@ -9973,6 +9976,7 @@ async def get_wb_cross_ai_analysis(
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
+              AND warehouse_type = 'Склад WB'
               AND warehouse_name != '' AND oblast_okrug_name != ''
             GROUP BY warehouse_name, oblast_okrug_name
             ORDER BY orders DESC
@@ -10047,6 +10051,7 @@ async def get_wb_cross_ai_analysis(
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
+              AND warehouse_type = 'Склад WB'
             GROUP BY nm_id
         """, parameters=params).result_rows
 
@@ -12511,7 +12516,16 @@ async def wb_cross_excel(
     shop = await db.get(Shop, shop_id)
     shop_name = shop.name if shop else f"Shop {shop_id}"
 
-    buf = _build_cross_excel(analytics, shop_name, period, "wildberries")
+    # Try to get AI analysis from cache (populated when user views AI on the page)
+    ai_data = None
+    import time as _time
+    cache_key = f"wb_cross_ai_{shop_id}_{period}"
+    if cache_key in _ai_cache:
+        ts, cached = _ai_cache[cache_key]
+        if _time.time() - ts < _AI_CACHE_TTL:
+            ai_data = cached
+
+    buf = _build_cross_excel(analytics, shop_name, period, "wildberries", ai_data=ai_data)
 
     filename = f"cross_logistics_wb_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
