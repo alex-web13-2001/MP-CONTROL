@@ -12828,7 +12828,7 @@ async def wb_geography_excel(
 ):
     """Download WB geography sales analysis as formatted Excel workbook."""
     analytics = await get_wb_geography(
-        shop_id=shop_id, period=period, db=db, current_user=current_user
+        shop_id=shop_id, period=period, nm_ids=None, db=db, current_user=current_user
     )
 
     shop = await db.get(Shop, shop_id)
@@ -12861,7 +12861,7 @@ async def ozon_geography_excel(
 ):
     """Download Ozon geography sales analysis as formatted Excel workbook."""
     analytics = await get_ozon_geography(
-        shop_id=shop_id, period=period, db=db, current_user=current_user
+        shop_id=shop_id, period=period, skus=None, db=db, current_user=current_user
     )
 
     # Normalize Ozon format (clusters/cities) → unified format (regions/okrugs)
