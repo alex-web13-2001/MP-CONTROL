@@ -1296,18 +1296,90 @@ async def export_ozon_excel(
         if oid not in matched_offer_ids and cost > 0:
             storage_only_rows.append((oid, cost))
 
+    # Enrich storage-only rows with product info
+    # 1. Product name from fact_ozon_placement_cost
+    placement_names: Dict[str, str] = {}
+    try:
+        pn_result = ch.query("""
+            SELECT offer_id, any(product_name) AS pname
+            FROM mms_analytics.fact_ozon_placement_cost FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND product_name != ''
+            GROUP BY offer_id
+        """, parameters={"shop_id": shop_id})
+        for r in pn_result.result_rows:
+            oid = str(r[0] or "").strip()
+            pname = str(r[1] or "").strip()
+            if oid and pname:
+                placement_names[oid] = pname
+    except Exception:
+        pass
+
+    # 2. SKU + barcode from dim_ozon_products by offer_id
+    offer_to_sku: Dict[str, int] = {}
+    offer_to_barcode: Dict[str, str] = {}
+    try:
+        prod_result = await db.execute(
+            text("""
+                SELECT offer_id, sku, barcode
+                FROM dim_ozon_products
+                WHERE shop_id = :shop_id AND offer_id = ANY(:offer_ids)
+            """),
+            {"shop_id": shop_id, "offer_ids": [oid for oid, _ in storage_only_rows]},
+        )
+        for r in prod_result.fetchall():
+            oid = r[0]
+            if r[1]:
+                offer_to_sku[oid] = int(r[1])
+            if r[2]:
+                offer_to_barcode[oid] = str(r[2])
+    except Exception:
+        pass
+
+    # 3. COGS for storage-only products
+    offer_to_cost_unit: Dict[str, float] = {}
+    try:
+        cost_so_result = await db.execute(
+            text("""
+                SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost
+                FROM product_costs
+                WHERE shop_id = :shop_id AND offer_id = ANY(:offer_ids)
+                  AND (cost_price > 0 OR packaging_cost > 0)
+            """),
+            {"shop_id": shop_id, "offer_ids": [oid for oid, _ in storage_only_rows]},
+        )
+        for r in cost_so_result.fetchall():
+            offer_to_cost_unit[r[0]] = float(r[1])
+    except Exception:
+        pass
+
     for j, (oid, cost) in enumerate(storage_only_rows):
         row_num = len(sku_rows) + 2 + j
         is_alt = ((len(sku_rows) + j) % 2 == 1)
-        ws5.cell(row=row_num, column=1, value="—")  # no SKU
-        ws5.cell(row=row_num, column=2, value=oid)  # offer_id as Артикул
-        ws5.cell(row=row_num, column=4, value="(нет продаж)")
-        ws5.cell(row=row_num, column=5, value=0)
-        ws5.cell(row=row_num, column=12, value=round(cost, 2)).number_format = MONEY_FMT
+        so_sku = offer_to_sku.get(oid, 0)
+        so_barcode = offer_to_barcode.get(oid, "")
+        so_name = placement_names.get(oid, "")
         profit_so = -cost
+
+        ws5.cell(row=row_num, column=1, value=so_sku if so_sku else "—")
+        ws5.cell(row=row_num, column=2, value=oid)
+        ws5.cell(row=row_num, column=3, value=so_barcode)
+        ws5.cell(row=row_num, column=4, value=so_name if so_name else "(нет продаж)")
+        ws5.cell(row=row_num, column=5, value=0)
+        ws5.cell(row=row_num, column=6, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=7, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=8, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=9, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=10, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=11, value=0).number_format = '0.0"%"'
+        ws5.cell(row=row_num, column=12, value=round(cost, 2)).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=13, value=0).number_format = MONEY_FMT
+        ws5.cell(row=row_num, column=14, value=0).number_format = MONEY_FMT
         pc = ws5.cell(row=row_num, column=15, value=round(profit_so, 2))
         pc.number_format = MONEY_FMT
         pc.font = RED_FONT
+        mc = ws5.cell(row=row_num, column=16, value=0)
+        mc.number_format = '0.0"%"'
         sku_totals["storage"] += cost
         sku_totals["profit"] += profit_so
         _style_data_row(ws5, row_num, len(sku_headers), is_alt=is_alt)
