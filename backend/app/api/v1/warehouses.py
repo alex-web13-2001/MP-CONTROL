@@ -12096,9 +12096,9 @@ def _build_cross_excel(
         c_ord = w["cross_orders"]
         l_ord = w["local_orders"] or (o - c_ord)
         cp = w["cross_pct"]
-        log = w["logistics_cost"]
+        log = float(w.get("logistics_cost", 0) or 0)
         cc = round(log * (c_ord / o)) if o > 0 and log > 0 else 0
-        rev = w["revenue"]
+        rev = float(w.get("revenue", 0) or 0)
 
         ws2.cell(ri, 1, w["warehouse_name"])
         ws2.cell(ri, 2, w["region"])
@@ -12302,7 +12302,7 @@ def _build_cross_excel(
         wh_data = next((w for w in warehouses if w["warehouse_name"] == wh_name), None)
         sku_loss = 0
         if wh_data and wh_data["orders"] > 0 and wh_data["logistics_cost"] > 0:
-            sku_loss = round(wh_data["logistics_cost"] * (s_cross / wh_data["orders"]))
+            sku_loss = round(float(wh_data["logistics_cost"]) * (s_cross / wh_data["orders"]))
 
         geography = s.get("geography", [])
         cross_geos = [g for g in geography if not g.get("is_local", True)]
