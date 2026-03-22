@@ -5455,7 +5455,6 @@ async def wb_warehouse_analytics(
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
           AND is_cancel = 0
-          AND warehouse_type = 'Склад WB'
         GROUP BY warehouse_name, oblast_okrug_name
     """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
 
@@ -5483,7 +5482,6 @@ async def wb_warehouse_analytics(
         WHERE shop_id = {{shop_id:UInt32}}
           AND date >= {{d_start:Date}}
           AND is_cancel = 0
-          AND warehouse_type = 'Склад WB'
         GROUP BY warehouse_name, nm_id, oblast_okrug_name
     """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
 
@@ -9823,6 +9821,8 @@ _AI_PROMPT_WB_CROSS = """Ты — эксперт по КРОСС-ЛОГИСТИ�
 
 ## ВВОДНЫЕ
 - **Кросс-доставка** — заказ из федерального округа X обслуживается складом из округа Y (не ближайшим). Увеличивает стоимость и время.
+- **FBS (Склад продавца)** — продавец сам отправляет товар покупателю. ВСЕ FBS-заказы — это фактически кросс-доставка, потому что товар идёт с одного склада продавца. FBS стоит ДОРОЖЕ чем FBO. В рекомендациях указывай: «переместить объём с FBS на FBO-склады WB в регионе X для снижения кросс-логистики».
+- **FBO (Склад WB)** — товар хранится на складе WB и доставляется покупателю из ближайшего склада. Это ДЕШЕВЛЕ и БЫСТРЕЕ.
 - **nm_id** — артикул ВБ.
 - **Питание** — товары из категорий «Корма», «Товары для животных», «Продукты питания» ДОЛЖНЫ поставляться только на склады с пометкой ": Питание" (например «Электросталь: Питание», «Казань: Питание»). Обычный склад «Электросталь» НЕ подходит для кормов. Это ВАЖНО для рекомендаций по довозу!
 - **Округа** — Центральный, Северо-Западный, Приволжский, Южный, Уральский, Сибирский, Дальневосточный.
@@ -9941,7 +9941,6 @@ async def get_wb_cross_ai_analysis(
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
-              AND warehouse_type = 'Склад WB'
               AND warehouse_name != '' AND oblast_okrug_name != ''
             GROUP BY nm_id, warehouse_name, oblast_okrug_name
             ORDER BY orders DESC
@@ -9971,12 +9970,12 @@ async def get_wb_cross_ai_analysis(
             SELECT
                 warehouse_name,
                 oblast_okrug_name,
-                count() AS orders
+                count() AS orders,
+                any(warehouse_type) AS wh_type
             FROM mms_analytics.fact_orders_raw
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
-              AND warehouse_type = 'Склад WB'
               AND warehouse_name != '' AND oblast_okrug_name != ''
             GROUP BY warehouse_name, oblast_okrug_name
             ORDER BY orders DESC
@@ -9989,12 +9988,15 @@ async def get_wb_cross_ai_analysis(
             wh = str(r[0])
             okrug = str(r[1])
             orders = int(r[2])
+            wh_type = str(r[3]) if len(r) > 3 else ""
             wh_okrug = WAREHOUSE_TO_OKRUG.get(wh, "")
             is_cross = wh_okrug != okrug and wh_okrug != ""
 
             if wh not in wh_summary:
-                wh_summary[wh] = {"okrug": wh_okrug, "total": 0, "cross": 0}
+                wh_summary[wh] = {"okrug": wh_okrug, "total": 0, "cross": 0, "is_fbs": False}
             wh_summary[wh]["total"] += orders
+            if wh_type == "Склад продавца":
+                wh_summary[wh]["is_fbs"] = True
             total_orders += orders
             if is_cross:
                 wh_summary[wh]["cross"] += orders
@@ -10051,7 +10053,6 @@ async def get_wb_cross_ai_analysis(
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND is_cancel = 0
-              AND warehouse_type = 'Склад WB'
             GROUP BY nm_id
         """, parameters=params).result_rows
 
@@ -10076,8 +10077,14 @@ async def get_wb_cross_ai_analysis(
         for wh_name, wh_data in sorted(wh_summary.items(), key=lambda x: x[1]["total"], reverse=True):
             wh_cross_pct = round(wh_data["cross"] / wh_data["total"] * 100) if wh_data["total"] > 0 else 0
             is_food_wh = ": Питание" in wh_name
-            food_tag = " [ПИТАНИЕ]" if is_food_wh else ""
-            prompt += f"- {wh_name}{food_tag} (округ: {wh_data['okrug']}): {wh_data['total']} заказов, {wh_data['cross']} кросс ({wh_cross_pct}%)\n"
+            is_fbs = wh_data.get("is_fbs", False)
+            tags = []
+            if is_fbs:
+                tags.append("FBS")
+            if is_food_wh:
+                tags.append("ПИТАНИЕ")
+            tag_str = f" [{', '.join(tags)}]" if tags else ""
+            prompt += f"- {wh_name}{tag_str} (округ: {wh_data['okrug']}): {wh_data['total']} заказов, {wh_data['cross']} кросс ({wh_cross_pct}%)\n"
 
         prompt += "\n## ПРОБЛЕМНЫЕ SKU (с кросс-заказами):\n"
         problem_skus = [
@@ -12396,7 +12403,7 @@ def _build_cross_excel(
         ws_ai.column_dimensions["C"].width = 15
 
         ws_ai.cell(1, 1, f"ИИ-анализ кросс-логистики — {shop_name}").font = title_font
-        ws_ai.cell(2, 1, f"Gemini 2.5 Flash • {datetime.now().strftime('%d.%m.%Y %H:%M')}").font = subtitle_font
+        ws_ai.cell(2, 1, f"Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M')}").font = subtitle_font
 
         severity = ai_data.get("severity", "")
         sev_colors = {"critical": "CC0000", "warning": "CC6600", "ok": "006600", "info": "2F5496"}
