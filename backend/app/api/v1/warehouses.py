@@ -5812,8 +5812,18 @@ async def wb_warehouse_analytics(
     warehouses_result.sort(key=lambda x: x["orders"], reverse=True)
 
     # ── 8. Cross-map: warehouse × okrug matrix ───────────────
+    # Include ALL warehouses with orders, not just those with stock
+    _wh_in_result = {w["warehouse_name"] for w in warehouses_result}
+
+    # Collect extra okrugs from wh_orders (warehouses with orders but no stock)
+    for wh_name_o, wh_data_o in wh_orders.items():
+        for okrug_name_o in wh_data_o.get("okrug_detail", {}):
+            _all_okrugs_seen.add(okrug_name_o)
+
     okrug_list = sorted(_all_okrugs_seen)
     cross_map = []
+
+    # 1) Warehouses from stocks (with stock data)
     for wh_data in warehouses_result:
         if wh_data["orders"] == 0:
             continue
@@ -5832,6 +5842,32 @@ async def wb_warehouse_analytics(
                 "is_local": is_local,
             }
         cross_map.append(row_data)
+
+    # 2) Extra warehouses from wh_orders (orders exist, no stock)
+    for wh_name_extra, wh_data_extra in wh_orders.items():
+        if wh_name_extra in _wh_in_result:
+            continue
+        if wh_data_extra["total"] == 0:
+            continue
+        wh_okrug_extra = WAREHOUSE_TO_OKRUG.get(wh_name_extra, "")
+        okrug_detail_extra = wh_data_extra.get("okrug_detail", {})
+        row_data = {
+            "warehouse": wh_name_extra,
+            "home_okrug": wh_okrug_extra,
+            "total_orders": wh_data_extra["total"],
+            "okrugs": {},
+        }
+        for okrug_name in okrug_list:
+            cnt = okrug_detail_extra.get(okrug_name, {}).get("count", 0)
+            is_local = okrug_name == wh_okrug_extra
+            row_data["okrugs"][okrug_name] = {
+                "count": cnt,
+                "is_local": is_local,
+            }
+        cross_map.append(row_data)
+
+    # Sort by total orders desc
+    cross_map.sort(key=lambda x: x["total_orders"], reverse=True)
 
     # ── 9. Costs summary ─────────────────────────────────────
     costs_summary = []
