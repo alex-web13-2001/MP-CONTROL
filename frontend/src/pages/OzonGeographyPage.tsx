@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Globe,
   RefreshCw,
+  Download,
   AlertTriangle,
   MapPin,
   ChevronRight,
@@ -45,6 +46,7 @@ import {
   type OzonGeographySkuInfo,
   type OzonCityProductsResponse,
   type GeoAIAnalysis,
+  downloadGeoExcel,
 } from '@/api/warehouses'
 
 /* ── Helpers ── */
@@ -1099,14 +1101,35 @@ export default function OzonGeographyPage() {
             Продажи по кластерам доставки и городам — поиск по товарам
           </p>
         </div>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-          Обновить
-        </button>
+        <div className="flex items-center gap-2">
+          {data && currentShop && (
+            <button
+              onClick={async () => {
+                try {
+                  await downloadGeoExcel({
+                    shop_id: currentShop.id,
+                    period,
+                    marketplace: 'ozon',
+                  })
+                } catch (e) {
+                  console.error('Excel download failed:', e)
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-600/15 text-emerald-400 hover:bg-emerald-600/25 transition-all"
+            >
+              <Download className="h-4 w-4" />
+              Скачать Excel
+            </button>
+          )}
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--muted)/0.5)] transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            Обновить
+          </button>
+        </div>
       </div>
 
       {/* Filters: Period + Product Combobox */}

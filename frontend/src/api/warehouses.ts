@@ -830,6 +830,29 @@ export async function downloadCrossExcel(params: {
   window.URL.revokeObjectURL(url)
 }
 
+export async function downloadGeoExcel(params: {
+  shop_id: number
+  period?: number
+  marketplace: 'wildberries' | 'ozon'
+}): Promise<void> {
+  const endpoint = params.marketplace === 'wildberries'
+    ? '/warehouses/wb/geography/excel'
+    : '/warehouses/ozon/geography/excel'
+  const response = await apiClient.get(endpoint, {
+    params: { shop_id: params.shop_id, period: params.period ?? 30 },
+    responseType: 'blob',
+  })
+  const url = window.URL.createObjectURL(new Blob([response.data]))
+  const link = document.createElement('a')
+  link.href = url
+  const mp = params.marketplace === 'wildberries' ? 'wb' : 'ozon'
+  link.setAttribute('download', `geography_${mp}_${params.shop_id}_${params.period ?? 30}d.xlsx`)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.URL.revokeObjectURL(url)
+}
+
 // ═══════════════════════════════════════════════════════════
 // WB Sales Geography
 // ═══════════════════════════════════════════════════════════
