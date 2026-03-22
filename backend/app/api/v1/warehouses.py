@@ -4695,6 +4695,7 @@ async def ozon_warehouse_analytics(
         overstocked_count = sum(1 for w in warehouses if w["status"] in ("overstocked", "storage_fee"))
 
         # ── Cross-map: warehouse × cluster_to matrix ─────────────
+        # Include ALL warehouses with orders, not just those with stock
         _all_clusters_seen: set[str] = set()
         total_cross_orders_all = 0
         total_orders_all = 0
@@ -4704,10 +4705,24 @@ async def ozon_warehouse_analytics(
             for cs in w.get("clusters_served", []):
                 _all_clusters_seen.add(cs["cluster"])
 
+        # Also collect clusters from geo_data (warehouses with orders but without stock)
+        _wh_in_warehouses = {w["warehouse_name"] for w in warehouses}
+        _extra_wh_geo: dict[str, dict[str, int]] = {}  # wh_name → {cluster → orders}
+        _extra_wh_orders: dict[str, int] = {}
+        for row in geo_data.result_rows:
+            wh_name_g, cluster_g, orders_g = row[0], row[1], int(row[2])
+            _all_clusters_seen.add(cluster_g)
+            if wh_name_g not in _wh_in_warehouses:
+                _extra_wh_geo.setdefault(wh_name_g, {})[cluster_g] = \
+                    _extra_wh_geo.get(wh_name_g, {}).get(cluster_g, 0) + orders_g
+                _extra_wh_orders[wh_name_g] = _extra_wh_orders.get(wh_name_g, 0) + orders_g
+
         cluster_list = sorted(_all_clusters_seen)
         overall_cross_pct = round(total_cross_orders_all / total_orders_all * 100, 1) if total_orders_all > 0 else 0
 
         cross_map = []
+
+        # 1) Warehouses from stocks (with stock data)
         for wh_data in warehouses:
             wh_geo_orders = wh_data.get("cross_orders", 0) + wh_data.get("local_orders", 0)
             if wh_geo_orders == 0:
@@ -4727,6 +4742,33 @@ async def ozon_warehouse_analytics(
                     "is_local": is_local,
                 }
             cross_map.append(row_data)
+
+        # 2) Extra warehouses from geo_data (orders exist, no FBO stock)
+        for wh_name_extra, cluster_orders in _extra_wh_geo.items():
+            wh_cluster_extra = _get_cluster_for_warehouse(wh_name_extra)
+            total_extra_orders = _extra_wh_orders.get(wh_name_extra, 0)
+            row_data = {
+                "warehouse": wh_name_extra,
+                "home_cluster": wh_cluster_extra,
+                "total_orders": total_extra_orders,
+                "clusters": {},
+            }
+            for cl_name in cluster_list:
+                cnt = cluster_orders.get(cl_name, 0)
+                is_local = cl_name == wh_cluster_extra
+                row_data["clusters"][cl_name] = {
+                    "count": cnt,
+                    "is_local": is_local,
+                }
+            cross_map.append(row_data)
+            # Add to totals
+            local_extra = cluster_orders.get(wh_cluster_extra, 0)
+            cross_extra = total_extra_orders - local_extra
+            total_cross_orders_all += cross_extra
+            total_orders_all += total_extra_orders
+
+        # Sort cross_map by total orders desc
+        cross_map.sort(key=lambda x: x["total_orders"], reverse=True)
 
         # ── Generate recommendations ─────────────────────────────
         recommendations = []
