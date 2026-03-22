@@ -11431,8 +11431,9 @@ def _build_cross_excel(
     shop_name: str,
     period: int,
     marketplace: str,
+    ai_data: dict | None = None,
 ):
-    """Build a 5-sheet Excel workbook for cross-logistics analysis."""
+    """Build a 5-6 sheet Excel workbook for cross-logistics analysis."""
     import io
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -11868,6 +11869,115 @@ def _build_cross_excel(
                     ws5.cell(ri, ci).fill = alt_fill
             ri += 1
 
+    # ═══════════════════════════════════════════
+    # Sheet 6: ИИ-анализ (if available)
+    # ═══════════════════════════════════════════
+    if ai_data and isinstance(ai_data, dict) and ai_data.get("severity"):
+        ws_ai = workbook.create_sheet("ИИ-анализ")
+        ws_ai.column_dimensions["A"].width = 20
+        ws_ai.column_dimensions["B"].width = 70
+        ws_ai.column_dimensions["C"].width = 15
+
+        ws_ai.cell(1, 1, f"ИИ-анализ кросс-логистики — {shop_name}").font = title_font
+        ws_ai.cell(2, 1, f"Gemini 2.5 Flash • {datetime.now().strftime('%d.%m.%Y %H:%M')}").font = subtitle_font
+
+        severity = ai_data.get("severity", "")
+        sev_colors = {"critical": "CC0000", "warning": "CC6600", "ok": "006600", "info": "2F5496"}
+        ws_ai.cell(4, 1, "Степень проблемы").font = Font(bold=True, size=12)
+        sev_cell = ws_ai.cell(4, 2, severity.upper())
+        sev_cell.font = Font(bold=True, size=14, color=sev_colors.get(severity, "000000"))
+
+        ws_ai.cell(5, 1, "Диагноз").font = Font(bold=True, size=11)
+        diag = ai_data.get("diagnosis", "")
+        ws_ai.cell(5, 2, diag).alignment = Alignment(wrap_text=True)
+
+        # ── Priority Actions ──
+        actions = ai_data.get("priority_actions", [])
+        if actions:
+            ri = 7
+            ws_ai.cell(ri, 1, "🎯 ПРИОРИТЕТНЫЕ ДЕЙСТВИЯ").font = Font(bold=True, size=12, color="2F5496")
+            ri += 1
+            for ci, h in enumerate(["#", "Действие", "Приоритет"], 1):
+                c = ws_ai.cell(ri, ci, h)
+                c.font = hdr_font
+                c.fill = hdr_fill
+                c.alignment = Alignment(horizontal="center")
+            ri += 1
+            for idx, act in enumerate(actions, 1):
+                action_text = act if isinstance(act, str) else act.get("action", act.get("text", str(act)))
+                priority = act.get("priority", "") if isinstance(act, dict) else ""
+                ws_ai.cell(ri, 1, idx).alignment = Alignment(horizontal="center")
+                ws_ai.cell(ri, 2, action_text).alignment = Alignment(wrap_text=True)
+                ws_ai.cell(ri, 3, priority).alignment = Alignment(horizontal="center")
+                if ri % 2 == 0:
+                    for c in range(1, 4):
+                        ws_ai.cell(ri, c).fill = alt_fill
+                ri += 1
+            ri += 1
+        else:
+            ri = 7
+
+        # ── Warehouse Assessments ──
+        wh_assess = ai_data.get("warehouse_assessments", [])
+        if wh_assess:
+            ws_ai.cell(ri, 1, "🏭 ОЦЕНКА СКЛАДОВ").font = Font(bold=True, size=12, color="2F5496")
+            ri += 1
+            for ci, h in enumerate(["Склад", "Оценка / Проблема", "Кросс %"], 1):
+                c = ws_ai.cell(ri, ci, h)
+                c.font = hdr_font
+                c.fill = PatternFill("solid", fgColor="548235")
+                c.alignment = Alignment(horizontal="center")
+            ri += 1
+            for wha in wh_assess:
+                wh_name_ai = wha.get("warehouse", wha.get("name", ""))
+                assessment = wha.get("assessment", wha.get("issue", wha.get("text", str(wha))))
+                cross_pct_ai = wha.get("cross_pct", "")
+                ws_ai.cell(ri, 1, wh_name_ai).font = Font(bold=True)
+                ws_ai.cell(ri, 2, assessment).alignment = Alignment(wrap_text=True)
+                if cross_pct_ai:
+                    ws_ai.cell(ri, 3, f"{cross_pct_ai}%").font = red_font if (isinstance(cross_pct_ai, (int, float)) and cross_pct_ai > 50) else amber_font
+                if ri % 2 == 0:
+                    for c in range(1, 4):
+                        ws_ai.cell(ri, c).fill = alt_fill
+                ri += 1
+            ri += 1
+
+        # ── Problem SKUs from AI ──
+        ai_skus = ai_data.get("problem_skus", [])
+        if ai_skus:
+            ws_ai.cell(ri, 1, "⚠️ ПРОБЛЕМНЫЕ ТОВАРЫ (ИИ)").font = Font(bold=True, size=12, color="CC0000")
+            ri += 1
+            ai_sku_headers = ["Товар", "Проблема / Рекомендация", "Кросс %"]
+            for ci, h in enumerate(ai_sku_headers, 1):
+                c = ws_ai.cell(ri, ci, h)
+                c.font = hdr_font
+                c.fill = PatternFill("solid", fgColor="C00000")
+                c.alignment = Alignment(horizontal="center")
+            ri += 1
+            for sku_ai in ai_skus:
+                sku_label = sku_ai.get("offer_id", sku_ai.get("sku", sku_ai.get("name", "")))
+                sku_issue = sku_ai.get("recommendation", sku_ai.get("issue", sku_ai.get("text", str(sku_ai))))
+                sku_routes = sku_ai.get("routes", sku_ai.get("cross_routes", []))
+                sku_cross = sku_ai.get("cross_pct", "")
+                # Build full text
+                full_text = sku_issue
+                if sku_routes:
+                    route_strs = []
+                    for rt in sku_routes[:5]:
+                        if isinstance(rt, str):
+                            route_strs.append(rt)
+                        elif isinstance(rt, dict):
+                            route_strs.append(f"{rt.get('from', rt.get('from_wh', ''))} → {rt.get('to', rt.get('to_cluster', ''))}: {rt.get('orders', '')} зак.")
+                    full_text += "\nМаршруты: " + "; ".join(route_strs)
+                ws_ai.cell(ri, 1, sku_label).font = Font(bold=True)
+                ws_ai.cell(ri, 2, full_text).alignment = Alignment(wrap_text=True)
+                if sku_cross:
+                    ws_ai.cell(ri, 3, f"{sku_cross}%")
+                if ri % 2 == 0:
+                    for c in range(1, 4):
+                        ws_ai.cell(ri, c).fill = alt_fill
+                ri += 1
+
     buf = io.BytesIO()
     workbook.save(buf)
     buf.seek(0)
@@ -11882,12 +11992,10 @@ async def wb_cross_excel(
     current_user: User = Depends(get_current_user),
 ):
     """Download WB cross-logistics analysis as formatted Excel workbook."""
-    # Get analytics data (validates shop inside)
     analytics = await wb_warehouse_analytics(
         shop_id=shop_id, period=period, db=db, current_user=current_user
     )
 
-    # Get shop name
     shop = await db.get(Shop, shop_id)
     shop_name = shop.name if shop else f"Shop {shop_id}"
 
@@ -11909,16 +12017,24 @@ async def ozon_cross_excel(
     current_user: User = Depends(get_current_user),
 ):
     """Download Ozon cross-logistics analysis as formatted Excel workbook."""
-    # Get analytics data (validates shop inside)
     analytics = await ozon_warehouse_analytics(
         shop_id=shop_id, period=period, db=db, current_user=current_user
     )
 
-    # Get shop name
     shop = await db.get(Shop, shop_id)
     shop_name = shop.name if shop else f"Shop {shop_id}"
 
-    buf = _build_cross_excel(analytics, shop_name, period, "ozon")
+    # Try to get AI analysis (from cache or fresh call)
+    ai_data = None
+    try:
+        ai_data = await get_ozon_cross_ai_analysis(
+            shop_id=shop_id, period=period, force=False,
+            current_user=current_user, db=db,
+        )
+    except Exception as e:
+        logger.warning("AI analysis for cross-excel failed (non-critical): %s", e)
+
+    buf = _build_cross_excel(analytics, shop_name, period, "ozon", ai_data=ai_data)
 
     filename = f"cross_logistics_ozon_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
