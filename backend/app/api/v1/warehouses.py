@@ -5735,7 +5735,9 @@ async def wb_warehouse_analytics(
         # Per-SKU details for this warehouse
         skus_detail = []
         wh_sku_data = wh_sku_orders.get(wh_name, {})
-        for nm_id in stk["nm_ids"]:
+        # Combine nm_ids from stock AND orders (FBS has no stock but has orders)
+        all_sku_nm_ids = set(stk["nm_ids"]) | set(wh_sku_data.keys())
+        for nm_id in all_sku_nm_ids:
             qty = stk["qtys"].get(nm_id, 0)
             sku_ords = wh_sku_data.get(nm_id, {"orders": 0, "revenue": 0.0, "okrug_detail": {}})
             sku_total_orders = sku_ords["orders"]
