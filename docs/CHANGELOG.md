@@ -1,3 +1,24 @@
+## 2026-03-23 (v17.16)
+
+### feat(cross-ai-wb): ИИ-анализ кросс-логистики Wildberries
+
+**Backend:**
+- `POST /warehouses/wb/cross/ai-analysis` — Gemini 2.5 Flash
+- Данные: `fact_orders_raw` × `WAREHOUSE_TO_OKRUG` × `fact_wb_warehouse_stocks` × `dim_products`
+- Товары кормов/питания помечены `[КОРМ/ПИТАНИЕ]` в промпте
+- ИИ знает про склады `: Питание` и рекомендует именно их для пищевой продукции
+- Кэш 30 мин (`_ai_cache`)
+
+**Frontend:**
+- `getWbCrossAIAnalysis()` — native fetch (180с таймаут)
+- `CrossAIInsight` — универсальный компонент (заменяет `OzonCrossAIInsight`)
+- AI-анализ теперь показывается и для Ozon, и для WB
+
+### fix(cross-map): Полные данные Ozon + WB
+
+- Кросс-карта теперь включает склады с заказами без FBO-остатков
+- Сортировка складов по убыванию заказов
+
 ## 2026-03-23 (v17.15)
 
 ### feat(cross-ai): Таймауты, auto-retry, таймер загрузки ИИ
