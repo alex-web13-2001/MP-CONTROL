@@ -12883,65 +12883,126 @@ def _build_geo_excel(
     # ═════════════════════════════════════════
     if ai_data and isinstance(ai_data, dict):
         ws_ai = workbook.create_sheet("ИИ-анализ")
-        ws_ai.column_dimensions["A"].width = 40
-        ws_ai.column_dimensions["B"].width = 60
-        ws_ai.column_dimensions["C"].width = 15
+        ws_ai.column_dimensions["A"].width = 25
+        ws_ai.column_dimensions["B"].width = 80
+        ws_ai.column_dimensions["C"].width = 14
+        wrap_align = Alignment(wrap_text=True, vertical="top")
+        wrap_align_bold = Alignment(wrap_text=True, vertical="top")
 
         ws_ai.cell(1, 1, f"ИИ-анализ географии — {shop_name}").font = title_font
+        ws_ai.merge_cells("A1:C1")
         ws_ai.cell(2, 1, f"Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M')}").font = subtitle_font
+        ws_ai.merge_cells("A2:C2")
 
         ri = 4
         severity = ai_data.get("severity", "")
         if severity:
-            sev_map = {"critical": "🔴 Критично", "warning": "🟡 Внимание", "ok": "🟢 Всё ОК"}
+            sev_map = {"critical": "🔴 Критично", "warning": "🟡 Внимание", "ok": "🟢 Всё ОК",
+                        "medium": "🟡 Средний уровень", "low": "🟢 Низкий уровень", "high": "🔴 Высокий уровень"}
             ws_ai.cell(ri, 1, "Статус").font = Font(bold=True, size=12)
-            ws_ai.cell(ri, 2, sev_map.get(severity, severity))
-            ri += 1
+            ws_ai.cell(ri, 2, sev_map.get(severity, severity)).font = Font(size=12)
+            ri += 2
 
         diagnosis = ai_data.get("diagnosis", "")
         if diagnosis:
-            ws_ai.cell(ri, 1, "Общая оценка").font = Font(bold=True, size=12)
+            ws_ai.cell(ri, 1, "📋 Общая оценка").font = Font(bold=True, size=13, color="1F4E79")
+            ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
             ri += 1
-            for line in diagnosis.split("\n"):
-                if line.strip():
-                    ws_ai.cell(ri, 1, line.strip())
-                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
-                    ri += 1
+            # Split long text into readable chunks (by sentences or newlines)
+            lines = diagnosis.replace("\\n", "\n").split("\n")
+            all_lines = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # If a single line is very long, split by sentences
+                if len(line) > 120:
+                    import re
+                    sentences = re.split(r'(?<=[.!?])\s+', line)
+                    for s in sentences:
+                        if s.strip():
+                            all_lines.append(s.strip())
+                else:
+                    all_lines.append(line)
+            for line in all_lines:
+                c = ws_ai.cell(ri, 1, line)
+                c.alignment = wrap_align
+                c.font = Font(size=11)
+                ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
+                ws_ai.row_dimensions[ri].height = max(30, 15 * ((len(line) // 100) + 1))
+                ri += 1
             ri += 1
 
         recs = ai_data.get("recommendations", [])
         if recs:
-            ws_ai.cell(ri, 1, "Рекомендации").font = Font(bold=True, size=12, color="1F4E79")
+            ws_ai.cell(ri, 1, "💡 Рекомендации").font = Font(bold=True, size=13, color="1F4E79")
+            ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
+            ri += 1
+            # Header row
+            for ci, h in enumerate(["Действие", "Обоснование", "Приоритет"], 1):
+                c = ws_ai.cell(ri, ci, h)
+                c.font = Font(bold=True, size=11, color="FFFFFF")
+                c.fill = PatternFill("solid", fgColor="2C3E50")
+                c.alignment = Alignment(horizontal="center")
             ri += 1
             for idx, rec in enumerate(recs, 1):
                 if isinstance(rec, dict):
-                    ws_ai.cell(ri, 1, f"{idx}. {rec.get('action', '')}").font = Font(bold=True)
-                    ws_ai.cell(ri, 2, rec.get("reason", ""))
+                    action = f"{idx}. {rec.get('action', '')}"
+                    reason = rec.get("reason", "")
                     p = rec.get("priority", "")
-                    pc = ws_ai.cell(ri, 3, p)
+                    p_label = {"high": "🔴 Высокий", "medium": "🟡 Средний", "low": "🟢 Низкий"}.get(p, p)
+
+                    c1 = ws_ai.cell(ri, 1, action)
+                    c1.font = Font(bold=True, size=11)
+                    c1.alignment = wrap_align
+
+                    c2 = ws_ai.cell(ri, 2, reason)
+                    c2.alignment = wrap_align
+                    c2.font = Font(size=11)
+
+                    pc = ws_ai.cell(ri, 3, p_label)
+                    pc.alignment = Alignment(horizontal="center", vertical="top")
                     if p == "high":
                         pc.font = red_font
                     elif p == "medium":
                         pc.font = amber_font
                     else:
                         pc.font = green_font
+
+                    max_len = max(len(action), len(reason))
+                    ws_ai.row_dimensions[ri].height = max(30, 15 * ((max_len // 80) + 1))
                 elif isinstance(rec, str):
-                    ws_ai.cell(ri, 1, f"{idx}. {rec}")
+                    c1 = ws_ai.cell(ri, 1, f"{idx}. {rec}")
+                    c1.alignment = wrap_align
+                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
+                    ws_ai.row_dimensions[ri].height = max(30, 15 * ((len(rec) // 100) + 1))
+                for ci in range(1, 4):
+                    ws_ai.cell(ri, ci).border = border
+                    if ri % 2 == 0:
+                        ws_ai.cell(ri, ci).fill = alt_fill
                 ri += 1
             ri += 1
 
         insights = ai_data.get("insights", ai_data.get("key_insights", []))
         if insights:
-            ws_ai.cell(ri, 1, "Ключевые выводы").font = Font(bold=True, size=12, color="1F4E79")
+            ws_ai.cell(ri, 1, "🔑 Ключевые выводы").font = Font(bold=True, size=13, color="1F4E79")
+            ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
             ri += 1
-            for ins in insights:
+            for idx, ins in enumerate(insights, 1):
+                txt = ""
                 if isinstance(ins, str):
-                    ws_ai.cell(ri, 1, f"• {ins}")
-                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
+                    txt = ins
                 elif isinstance(ins, dict):
-                    ws_ai.cell(ri, 1, f"• {ins.get('insight', ins.get('text', ''))}")
+                    txt = ins.get("insight", ins.get("text", ""))
+                if txt:
+                    c = ws_ai.cell(ri, 1, f"{idx}. {txt}")
+                    c.alignment = wrap_align
+                    c.font = Font(size=11)
                     ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
-                ri += 1
+                    ws_ai.row_dimensions[ri].height = max(30, 15 * ((len(txt) // 100) + 1))
+                    for ci in range(1, 4):
+                        ws_ai.cell(ri, ci).border = border
+                    ri += 1
 
     buf = io.BytesIO()
     workbook.save(buf)
