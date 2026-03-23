@@ -12587,6 +12587,7 @@ async def ozon_cross_excel(
 def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: str, ai_data: dict | None = None) -> io.BytesIO:
     """Build a formatted Excel workbook for geography sales analysis."""
     import openpyxl
+    from datetime import datetime
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
