@@ -129,7 +129,7 @@ async def get_campaign_kpi(
             """
         else:
             q = """
-                SELECT sum(finishedPrice * quantity) 
+                SELECT sum(finished_price * quantity) 
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND nmId IN {skus:Array(UInt64)}
@@ -361,7 +361,7 @@ async def get_campaign_stats(
         if skus_list and shop_id_val:
             pr_rows = ch.query(
                 """
-                SELECT toDate(date) as d, sum(finishedPrice * quantity)
+                SELECT toDate(date) as d, sum(finished_price * quantity)
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND nmId IN {skus:Array(UInt64)}
