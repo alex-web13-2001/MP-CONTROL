@@ -1627,8 +1627,9 @@ export default function AdvertisingAnalyticsPage() {
       let dateTo: string | undefined
       if (customRange?.from) {
         const toDate = customRange.to ?? customRange.from
-        dateFrom = customRange.from.toISOString().slice(0, 10)
-        dateTo = toDate.toISOString().slice(0, 10)
+        const pad = (n: number) => String(n).padStart(2, '0')
+        dateFrom = `${customRange.from.getFullYear()}-${pad(customRange.from.getMonth() + 1)}-${pad(customRange.from.getDate())}`
+        dateTo = `${toDate.getFullYear()}-${pad(toDate.getMonth() + 1)}-${pad(toDate.getDate())}`
       }
       const result = await getAdvertisingAnalytics(currentShop.id, customRange ? 'custom' : period, dateFrom, dateTo)
       setData(result)

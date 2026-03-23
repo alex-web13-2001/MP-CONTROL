@@ -52,7 +52,11 @@ function calcDateRange(days: number) {
   const to = new Date()
   const from = new Date()
   from.setDate(from.getDate() - days + 1)
-  return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) }
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return {
+    from: `${from.getFullYear()}-${pad(from.getMonth() + 1)}-${pad(from.getDate())}`,
+    to: `${to.getFullYear()}-${pad(to.getMonth() + 1)}-${pad(to.getDate())}`,
+  }
 }
 
 /* ═══ Tab button ═══ */
