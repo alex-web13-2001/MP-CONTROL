@@ -4825,6 +4825,15 @@ def sync_ozon_placement_cost(
                     db=db, shop_id=shop_id,
                     api_key=api_key, client_id=client_id,
                 )
+                # Random delay 10-30s to avoid competing with parallel sync tasks
+                # (finance, funnel, returns) for Ozon's per-second rate limit.
+                import random
+                delay = random.uniform(10, 30)
+                logger.info(
+                    "Placement cost: waiting %.1fs before API call (shop %d)",
+                    delay, shop_id,
+                )
+                await asyncio.sleep(delay)
                 rows = await service.fetch_placement_costs(
                     date_from, date_to,
                     offer_to_sku=offer_to_sku,
