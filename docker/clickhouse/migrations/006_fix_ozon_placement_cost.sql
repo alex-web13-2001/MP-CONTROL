@@ -1,12 +1,8 @@
--- Fix: Ozon placement cost report contains daily rows per SKU per warehouse.
--- Need to add warehouse_name, category, item_count, paid_volume columns.
--- Also need to change ORDER BY to include warehouse_name and dt properly.
--- Since we can't change ORDER BY on existing ReplacingMergeTree,
--- we drop and recreate the table with correct schema.
+-- Fix: Ozon placement cost report — ensure correct schema.
+-- SAFE migration: uses IF NOT EXISTS only, never drops data.
+-- Original migration had DROP TABLE which destroyed data on every deploy/restart.
 
-DROP TABLE IF EXISTS mms_analytics.fact_ozon_placement_cost;
-
-CREATE TABLE mms_analytics.fact_ozon_placement_cost (
+CREATE TABLE IF NOT EXISTS mms_analytics.fact_ozon_placement_cost (
     dt Date,                              -- row date from Excel ("Дата")
     period_from Date,                     -- report period start (requested from)
     period_to Date,                       -- report period end (requested to)

@@ -2830,9 +2830,37 @@ async def ozon_storage_analytics(
                     actual_wh_costs[oid] = {}
                 actual_wh_costs[oid][wh_name] = float(row[2])
         except Exception:
-            pass  # Table may not exist yet
+            logger.exception("Error fetching fact_ozon_placement_cost for shop %s", shop_id)
 
         has_actual_data = len(actual_costs) > 0
+
+        # ── 5c. FALLBACK: total storage from fact_ozon_transactions ──
+        # If fact_ozon_placement_cost is empty (e.g. migration dropped data,
+        # sync not yet completed, or Ozon API 429), get total storage cost
+        # from fact_ozon_transactions which is always populated by sync_ozon_finance.
+        fallback_total_storage = 0.0
+        if not has_actual_data:
+            try:
+                txn_storage = ch.query("""
+                    SELECT sum(abs(storage_fee)) AS total_storage,
+                           min(dt) AS min_dt, max(dt) AS max_dt
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND category = 'Storage'
+                      AND dt >= today() - {period:UInt32}
+                """, parameters={"shop_id": shop_id, "period": period})
+                for row in txn_storage.result_rows:
+                    fallback_val = float(row[0] or 0)
+                    if fallback_val > 0:
+                        fallback_total_storage = fallback_val
+                        has_actual_data = True
+                        actual_period = {"from": str(row[1]), "to": str(row[2])}
+                        logger.info(
+                            "Ozon storage fallback from transactions: %.2f for shop %s (period %s→%s)",
+                            fallback_val, shop_id, row[1], row[2],
+                        )
+            except Exception:
+                logger.exception("Error fetching storage fallback from fact_ozon_transactions for shop %s", shop_id)
 
         # ── 6. Build per-SKU storage data ──
         # Ozon tariff: ~0.14 ₽/L/day for turnover > 160 days
@@ -2969,7 +2997,11 @@ async def ozon_storage_analytics(
             "kpi": {
                 "total_skus": len(storage_skus),
                 "total_stock": total_stock,
-                "total_storage": round(total_actual_cost if has_actual_data else total_est_cost, 2),
+                "total_storage": round(
+                    total_actual_cost if total_actual_cost > 0
+                    else fallback_total_storage if fallback_total_storage > 0
+                    else total_est_cost, 2
+                ),
                 "avg_turnover_days": round(avg_turnover, 1) if avg_turnover else None,
                 "paid_zone_skus": paid_count,
                 "warning_zone_skus": warning_count,
