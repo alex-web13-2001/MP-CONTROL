@@ -13036,8 +13036,9 @@ async def wb_geography_excel(
                 "stability_pct": stab,
                 "sku_total_orders": sku_totals.get(nm, 0),
             })
-    except Exception:
-        pass  # Non-critical — sheet simply won't appear
+    except Exception as e:
+        import logging
+        logging.exception("WB geo Excel: sku_region_data collection failed: %s", e)
 
     buf = _build_geo_excel(analytics, shop_name, period, "wildberries",
                            ai_data=ai_data, sku_region_data=sku_region_data)
@@ -13186,8 +13187,9 @@ async def ozon_geography_excel(
                 "stability_pct": stab,
                 "sku_total_orders": sku_totals.get(s, 0),
             })
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.exception("Ozon geo Excel: sku_region_data collection failed: %s", e)
 
     buf = _build_geo_excel(analytics_normalized, shop_name, period, "ozon",
                            ai_data=ai_data, sku_region_data=sku_region_data)
