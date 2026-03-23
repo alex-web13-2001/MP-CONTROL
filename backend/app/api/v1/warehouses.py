@@ -12584,8 +12584,21 @@ async def ozon_cross_excel(
 # ═══════════════════════════════════════════════════════════════
 
 
-def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: str, ai_data: dict | None = None) -> io.BytesIO:
-    """Build a formatted Excel workbook for geography sales analysis."""
+def _build_geo_excel(
+    analytics: dict, shop_name: str, period: int, marketplace: str,
+    ai_data: dict | None = None,
+    sku_region_data: list | None = None,
+) -> io.BytesIO:
+    """Build a detailed Excel workbook for geography sales analysis.
+
+    Sheets:
+    1. Сводка — KPI, top okrugs
+    2. Регионы — per-region breakdown with okrug grouping
+    3. Топ товары — top products overall
+    4. Товары по округам — per-okrug top SKU drill-down
+    5. SKU × Регионы — per-SKU per-region matrix
+    6. ИИ-анализ
+    """
     import openpyxl
     from datetime import datetime
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -12595,10 +12608,13 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
     subtitle_font = Font(name="Calibri", size=11, italic=True, color="666666")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    section_font = Font(name="Calibri", size=13, bold=True, color="1F4E79")
+    section_fill = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")
     green_font = Font(color="006600", bold=True)
     amber_font = Font(color="CC6600", bold=True)
     red_font = Font(color="CC0000", bold=True)
     kpi_label_font = Font(name="Calibri", size=12, bold=True, color="2F5496")
+    kpi_val_font = Font(name="Calibri", size=12, bold=True)
     border = Border(
         bottom=Side(style="thin", color="E0E0E0"),
         right=Side(style="thin", color="E0E0E0"),
@@ -12606,7 +12622,6 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
     alt_fill = PatternFill(start_color="F2F7FB", end_color="F2F7FB", fill_type="solid")
     num_fmt = "#,##0"
     money_fmt = "#,##0 ₽"
-    pct_fmt = "0.0%"
 
     workbook = openpyxl.Workbook()
 
@@ -12620,86 +12635,99 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
     okrug_top_products = analytics.get("okrug_top_products", {})
 
     mp_label = "Wildberries" if marketplace == "wildberries" else "Ozon"
+    okrug_label = "Фед. округ" if marketplace == "wildberries" else "Кластер"
+    region_label = "Регион" if marketplace == "wildberries" else "Город"
+    sku_label = "Артикул" if marketplace == "wildberries" else "Offer ID"
 
     # ═════════════════════════════════════════
     # Sheet 1: Сводка
     # ═════════════════════════════════════════
     ws1 = workbook.active
     ws1.title = "Сводка"
-    ws1.column_dimensions["A"].width = 40
-    ws1.column_dimensions["B"].width = 25
 
-    ws1.cell(1, 1, f"География продаж — {shop_name}").font = title_font
+    ws1.cell(1, 1, f"📊 География продаж — {shop_name}").font = title_font
     ws1.cell(2, 1, f"Маркетплейс: {mp_label} • Период: {period} дней • {datetime.now().strftime('%d.%m.%Y')}").font = subtitle_font
 
     kpi_rows = [
-        ("Всего заказов", total_orders),
+        ("Всего заказов", f"{total_orders:,}"),
         ("Выручка", f"{round(total_revenue):,} ₽"),
         ("Средний чек", f"{round(avg_check):,} ₽"),
-        ("Федеральных округов", total_okrugs),
-        ("Регионов", total_regions),
+        (f"{okrug_label}ов", total_okrugs),
+        (f"{region_label}ов", total_regions),
     ]
     for i, (label, val) in enumerate(kpi_rows, 4):
         ws1.cell(i, 1, label).font = kpi_label_font
         c = ws1.cell(i, 2, val)
-        c.font = Font(name="Calibri", size=12, bold=True)
+        c.font = kpi_val_font
         c.alignment = Alignment(horizontal="right")
 
-    # Округа сводка
+    # Топ округа/кластеры
     ri = len(kpi_rows) + 6
-    ws1.cell(ri, 1, "ОКРУГА").font = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+    ws1.cell(ri, 1, f"РАСПРЕДЕЛЕНИЕ ПО {okrug_label.upper()}АМ").font = section_font
     ri += 1
 
-    okrug_headers = ["Округ", "Заказов", "Выручка ₽", "Ср. чек ₽", "Стабильность %", "Регионов", "Доля %"]
-    for ci, h in enumerate(okrug_headers, 1):
+    okrug_agg: dict[str, dict] = {}
+    for reg in regions:
+        ok = reg.get("okrug", "?")
+        if ok not in okrug_agg:
+            okrug_agg[ok] = {"orders": 0, "revenue": 0.0, "regions": 0, "max_stab": 0}
+        okrug_agg[ok]["orders"] += reg.get("orders", 0)
+        okrug_agg[ok]["revenue"] += float(reg.get("revenue", 0))
+        okrug_agg[ok]["regions"] += 1
+        s = reg.get("stability_pct", 0)
+        if s > okrug_agg[ok]["max_stab"]:
+            okrug_agg[ok]["max_stab"] = s
+
+    ok_headers = [okrug_label, "Заказов", "Выручка ₽", "Ср. чек ₽", f"{region_label}ов", "Доля %", "Доля выр. %"]
+    for ci, h in enumerate(ok_headers, 1):
         c = ws1.cell(ri, ci, h)
         c.font = header_font
         c.fill = header_fill
         c.alignment = Alignment(horizontal="center")
     ri += 1
 
-    # Aggregate regions into okrugs
-    okrug_agg: dict[str, dict] = {}
-    for reg in regions:
-        ok = reg.get("okrug", "?")
-        if ok not in okrug_agg:
-            okrug_agg[ok] = {"orders": 0, "revenue": 0.0, "stability_pct": 0, "regions": 0}
-        okrug_agg[ok]["orders"] += reg.get("orders", 0)
-        okrug_agg[ok]["revenue"] += float(reg.get("revenue", 0))
-        okrug_agg[ok]["regions"] += 1
-
     for ok_name, ok_data in sorted(okrug_agg.items(), key=lambda x: x[1]["orders"], reverse=True):
         ok_orders = ok_data["orders"]
         ok_revenue = ok_data["revenue"]
         ok_avg = round(ok_revenue / ok_orders) if ok_orders > 0 else 0
         ok_share = round(ok_orders / total_orders * 100, 1) if total_orders > 0 else 0
-        ws1.cell(ri, 1, ok_name)
+        ok_rev_share = round(ok_revenue / total_revenue * 100, 1) if total_revenue > 0 else 0
+        ws1.cell(ri, 1, ok_name).font = Font(bold=True)
         ws1.cell(ri, 2, ok_orders).number_format = num_fmt
         ws1.cell(ri, 3, round(ok_revenue)).number_format = money_fmt
         ws1.cell(ri, 4, ok_avg).number_format = money_fmt
-        ws1.cell(ri, 5, ok_data.get("stability_pct", "—"))
-        ws1.cell(ri, 6, ok_data["regions"])
-        sc = ws1.cell(ri, 7, ok_share)
+        ws1.cell(ri, 5, ok_data["regions"])
+        sc = ws1.cell(ri, 6, ok_share)
         sc.number_format = "0.0"
-        if ok_share >= 25:
-            sc.font = green_font
-        elif ok_share >= 10:
-            sc.font = amber_font
-        for ci in range(1, len(okrug_headers) + 1):
+        sc.font = green_font if ok_share >= 25 else (amber_font if ok_share >= 10 else red_font)
+        ws1.cell(ri, 7, ok_rev_share).number_format = "0.0"
+        for ci in range(1, len(ok_headers) + 1):
             ws1.cell(ri, ci).border = border
         ri += 1
 
-    for ci, w in enumerate([25, 12, 15, 12, 12, 10, 10], 1):
+    # ИТОГО строка
+    ws1.cell(ri, 1, "ИТОГО").font = Font(bold=True, color="1F4E79")
+    ws1.cell(ri, 2, total_orders).number_format = num_fmt
+    ws1.cell(ri, 2).font = Font(bold=True)
+    ws1.cell(ri, 3, round(total_revenue)).number_format = money_fmt
+    ws1.cell(ri, 3).font = Font(bold=True)
+    ws1.cell(ri, 4, round(avg_check)).number_format = money_fmt
+    ws1.cell(ri, 5, total_regions)
+    ws1.cell(ri, 6, 100.0).number_format = "0.0"
+    ws1.cell(ri, 7, 100.0).number_format = "0.0"
+    for ci in range(1, len(ok_headers) + 1):
+        ws1.cell(ri, ci).border = Border(top=Side(style="medium", color="1F4E79"), bottom=Side(style="medium", color="1F4E79"))
+
+    for ci, w in enumerate([30, 12, 16, 14, 12, 10, 12], 1):
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
     # ═════════════════════════════════════════
-    # Sheet 2: Регионы (детализация)
+    # Sheet 2: Регионы (полная детализация)
     # ═════════════════════════════════════════
     ws2 = workbook.create_sheet("Регионы")
 
-    reg_headers = ["Округ", "Регион", "Заказов", "Выручка ₽", "Ср. чек ₽", "Стабильность %", "Доля %"]
-    ws2.column_dimensions["A"].width = 30
-    ws2.column_dimensions["B"].width = 30
+    reg_headers = [okrug_label, region_label, "Заказов", "Выручка ₽", "Ср. чек ₽",
+                   "Стаб. %", "Доля зак. %", "Доля выр. %"]
     for ci, h in enumerate(reg_headers, 1):
         c = ws2.cell(1, ci, h)
         c.font = header_font
@@ -12714,6 +12742,7 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
         r_revenue = float(reg.get("revenue", 0))
         r_avg = round(r_revenue / r_orders) if r_orders > 0 else 0
         r_share = round(r_orders / total_orders * 100, 1) if total_orders > 0 else 0
+        r_rev_share = round(r_revenue / total_revenue * 100, 1) if total_revenue > 0 else 0
         r_stab = reg.get("stability_pct", 0)
         ws2.cell(ri, 1, reg.get("okrug", ""))
         ws2.cell(ri, 2, reg.get("region", ""))
@@ -12724,47 +12753,167 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
         stab_c.number_format = "0.0"
         stab_c.font = green_font if r_stab >= 50 else (amber_font if r_stab >= 20 else red_font)
         ws2.cell(ri, 7, r_share).number_format = "0.0"
+        ws2.cell(ri, 8, r_rev_share).number_format = "0.0"
         for ci in range(1, len(reg_headers) + 1):
             ws2.cell(ri, ci).border = border
             if ri % 2 == 0:
                 ws2.cell(ri, ci).fill = alt_fill
 
-    for ci, w in enumerate([30, 30, 12, 15, 12, 14, 10], 1):
+    for ci, w in enumerate([28, 28, 12, 16, 14, 10, 12, 12], 1):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
     # ═════════════════════════════════════════
-    # Sheet 3: Топ товары
+    # Sheet 3: Топ товары (общий)
     # ═════════════════════════════════════════
     ws3 = workbook.create_sheet("Топ товары")
 
-    prod_headers = ["Артикул", "Название", "Заказов", "Выручка ₽", "Округов", "Регионов", "Стабильность %", "Доля %"]
+    prod_headers = [sku_label, "Название", "Заказов", "Выручка ₽", "Ср. чек ₽",
+                    f"{okrug_label}ов", f"{region_label}ов", "Стаб. %", "Доля %"]
     for ci, h in enumerate(prod_headers, 1):
         c = ws3.cell(1, ci, h)
         c.font = header_font
         c.fill = header_fill
         c.alignment = Alignment(horizontal="center")
     ws3.freeze_panes = "A2"
+    ws3.auto_filter.ref = f"A1:{get_column_letter(len(prod_headers))}1"
 
     for ri, prod in enumerate(top_products, 2):
+        p_orders = prod.get("orders", 0)
+        p_revenue = float(prod.get("revenue", 0))
+        p_avg = round(p_revenue / p_orders) if p_orders > 0 else 0
         ws3.cell(ri, 1, prod.get("vendor_code", str(prod.get("nm_id", ""))))
         ws3.cell(ri, 2, prod.get("name", ""))
-        ws3.cell(ri, 3, prod.get("orders", 0)).number_format = num_fmt
-        ws3.cell(ri, 4, round(float(prod.get("revenue", 0)))).number_format = money_fmt
-        ws3.cell(ri, 5, prod.get("okrug_count", 0))
-        ws3.cell(ri, 6, prod.get("region_count", 0))
-        stab_c = ws3.cell(ri, 7, prod.get("stability_pct", 0))
+        ws3.cell(ri, 3, p_orders).number_format = num_fmt
+        ws3.cell(ri, 4, round(p_revenue)).number_format = money_fmt
+        ws3.cell(ri, 5, p_avg).number_format = money_fmt
+        ws3.cell(ri, 6, prod.get("okrug_count", 0))
+        ws3.cell(ri, 7, prod.get("region_count", 0))
+        stab_c = ws3.cell(ri, 8, prod.get("stability_pct", 0))
         stab_c.number_format = "0.0"
-        ws3.cell(ri, 8, prod.get("share_pct", 0)).number_format = "0.0"
+        ws3.cell(ri, 9, prod.get("share_pct", 0)).number_format = "0.0"
         for ci in range(1, len(prod_headers) + 1):
             ws3.cell(ri, ci).border = border
             if ri % 2 == 0:
                 ws3.cell(ri, ci).fill = alt_fill
 
-    for ci, w in enumerate([20, 40, 12, 15, 10, 10, 14, 10], 1):
+    for ci, w in enumerate([22, 40, 12, 16, 14, 10, 10, 10, 10], 1):
         ws3.column_dimensions[get_column_letter(ci)].width = w
 
     # ═════════════════════════════════════════
-    # Sheet 4: ИИ-анализ (если есть)
+    # Sheet 4: Товары по округам
+    # ═════════════════════════════════════════
+    if okrug_top_products:
+        ws4 = workbook.create_sheet(f"Товары по {okrug_label.lower()}ам")
+
+        ok_prod_headers = [okrug_label, sku_label, "Название", "Заказов", "Выручка ₽", "Ср. чек ₽", "Стаб. %"]
+        for ci, h in enumerate(ok_prod_headers, 1):
+            c = ws4.cell(1, ci, h)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = Alignment(horizontal="center")
+        ws4.freeze_panes = "A2"
+        ws4.auto_filter.ref = f"A1:{get_column_letter(len(ok_prod_headers))}1"
+
+        ri = 2
+        for ok_name in sorted(okrug_top_products.keys(), key=lambda k: okrug_agg.get(k, {}).get("orders", 0), reverse=True):
+            prods = okrug_top_products[ok_name]
+            if not isinstance(prods, list):
+                continue
+            # Section header
+            for ci in range(1, len(ok_prod_headers) + 1):
+                ws4.cell(ri, ci).fill = section_fill
+            ok_info = okrug_agg.get(ok_name, {})
+            ws4.cell(ri, 1, f"▶ {ok_name}").font = section_font
+            ok_o = ok_info.get("orders", 0)
+            ws4.cell(ri, 4, ok_o).number_format = num_fmt
+            ws4.cell(ri, 4).font = Font(bold=True)
+            ws4.cell(ri, 5, round(ok_info.get("revenue", 0))).number_format = money_fmt
+            ws4.cell(ri, 5).font = Font(bold=True)
+            ri += 1
+
+            for prod in prods:
+                if not isinstance(prod, dict):
+                    continue
+                p_orders = prod.get("orders", 0)
+                p_revenue = float(prod.get("revenue", 0))
+                p_avg = round(p_revenue / p_orders) if p_orders > 0 else 0
+                ws4.cell(ri, 1, "")
+                ws4.cell(ri, 2, prod.get("vendor_code", str(prod.get("nm_id", ""))))
+                ws4.cell(ri, 3, prod.get("name", ""))
+                ws4.cell(ri, 4, p_orders).number_format = num_fmt
+                ws4.cell(ri, 5, round(p_revenue)).number_format = money_fmt
+                ws4.cell(ri, 6, p_avg).number_format = money_fmt
+                stab_c = ws4.cell(ri, 7, prod.get("stability_pct", 0))
+                stab_c.number_format = "0.0"
+                stab_c.font = green_font if prod.get("stability_pct", 0) >= 50 else (amber_font if prod.get("stability_pct", 0) >= 20 else red_font)
+                for ci in range(1, len(ok_prod_headers) + 1):
+                    ws4.cell(ri, ci).border = border
+                    if ri % 2 == 0:
+                        ws4.cell(ri, ci).fill = alt_fill
+                ri += 1
+            ri += 1  # gap between okrugs
+
+        for ci, w in enumerate([28, 22, 40, 12, 16, 14, 10], 1):
+            ws4.column_dimensions[get_column_letter(ci)].width = w
+
+    # ═════════════════════════════════════════
+    # Sheet 5: SKU × Регионы (матрица)
+    # ═════════════════════════════════════════
+    if sku_region_data:
+        ws5 = workbook.create_sheet(f"SKU × {region_label}ы")
+
+        sr_headers = [sku_label, "Название", okrug_label, region_label,
+                      "Заказов", "Выручка ₽", "Ср. чек ₽", "Стаб. %",
+                      "Доля SKU %"]
+        for ci, h in enumerate(sr_headers, 1):
+            c = ws5.cell(1, ci, h)
+            c.font = header_font
+            c.fill = header_fill
+            c.alignment = Alignment(horizontal="center")
+        ws5.freeze_panes = "A2"
+        ws5.auto_filter.ref = f"A1:{get_column_letter(len(sr_headers))}1"
+
+        # Sort: by SKU orders desc, then region orders desc
+        sorted_sr = sorted(sku_region_data, key=lambda x: (-x.get("sku_total_orders", 0), -x.get("orders", 0)))
+
+        current_sku = None
+        for ri_idx, sr in enumerate(sorted_sr):
+            ri = ri_idx + 2
+            sku_id = sr.get("sku_label", "")
+            show_sku = sku_id != current_sku
+            current_sku = sku_id
+
+            if show_sku:
+                ws5.cell(ri, 1, sku_id).font = Font(bold=True)
+                ws5.cell(ri, 2, sr.get("name", "")).font = Font(bold=True)
+            else:
+                ws5.cell(ri, 1, "")
+                ws5.cell(ri, 2, "")
+            ws5.cell(ri, 3, sr.get("okrug", ""))
+            ws5.cell(ri, 4, sr.get("region", ""))
+            r_orders = sr.get("orders", 0)
+            r_rev = float(sr.get("revenue", 0))
+            r_avg = round(r_rev / r_orders) if r_orders > 0 else 0
+            ws5.cell(ri, 5, r_orders).number_format = num_fmt
+            ws5.cell(ri, 6, round(r_rev)).number_format = money_fmt
+            ws5.cell(ri, 7, r_avg).number_format = money_fmt
+            stab_c = ws5.cell(ri, 8, sr.get("stability_pct", 0))
+            stab_c.number_format = "0.0"
+            # Share within this SKU
+            sku_total = sr.get("sku_total_orders", 1)
+            sku_share = round(r_orders / sku_total * 100, 1) if sku_total > 0 else 0
+            ws5.cell(ri, 9, sku_share).number_format = "0.0"
+
+            for ci in range(1, len(sr_headers) + 1):
+                ws5.cell(ri, ci).border = border
+                if ri % 2 == 0:
+                    ws5.cell(ri, ci).fill = alt_fill
+
+        for ci, w in enumerate([22, 38, 26, 26, 12, 16, 14, 10, 12], 1):
+            ws5.column_dimensions[get_column_letter(ci)].width = w
+
+    # ═════════════════════════════════════════
+    # Sheet 6: ИИ-анализ (если есть)
     # ═════════════════════════════════════════
     if ai_data and isinstance(ai_data, dict):
         ws_ai = workbook.create_sheet("ИИ-анализ")
@@ -12776,8 +12925,13 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
         ws_ai.cell(2, 1, f"Дата анализа: {datetime.now().strftime('%d.%m.%Y %H:%M')}").font = subtitle_font
 
         ri = 4
+        severity = ai_data.get("severity", "")
+        if severity:
+            sev_map = {"critical": "🔴 Критично", "warning": "🟡 Внимание", "ok": "🟢 Всё ОК"}
+            ws_ai.cell(ri, 1, "Статус").font = Font(bold=True, size=12)
+            ws_ai.cell(ri, 2, sev_map.get(severity, severity))
+            ri += 1
 
-        # Diagnosis
         diagnosis = ai_data.get("diagnosis", "")
         if diagnosis:
             ws_ai.cell(ri, 1, "Общая оценка").font = Font(bold=True, size=12)
@@ -12785,25 +12939,31 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
             for line in diagnosis.split("\n"):
                 if line.strip():
                     ws_ai.cell(ri, 1, line.strip())
+                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
                     ri += 1
             ri += 1
 
-        # Recommendations
         recs = ai_data.get("recommendations", [])
         if recs:
             ws_ai.cell(ri, 1, "Рекомендации").font = Font(bold=True, size=12, color="1F4E79")
             ri += 1
-            for rec in recs:
+            for idx, rec in enumerate(recs, 1):
                 if isinstance(rec, dict):
-                    ws_ai.cell(ri, 1, f"• {rec.get('action', '')}").font = Font(bold=True)
-                    ws_ai.cell(ri, 2, rec.get('reason', ''))
-                    ws_ai.cell(ri, 3, rec.get('priority', ''))
+                    ws_ai.cell(ri, 1, f"{idx}. {rec.get('action', '')}").font = Font(bold=True)
+                    ws_ai.cell(ri, 2, rec.get("reason", ""))
+                    p = rec.get("priority", "")
+                    pc = ws_ai.cell(ri, 3, p)
+                    if p == "high":
+                        pc.font = red_font
+                    elif p == "medium":
+                        pc.font = amber_font
+                    else:
+                        pc.font = green_font
                 elif isinstance(rec, str):
-                    ws_ai.cell(ri, 1, f"• {rec}")
+                    ws_ai.cell(ri, 1, f"{idx}. {rec}")
                 ri += 1
             ri += 1
 
-        # Insights
         insights = ai_data.get("insights", ai_data.get("key_insights", []))
         if insights:
             ws_ai.cell(ri, 1, "Ключевые выводы").font = Font(bold=True, size=12, color="1F4E79")
@@ -12811,8 +12971,10 @@ def _build_geo_excel(analytics: dict, shop_name: str, period: int, marketplace: 
             for ins in insights:
                 if isinstance(ins, str):
                     ws_ai.cell(ri, 1, f"• {ins}")
+                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
                 elif isinstance(ins, dict):
                     ws_ai.cell(ri, 1, f"• {ins.get('insight', ins.get('text', ''))}")
+                    ws_ai.merge_cells(start_row=ri, start_column=1, end_row=ri, end_column=3)
                 ri += 1
 
     buf = io.BytesIO()
@@ -12844,7 +13006,75 @@ async def wb_geography_excel(
         if time.time() - ts < _AI_CACHE_TTL:
             ai_data = cached
 
-    buf = _build_geo_excel(analytics, shop_name, period, "wildberries", ai_data=ai_data)
+    # ── Collect per-SKU per-region matrix data ──
+    sku_region_data = []
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        total_weeks = max(1, period // 7)
+
+        rows = ch.query("""
+            SELECT
+                nm_id,
+                oblast_okrug_name AS okrug,
+                region_name AS region,
+                count() AS orders,
+                sum(toFloat64(price_with_disc)) AS revenue,
+                uniqExact(toMonday(date)) AS active_weeks
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d_start:Date}
+              AND is_cancel = 0
+              AND region_name != ''
+            GROUP BY nm_id, okrug, region
+            ORDER BY nm_id, orders DESC
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+        ch.close()
+
+        # Get product names from PG
+        nm_ids_in = list(set(int(r[0]) for r in rows))
+        prod_map: dict[int, dict] = {}
+        if nm_ids_in:
+            nm_list = ", ".join(str(x) for x in nm_ids_in[:500])
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT nm_id, vendor_code, name
+                    FROM dim_products
+                    WHERE shop_id = :sid AND nm_id IN ({nm_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"vendor_code": r[1] or "", "name": (r[2] or "")[:80]}
+
+        # Compute per-SKU totals
+        sku_totals: dict[int, int] = {}
+        for r in rows:
+            nm = int(r[0])
+            sku_totals[nm] = sku_totals.get(nm, 0) + int(r[3])
+
+        for r in rows:
+            nm = int(r[0])
+            prod = prod_map.get(nm, {})
+            active_weeks = int(r[5])
+            stab = round(active_weeks / total_weeks * 100, 1)
+            sku_region_data.append({
+                "sku_label": prod.get("vendor_code") or str(nm),
+                "name": prod.get("name", ""),
+                "okrug": str(r[1]),
+                "region": str(r[2]),
+                "orders": int(r[3]),
+                "revenue": float(r[4]),
+                "stability_pct": stab,
+                "sku_total_orders": sku_totals.get(nm, 0),
+            })
+    except Exception:
+        pass  # Non-critical — sheet simply won't appear
+
+    buf = _build_geo_excel(analytics, shop_name, period, "wildberries",
+                           ai_data=ai_data, sku_region_data=sku_region_data)
 
     filename = f"geography_wb_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
@@ -12916,7 +13146,75 @@ async def ozon_geography_excel(
         if time.time() - ts < _AI_CACHE_TTL:
             ai_data = cached
 
-    buf = _build_geo_excel(analytics_normalized, shop_name, period, "ozon", ai_data=ai_data)
+    # ── Collect per-SKU per-city matrix data ──
+    sku_region_data = []
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        ch = get_clickhouse_client()
+        today = date.today()
+        d_start = today - timedelta(days=period)
+        total_weeks = max(1, period // 7)
+
+        rows = ch.query("""
+            SELECT
+                sku,
+                cluster_to AS cluster,
+                city,
+                count() AS orders,
+                sum(toFloat64(price) * quantity) AS revenue,
+                uniqExact(toMonday(toDate(order_date))) AS active_weeks
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+              AND city != ''
+            GROUP BY sku, cluster, city
+            ORDER BY sku, orders DESC
+        """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
+        ch.close()
+
+        # Get product names from PG (dim_ozon_products)
+        sku_ids = list(set(int(r[0]) for r in rows))
+        prod_map: dict[int, dict] = {}
+        if sku_ids:
+            sk_list = ", ".join(str(x) for x in sku_ids[:500])
+            pg_rows = (await db.execute(
+                text(f"""
+                    SELECT product_id, offer_id, name
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND product_id IN ({sk_list})
+                """),
+                {"sid": shop_id},
+            )).fetchall()
+            for r in pg_rows:
+                prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:80]}
+
+        # Per-SKU totals
+        sku_totals: dict[int, int] = {}
+        for r in rows:
+            s = int(r[0])
+            sku_totals[s] = sku_totals.get(s, 0) + int(r[3])
+
+        for r in rows:
+            s = int(r[0])
+            prod = prod_map.get(s, {})
+            active_weeks = int(r[5])
+            stab = round(active_weeks / total_weeks * 100, 1)
+            sku_region_data.append({
+                "sku_label": prod.get("offer_id") or str(s),
+                "name": prod.get("name", ""),
+                "okrug": str(r[1]),
+                "region": str(r[2]),
+                "orders": int(r[3]),
+                "revenue": float(r[4]),
+                "stability_pct": stab,
+                "sku_total_orders": sku_totals.get(s, 0),
+            })
+    except Exception:
+        pass
+
+    buf = _build_geo_excel(analytics_normalized, shop_name, period, "ozon",
+                           ai_data=ai_data, sku_region_data=sku_region_data)
 
     filename = f"geography_ozon_shop{shop_id}_{period}d.xlsx"
     return StreamingResponse(
