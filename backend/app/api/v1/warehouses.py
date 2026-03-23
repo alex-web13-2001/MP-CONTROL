@@ -2842,12 +2842,13 @@ async def ozon_storage_analytics(
         if not has_actual_data:
             try:
                 txn_storage = ch.query("""
-                    SELECT sum(abs(storage_fee)) AS total_storage,
-                           min(dt) AS min_dt, max(dt) AS max_dt
+                    SELECT sum(abs(amount)) AS total_storage,
+                           min(toDate(operation_date)) AS min_dt,
+                           max(toDate(operation_date)) AS max_dt
                     FROM mms_analytics.fact_ozon_transactions FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND category = 'Storage'
-                      AND dt >= today() - {period:UInt32}
+                      AND toDate(operation_date) >= today() - {period:UInt32}
                 """, parameters={"shop_id": shop_id, "period": period})
                 for row in txn_storage.result_rows:
                     fallback_val = float(row[0] or 0)
