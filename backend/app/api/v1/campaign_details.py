@@ -127,16 +127,10 @@ async def get_campaign_kpi(
                   AND sku IN {skus:Array(UInt64)}
                   AND order_date BETWEEN {start_date:Date} AND {end_date:Date}
             """
+            return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
         else:
-            q = """
-                SELECT sum(finished_price) 
-                FROM mms_analytics.fact_orders_raw FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND nm_id IN {skus:Array(UInt64)}
-                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND is_cancel = 0
-            """
-        return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
+            # WB: use revenue from fact_advert_stats_v3 directly (already tied to campaign)
+            return None, {}
     
     # Get campaign SKUs + shop_id
     if marketplace.lower() == "ozon":
@@ -162,13 +156,15 @@ async def get_campaign_kpi(
         cart = int(ad_row[3] or 0)
         clicks = int(ad_row[4] or 0)
         views = int(ad_row[5] or 0)
+        # For WB: product_revenue = ad_revenue (from fact_advert_stats_v3)
+        effective_prod_rev = prod_rev if prod_rev > 0 else ad_rev
         ctr = (clicks / views * 100) if views > 0 else 0
         drr_ad = (spend / ad_rev * 100) if ad_rev > 0 else 0
-        drr_prod = (spend / prod_rev * 100) if prod_rev > 0 else 0
+        drr_prod = (spend / effective_prod_rev * 100) if effective_prod_rev > 0 else 0
         cpo = (spend / orders) if orders > 0 else 0
         return KpiPeriod(
             spend=round(spend, 2), ad_revenue=round(ad_rev, 2),
-            product_revenue=round(prod_rev, 2),
+            product_revenue=round(effective_prod_rev, 2),
             orders=orders, cart=cart, clicks=clicks, views=views,
             ctr=round(ctr, 2), drr_ad=round(drr_ad, 2),
             drr_product=round(drr_prod, 2), cpo=round(cpo, 2),
@@ -184,7 +180,7 @@ async def get_campaign_kpi(
     ad_prev = ch.query(q_prev, parameters=p_prev).result_rows
     ad_prev_row = ad_prev[0] if ad_prev else (0, 0, 0, 0, 0, 0)
     
-    # Product revenue
+    # Product revenue (only for Ozon where we have separate orders data)
     prod_rev_cur = 0.0
     prod_rev_prev = 0.0
     if campaign_skus and shop_id:
@@ -248,7 +244,6 @@ async def get_campaign_stats(
     }
     
     if marketplace.lower() == "ozon":
-        table = "mms_analytics.fact_ozon_ad_daily FINAL"
         sku_filter = "AND sku = {sku:UInt64}" if sku else ""
         if sku:
             params["sku"] = sku
@@ -264,7 +259,7 @@ async def get_campaign_stats(
                 sum(money_spent) as t_spend,
                 if(sum(views)>0, round(sum(clicks)/sum(views)*100, 2), 0) as t_ctr,
                 if(sum(revenue)>0, round(sum(money_spent)/sum(revenue)*100, 2), 0) as t_drr
-            FROM {table}
+            FROM mms_analytics.fact_ozon_ad_daily FINAL
             WHERE campaign_id = {{campaign_id:UInt64}}
               AND dt BETWEEN {{start_date:Date}} AND {{end_date:Date}}
               {sku_filter}
@@ -272,7 +267,6 @@ async def get_campaign_stats(
             ORDER BY dt ASC
         """
     elif marketplace.lower() == "wb":
-        table = "mms_analytics.fact_advert_stats_v3 FINAL"
         sku_filter = "AND nm_id = {sku:UInt64}" if sku else ""
         if sku:
             params["sku"] = sku
@@ -288,7 +282,7 @@ async def get_campaign_stats(
                 sum(spend) as t_spend,
                 if(sum(views)>0, round(sum(clicks)/sum(views)*100, 2), 0) as t_ctr,
                 if(sum(revenue)>0, round(sum(spend)/sum(revenue)*100, 2), 0) as t_drr
-            FROM {table}
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE advert_id = {{campaign_id:UInt64}}
               AND date BETWEEN {{start_date:Date}} AND {{end_date:Date}}
               {sku_filter}
@@ -300,88 +294,18 @@ async def get_campaign_stats(
 
     rows = ch.query(query, parameters=params).result_rows
     
-    # Build ad stats dict by date (normalize datetime→date)
+    # Build result directly — all data comes from the ad stats table
     def _to_date(v):
         return v.date() if isinstance(v, dt_datetime) else v
     
-    ad_by_date = {}
-    for r in rows:
-        ad_by_date[_to_date(r[0])] = {
-            'views': int(r[1]), 'clicks': int(r[2]), 'orders': int(r[3]),
-            'cart': int(r[4]), 'revenue': float(r[5]), 'spend': float(r[6]),
-            'ctr': float(r[7]), 'drr': float(r[8]),
-        }
-    
-    # Get daily product revenue from orders
-    prod_rev_by_date = {}
-    # Determine SKUs from campaign ad data
-    if marketplace.lower() == "ozon":
-        if sku:
-            skus_list = [sku]
-            shop_q = ch.query(
-                "SELECT DISTINCT shop_id FROM mms_analytics.fact_ozon_ad_daily FINAL WHERE campaign_id = {cid:UInt64} LIMIT 1",
-                parameters={"cid": campaign_id}
-            ).result_rows
-        else:
-            skus_q = ch.query(
-                "SELECT DISTINCT sku, shop_id FROM mms_analytics.fact_ozon_ad_daily FINAL WHERE campaign_id = {cid:UInt64}",
-                parameters={"cid": campaign_id}
-            ).result_rows
-            skus_list = [int(r[0]) for r in skus_q]
-            shop_q = skus_q
-        shop_id_val = int(shop_q[0][-1]) if shop_q else 0
-        if skus_list and shop_id_val:
-            pr_rows = ch.query(
-                """
-                SELECT toDate(order_date) as d, sum(price * quantity)
-                FROM mms_analytics.fact_ozon_orders FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND sku IN {skus:Array(UInt64)}
-                  AND toDate(order_date) BETWEEN {start_date:Date} AND {end_date:Date}
-                GROUP BY d
-                """,
-                parameters={"shop_id": shop_id_val, "skus": skus_list, "start_date": start_date, "end_date": end_date}
-            ).result_rows
-            for pr in pr_rows:
-                prod_rev_by_date[_to_date(pr[0])] = float(pr[1] or 0)
-    else:
-        if sku:
-            skus_list = [sku]
-            shop_q = ch.query(
-                "SELECT DISTINCT shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} LIMIT 1",
-                parameters={"cid": campaign_id}
-            ).result_rows
-        else:
-            skus_q = ch.query(
-                "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64}",
-                parameters={"cid": campaign_id}
-            ).result_rows
-            skus_list = [int(r[0]) for r in skus_q]
-            shop_q = skus_q
-        shop_id_val = int(shop_q[0][-1]) if shop_q else 0
-        if skus_list and shop_id_val:
-            pr_rows = ch.query(
-                """
-                SELECT toDate(date) as d, sum(finished_price)
-                FROM mms_analytics.fact_orders_raw FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND nm_id IN {skus:Array(UInt64)}
-                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND is_cancel = 0
-                GROUP BY d
-                """,
-                parameters={"shop_id": shop_id_val, "skus": skus_list, "start_date": start_date, "end_date": end_date}
-            ).result_rows
-            for pr in pr_rows:
-                prod_rev_by_date[_to_date(pr[0])] = float(pr[1] or 0)
-    
-    # Merge and return
-    all_dates = sorted(set(list(ad_by_date.keys()) + list(prod_rev_by_date.keys())))
     result = []
-    for dt_val in all_dates:
-        ad = ad_by_date.get(dt_val, {'views': 0, 'clicks': 0, 'orders': 0, 'cart': 0, 'revenue': 0, 'spend': 0, 'ctr': 0, 'drr': 0})
+    for r in rows:
         result.append(CampaignStatsRow(
-            dt=dt_val, product_revenue=round(prod_rev_by_date.get(dt_val, 0), 2), **ad
+            dt=_to_date(r[0]),
+            views=int(r[1]), clicks=int(r[2]), orders=int(r[3]),
+            cart=int(r[4]), revenue=float(r[5]), spend=float(r[6]),
+            ctr=float(r[7]), drr=float(r[8]),
+            product_revenue=float(r[5]),  # For WB/Ozon ad tables, revenue IS the product revenue
         ))
     return result
 
@@ -474,7 +398,7 @@ async def get_campaign_events(
             pg_res = await db.execute(pg_q, {"sid": shop_id, "ids": nm_ids})
             product_map = {int(r[0]): {"name": r[1] or "", "offer_id": r[2] or ""} for r in pg_res}
         else:
-            pg_q = text("SELECT nm_id, imt_name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)")
+            pg_q = text("SELECT nm_id, name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)")
             pg_res = await db.execute(pg_q, {"sid": shop_id, "ids": nm_ids})
             product_map = {int(r[0]): {"name": r[1] or "", "offer_id": r[2] or ""} for r in pg_res}
 
@@ -727,7 +651,7 @@ async def get_campaign_purchases(
         from sqlalchemy import text as sa_text
         sku_ids = [r.sku for r in result]
         pg_res = await db.execute(
-            sa_text("SELECT nm_id, imt_name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)"),
+            sa_text("SELECT nm_id, name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)"),
             {"sid": shop_id, "ids": sku_ids}
         )
         pg_map = {int(row[0]): {"name": row[1] or "", "offer_id": row[2] or ""} for row in pg_res}
