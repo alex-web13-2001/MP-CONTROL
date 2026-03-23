@@ -117,7 +117,7 @@ async def get_campaign_kpi(
             if sku: params["sku"] = sku
             q = f"""
                 SELECT
-                    sum(spend), sum(revenue), sum(orders), 0,
+                    sum(spend), sum(revenue), sum(orders), sum(atbs),
                     sum(clicks), sum(views)
                 FROM mms_analytics.fact_advert_stats_v3 FINAL
                 WHERE advert_id = {{campaign_id:UInt64}}
@@ -138,8 +138,16 @@ async def get_campaign_kpi(
             """
             return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
         else:
-            # WB: use revenue from fact_advert_stats_v3 directly (already tied to campaign)
-            return None, {}
+            # WB: get total product revenue from orders table
+            q = """
+                SELECT sum(finished_price) 
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND nm_id IN {skus:Array(UInt64)}
+                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
+                  AND is_cancel = 0
+            """
+            return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
     
     # Get campaign SKUs + shop_id
     if marketplace.lower() == "ozon":
@@ -287,7 +295,7 @@ async def get_campaign_stats(
                 sum(views) as t_views,
                 sum(clicks) as t_clicks,
                 sum(orders) as t_orders,
-                0 as t_cart,
+                sum(atbs) as t_cart,
                 sum(revenue) as t_revenue,
                 sum(spend) as t_spend,
                 if(sum(views)>0, round(sum(clicks)/sum(views)*100, 2), 0) as t_ctr,
@@ -315,8 +323,57 @@ async def get_campaign_stats(
             views=int(r[1]), clicks=int(r[2]), orders=int(r[3]),
             cart=int(r[4]), revenue=float(r[5]), spend=float(r[6]),
             ctr=float(r[7]), drr=float(r[8]),
-            product_revenue=float(r[5]),  # For WB/Ozon ad tables, revenue IS the product revenue
+            product_revenue=0,
         ))
+    
+    # Get daily product revenue from actual orders (total, not just ad-attributed)
+    if marketplace == "wb":
+        skus_for_rev = []
+        shop_id_for_rev = 0
+        if sku:
+            skus_for_rev = [sku]
+        else:
+            skus_q = ch.query(
+                "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64}",
+                parameters={"cid": campaign_id}
+            ).result_rows
+            skus_for_rev = [int(r[0]) for r in skus_q]
+            if skus_q:
+                shop_id_for_rev = int(skus_q[0][1])
+        if not shop_id_for_rev and skus_for_rev:
+            sh = ch.query(
+                "SELECT DISTINCT shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} LIMIT 1",
+                parameters={"cid": campaign_id}
+            ).result_rows
+            shop_id_for_rev = int(sh[0][0]) if sh else 0
+        if sku:
+            sh = ch.query(
+                "SELECT DISTINCT shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} LIMIT 1",
+                parameters={"cid": campaign_id}
+            ).result_rows
+            shop_id_for_rev = int(sh[0][0]) if sh else 0
+        
+        prod_rev_by_date = {}
+        if skus_for_rev and shop_id_for_rev:
+            pr_rows = ch.query(
+                """
+                SELECT toDate(date) as d, sum(finished_price)
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND nm_id IN {skus:Array(UInt64)}
+                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
+                  AND is_cancel = 0
+                GROUP BY d
+                """,
+                parameters={"shop_id": shop_id_for_rev, "skus": skus_for_rev, "start_date": start_date, "end_date": end_date}
+            ).result_rows
+            for pr in pr_rows:
+                prod_rev_by_date[_to_date(pr[0])] = float(pr[1] or 0)
+        
+        # Merge product_revenue into results
+        for row in result:
+            row.product_revenue = round(prod_rev_by_date.get(row.dt, 0), 2)
+    
     return result
 
 @router.get("/{marketplace}/{campaign_id}/events", response_model=List[CampaignEventRow])
@@ -512,16 +569,31 @@ async def get_campaign_heatmap(
     if not skus:
         return []
         
-    if marketplace.lower() == "ozon":
+    # Need shop_id for WB orders table
+    if marketplace == "wb":
+        shop_q = ch.query(
+            "SELECT DISTINCT shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} LIMIT 1",
+            parameters={"cid": campaign_id}
+        ).result_rows
+        wb_shop_id = int(shop_q[0][0]) if shop_q else 0
+    
+    if marketplace == "ozon":
         table = "mms_analytics.fact_ozon_orders FINAL"
         sku_col = "sku"
         date_col = "order_date"
+        shop_filter = ""
     else:
         table = "mms_analytics.fact_orders_raw FINAL"
         sku_col = "nm_id"
         date_col = "date"
+        shop_filter = f"AND shop_id = {{shop_id:UInt32}}" if marketplace == "wb" else ""
         
     # In ClickHouse array/tuple substitution is {skus:Array(UInt64)}
+    if marketplace == "ozon":
+        cancel_filter = "AND status NOT IN ('cancelled')"
+    else:
+        cancel_filter = "AND is_cancel = 0"
+    
     query = f"""
         SELECT
             toDayOfWeek({date_col}) AS day_of_week,
@@ -530,7 +602,8 @@ async def get_campaign_heatmap(
         FROM {table}
         WHERE {sku_col} IN {{skus:Array(UInt64)}}
           AND toDate({date_col}) BETWEEN {{sd:Date}} AND {{ed:Date}}
-          AND status NOT IN ('cancelled', 'Отменен')
+          {cancel_filter}
+          {shop_filter}
         GROUP BY day_of_week, hour
         ORDER BY day_of_week, hour
     """
@@ -538,8 +611,10 @@ async def get_campaign_heatmap(
     params = {
         "skus": skus,
         "sd": start_date,
-        "ed": end_date
+        "ed": end_date,
     }
+    if marketplace == "wb" and wb_shop_id:
+        params["shop_id"] = wb_shop_id
     
     rows = ch.query(query, parameters=params).result_rows
     
