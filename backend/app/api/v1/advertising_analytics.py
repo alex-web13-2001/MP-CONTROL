@@ -983,7 +983,7 @@ async def campaign_daily_stats(
         # ── WB: per-campaign daily stats from fact_advert_stats_v3 ──
         rows = ch.query("""
             SELECT
-                campaign_id,
+                advert_id AS campaign_id,
                 date AS day,
                 sum(spend) AS t_spend,
                 sum(views) AS t_views,
@@ -1028,7 +1028,7 @@ async def campaign_daily_stats(
 
         # Build campaign_id -> nm_id mapping
         sku_map_rows = ch.query("""
-            SELECT DISTINCT campaign_id, nm_id
+            SELECT DISTINCT advert_id AS campaign_id, nm_id
             FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {start:Date}
@@ -1665,7 +1665,7 @@ async def _build_wb_analytics(
     # ── 3. Campaigns Table (enriched) ─────────────────
     campaigns_rows = ch.query("""
         SELECT
-            campaign_id,
+            advert_id AS campaign_id,
             sum(spend) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
@@ -1716,12 +1716,19 @@ async def _build_wb_analytics(
             }).result_rows
             for row in ch_result:
                 cid = int(row[0])
-                raw_type = int(row[2]) if row[2] is not None else 0
-                raw_status = int(row[3]) if row[3] is not None else 0
+                # Safe int parsing — type can be UInt8 or string
+                try:
+                    raw_type = int(row[2]) if row[2] is not None else 0
+                except (ValueError, TypeError):
+                    raw_type = 0
+                try:
+                    raw_status = int(row[3]) if row[3] is not None else 0
+                except (ValueError, TypeError):
+                    raw_status = 0
                 campaign_info_map[cid] = {
                     "title": row[1] or "",
-                    "campaign_type": WB_CAMPAIGN_TYPES.get(raw_type, str(raw_type)),
-                    "status": WB_CAMPAIGN_STATUSES.get(raw_status, str(raw_status)),
+                    "campaign_type": WB_CAMPAIGN_TYPES.get(raw_type, str(row[2] or "")),
+                    "status": WB_CAMPAIGN_STATUSES.get(raw_status, str(row[3] or "")),
                 }
         except Exception as e:
             logger.warning("WB campaign enrichment failed: %s", e)
@@ -1729,7 +1736,7 @@ async def _build_wb_analytics(
     # Per-SKU breakdown within each campaign
     sku_stats_rows = ch.query("""
         SELECT
-            campaign_id,
+            advert_id AS campaign_id,
             nm_id,
             sum(spend) AS t_spend,
             sum(views) AS t_views,
@@ -1770,7 +1777,7 @@ async def _build_wb_analytics(
             nm_list = list(all_nm_ids)
             sku_result = await db.execute(
                 sa_text("""
-                    SELECT nm_id, supplier_article, name
+                    SELECT nm_id, vendor_code, name
                     FROM dim_products
                     WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)
                 """),
@@ -1778,7 +1785,7 @@ async def _build_wb_analytics(
             )
             for row in sku_result:
                 sku_name_map[int(row[0])] = {
-                    "supplier_article": row[1] or "",
+                    "vendor_code": row[1] or "",
                     "name": row[2] or "",
                 }
         except Exception as e:
@@ -1840,7 +1847,7 @@ async def _build_wb_analytics(
         return {
             "sku": nm_id,
             "product_id": nm_id,
-            "offer_id": info.get("supplier_article", str(nm_id)),
+            "offer_id": info.get("vendor_code", str(nm_id)),
             "name": info.get("name", ""),
             "image_url": _wb_image_url(nm_id),
             "spend": s["spend"],
@@ -1937,7 +1944,7 @@ async def _build_wb_analytics(
         info = sku_name_map.get(nm_id, {})
         top_skus.append({
             "sku": nm_id,
-            "offer_id": info.get("supplier_article", str(nm_id)),
+            "offer_id": info.get("vendor_code", str(nm_id)),
             "name": info.get("name", ""),
             "image_url": _wb_image_url(nm_id),
             "spend": round(float(row[1]), 2),
@@ -1952,7 +1959,7 @@ async def _build_wb_analytics(
         try:
             pg_result = await db.execute(
                 sa_text("""
-                    SELECT nm_id, supplier_article, name
+                    SELECT nm_id, vendor_code, name
                     FROM dim_products
                     WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)
                 """),
@@ -1961,14 +1968,14 @@ async def _build_wb_analytics(
             for row in pg_result:
                 nm = int(row[0])
                 sku_name_map[nm] = {
-                    "supplier_article": row[1] or "",
+                    "vendor_code": row[1] or "",
                     "name": row[2] or "",
                 }
             for s in top_skus:
                 info = sku_name_map.get(s["sku"], {})
                 if info:
                     s["name"] = info.get("name", s["name"])
-                    s["offer_id"] = info.get("supplier_article", s["offer_id"])
+                    s["offer_id"] = info.get("vendor_code", s["offer_id"])
         except Exception:
             pass
 
