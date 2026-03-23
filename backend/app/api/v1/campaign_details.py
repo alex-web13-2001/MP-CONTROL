@@ -129,11 +129,12 @@ async def get_campaign_kpi(
             """
         else:
             q = """
-                SELECT sum(finished_price * quantity) 
+                SELECT sum(finished_price) 
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND nmId IN {skus:Array(UInt64)}
+                  AND nm_id IN {skus:Array(UInt64)}
                   AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
+                  AND is_cancel = 0
             """
         return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
     
@@ -361,12 +362,12 @@ async def get_campaign_stats(
         if skus_list and shop_id_val:
             pr_rows = ch.query(
                 """
-                SELECT toDate(date) as d, sum(finished_price * quantity)
+                SELECT toDate(date) as d, sum(finished_price)
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND nmId IN {skus:Array(UInt64)}
+                  AND nm_id IN {skus:Array(UInt64)}
                   AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND isCancel = 0
+                  AND is_cancel = 0
                 GROUP BY d
                 """,
                 parameters={"shop_id": shop_id_val, "skus": skus_list, "start_date": start_date, "end_date": end_date}
@@ -674,13 +675,14 @@ async def get_campaign_purchases(
                 nm_id as sku,
                 '' as t_name,
                 '' as t_offer,
-                sum(quantity) as t_qty,
-                sum(total_price) as t_revenue,
-                if(sum(quantity) > 0, round(sum(total_price) / sum(quantity), 2), 0) as t_avg_price
+                count() as t_qty,
+                sum(finished_price) as t_revenue,
+                if(count() > 0, round(sum(finished_price) / count(), 2), 0) as t_avg_price
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND nm_id IN {skus:Array(UInt64)}
-              AND date BETWEEN {sd:Date} AND {ed:Date}
+              AND toDate(date) BETWEEN {sd:Date} AND {ed:Date}
+              AND is_cancel = 0
             GROUP BY nm_id
             ORDER BY t_revenue DESC
         """
