@@ -967,8 +967,8 @@ async def campaign_daily_stats(
         raise HTTPException(status_code=404, detail="Магазин не найден")
     marketplace = shop_row[1]
 
-    if marketplace != "ozon":
-        return {"campaigns": {}, "events": []}
+    if marketplace not in ("ozon", "wildberries"):
+        return {"campaigns_daily": {}, "events_by_campaign": {}, "campaign_total_revenue": {}}
 
     try:
         start_date = date.fromisoformat(date_from)
@@ -979,7 +979,219 @@ async def campaign_daily_stats(
     from app.core.clickhouse import get_clickhouse_client
     ch = get_clickhouse_client()
 
-    # Fetch per-campaign daily stats
+    if marketplace == "wildberries":
+        # ── WB: per-campaign daily stats from fact_advert_stats_v3 ──
+        rows = ch.query("""
+            SELECT
+                campaign_id,
+                date AS day,
+                sum(spend) AS t_spend,
+                sum(views) AS t_views,
+                sum(clicks) AS t_clicks,
+                sum(atbs) AS t_cart,
+                sum(orders) AS t_orders,
+                sum(revenue) AS t_revenue,
+                CASE WHEN sum(views) > 0
+                    THEN round(sum(clicks) / sum(views) * 100, 2) ELSE 0
+                END AS t_ctr,
+                CASE WHEN sum(revenue) > 0
+                    THEN round(sum(spend) / sum(revenue) * 100, 1) ELSE 0
+                END AS t_drr
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {start:Date}
+              AND date <= {end:Date}
+            GROUP BY campaign_id, day
+            ORDER BY campaign_id, day
+        """, parameters={
+            "shop_id": shop_id,
+            "start": start_date,
+            "end": end_date,
+        }).result_rows
+
+        campaigns_daily: dict = {}
+        for row in rows:
+            cid = int(row[0])
+            if cid not in campaigns_daily:
+                campaigns_daily[cid] = []
+            campaigns_daily[cid].append({
+                "date": str(row[1]),
+                "spend": round(float(row[2]), 2),
+                "views": int(row[3]),
+                "clicks": int(row[4]),
+                "cart": int(row[5]),
+                "orders": int(row[6]),
+                "revenue": round(float(row[7]), 2),
+                "ctr": float(row[8]),
+                "drr": float(row[9]),
+            })
+
+        # Build campaign_id -> nm_id mapping
+        sku_map_rows = ch.query("""
+            SELECT DISTINCT campaign_id, nm_id
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {start:Date}
+              AND date <= {end:Date}
+              AND nm_id > 0
+        """, parameters={
+            "shop_id": shop_id,
+            "start": start_date,
+            "end": end_date,
+        }).result_rows
+
+        campaign_skus: dict = {}
+        nm_to_campaigns: dict = {}
+        for row in sku_map_rows:
+            cid, nm_id = int(row[0]), int(row[1])
+            campaign_skus.setdefault(cid, []).append(nm_id)
+            nm_to_campaigns.setdefault(nm_id, set()).add(cid)
+
+        # Total revenue per nm_id per day from fact_orders_raw
+        campaign_total_rev_agg: dict = {}
+        all_camp_nms = list({nm for nms in campaign_skus.values() for nm in nms})
+        if all_camp_nms:
+            try:
+                total_rev_rows = ch.query("""
+                    SELECT
+                        nm_id,
+                        toDate(addHours(date, 3)) AS day,
+                        sum(price_with_disc) AS total_revenue
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(date, 3)) >= {start:Date}
+                      AND toDate(addHours(date, 3)) <= {end:Date}
+                      AND nm_id IN ({nm_ids:Array(UInt64)})
+                    GROUP BY nm_id, day
+                    ORDER BY nm_id, day
+                """, parameters={
+                    "shop_id": shop_id,
+                    "start": start_date,
+                    "end": end_date,
+                    "nm_ids": all_camp_nms,
+                }).result_rows
+
+                nm_day_rev: dict = {}
+                for row in total_rev_rows:
+                    key = (int(row[0]), str(row[1]))
+                    nm_day_rev[key] = float(row[2])
+
+                # Aggregate per campaign per day
+                campaign_total_rev_daily: dict = {}
+                for cid, nms in campaign_skus.items():
+                    daily_rev: dict = {}
+                    for nm in nms:
+                        for (n, day), rev in nm_day_rev.items():
+                            if n == nm:
+                                daily_rev[day] = daily_rev.get(day, 0) + rev
+                    if daily_rev:
+                        campaign_total_rev_daily[cid] = daily_rev
+
+                # Merge total_revenue into campaigns_daily
+                for cid, days_data in campaigns_daily.items():
+                    total_rev_for_campaign = campaign_total_rev_daily.get(cid, {})
+                    for dp in days_data:
+                        dp["total_revenue"] = round(total_rev_for_campaign.get(dp["date"], 0), 2)
+                        dp["total_drr"] = round(dp["spend"] / dp["total_revenue"] * 100, 1) if dp["total_revenue"] > 0 else 0
+            except Exception:
+                pass
+
+        # Compute total_revenue aggregate per campaign
+        for cid, days_data in campaigns_daily.items():
+            total = sum(dp.get("total_revenue", 0) for dp in days_data)
+            if total > 0:
+                campaign_total_rev_agg[cid] = round(total, 2)
+
+        # Fetch events for WB
+        events_result = await db.execute(
+            sa_text("""
+                SELECT id, created_at, event_type, advert_id, nm_id,
+                       old_value, new_value, event_metadata
+                FROM event_log
+                WHERE shop_id = :shop_id
+                  AND created_at >= :date_from
+                  AND created_at < :date_to_excl
+                  AND event_type = ANY(:event_types)
+                ORDER BY created_at
+            """),
+            {
+                "shop_id": shop_id,
+                "date_from": start_date,
+                "date_to_excl": end_date + timedelta(days=1),
+                "event_types": AD_CHART_EVENT_TYPES,
+            },
+        )
+        raw_events = events_result.fetchall()
+
+        events_by_campaign: dict = {}
+        for ev in raw_events:
+            ev_id, created_at, event_type, advert_id, nm_id, old_val, new_val, metadata = ev
+
+            cat = EVENT_TYPE_TO_CATEGORY.get(event_type, "other")
+            label = EVENT_LABELS.get(event_type, event_type)
+            ev_date = created_at.strftime("%Y-%m-%d") if created_at else ""
+            ev_time = created_at.strftime("%H:%M") if created_at else ""
+
+            meta = {}
+            if metadata:
+                if isinstance(metadata, str):
+                    try:
+                        meta = json.loads(metadata)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                elif isinstance(metadata, dict):
+                    meta = metadata
+
+            detail = ""
+            if event_type in ("BID_CHANGE",):
+                old_fmt = f"{float(old_val):.2f} ₽" if old_val else ""
+                new_fmt = f"{float(new_val):.2f} ₽" if new_val else ""
+                bid_field = meta.get("bid_field", "")
+                prefix = {"search": "Поиск", "recommendation": "Рекомендации"}.get(bid_field, "")
+                detail = f"{prefix}: {old_fmt} → {new_fmt}" if prefix else f"{old_fmt} → {new_fmt}"
+            elif event_type in ("STATUS_CHANGE",):
+                sl = {"9": "Активна", "11": "Приостановлена", "7": "Завершена"}
+                detail = f"{sl.get(old_val, old_val or '')} → {sl.get(new_val, new_val or '')}"
+            elif event_type in ("PRICE_CHANGE",):
+                old_fmt = f"{float(old_val):,.0f} ₽" if old_val else ""
+                new_fmt = f"{float(new_val):,.0f} ₽" if new_val else ""
+                detail = f"{old_fmt} → {new_fmt}"
+
+            campaign_title = meta.get("campaign_title", "") or meta.get("title", "")
+
+            event_data = {
+                "id": ev_id,
+                "date": ev_date,
+                "time": ev_time,
+                "event_type": event_type,
+                "category": cat,
+                "label": label,
+                "detail": detail,
+                "campaign_title": campaign_title,
+                "nm_id": int(nm_id) if nm_id else None,
+                "offer_id": "",
+            }
+
+            # Match event to campaigns
+            matched_campaigns = set()
+            if advert_id:
+                matched_campaigns.add(int(advert_id))
+            if nm_id:
+                nm_int = int(nm_id)
+                if nm_int in nm_to_campaigns:
+                    matched_campaigns.update(nm_to_campaigns[nm_int])
+
+            for cid in matched_campaigns:
+                events_by_campaign.setdefault(cid, []).append(event_data)
+
+        ch.close()
+        return {
+            "campaigns_daily": campaigns_daily,
+            "events_by_campaign": events_by_campaign,
+            "campaign_total_revenue": campaign_total_rev_agg,
+        }
+
+    # ── Ozon path (existing) ──────────────────────────
     rows = ch.query("""
         SELECT
             campaign_id,
@@ -1313,6 +1525,9 @@ async def _build_wb_analytics(
     prev_drr = round(prev["spend"] / prev["revenue"] * 100, 1) if prev["revenue"] > 0 else 0
     cur_roas = round(cur["revenue"] / cur["spend"], 2) if cur["spend"] > 0 else 0
     prev_roas = round(prev["revenue"] / prev["spend"], 2) if prev["spend"] > 0 else 0
+    # Конверсия клик → корзина
+    cur_cart_rate = round(cur["cart"] / cur["clicks"] * 100, 1) if cur["clicks"] > 0 else 0
+    prev_cart_rate = round(prev["cart"] / prev["clicks"] * 100, 1) if prev["clicks"] > 0 else 0
     # Конверсия корзина → заказ
     cur_cr = round(cur["orders"] / cur["cart"] * 100, 1) if cur["cart"] > 0 else 0
     prev_cr = round(prev["orders"] / prev["cart"] * 100, 1) if prev["cart"] > 0 else 0
@@ -1346,8 +1561,6 @@ async def _build_wb_analytics(
     total_rev_map = {row[0]: float(row[1]) for row in total_rev_rows}
     cur_total_rev = total_rev_map.get("current", 0)
     prev_total_rev = total_rev_map.get("previous", 0)
-    # WB spend is in kopecks, revenue in kopecks — need consistent units
-    # fact_advert_stats_v3.spend is in rubles, finishedPrice is in rubles
     cur_total_drr = round(cur["spend"] / cur_total_rev * 100, 1) if cur_total_rev > 0 else 0
     prev_total_drr = round(prev["spend"] / prev_total_rev * 100, 1) if prev_total_rev > 0 else 0
 
@@ -1362,6 +1575,8 @@ async def _build_wb_analytics(
         "ctr_delta": round(cur_ctr - prev_ctr, 2),
         "cart": cur["cart"],
         "cart_delta": _safe_delta(cur["cart"], prev["cart"]),
+        "cart_rate": cur_cart_rate,
+        "cart_rate_delta": round(cur_cart_rate - prev_cart_rate, 1),
         "orders": cur["orders"],
         "orders_delta": _safe_delta(cur["orders"], prev["orders"]),
         "conversion_rate": cur_cr,
@@ -1382,7 +1597,7 @@ async def _build_wb_analytics(
         "roas_delta": round(cur_roas - prev_roas, 2),
     }
 
-    # ── 2. Daily Chart ────────────────────────────────
+    # ── 2. Daily Chart (with total_drr from fact_orders_raw) ──────
     chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
     chart_rows = ch.query("""
         SELECT
@@ -1411,10 +1626,32 @@ async def _build_wb_analytics(
         "end": cur_end,
     }).result_rows
 
-    chart_daily = [
-        {
-            "date": str(row[0]),
-            "spend": round(float(row[1]), 2),
+    # Get daily total revenue from fact_orders_raw for total_drr
+    daily_total_rev_rows = ch.query("""
+        SELECT
+            toDate(addHours(date, 3)) AS day,
+            sum(price_with_disc) AS total_rev
+        FROM mms_analytics.fact_orders_raw FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND toDate(addHours(date, 3)) >= {start:Date}
+          AND toDate(addHours(date, 3)) <= {end:Date}
+        GROUP BY day
+        ORDER BY day
+    """, parameters={
+        "shop_id": shop_id,
+        "start": chart_start,
+        "end": cur_end,
+    }).result_rows
+    daily_total_rev = {str(row[0]): float(row[1]) for row in daily_total_rev_rows}
+
+    chart_daily = []
+    for row in chart_rows:
+        day_str = str(row[0])
+        spend = round(float(row[1]), 2)
+        total_rev = daily_total_rev.get(day_str, 0)
+        chart_daily.append({
+            "date": day_str,
+            "spend": spend,
             "views": int(row[2]),
             "clicks": int(row[3]),
             "cart": int(row[4]),
@@ -1422,17 +1659,17 @@ async def _build_wb_analytics(
             "revenue": round(float(row[6]), 2),
             "ctr": float(row[7]),
             "drr": float(row[8]),
-        }
-        for row in chart_rows
-    ]
+            "total_drr": round(spend / total_rev * 100, 1) if total_rev > 0 else 0,
+        })
 
-    # ── 3. Campaigns Table ────────────────────────────
+    # ── 3. Campaigns Table (enriched) ─────────────────
     campaigns_rows = ch.query("""
         SELECT
             campaign_id,
             sum(spend) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
             sum(orders) AS t_orders,
             sum(revenue) AS t_revenue,
             CASE WHEN sum(views) > 0
@@ -1443,7 +1680,8 @@ async def _build_wb_analytics(
             END AS t_avg_cpc,
             CASE WHEN sum(revenue) > 0
                 THEN round(sum(spend) / sum(revenue) * 100, 1) ELSE 0
-            END AS t_drr
+            END AS t_drr,
+            uniqExact(nm_id) AS t_sku_count
         FROM mms_analytics.fact_advert_stats_v3 FINAL
         WHERE shop_id = {shop_id:UInt32}
           AND date >= {cur_start:Date}
@@ -1452,20 +1690,227 @@ async def _build_wb_analytics(
         ORDER BY t_spend DESC
     """, parameters=params).result_rows
 
-    campaigns_table = [
-        {
-            "campaign_id": int(row[0]),
-            "spend": round(float(row[1]), 2),
-            "views": int(row[2]),
-            "clicks": int(row[3]),
-            "orders": int(row[4]),
-            "revenue": round(float(row[5]), 2),
-            "ctr": float(row[6]),
-            "avg_cpc": float(row[7]),
-            "drr": float(row[8]),
+    campaign_ids = [int(row[0]) for row in campaigns_rows]
+
+    # Enrich campaign info from dim_advert_campaigns
+    campaign_info_map: dict = {}
+    WB_CAMPAIGN_TYPES = {
+        0: "", 1: "Поиск", 2: "Каталог", 4: "Карточка",
+        5: "Рекомендации", 7: "Авто", 8: "Поиск + Каталог", 9: "Единая",
+    }
+    WB_CAMPAIGN_STATUSES = {
+        -1: "Удалена", 4: "Готова", 7: "Завершена",
+        8: "Отказ", 9: "Активна", 11: "Приостановлена",
+    }
+
+    if campaign_ids:
+        try:
+            ch_result = ch.query("""
+                SELECT advert_id, name, type, status
+                FROM mms_analytics.dim_advert_campaigns FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND advert_id IN ({cids:Array(UInt64)})
+            """, parameters={
+                "shop_id": shop_id,
+                "cids": [int(c) for c in campaign_ids],
+            }).result_rows
+            for row in ch_result:
+                cid = int(row[0])
+                raw_type = int(row[2]) if row[2] is not None else 0
+                raw_status = int(row[3]) if row[3] is not None else 0
+                campaign_info_map[cid] = {
+                    "title": row[1] or "",
+                    "campaign_type": WB_CAMPAIGN_TYPES.get(raw_type, str(raw_type)),
+                    "status": WB_CAMPAIGN_STATUSES.get(raw_status, str(raw_status)),
+                }
+        except Exception as e:
+            logger.warning("WB campaign enrichment failed: %s", e)
+
+    # Per-SKU breakdown within each campaign
+    sku_stats_rows = ch.query("""
+        SELECT
+            campaign_id,
+            nm_id,
+            sum(spend) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
+            sum(orders) AS t_orders,
+            sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {cur_start:Date}
+          AND date <= {cur_end:Date}
+          AND nm_id > 0
+        GROUP BY campaign_id, nm_id
+        ORDER BY campaign_id, t_spend DESC
+    """, parameters=params).result_rows
+
+    # Collect all nm_ids for enrichment
+    all_nm_ids: set = set()
+    sku_stats_by_campaign: dict = {}
+    for row in sku_stats_rows:
+        cid = int(row[0])
+        nm_id = int(row[1])
+        all_nm_ids.add(nm_id)
+        sku_stats_by_campaign.setdefault(cid, []).append({
+            "nm_id": nm_id,
+            "spend": round(float(row[2]), 2),
+            "views": int(row[3]),
+            "clicks": int(row[4]),
+            "cart": int(row[5]),
+            "orders": int(row[6]),
+            "revenue": round(float(row[7]), 2),
+        })
+
+    # Enrich SKU names from dim_products
+    sku_name_map: dict = {}
+    if all_nm_ids:
+        try:
+            nm_list = list(all_nm_ids)
+            sku_result = await db.execute(
+                sa_text("""
+                    SELECT nm_id, supplier_article, name
+                    FROM dim_products
+                    WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)
+                """),
+                {"shop_id": shop_id, "nm_ids": nm_list},
+            )
+            for row in sku_result:
+                sku_name_map[int(row[0])] = {
+                    "supplier_article": row[1] or "",
+                    "name": row[2] or "",
+                }
+        except Exception as e:
+            logger.warning("WB SKU enrichment failed: %s", e)
+
+    # Per-SKU total revenue from fact_orders_raw
+    sku_total_rev_map: dict = {}
+    if all_nm_ids:
+        try:
+            sku_rev_rows = ch.query("""
+                SELECT
+                    nm_id,
+                    sum(price_with_disc) AS total_revenue
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(date, 3)) >= {cur_start:Date}
+                  AND toDate(addHours(date, 3)) <= {cur_end:Date}
+                  AND nm_id IN ({nm_ids:Array(UInt64)})
+                GROUP BY nm_id
+            """, parameters={**params, "nm_ids": list(all_nm_ids)}).result_rows
+            for row in sku_rev_rows:
+                sku_total_rev_map[int(row[0])] = float(row[1])
+        except Exception:
+            pass
+
+    # WB bids from ClickHouse log_wb_bids (latest bid per nm_id per advert_id)
+    wb_bids_map: dict = {}  # (advert_id, nm_id) -> bid_search
+    if campaign_ids and all_nm_ids:
+        try:
+            bid_rows = ch.query("""
+                SELECT advert_id, nm_id,
+                       argMax(bid_search, timestamp) AS last_bid
+                FROM mms_analytics.log_wb_bids
+                WHERE shop_id = {shop_id:UInt32}
+                  AND advert_id IN ({cids:Array(UInt64)})
+                GROUP BY advert_id, nm_id
+            """, parameters={
+                "shop_id": shop_id,
+                "cids": [int(c) for c in campaign_ids],
+            }).result_rows
+            for row in bid_rows:
+                wb_bids_map[(int(row[0]), int(row[1]))] = int(row[2])
+        except Exception:
+            pass
+
+    def build_wb_sku_item(s: dict, campaign_id: int) -> dict:
+        nm_id = s["nm_id"]
+        info = sku_name_map.get(nm_id, {})
+        orders = s["orders"]
+        revenue = s["revenue"]
+        ad_drr = round(s["spend"] / revenue * 100, 1) if revenue > 0 else 0
+        total_rev = sku_total_rev_map.get(nm_id, 0)
+        total_drr = round(s["spend"] / total_rev * 100, 1) if total_rev > 0 else 0
+        cart_conv = round(s["cart"] / s["clicks"] * 100, 1) if s["clicks"] > 0 else 0
+        order_conv = round(orders / s["cart"] * 100, 1) if s["cart"] > 0 else 0
+        # WB bid in kopecks, convert to rubles for display
+        bid_kopecks = wb_bids_map.get((campaign_id, nm_id), 0)
+        bid_rub = round(bid_kopecks / 100, 2) if bid_kopecks else 0
+        return {
+            "sku": nm_id,
+            "product_id": nm_id,
+            "offer_id": info.get("supplier_article", str(nm_id)),
+            "name": info.get("name", ""),
+            "image_url": _wb_image_url(nm_id),
+            "spend": s["spend"],
+            "views": s["views"],
+            "clicks": s["clicks"],
+            "cart": s["cart"],
+            "cart_conv": cart_conv,
+            "orders": orders,
+            "order_conv": order_conv,
+            "direct_orders": orders,
+            "model_orders": 0,   # WB has no model (associated) orders
+            "revenue": revenue,
+            "direct_revenue": revenue,
+            "model_revenue": 0,
+            "halo_pct": 0,       # WB has no halo effect tracking
+            "ctr": round(s["clicks"] / s["views"] * 100, 2) if s["views"] > 0 else 0,
+            "avg_cpc": round(s["spend"] / s["clicks"], 2) if s["clicks"] > 0 else 0,
+            "drr": ad_drr,
+            "total_revenue": round(total_rev, 2),
+            "total_drr": total_drr,
+            "bid": bid_rub,
         }
-        for row in campaigns_rows
-    ]
+
+    campaigns_table = []
+    for row in campaigns_rows:
+        cid = int(row[0])
+        spend = round(float(row[1]), 2)
+        clicks = int(row[3])
+        cart = int(row[4])
+        orders = int(row[5])
+        revenue = round(float(row[6]), 2)
+        cart_conv = round(cart / clicks * 100, 1) if clicks > 0 else 0
+        order_conv = round(orders / cart * 100, 1) if cart > 0 else 0
+
+        info = campaign_info_map.get(cid, {})
+        items = [build_wb_sku_item(s, cid) for s in sku_stats_by_campaign.get(cid, [])]
+
+        # Aggregate total revenue from per-SKU map
+        campaign_total_rev = sum(
+            sku_total_rev_map.get(s["nm_id"], 0)
+            for s in sku_stats_by_campaign.get(cid, [])
+        )
+        campaign_total_drr = round(spend / campaign_total_rev * 100, 1) if campaign_total_rev > 0 else 0
+
+        campaigns_table.append({
+            "campaign_id": cid,
+            "title": info.get("title", ""),
+            "status": info.get("status", ""),
+            "campaign_type": info.get("campaign_type", ""),
+            "sku_count": int(row[10]),
+            "items": items,
+            "spend": spend,
+            "views": int(row[2]),
+            "clicks": clicks,
+            "cart": cart,
+            "cart_conv": cart_conv,
+            "orders": orders,
+            "order_conv": order_conv,
+            "direct_orders": orders,
+            "model_orders": 0,
+            "revenue": revenue,
+            "direct_revenue": revenue,
+            "model_revenue": 0,
+            "halo_pct": 0,
+            "ctr": float(row[7]),
+            "avg_cpc": float(row[8]),
+            "drr": float(row[9]),
+            "total_revenue": round(campaign_total_rev, 2),
+            "total_drr": campaign_total_drr,
+        })
 
     # ── 4. Top SKUs (nm_id) ───────────────────────────
     top_skus_rows = ch.query("""
@@ -1489,50 +1934,83 @@ async def _build_wb_analytics(
     top_skus = []
     for row in top_skus_rows:
         nm_id = int(row[0])
+        info = sku_name_map.get(nm_id, {})
         top_skus.append({
             "sku": nm_id,
-            "offer_id": str(nm_id),
-            "name": "",
-            "image_url": "",
+            "offer_id": info.get("supplier_article", str(nm_id)),
+            "name": info.get("name", ""),
+            "image_url": _wb_image_url(nm_id),
             "spend": round(float(row[1]), 2),
             "orders": int(row[2]),
             "revenue": round(float(row[3]), 2),
             "drr": float(row[4]),
         })
 
-    # Enrich from PostgreSQL dim_products
-    if top_skus:
-        from sqlalchemy import text
-        nm_ids = [s["sku"] for s in top_skus]
-        pg_result = await db.execute(
-            sa_text("""
-                SELECT nm_id, supplier_article, name
-                FROM dim_products
-                WHERE shop_id = :shop_id
-                  AND nm_id = ANY(:nm_ids)
-            """),
-            {"shop_id": shop_id, "nm_ids": nm_ids},
-        )
-        pg_map = {}
-        for row in pg_result:
-            pg_map[int(row[0])] = {
-                "supplier_article": row[1] or "",
-                "name": row[2] or "",
-            }
+    # Enrich any missing SKU names (for nm_ids not already in sku_name_map)
+    missing_nm = [s["sku"] for s in top_skus if not sku_name_map.get(s["sku"])]
+    if missing_nm:
+        try:
+            pg_result = await db.execute(
+                sa_text("""
+                    SELECT nm_id, supplier_article, name
+                    FROM dim_products
+                    WHERE shop_id = :shop_id AND nm_id = ANY(:nm_ids)
+                """),
+                {"shop_id": shop_id, "nm_ids": missing_nm},
+            )
+            for row in pg_result:
+                nm = int(row[0])
+                sku_name_map[nm] = {
+                    "supplier_article": row[1] or "",
+                    "name": row[2] or "",
+                }
+            for s in top_skus:
+                info = sku_name_map.get(s["sku"], {})
+                if info:
+                    s["name"] = info.get("name", s["name"])
+                    s["offer_id"] = info.get("supplier_article", s["offer_id"])
+        except Exception:
+            pass
 
-        # WB image URLs
-        for s in top_skus:
-            info = pg_map.get(s["sku"], {})
-            s["name"] = info.get("name", "")
-            s["offer_id"] = info.get("supplier_article", str(s["sku"]))
-            # Generate WB CDN image URL
-            s["image_url"] = _wb_image_url(s["sku"])
+    # ── 5. Events overlay (from PostgreSQL event_log) ──────────
+    chart_start_dt = dt_datetime.combine(chart_start, dt_datetime.min.time())
+    chart_end_dt = dt_datetime.combine(cur_end + timedelta(days=1), dt_datetime.min.time())
+    events_agg_result = await db.execute(
+        sa_text("""
+            SELECT
+                date_trunc('day', created_at)::date AS day,
+                event_type,
+                count(*) AS cnt
+            FROM event_log
+            WHERE shop_id = :shop_id
+              AND created_at >= :date_from
+              AND created_at < :date_to
+              AND event_type = ANY(:event_types)
+            GROUP BY day, event_type
+            ORDER BY day
+        """),
+        {"shop_id": shop_id, "date_from": chart_start_dt, "date_to": chart_end_dt,
+         "event_types": AD_CHART_EVENT_TYPES},
+    )
+    events_by_day: dict = {}
+    for row in events_agg_result:
+        day_str = str(row[0])
+        evt_type = row[1]
+        cnt = int(row[2])
+        cat = EVENT_TYPE_TO_CATEGORY.get(evt_type, "other")
+        if day_str not in events_by_day:
+            events_by_day[day_str] = {"advertising": 0, "content": 0, "price": 0, "stock": 0, "total": 0}
+        events_by_day[day_str][cat] = events_by_day[day_str].get(cat, 0) + cnt
+        events_by_day[day_str]["total"] += cnt
 
     return {
+        "date_from": cur_start.isoformat(),
+        "date_to": cur_end.isoformat(),
         "kpi": kpi,
         "chart_daily": chart_daily,
         "campaigns_table": campaigns_table,
         "top_skus": top_skus,
+        "events_by_day": events_by_day,
     }
 
 
