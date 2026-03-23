@@ -12,6 +12,14 @@ from app.models.user import User
 
 router = APIRouter(prefix="/campaign-details", tags=["Campaign Details"])
 
+
+def _normalize_mp(marketplace: str) -> str:
+    """Normalize marketplace string: 'wildberries' → 'wb', 'ozon' stays 'ozon'."""
+    mp = marketplace.lower().strip()
+    if mp in ("wildberries", "wb"):
+        return "wb"
+    return mp
+
 # --- Models ---
 
 class CampaignStatsRow(BaseModel):
@@ -83,6 +91,7 @@ async def get_campaign_kpi(
     KPI aggregates for current period + previous period (same length) for delta comparison.
     Also includes total product revenue from orders tables.
     """
+    marketplace = _normalize_mp(marketplace)
     from datetime import timedelta
     ch = get_clickhouse_client()
     
@@ -234,6 +243,7 @@ async def get_campaign_stats(
     Get time-series statistics for a specific campaign (Spend, Views, Clicks, Orders, DRR).
     Works for both Ozon and WB.
     """
+    marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     
     query = ""
@@ -323,6 +333,7 @@ async def get_campaign_events(
     For Ozon: ad stats store 'sku', but event_log stores nm_id = product_id.
     We must convert sku -> product_id via dim_ozon_products.
     """
+    marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     ad_skus = []
     
@@ -430,6 +441,7 @@ async def get_campaign_phrases(
     Get aggregated search phrases statistics for a campaign within date range.
     Uses the new fact_advert_phrases_daily ClickHouse table.
     """
+    marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     mk_enum = 2 if marketplace.lower() == "ozon" else 1
     
@@ -478,6 +490,7 @@ async def get_campaign_heatmap(
     """
     Get order heatmap (Hour of Day vs Day of Week) for products in this campaign.
     """
+    marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     skus = []
     
@@ -557,6 +570,7 @@ async def get_campaign_purchases(
     Get products purchased through this campaign (which SKUs are being bought).
     Uses orders data joined with campaign SKU list.
     """
+    marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     
     # Get SKUs from the campaign
