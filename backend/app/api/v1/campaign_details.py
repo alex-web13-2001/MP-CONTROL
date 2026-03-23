@@ -445,16 +445,21 @@ async def get_campaign_events(
         nm_ids_str = [str(s) for s in ad_skus]
         sku_to_pid = {}
     
-    # Exclude individual warehouse stock events — only show full FBO/FBS stockouts
-    excluded_events = ['STOCK_OUT', 'STOCK_REPLENISH', 'OZON_STOCK_OUT', 'OZON_STOCK_REPLENISH']
+    # Exclude noisy events from popup:
+    # - Individual warehouse stock events (keep only FBO/FBS total stockouts)
+    # - STATUS_CHANGE (constant pause/unpause cycles are noise, user sees status directly)
+    excluded_events = [
+        'STOCK_OUT', 'STOCK_REPLENISH', 'OZON_STOCK_OUT', 'OZON_STOCK_REPLENISH',
+        'STATUS_CHANGE', 'OZON_STATUS_CHANGE',
+    ]
     
     # Campaign-level events (BID_CHANGE, STATUS_CHANGE, etc.) must be filtered by advert_id
     # to avoid showing events from OTHER campaigns that advertise the same product.
     # Product-level events (STOCK, PRICE, CONTENT) are filtered by nm_id only.
     campaign_event_types = [
-        'BID_CHANGE', 'STATUS_CHANGE', 'ITEM_ADD', 'ITEM_REMOVE', 'ITEM_INACTIVE',
+        'BID_CHANGE', 'ITEM_ADD', 'ITEM_REMOVE', 'ITEM_INACTIVE',
         'CAMPAIGN_CREATED', 'BUDGET_CHANGE',
-        'OZON_BID_CHANGE', 'OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE',
+        'OZON_BID_CHANGE', 'OZON_BUDGET_CHANGE',
         'OZON_ITEM_ADD', 'OZON_ITEM_REMOVE', 'OZON_CAMPAIGN_CREATED',
     ]
     query = """
