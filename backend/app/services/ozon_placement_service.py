@@ -74,69 +74,57 @@ class OzonPlacementService:
 
     async def create_report(
         self, date_from: str, date_to: str,
-        max_retries: int = 3,
     ) -> Optional[str]:
         """
         Request placement cost report generation.
 
+        Note: MarketplaceClient.request() already handles 429 with retries
+        and backoff, so we don't add our own retry loop here.
+
         Args:
             date_from: 'YYYY-MM-DD' start date
             date_to: 'YYYY-MM-DD' end date
-            max_retries: Number of retries on 429 rate limit
 
         Returns:
             Report code (UUID string) or None on failure
         """
-        retry_delays = [5, 15, 30]  # seconds between retries on 429
+        async with self._make_client() as client:
+            response = await client.post(
+                "/v1/report/placement/by-products/create",
+                json={
+                    "date_from": date_from,
+                    "date_to": date_to,
+                },
+            )
 
-        for attempt in range(max_retries + 1):
-            async with self._make_client() as client:
-                response = await client.post(
-                    "/v1/report/placement/by-products/create",
-                    json={
-                        "date_from": date_from,
-                        "date_to": date_to,
-                    },
-                )
+        if response.status_code == 429:
+            logger.error(
+                "Rate limit 429 on create_report for shop %s (client_id=%s). "
+                "Response body: %s",
+                self.shop_id, self.client_id, response.data,
+            )
+            return None
 
-            if response.status_code == 429:
-                if attempt < max_retries:
-                    delay = retry_delays[min(attempt, len(retry_delays) - 1)]
-                    logger.warning(
-                        "Rate limit 429 on create_report (attempt %d/%d), retrying in %ds...",
-                        attempt + 1, max_retries + 1, delay,
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-                else:
-                    logger.error(
-                        "Rate limit 429 on create_report after %d attempts",
-                        max_retries + 1,
-                    )
-                    return None
+        if not response.is_success:
+            logger.error(
+                "Placement report create failed: %s %s",
+                response.status_code, response.data,
+            )
+            return None
 
-            if not response.is_success:
-                logger.error(
-                    "Placement report create failed: %s %s",
-                    response.status_code, response.data,
-                )
-                return None
+        code = response.data.get("result", {}).get("code", "")
+        if not code:
+            code = response.data.get("code", "")
 
-            code = response.data.get("result", {}).get("code", "")
-            if not code:
-                code = response.data.get("code", "")
+        if code:
+            logger.info(
+                "Placement report requested: code=%s, period=%s→%s, shop=%s",
+                code, date_from, date_to, self.shop_id,
+            )
+        else:
+            logger.error("No report code in response: %s", response.data)
 
-            if code:
-                logger.info(
-                    "Placement report requested: code=%s, period=%s→%s",
-                    code, date_from, date_to,
-                )
-            else:
-                logger.error("No report code in response: %s", response.data)
-
-            return code or None
-
-        return None
+        return code or None
 
     async def check_report(self, code: str) -> Tuple[str, Optional[str]]:
         """
