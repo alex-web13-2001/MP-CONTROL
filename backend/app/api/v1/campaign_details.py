@@ -20,6 +20,19 @@ def _normalize_mp(marketplace: str) -> str:
         return "wb"
     return mp
 
+
+def _build_wb_scope_filter(scope: str) -> str:
+    """Build SQL filter for WB scope: main/cross/all.
+    main  = directly advertised SKUs (have views/clicks/spend)
+    cross = associated conversions only (have orders but no views/clicks/spend)
+    all   = everything
+    """
+    if scope == "main":
+        return "AND (views > 0 OR clicks > 0 OR spend > 0)"
+    elif scope == "cross":
+        return "AND views = 0 AND clicks = 0 AND spend = 0"
+    return ""  # all
+
 # --- Models ---
 
 class CampaignStatsRow(BaseModel):
@@ -85,6 +98,7 @@ async def get_campaign_kpi(
     start_date: date = Query(...),
     end_date: date = Query(...),
     sku: Optional[int] = Query(None),
+    scope: str = Query("all", description="main=advertised SKUs, cross=associated conversions, all=everything"),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -115,13 +129,14 @@ async def get_campaign_kpi(
         else:
             sku_f = "AND nm_id = {sku:UInt64}" if sku else ""
             if sku: params["sku"] = sku
+            scope_f = _build_wb_scope_filter(scope) if not sku else ""
             q = f"""
                 SELECT
                     sum(spend), sum(revenue), sum(orders), sum(atbs),
                     sum(clicks), sum(views)
                 FROM mms_analytics.fact_advert_stats_v3 FINAL
                 WHERE advert_id = {{campaign_id:UInt64}}
-                  AND date BETWEEN {{start_date:Date}} AND {{end_date:Date}} {sku_f}
+                  AND date BETWEEN {{start_date:Date}} AND {{end_date:Date}} {sku_f} {scope_f}
             """
         return q, params
     
@@ -156,8 +171,9 @@ async def get_campaign_kpi(
             parameters={"cid": campaign_id}
         ).result_rows
     else:
+        wb_scope_f = _build_wb_scope_filter(scope)
         skus_r = ch.query(
-            "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND (views > 0 OR clicks > 0 OR spend > 0)",
+            f"SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {{cid:UInt64}} {wb_scope_f}",
             parameters={"cid": campaign_id}
         ).result_rows
     
@@ -245,6 +261,7 @@ async def get_campaign_stats(
     start_date: date = Query(..., description="Start Date"),
     end_date: date = Query(..., description="End Date"),
     sku: Optional[int] = Query(None, description="Filter by specific SKU/nmId inside campaign"),
+    scope: str = Query("all", description="main=advertised SKUs, cross=associated conversions, all=everything"),
     current_user: User = Depends(get_current_user),
 ):
     """
@@ -288,6 +305,7 @@ async def get_campaign_stats(
         sku_filter = "AND nm_id = {sku:UInt64}" if sku else ""
         if sku:
             params["sku"] = sku
+        scope_f = _build_wb_scope_filter(scope) if not sku else ""
             
         query = f"""
             SELECT
@@ -303,7 +321,7 @@ async def get_campaign_stats(
             FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE advert_id = {{campaign_id:UInt64}}
               AND date BETWEEN {{start_date:Date}} AND {{end_date:Date}}
-              {sku_filter}
+              {sku_filter} {scope_f}
             GROUP BY date
             ORDER BY date ASC
         """
@@ -333,8 +351,9 @@ async def get_campaign_stats(
         if sku:
             skus_for_rev = [sku]
         else:
+            wb_scope_f = _build_wb_scope_filter(scope)
             skus_q = ch.query(
-                "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND (views > 0 OR clicks > 0 OR spend > 0)",
+                f"SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {{cid:UInt64}} {wb_scope_f}",
                 parameters={"cid": campaign_id}
             ).result_rows
             skus_for_rev = [int(r[0]) for r in skus_q]
@@ -690,6 +709,7 @@ class CampaignPurchaseRow(BaseModel):
     quantity: int
     revenue: float
     avg_price: float
+    is_cross: bool = False  # True = associated conversion, False = directly advertised
 
 @router.get("/{marketplace}/{campaign_id}/purchases", response_model=List[CampaignPurchaseRow])
 async def get_campaign_purchases(
@@ -697,6 +717,7 @@ async def get_campaign_purchases(
     campaign_id: int,
     start_date: date = Query(..., description="Start Date"),
     end_date: date = Query(..., description="End Date"),
+    scope: str = Query("all", description="main=advertised SKUs, cross=associated conversions, all=everything"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -707,21 +728,32 @@ async def get_campaign_purchases(
     marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
     
-    # Get SKUs from the campaign
+    # Get SKUs from the campaign based on scope
     if marketplace.lower() == "ozon":
         sku_res = ch.query(
             "SELECT DISTINCT sku FROM mms_analytics.fact_ozon_ad_daily FINAL WHERE campaign_id = {cid:UInt64} AND dt BETWEEN {sd:Date} AND {ed:Date}",
             parameters={"cid": campaign_id, "sd": start_date, "ed": end_date}
         ).result_rows
     else:
+        wb_scope_f = _build_wb_scope_filter(scope)
         sku_res = ch.query(
-            "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date} AND (views > 0 OR clicks > 0 OR spend > 0)",
+            f"SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {{cid:UInt64}} AND date BETWEEN {{sd:Date}} AND {{ed:Date}} {wb_scope_f}",
             parameters={"cid": campaign_id, "sd": start_date, "ed": end_date}
         ).result_rows
     
     skus = [int(r[0]) for r in sku_res]
     if not skus:
         return []
+    
+    # Also get the main SKUs to mark is_cross flag
+    main_skus_set = set()
+    if marketplace.lower() != "ozon":
+        main_res = ch.query(
+            "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date} AND (views > 0 OR clicks > 0 OR spend > 0)",
+            parameters={"cid": campaign_id, "sd": start_date, "ed": end_date}
+        ).result_rows
+        main_skus_set = {int(r[0]) for r in main_res}
+    
     
     # Get actual orders for these SKUs
     if marketplace.lower() == "ozon":
@@ -785,13 +817,15 @@ async def get_campaign_purchases(
     
     result = []
     for r in rows:
+        sku_val = int(r[0])
         result.append(CampaignPurchaseRow(
-            sku=int(r[0]),
+            sku=sku_val,
             product_name=str(r[1]) if r[1] else f"SKU {r[0]}",
             offer_id=str(r[2]) if r[2] else "",
             quantity=int(r[3]),
             revenue=float(r[4]),
             avg_price=float(r[5]),
+            is_cross=bool(main_skus_set) and sku_val not in main_skus_set,
         ))
     
     # Enrich WB names from PostgreSQL

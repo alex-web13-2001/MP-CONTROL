@@ -264,6 +264,7 @@ export function CampaignDetailModal({
   const [period, setPeriod] = useState('30d')
   const [selectedSku, setSelectedSku] = useState<number | undefined>(initialSku)
   const [showSkuDropdown, setShowSkuDropdown] = useState(false)
+  const [scope, setScope] = useState<'all' | 'main' | 'cross'>('all')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
@@ -308,16 +309,16 @@ export function CampaignDetailModal({
   const [loadedTabs, setLoadedTabs] = useState<Set<string>>(new Set())
 
   const loadTabData = useCallback(async (tab: TabType) => {
-    const cacheKey = `${tab}_${startDate}_${endDate}_${selectedSku || 'all'}`
+    const cacheKey = `${tab}_${startDate}_${endDate}_${selectedSku || 'all'}_${scope}`
     if (loadedTabs.has(cacheKey)) return
     setLoading(true)
     try {
       switch (tab) {
         case 'stats': {
           const [s, ev, kpi] = await Promise.all([
-            getCampaignStats(marketplace, campaignId, startDate, endDate, selectedSku),
+            getCampaignStats(marketplace, campaignId, startDate, endDate, selectedSku, scope),
             getCampaignEvents(marketplace, campaignId, selectedSku),
-            getCampaignKpi(marketplace, campaignId, startDate, endDate, selectedSku),
+            getCampaignKpi(marketplace, campaignId, startDate, endDate, selectedSku, scope),
           ])
           setStats(s)
           setEvents(ev)
@@ -331,7 +332,7 @@ export function CampaignDetailModal({
           }
           if (stats.length === 0) {
             promises.push(
-              getCampaignStats(marketplace, campaignId, startDate, endDate, selectedSku).then(s => setStats(s))
+              getCampaignStats(marketplace, campaignId, startDate, endDate, selectedSku, scope).then(s => setStats(s))
             )
           }
           await Promise.all(promises)
@@ -348,7 +349,7 @@ export function CampaignDetailModal({
           break
         }
         case 'purchases': {
-          const d = await getCampaignPurchases(marketplace, campaignId, startDate, endDate)
+          const d = await getCampaignPurchases(marketplace, campaignId, startDate, endDate, scope)
           setPurchases(d)
           break
         }
@@ -356,9 +357,9 @@ export function CampaignDetailModal({
       setLoadedTabs(prev => new Set(prev).add(cacheKey))
     } catch (err) { console.error(`Failed to load ${tab}:`, err) }
     finally { setLoading(false) }
-  }, [marketplace, campaignId, startDate, endDate, selectedSku, loadedTabs, events.length, stats.length])
+  }, [marketplace, campaignId, startDate, endDate, selectedSku, scope, loadedTabs, events.length, stats.length])
 
-  useEffect(() => { setLoadedTabs(new Set()) }, [period, selectedSku])
+  useEffect(() => { setLoadedTabs(new Set()) }, [period, selectedSku, scope])
   useEffect(() => { if (isOpen) loadTabData(activeTab) }, [isOpen, activeTab, loadTabData])
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -1199,6 +1200,18 @@ export function CampaignDetailModal({
                   ))}
                 </div>
               )}
+            </div>
+          )}
+          {/* Scope toggle (WB only — shows main vs cross-sell data) */}
+          {marketplace.toLowerCase() !== 'ozon' && (
+            <div className="flex items-center gap-0 bg-[hsl(var(--muted)/0.3)] rounded-lg p-0.5">
+              {([
+                { value: 'all' as const, label: 'Все продажи' },
+                { value: 'main' as const, label: 'Товары кампании' },
+                { value: 'cross' as const, label: 'Кросс' },
+              ]).map(opt => (
+                <button key={opt.value} onClick={() => setScope(opt.value)} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all whitespace-nowrap ${scope === opt.value ? 'bg-[hsl(var(--background))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>{opt.label}</button>
+              ))}
             </div>
           )}
           <button

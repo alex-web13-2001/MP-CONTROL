@@ -47,6 +47,7 @@ export interface CampaignPurchaseRow {
   quantity: number
   revenue: number
   avg_price: number
+  is_cross: boolean
 }
 
 export interface KpiPeriod {
@@ -74,11 +75,12 @@ export const getCampaignKpi = async (
   campaignId: number,
   startDate: string,
   endDate: string,
-  sku?: number
+  sku?: number,
+  scope?: string
 ): Promise<CampaignKpiResponse> => {
   const { data } = await apiClient.get<CampaignKpiResponse>(
     `/campaign-details/${marketplace}/${campaignId}/kpi`,
-    { params: { start_date: startDate, end_date: endDate, sku } }
+    { params: { start_date: startDate, end_date: endDate, sku, scope } }
   )
   return data
 }
@@ -88,11 +90,12 @@ export const getCampaignStats = async (
   campaignId: number,
   startDate: string,
   endDate: string,
-  sku?: number
+  sku?: number,
+  scope?: string
 ): Promise<CampaignStatsRow[]> => {
   const { data } = await apiClient.get<CampaignStatsRow[]>(
     `/campaign-details/${marketplace}/${campaignId}/stats`,
-    { params: { start_date: startDate, end_date: endDate, sku } }
+    { params: { start_date: startDate, end_date: endDate, sku, scope } }
   )
   return data
 }
@@ -141,11 +144,12 @@ export const getCampaignPurchases = async (
   marketplace: string,
   campaignId: number,
   startDate: string,
-  endDate: string
+  endDate: string,
+  scope?: string
 ): Promise<CampaignPurchaseRow[]> => {
   const { data } = await apiClient.get<CampaignPurchaseRow[]>(
     `/campaign-details/${marketplace}/${campaignId}/purchases`,
-    { params: { start_date: startDate, end_date: endDate } }
+    { params: { start_date: startDate, end_date: endDate, scope } }
   )
   return data
 }
