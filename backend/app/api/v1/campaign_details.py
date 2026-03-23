@@ -445,16 +445,19 @@ async def get_campaign_events(
         nm_ids_str = [str(s) for s in ad_skus]
         sku_to_pid = {}
     
+    # Exclude individual warehouse stock events — only show full FBO/FBS stockouts
+    excluded_events = ['STOCK_OUT', 'STOCK_REPLENISH', 'OZON_STOCK_OUT', 'OZON_STOCK_REPLENISH']
     query = """
         SELECT id, created_at, event_type, nm_id::text, old_value, new_value
         FROM event_log
         WHERE nm_id::text = ANY(:skus)
           AND shop_id = :shop_id
+          AND NOT (event_type = ANY(:excluded))
         ORDER BY created_at DESC
         LIMIT :limit
     """
     
-    result = await db.execute(text(query), {"skus": nm_ids_str, "limit": limit, "shop_id": shop_id})
+    result = await db.execute(text(query), {"skus": nm_ids_str, "limit": limit, "shop_id": shop_id, "excluded": excluded_events})
     events = result.fetchall()
     
     # Enrich with product names from PostgreSQL
