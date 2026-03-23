@@ -499,10 +499,35 @@ async def get_campaign_events(
             pg_res = await db.execute(pg_q, {"sid": shop_id, "ids": nm_ids})
             product_map = {int(r[0]): {"name": r[1] or "", "offer_id": r[2] or ""} for r in pg_res}
 
+    # WB campaign status codes → human-readable labels
+    WB_STATUS_MAP = {
+        "4": "Готова к запуску", "7": "Завершена", "8": "Отклонена",
+        "9": "Пауза", "11": "Активна",
+    }
+    # Ozon campaign status labels
+    OZON_STATUS_MAP = {
+        "CAMPAIGN_STATE_RUNNING": "Активна",
+        "CAMPAIGN_STATE_STOPPED": "Остановлена",
+        "CAMPAIGN_STATE_INACTIVE": "Неактивна",
+        "CAMPAIGN_STATE_ARCHIVED": "В архиве",
+        "CAMPAIGN_STATE_MODERATION": "Модерация",
+    }
+
     result = []
     for e in events:
         nm_id = int(e[3]) if e[3] else None
         prod_info = product_map.get(nm_id, {}) if nm_id else {}
+        old_val = e[4]
+        new_val = e[5]
+        
+        # Translate status codes to readable labels
+        if e[2] in ('STATUS_CHANGE',):
+            old_val = WB_STATUS_MAP.get(str(old_val), old_val)
+            new_val = WB_STATUS_MAP.get(str(new_val), new_val)
+        elif e[2] in ('OZON_STATUS_CHANGE',):
+            old_val = OZON_STATUS_MAP.get(str(old_val), old_val)
+            new_val = OZON_STATUS_MAP.get(str(new_val), new_val)
+        
         result.append(CampaignEventRow(
             id=e[0],
             timestamp=e[1].isoformat() if hasattr(e[1], 'isoformat') else str(e[1]),
@@ -510,8 +535,8 @@ async def get_campaign_events(
             product_id=e[3],
             product_name=prod_info.get("name") or None,
             offer_id=prod_info.get("offer_id") or None,
-            old_value=e[4],
-            new_value=e[5],
+            old_value=old_val,
+            new_value=new_val,
         ))
     return result
 
