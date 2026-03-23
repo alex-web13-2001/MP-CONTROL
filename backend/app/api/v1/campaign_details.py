@@ -447,17 +447,43 @@ async def get_campaign_events(
     
     # Exclude individual warehouse stock events — only show full FBO/FBS stockouts
     excluded_events = ['STOCK_OUT', 'STOCK_REPLENISH', 'OZON_STOCK_OUT', 'OZON_STOCK_REPLENISH']
+    
+    # Campaign-level events (BID_CHANGE, STATUS_CHANGE, etc.) must be filtered by advert_id
+    # to avoid showing events from OTHER campaigns that advertise the same product.
+    # Product-level events (STOCK, PRICE, CONTENT) are filtered by nm_id only.
+    campaign_event_types = [
+        'BID_CHANGE', 'STATUS_CHANGE', 'ITEM_ADD', 'ITEM_REMOVE', 'ITEM_INACTIVE',
+        'CAMPAIGN_CREATED', 'BUDGET_CHANGE',
+        'OZON_BID_CHANGE', 'OZON_STATUS_CHANGE', 'OZON_BUDGET_CHANGE',
+        'OZON_ITEM_ADD', 'OZON_ITEM_REMOVE', 'OZON_CAMPAIGN_CREATED',
+    ]
     query = """
-        SELECT id, created_at, event_type, nm_id::text, old_value, new_value
-        FROM event_log
-        WHERE nm_id::text = ANY(:skus)
-          AND shop_id = :shop_id
-          AND NOT (event_type = ANY(:excluded))
+        (
+            SELECT id, created_at, event_type, nm_id::text, old_value, new_value
+            FROM event_log
+            WHERE advert_id = :advert_id
+              AND shop_id = :shop_id
+              AND event_type = ANY(:campaign_types)
+              AND NOT (event_type = ANY(:excluded))
+        )
+        UNION ALL
+        (
+            SELECT id, created_at, event_type, nm_id::text, old_value, new_value
+            FROM event_log
+            WHERE nm_id::text = ANY(:skus)
+              AND shop_id = :shop_id
+              AND NOT (event_type = ANY(:campaign_types))
+              AND NOT (event_type = ANY(:excluded))
+        )
         ORDER BY created_at DESC
         LIMIT :limit
     """
     
-    result = await db.execute(text(query), {"skus": nm_ids_str, "limit": limit, "shop_id": shop_id, "excluded": excluded_events})
+    result = await db.execute(text(query), {
+        "skus": nm_ids_str, "limit": limit, "shop_id": shop_id,
+        "excluded": excluded_events, "advert_id": campaign_id,
+        "campaign_types": campaign_event_types,
+    })
     events = result.fetchall()
     
     # Enrich with product names from PostgreSQL
