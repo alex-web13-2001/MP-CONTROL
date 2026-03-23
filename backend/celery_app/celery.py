@@ -91,6 +91,7 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.sync_all_frequent": {"queue": "sync", "routing_key": "sync"},
     "celery_app.tasks.tasks.sync_all_ads": {"queue": "sync", "routing_key": "sync"},
     "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_all_placement_cost": {"queue": "sync", "routing_key": "sync"},
 }
 
 # ===================
@@ -172,6 +173,14 @@ celery_app.conf.beat_schedule = {
         "task": "celery_app.tasks.tasks.sync_all_campaign_snapshots",
         "schedule": 1800.0,  # Every 30 minutes
         "options": {"queue": "sync", "priority": 6},
+    },
+
+    # Placement cost sync — separate from daily to avoid Ozon rps rate limit
+    # Runs 1 hour after sync_all_daily when other sync tasks are done
+    "sync-all-placement-cost": {
+        "task": "celery_app.tasks.tasks.sync_all_placement_cost",
+        "schedule": crontab(hour=4, minute=0),
+        "options": {"queue": "sync", "priority": 3},
     },
 }
 

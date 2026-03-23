@@ -571,7 +571,6 @@ def sync_all_daily(self):
                 sync_ozon_seller_rating,
                 sync_ozon_content_rating,
                 sync_ozon_content,
-                sync_ozon_placement_cost,
             )
 
             kwargs = dict(api_key=api_key, client_id=client_id)
@@ -580,7 +579,6 @@ def sync_all_daily(self):
                 sync_ozon_products, sync_ozon_product_snapshots,
                 sync_ozon_finance, sync_ozon_funnel, sync_ozon_returns,
                 sync_ozon_seller_rating, sync_ozon_content_rating, sync_ozon_content,
-                sync_ozon_placement_cost,
             ]:
                 if _dedup_dispatch(task_ref, r, shop.id, ttl=82800, **kwargs):  # 23h TTL for daily
                     dispatched += 1
@@ -615,6 +613,82 @@ def sync_all_daily(self):
 
     logger.info("sync_all_daily: dispatched=%d skipped=%d shops=%d", dispatched, skipped, len(shops))
     return {"dispatched": dispatched, "skipped": skipped, "shops": len(shops)}
+
+
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1740)
+def sync_all_placement_cost(self):
+    """
+    Dedicated coordinator for Ozon placement (storage) cost sync.
+
+    Runs SEPARATELY from sync_all_daily to avoid competing for Ozon's
+    per-second rate limit with other sync tasks (finance, funnel, returns, etc.).
+
+    Dispatches sync_ozon_placement_cost for each Ozon shop SEQUENTIALLY
+    with a 60-second gap between shops to stay under API rate limits.
+
+    Scheduled via Celery Beat at 04:00 UTC (1 hour after sync_all_daily).
+    """
+    import asyncio
+    import os
+    import time
+    import logging
+    import redis
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+
+    async def _get_ozon_shops():
+        engine = create_async_engine(settings.database_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(
+                    Shop.status == "active",
+                    Shop.marketplace == "ozon",
+                )
+            )
+            shops = result.scalars().all()
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_get_ozon_shops())
+    if not shops:
+        logger.info("sync_all_placement_cost: no Ozon shops found")
+        return {"dispatched": 0}
+
+    from celery_app.tasks.tasks import sync_ozon_placement_cost
+
+    dispatched = 0
+    for i, shop in enumerate(shops):
+        try:
+            api_key = decrypt_api_key(shop.api_key_encrypted)
+            client_id = shop.client_id or ""
+        except Exception as e:
+            logger.error("sync_all_placement_cost: shop %s decrypt failed: %s", shop.id, e)
+            continue
+
+        if _dedup_dispatch(
+            sync_ozon_placement_cost, r, shop.id, ttl=82800,
+            api_key=api_key, client_id=client_id,
+        ):
+            dispatched += 1
+            logger.info(
+                "sync_all_placement_cost: dispatched shop %s (%s) [%d/%d]",
+                shop.id, shop.name, i + 1, len(shops),
+            )
+        # Wait 60s between shops to avoid overwhelming Ozon's rate limit
+        if i < len(shops) - 1:
+            time.sleep(60)
+
+    logger.info("sync_all_placement_cost: dispatched=%d shops=%d", dispatched, len(shops))
+    return {"dispatched": dispatched, "shops": len(shops)}
 
 
 @celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
