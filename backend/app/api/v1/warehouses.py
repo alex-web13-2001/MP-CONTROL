@@ -12762,42 +12762,8 @@ def _build_geo_excel(
     for ci, w in enumerate([28, 28, 12, 16, 14, 10, 12, 12], 1):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
-    # ═════════════════════════════════════════
-    # Sheet 3: Топ товары (общий)
-    # ═════════════════════════════════════════
-    ws3 = workbook.create_sheet("Топ товары")
-
-    prod_headers = [sku_label, "Название", "Заказов", "Выручка ₽", "Ср. чек ₽",
-                    f"{okrug_label}ов", f"{region_label}ов", "Стаб. %", "Доля %"]
-    for ci, h in enumerate(prod_headers, 1):
-        c = ws3.cell(1, ci, h)
-        c.font = header_font
-        c.fill = header_fill
-        c.alignment = Alignment(horizontal="center")
-    ws3.freeze_panes = "A2"
-    ws3.auto_filter.ref = f"A1:{get_column_letter(len(prod_headers))}1"
-
-    for ri, prod in enumerate(top_products, 2):
-        p_orders = prod.get("orders", 0)
-        p_revenue = float(prod.get("revenue", 0))
-        p_avg = round(p_revenue / p_orders) if p_orders > 0 else 0
-        ws3.cell(ri, 1, prod.get("vendor_code", str(prod.get("nm_id", ""))))
-        ws3.cell(ri, 2, prod.get("name", ""))
-        ws3.cell(ri, 3, p_orders).number_format = num_fmt
-        ws3.cell(ri, 4, round(p_revenue)).number_format = money_fmt
-        ws3.cell(ri, 5, p_avg).number_format = money_fmt
-        ws3.cell(ri, 6, prod.get("okrug_count", 0))
-        ws3.cell(ri, 7, prod.get("region_count", 0))
-        stab_c = ws3.cell(ri, 8, prod.get("stability_pct", 0))
-        stab_c.number_format = "0.0"
-        ws3.cell(ri, 9, prod.get("share_pct", 0)).number_format = "0.0"
-        for ci in range(1, len(prod_headers) + 1):
-            ws3.cell(ri, ci).border = border
-            if ri % 2 == 0:
-                ws3.cell(ri, ci).fill = alt_fill
-
-    for ci, w in enumerate([22, 40, 12, 16, 14, 10, 10, 10, 10], 1):
-        ws3.column_dimensions[get_column_letter(ci)].width = w
+    # (Sheet "Топ товары" удалён — это общий топ продаж, не относящийся к географии.
+    #  Географическая детализация по товарам — в листах "Товары по округам" и "SKU × Регионы".)
 
     # ═════════════════════════════════════════
     # Sheet 4: Товары по округам
@@ -13124,6 +13090,24 @@ async def ozon_geography_excel(
             "stability_pct": p.get("stability_pct", 0),
             "share_pct": p.get("share_pct", 0),
         })
+    # Normalize cluster_top_products → okrug_top_products with unified keys
+    normalized_okrug_prods: dict[str, list] = {}
+    for cluster_name, prods in analytics.get("cluster_top_products", {}).items():
+        if not isinstance(prods, list):
+            continue
+        normalized_okrug_prods[cluster_name] = []
+        for p in prods:
+            if not isinstance(p, dict):
+                continue
+            normalized_okrug_prods[cluster_name].append({
+                "nm_id": p.get("sku", 0),
+                "vendor_code": p.get("offer_id", ""),
+                "name": p.get("name", "") or p.get("offer_id", ""),
+                "orders": p.get("orders", 0),
+                "revenue": p.get("revenue", 0),
+                "avg_check": p.get("avg_check", 0),
+                "stability_pct": p.get("stability_pct", 0),
+            })
     analytics_normalized = {
         "total_orders": analytics.get("total_orders", 0),
         "total_revenue": analytics.get("total_revenue", 0),
@@ -13132,7 +13116,7 @@ async def ozon_geography_excel(
         "total_regions": analytics.get("total_cities", 0),
         "regions": normalized_regions,
         "top_products": normalized_products,
-        "okrug_top_products": analytics.get("cluster_top_products", {}),
+        "okrug_top_products": normalized_okrug_prods,
     }
 
     shop = await db.get(Shop, shop_id)
@@ -13162,7 +13146,8 @@ async def ozon_geography_excel(
                 city,
                 count() AS orders,
                 sum(toFloat64(price) * quantity) AS revenue,
-                uniqExact(toMonday(toDate(order_date))) AS active_weeks
+                uniqExact(toMonday(toDate(order_date))) AS active_weeks,
+                any(offer_id) AS offer_id_val
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND order_date >= {d_start:Date}
@@ -13173,21 +13158,12 @@ async def ozon_geography_excel(
         """, parameters={"shop_id": shop_id, "d_start": d_start}).result_rows
         ch.close()
 
-        # Get product names from PG (dim_ozon_products)
-        sku_ids = list(set(int(r[0]) for r in rows))
-        prod_map: dict[int, dict] = {}
-        if sku_ids:
-            sk_list = ", ".join(str(x) for x in sku_ids[:500])
-            pg_rows = (await db.execute(
-                text(f"""
-                    SELECT product_id, offer_id, name
-                    FROM dim_ozon_products
-                    WHERE shop_id = :sid AND product_id IN ({sk_list})
-                """),
-                {"sid": shop_id},
-            )).fetchall()
-            for r in pg_rows:
-                prod_map[r[0]] = {"offer_id": r[1] or "", "name": (r[2] or "")[:80]}
+        # Build offer_id map from CH results (no PG needed — dim_ozon_products may be empty)
+        sku_offer_map: dict[int, str] = {}
+        for r in rows:
+            s = int(r[0])
+            if s not in sku_offer_map:
+                sku_offer_map[s] = str(r[6]) if r[6] else ""
 
         # Per-SKU totals
         sku_totals: dict[int, int] = {}
@@ -13197,12 +13173,12 @@ async def ozon_geography_excel(
 
         for r in rows:
             s = int(r[0])
-            prod = prod_map.get(s, {})
+            oid = sku_offer_map.get(s, "")
             active_weeks = int(r[5])
             stab = round(active_weeks / total_weeks * 100, 1)
             sku_region_data.append({
-                "sku_label": prod.get("offer_id") or str(s),
-                "name": prod.get("name", ""),
+                "sku_label": oid or str(s),
+                "name": oid,  # offer_id serves as product identifier for Ozon
                 "okrug": str(r[1]),
                 "region": str(r[2]),
                 "orders": int(r[3]),
