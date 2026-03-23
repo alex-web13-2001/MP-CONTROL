@@ -79,9 +79,14 @@ export interface CampaignRow {
   campaign_id: number
   title: string
   status: string
+  status_code?: number
   campaign_type: string
+  payment_type?: string
+  bid_type?: string
+  placements?: string[]
   sku_count: number
   items: CampaignSkuItem[]
+  associated_items?: CampaignSkuItem[]
   spend: number
   views: number
   clicks: number

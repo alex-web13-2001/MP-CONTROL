@@ -1694,19 +1694,22 @@ async def _build_wb_analytics(
 
     # Enrich campaign info from dim_advert_campaigns
     campaign_info_map: dict = {}
-    WB_CAMPAIGN_TYPES = {
-        0: "", 1: "Поиск", 2: "Каталог", 4: "Карточка",
-        5: "Рекомендации", 7: "Авто", 8: "Поиск + Каталог", 9: "Единая",
+    WB_TYPE_ENUM_MAP = {
+        "search": "Поиск", "carousel": "Каталог", "card": "Карточка",
+        "recommend": "Рекомендации", "auto": "Авто",
+        "search_plus_catalog": "Поиск + Каталог",
+        "recommend_plus_carousel": "Единая",
     }
-    WB_CAMPAIGN_STATUSES = {
+    WB_STATUS_MAP = {
         -1: "Удалена", 4: "Готова", 7: "Завершена",
-        8: "Отказ", 9: "Активна", 11: "Приостановлена",
+        8: "Отменена", 9: "Активна", 11: "На паузе",
     }
 
     if campaign_ids:
         try:
             ch_result = ch.query("""
-                SELECT advert_id, name, type, status
+                SELECT advert_id, name, type, status,
+                       payment_type, bid_type, search_enabled, recommendations_enabled
                 FROM mms_analytics.dim_advert_campaigns FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND advert_id IN ({cids:Array(UInt64)})
@@ -1716,59 +1719,91 @@ async def _build_wb_analytics(
             }).result_rows
             for row in ch_result:
                 cid = int(row[0])
-                # Safe int parsing — type can be UInt8 or string
-                try:
-                    raw_type = int(row[2]) if row[2] is not None else 0
-                except (ValueError, TypeError):
-                    raw_type = 0
+                raw_type_str = str(row[2]) if row[2] else ""
                 try:
                     raw_status = int(row[3]) if row[3] is not None else 0
                 except (ValueError, TypeError):
                     raw_status = 0
+                payment_type = str(row[4] or "")  # cpm / cpc
+                bid_type = str(row[5] or "")       # manual / unified
+                search_on = bool(row[6]) if row[6] is not None else False
+                recom_on = bool(row[7]) if row[7] is not None else False
+
+                # Build human-readable campaign type label
+                type_label = WB_TYPE_ENUM_MAP.get(raw_type_str, raw_type_str)
+                payment_label = "CPM" if payment_type == "cpm" else ("CPC" if payment_type == "cpc" else "")
+                # Don't repeat "Единая" if type_label already says it
+                if bid_type == "manual":
+                    bid_label = "Ручная ставка"
+                elif bid_type == "unified" and type_label != "Единая":
+                    bid_label = "Единая ставка"
+                else:
+                    bid_label = ""
+                full_type = " · ".join(filter(None, [type_label, payment_label, bid_label]))
+
+                # Placements
+                placements = []
+                if search_on:
+                    placements.append("Поиск")
+                if recom_on:
+                    placements.append("Рекомендации")
+
                 campaign_info_map[cid] = {
                     "title": row[1] or "",
-                    "campaign_type": WB_CAMPAIGN_TYPES.get(raw_type, str(row[2] or "")),
-                    "status": WB_CAMPAIGN_STATUSES.get(raw_status, str(row[3] or "")),
+                    "campaign_type": full_type,
+                    "status": WB_STATUS_MAP.get(raw_status, str(raw_status)),
+                    "status_code": raw_status,
+                    "payment_type": payment_type,
+                    "bid_type": bid_type,
+                    "placements": placements,
                 }
         except Exception as e:
             logger.warning("WB campaign enrichment failed: %s", e)
 
-    # Per-SKU breakdown within each campaign
+    # Per-SKU breakdown from ads_raw_history (WITH is_associated flag!)
+    # This separates truly advertised SKUs from cross-sell (associated) orders
     sku_stats_rows = ch.query("""
         SELECT
             advert_id AS campaign_id,
             nm_id,
+            is_associated,
             sum(spend) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
             sum(atbs) AS t_cart,
             sum(orders) AS t_orders,
             sum(revenue) AS t_revenue
-        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        FROM mms_analytics.ads_raw_history
         WHERE shop_id = {shop_id:UInt32}
-          AND date >= {cur_start:Date}
-          AND date <= {cur_end:Date}
+          AND fetched_at >= toDateTime({cur_start:Date})
+          AND fetched_at < toDateTime({cur_end:Date}) + INTERVAL 1 DAY
           AND nm_id > 0
-        GROUP BY campaign_id, nm_id
+        GROUP BY campaign_id, nm_id, is_associated
         ORDER BY campaign_id, t_spend DESC
     """, parameters=params).result_rows
 
-    # Collect all nm_ids for enrichment
+    # Collect all nm_ids for enrichment; separate advertised vs associated
     all_nm_ids: set = set()
-    sku_stats_by_campaign: dict = {}
+    sku_advertised_by_campaign: dict = {}   # only is_associated=0
+    sku_associated_by_campaign: dict = {}   # only is_associated=1
     for row in sku_stats_rows:
         cid = int(row[0])
         nm_id = int(row[1])
+        is_assoc = int(row[2])
         all_nm_ids.add(nm_id)
-        sku_stats_by_campaign.setdefault(cid, []).append({
+        entry = {
             "nm_id": nm_id,
-            "spend": round(float(row[2]), 2),
-            "views": int(row[3]),
-            "clicks": int(row[4]),
-            "cart": int(row[5]),
-            "orders": int(row[6]),
-            "revenue": round(float(row[7]), 2),
-        })
+            "spend": round(float(row[3]), 2),
+            "views": int(row[4]),
+            "clicks": int(row[5]),
+            "cart": int(row[6]),
+            "orders": int(row[7]),
+            "revenue": round(float(row[8]), 2),
+        }
+        if is_assoc == 0:
+            sku_advertised_by_campaign.setdefault(cid, []).append(entry)
+        else:
+            sku_associated_by_campaign.setdefault(cid, []).append(entry)
 
     # Enrich SKU names from dim_products
     sku_name_map: dict = {}
@@ -1883,22 +1918,39 @@ async def _build_wb_analytics(
         order_conv = round(orders / cart * 100, 1) if cart > 0 else 0
 
         info = campaign_info_map.get(cid, {})
-        items = [build_wb_sku_item(s, cid) for s in sku_stats_by_campaign.get(cid, [])]
+        # Build items: only truly advertised SKUs
+        advertised_items = [build_wb_sku_item(s, cid) for s in sku_advertised_by_campaign.get(cid, [])]
+        # Associated (cross-sell) items — separate list
+        associated_items = [build_wb_sku_item(s, cid) for s in sku_associated_by_campaign.get(cid, [])]
+        # Filter associated: only show those with orders > 0
+        associated_items = [i for i in associated_items if i["orders"] > 0 or i["cart"] > 0]
 
-        # Aggregate total revenue from per-SKU map
+        # Count of truly advertised SKUs (not all SKUs in stats)
+        sku_count = len(sku_advertised_by_campaign.get(cid, []))
+
+        # Aggregate total revenue from per-SKU map (advertised only)
         campaign_total_rev = sum(
             sku_total_rev_map.get(s["nm_id"], 0)
-            for s in sku_stats_by_campaign.get(cid, [])
+            for s in sku_advertised_by_campaign.get(cid, [])
         )
         campaign_total_drr = round(spend / campaign_total_rev * 100, 1) if campaign_total_rev > 0 else 0
+
+        # Count associated orders/revenue
+        assoc_orders = sum(s["orders"] for s in sku_associated_by_campaign.get(cid, []))
+        assoc_revenue = sum(s["revenue"] for s in sku_associated_by_campaign.get(cid, []))
 
         campaigns_table.append({
             "campaign_id": cid,
             "title": info.get("title", ""),
             "status": info.get("status", ""),
+            "status_code": info.get("status_code", 0),
             "campaign_type": info.get("campaign_type", ""),
-            "sku_count": int(row[10]),
-            "items": items,
+            "payment_type": info.get("payment_type", ""),
+            "bid_type": info.get("bid_type", ""),
+            "placements": info.get("placements", []),
+            "sku_count": sku_count,
+            "items": advertised_items,
+            "associated_items": associated_items,
             "spend": spend,
             "views": int(row[2]),
             "clicks": clicks,
@@ -1907,11 +1959,11 @@ async def _build_wb_analytics(
             "orders": orders,
             "order_conv": order_conv,
             "direct_orders": orders,
-            "model_orders": 0,
+            "model_orders": assoc_orders,
             "revenue": revenue,
             "direct_revenue": revenue,
-            "model_revenue": 0,
-            "halo_pct": 0,
+            "model_revenue": round(assoc_revenue, 2),
+            "halo_pct": round(assoc_orders / orders * 100, 1) if orders > 0 else 0,
             "ctr": float(row[7]),
             "avg_cpc": float(row[8]),
             "drr": float(row[9]),
@@ -1919,7 +1971,7 @@ async def _build_wb_analytics(
             "total_drr": campaign_total_drr,
         })
 
-    # ── 4. Top SKUs (nm_id) ───────────────────────────
+    # ── 4. Top SKUs (nm_id) — only ADVERTISED (is_associated=0) ──
     top_skus_rows = ch.query("""
         SELECT
             nm_id,
@@ -1929,10 +1981,11 @@ async def _build_wb_analytics(
             CASE WHEN sum(revenue) > 0
                 THEN round(sum(spend) / sum(revenue) * 100, 1) ELSE 0
             END AS t_drr
-        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        FROM mms_analytics.ads_raw_history
         WHERE shop_id = {shop_id:UInt32}
-          AND date >= {cur_start:Date}
-          AND date <= {cur_end:Date}
+          AND fetched_at >= toDateTime({cur_start:Date})
+          AND fetched_at < toDateTime({cur_end:Date}) + INTERVAL 1 DAY
+          AND is_associated = 0
         GROUP BY nm_id
         ORDER BY t_spend DESC
         LIMIT 30
