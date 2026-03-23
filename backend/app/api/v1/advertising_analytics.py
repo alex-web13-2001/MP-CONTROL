@@ -1760,27 +1760,39 @@ async def _build_wb_analytics(
         except Exception as e:
             logger.warning("WB campaign enrichment failed: %s", e)
 
-    # Per-SKU breakdown from ads_raw_history (WITH is_associated flag!)
-    # This separates truly advertised SKUs from cross-sell (associated) orders
+    # Per-SKU breakdown: STATS from fact_advert_stats_v3 (ReplacingMergeTree = deduped)
     sku_stats_rows = ch.query("""
         SELECT
             advert_id AS campaign_id,
             nm_id,
-            is_associated,
             sum(spend) AS t_spend,
             sum(views) AS t_views,
             sum(clicks) AS t_clicks,
             sum(atbs) AS t_cart,
             sum(orders) AS t_orders,
             sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {cur_start:Date}
+          AND date <= {cur_end:Date}
+          AND nm_id > 0
+        GROUP BY campaign_id, nm_id
+        ORDER BY campaign_id, t_spend DESC
+    """, parameters=params).result_rows
+
+    # Lookup is_associated flag from ads_raw_history (any row is enough, use latest)
+    assoc_flag_rows = ch.query("""
+        SELECT DISTINCT advert_id, nm_id, is_associated
         FROM mms_analytics.ads_raw_history
         WHERE shop_id = {shop_id:UInt32}
           AND fetched_at >= toDateTime({cur_start:Date})
           AND fetched_at < toDateTime({cur_end:Date}) + INTERVAL 1 DAY
-          AND nm_id > 0
-        GROUP BY campaign_id, nm_id, is_associated
-        ORDER BY campaign_id, t_spend DESC
     """, parameters=params).result_rows
+    # Build set of associated (advert_id, nm_id)
+    associated_set: set = set()
+    for row in assoc_flag_rows:
+        if int(row[2]) == 1:
+            associated_set.add((int(row[0]), int(row[1])))
 
     # Collect all nm_ids for enrichment; separate advertised vs associated
     all_nm_ids: set = set()
@@ -1789,21 +1801,20 @@ async def _build_wb_analytics(
     for row in sku_stats_rows:
         cid = int(row[0])
         nm_id = int(row[1])
-        is_assoc = int(row[2])
         all_nm_ids.add(nm_id)
         entry = {
             "nm_id": nm_id,
-            "spend": round(float(row[3]), 2),
-            "views": int(row[4]),
-            "clicks": int(row[5]),
-            "cart": int(row[6]),
-            "orders": int(row[7]),
-            "revenue": round(float(row[8]), 2),
+            "spend": round(float(row[2]), 2),
+            "views": int(row[3]),
+            "clicks": int(row[4]),
+            "cart": int(row[5]),
+            "orders": int(row[6]),
+            "revenue": round(float(row[7]), 2),
         }
-        if is_assoc == 0:
-            sku_advertised_by_campaign.setdefault(cid, []).append(entry)
-        else:
+        if (cid, nm_id) in associated_set:
             sku_associated_by_campaign.setdefault(cid, []).append(entry)
+        else:
+            sku_advertised_by_campaign.setdefault(cid, []).append(entry)
 
     # Enrich SKU names from dim_products
     sku_name_map: dict = {}
@@ -1971,7 +1982,7 @@ async def _build_wb_analytics(
             "total_drr": campaign_total_drr,
         })
 
-    # ── 4. Top SKUs (nm_id) — only ADVERTISED (is_associated=0) ──
+    # ── 4. Top SKUs (nm_id) — only ADVERTISED (filter associated via lookup) ──
     top_skus_rows = ch.query("""
         SELECT
             nm_id,
@@ -1981,19 +1992,25 @@ async def _build_wb_analytics(
             CASE WHEN sum(revenue) > 0
                 THEN round(sum(spend) / sum(revenue) * 100, 1) ELSE 0
             END AS t_drr
-        FROM mms_analytics.ads_raw_history
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
         WHERE shop_id = {shop_id:UInt32}
-          AND fetched_at >= toDateTime({cur_start:Date})
-          AND fetched_at < toDateTime({cur_end:Date}) + INTERVAL 1 DAY
-          AND is_associated = 0
+          AND date >= {cur_start:Date}
+          AND date <= {cur_end:Date}
         GROUP BY nm_id
         ORDER BY t_spend DESC
-        LIMIT 30
+        LIMIT 50
     """, parameters=params).result_rows
+    # Build all-campaign associated nm_id set for filtering
+    all_associated_nm_ids = {nm_id for (_, nm_id) in associated_set}
 
     top_skus = []
     for row in top_skus_rows:
         nm_id = int(row[0])
+        # Skip SKUs that are ONLY associated (not directly advertised in any campaign)
+        if nm_id in all_associated_nm_ids and nm_id not in {
+            e["nm_id"] for entries in sku_advertised_by_campaign.values() for e in entries
+        }:
+            continue
         info = sku_name_map.get(nm_id, {})
         top_skus.append({
             "sku": nm_id,
@@ -2005,6 +2022,8 @@ async def _build_wb_analytics(
             "revenue": round(float(row[3]), 2),
             "drr": float(row[4]),
         })
+        if len(top_skus) >= 30:
+            break
 
     # Enrich any missing SKU names (for nm_ids not already in sku_name_map)
     missing_nm = [s["sku"] for s in top_skus if not sku_name_map.get(s["sku"])]
