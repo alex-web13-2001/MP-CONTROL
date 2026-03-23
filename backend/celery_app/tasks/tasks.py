@@ -4740,7 +4740,7 @@ def sync_ozon_turnover(
     return asyncio.run(run_sync())
 
 
-@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
+@celery_app.task(bind=True, time_limit=600, soft_time_limit=580)
 def sync_ozon_placement_cost(
     self,
     shop_id: int,
