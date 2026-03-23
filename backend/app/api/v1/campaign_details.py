@@ -157,7 +157,7 @@ async def get_campaign_kpi(
         ).result_rows
     else:
         skus_r = ch.query(
-            "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64}",
+            "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND (views > 0 OR clicks > 0 OR spend > 0)",
             parameters={"cid": campaign_id}
         ).result_rows
     
@@ -334,7 +334,7 @@ async def get_campaign_stats(
             skus_for_rev = [sku]
         else:
             skus_q = ch.query(
-                "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64}",
+                "SELECT DISTINCT nm_id, shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND (views > 0 OR clicks > 0 OR spend > 0)",
                 parameters={"cid": campaign_id}
             ).result_rows
             skus_for_rev = [int(r[0]) for r in skus_q]
@@ -404,7 +404,7 @@ async def get_campaign_events(
             ).result_rows
         else:
             res = ch.query(
-                "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date >= today()-90",
+                "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date >= today()-90 AND (views > 0 OR clicks > 0 OR spend > 0)",
                 parameters={"cid": campaign_id}
             ).result_rows
         ad_skus = [int(r[0]) for r in res]
@@ -561,7 +561,7 @@ async def get_campaign_heatmap(
             ).result_rows
         else:
             res = ch.query(
-                "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date}",
+                "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date} AND (views > 0 OR clicks > 0 OR spend > 0)",
                 parameters={"cid": campaign_id, "sd": start_date, "ed": end_date}
             ).result_rows
         skus = [int(r[0]) for r in res]
@@ -656,7 +656,7 @@ async def get_campaign_purchases(
         ).result_rows
     else:
         sku_res = ch.query(
-            "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date}",
+            "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL WHERE advert_id = {cid:UInt64} AND date BETWEEN {sd:Date} AND {ed:Date} AND (views > 0 OR clicks > 0 OR spend > 0)",
             parameters={"cid": campaign_id, "sd": start_date, "ed": end_date}
         ).result_rows
     
