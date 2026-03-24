@@ -309,6 +309,7 @@ export function CampaignDetailModal({
   const [purchases, setPurchases] = useState<CampaignPurchaseRow[]>([])
   const [kpiData, setKpiData] = useState<CampaignKpiResponse | null>(null)
   const [loadedTabs, setLoadedTabs] = useState<Set<string>>(new Set())
+  const [eventDayDetail, setEventDayDetail] = useState<string | null>(null)
 
   const loadTabData = useCallback(async (tab: TabType) => {
     const cacheKey = `${tab}_${startDate}_${endDate}_${selectedSku || 'all'}_${scope}`
@@ -485,14 +486,17 @@ export function CampaignDetailModal({
           {dayEvents.length > 0 && (
             <div className="mt-2 pt-2 border-t border-[hsl(var(--border)/0.5)]">
               <div className="text-[11px] font-semibold text-[#a78bfa] mb-1">📌 События ({dayEvents.length})</div>
-              {dayEvents.slice(0, 5).map((ev, i) => {
+              {dayEvents.slice(0, 4).map((ev, i) => {
                 const evLabel = EVENT_LABELS[ev.event_type] || ev.event_type
                 const style = EVENT_STYLE[ev.event_type] || DEFAULT_EV_STYLE
+                // Compact teaser: show numeric change for bids/prices, skip hashes for photos
+                const PHOTO_EVENTS = ['CONTENT_MAIN_PHOTO_CHANGED', 'CONTENT_PHOTO_ORDER_CHANGED', 'CONTENT_PHOTO_ADDED', 'CONTENT_PHOTO_REMOVED', 'OZON_PHOTO_CHANGE']
                 let detail = ''
-                if (ev.old_value && ev.new_value) {
+                if (!PHOTO_EVENTS.includes(ev.event_type) && ev.old_value && ev.new_value) {
                   let ov = ev.old_value, nv = ev.new_value
                   if (ev.event_type === 'BID_CHANGE') { ov = String(Number(ov) / 100); nv = String(Number(nv) / 100) }
-                  detail = ` ${ov} → ${nv}`
+                  // Only show short details for numeric events
+                  if (NUMERIC_EVENTS.has(ev.event_type)) detail = ` ${ov} → ${nv}`
                 }
                 return (
                   <div key={i} className="flex items-center gap-1.5 py-0.5 text-[11px]">
@@ -502,9 +506,10 @@ export function CampaignDetailModal({
                   </div>
                 )
               })}
-              {dayEvents.length > 5 && (
-                <div className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">...ещё {dayEvents.length - 5}</div>
+              {dayEvents.length > 4 && (
+                <div className="text-[10px] text-[hsl(var(--muted-foreground))] mt-0.5">...ещё {dayEvents.length - 4}</div>
               )}
+              <div className="text-[10px] text-[hsl(var(--muted-foreground)/0.6)] mt-1 italic">Кликните для подробностей</div>
             </div>
           )}
         </div>
@@ -686,7 +691,12 @@ export function CampaignDetailModal({
         {/* Chart */}
         <div className="h-[300px] w-full rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4">
           <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+            <ComposedChart data={chartData} margin={{ top: 5, right: 5, left: -10, bottom: 0 }} onClick={(data: any) => {
+              if (data?.activeLabel) {
+                const clickedDate = data.activeLabel as string
+                if (eventsByDate[clickedDate]?.length) setEventDayDetail(clickedDate)
+              }
+            }}>
               <defs>
                 <linearGradient id="gSpendM" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15} />
@@ -1609,6 +1619,117 @@ export function CampaignDetailModal({
           {activeTab === 'bids' && renderBids()}
         </div>
       </div>
+
+      {/* ── Event Day Detail Popup ── */}
+      {eventDayDetail && (() => {
+        const dayEvts = eventsByDate[eventDayDetail] || []
+        let dateLabel = eventDayDetail
+        try { dateLabel = format(parseISO(eventDayDetail), 'dd MMMM yyyy', { locale: ru }) } catch {}
+        return (
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setEventDayDetail(null)}>
+            <div className="w-full max-w-[520px] max-h-[80vh] bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))]">
+                <div>
+                  <h3 className="text-[16px] font-bold text-[hsl(var(--foreground))]">📌 События за {dateLabel}</h3>
+                  <p className="text-[12px] text-[hsl(var(--muted-foreground))] mt-0.5">{dayEvts.length} {dayEvts.length === 1 ? 'событие' : dayEvts.length < 5 ? 'события' : 'событий'}</p>
+                </div>
+                <button onClick={() => setEventDayDetail(null)} className="p-2 rounded-lg hover:bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))] transition-colors"><X className="w-5 h-5" /></button>
+              </div>
+              {/* Events list */}
+              <div className="p-5 overflow-y-auto flex-1 space-y-2.5">
+                {dayEvts.map(ev => {
+                  const style = EVENT_STYLE[ev.event_type] || DEFAULT_EV_STYLE
+                  const EvIcon = style.icon
+                  const label = EVENT_LABELS[ev.event_type] || ev.event_type.replace(/_/g, ' ')
+                  const isNum = NUMERIC_EVENTS.has(ev.event_type)
+                  const PHOTO_EVENTS_SET = ['CONTENT_MAIN_PHOTO_CHANGED', 'CONTENT_PHOTO_ORDER_CHANGED', 'CONTENT_PHOTO_ADDED', 'CONTENT_PHOTO_REMOVED', 'OZON_PHOTO_CHANGE']
+                  const isPhoto = PHOTO_EVENTS_SET.includes(ev.event_type)
+                  let timeStr = ''
+                  try { timeStr = format(parseISO(ev.timestamp), 'HH:mm') } catch {}
+
+                  let oldNum = parseNum(ev.old_value)
+                  let newNum = parseNum(ev.new_value)
+                  if (ev.event_type === 'BID_CHANGE' && oldNum !== null) oldNum /= 100
+                  if (ev.event_type === 'BID_CHANGE' && newNum !== null) newNum /= 100
+                  const suffix = ev.event_type.includes('BID') || ev.event_type.includes('BUDGET') || ev.event_type.includes('PRICE') ? ' ₽' : ''
+
+                  return (
+                    <div key={ev.id} className="flex gap-3 rounded-xl border border-[hsl(var(--border)/0.4)] bg-[hsl(var(--card))] p-4 hover:border-[hsl(var(--border)/0.7)] transition-all">
+                      <div className="shrink-0 h-8 w-8 rounded-lg flex items-center justify-center" style={{ background: style.bg }}>
+                        <EvIcon className="h-4 w-4" style={{ color: style.color }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[14px] font-semibold" style={{ color: style.color }}>{label}</span>
+                          <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">⏱ {timeStr}</span>
+                        </div>
+                        {ev.product_id && (
+                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] block mt-0.5">
+                            {ev.offer_id && <span className="font-mono font-semibold uppercase text-[hsl(var(--primary)/0.8)]">{ev.offer_id} · </span>}
+                            {ev.product_name || `SKU: ${ev.product_id}`}
+                          </span>
+                        )}
+
+                        {/* Numeric value change */}
+                        {isNum && oldNum !== null && newNum !== null && (
+                          <div className="flex items-center gap-2.5 mt-2">
+                            <span className="text-[14px] font-medium text-[hsl(var(--muted-foreground)/0.7)] line-through">{fmtNum(oldNum, suffix)}</span>
+                            <ArrowRight className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
+                            <span className={`text-[15px] font-bold ${(newNum - oldNum) > 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmtNum(newNum, suffix)}</span>
+                            {(newNum - oldNum) !== 0 && (
+                              <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] font-semibold ${
+                                (newNum - oldNum) > 0 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'
+                              }`}>
+                                {(newNum - oldNum) > 0 ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />}
+                                {oldNum !== 0 ? `${Math.abs(((newNum - oldNum) / oldNum) * 100).toFixed(1)}%` : fmtNum(newNum - oldNum, suffix)}
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Photo preview */}
+                        {isPhoto && (() => {
+                          const imgUrl = (ev.event_metadata?.main_image_url as string) || ''
+                          const oldCount = (ev.event_metadata?.old_count as number) ?? null
+                          const newCount = (ev.event_metadata?.new_count as number) ?? null
+                          return (
+                            <div className="flex items-center gap-3 mt-2">
+                              {imgUrl ? (
+                                <img src={imgUrl} alt="Фото товара" className="h-16 w-16 rounded-lg object-cover border border-[hsl(var(--border))] shadow-sm" onError={e => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                              ) : (
+                                <div className="h-16 w-16 rounded-lg bg-[hsl(var(--muted)/0.3)] border border-[hsl(var(--border))] flex items-center justify-center">
+                                  <Image className="h-6 w-6 text-[hsl(var(--muted-foreground)/0.4)]" />
+                                </div>
+                              )}
+                              <div className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                                {ev.event_type === 'CONTENT_MAIN_PHOTO_CHANGED' && <span>Главное фото заменено</span>}
+                                {ev.event_type === 'CONTENT_PHOTO_ADDED' && oldCount !== null && newCount !== null && <span>Добавлено фото: {oldCount} → {newCount} шт.</span>}
+                                {ev.event_type === 'CONTENT_PHOTO_REMOVED' && oldCount !== null && newCount !== null && <span>Удалено фото: {oldCount} → {newCount} шт.</span>}
+                                {ev.event_type === 'CONTENT_PHOTO_ORDER_CHANGED' && <span>Порядок/состав фото изменён ({newCount ?? '?'} шт.)</span>}
+                                {ev.event_type === 'OZON_PHOTO_CHANGE' && <span>Фото обновлено</span>}
+                              </div>
+                            </div>
+                          )
+                        })()}
+
+                        {/* Non-numeric, non-photo: show old → new */}
+                        {!isNum && !isPhoto && (ev.old_value || ev.new_value) && (
+                          <div className="flex items-center gap-2 mt-1.5 text-[12px]">
+                            {ev.old_value && <span className="px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded font-medium">{ev.old_value}</span>}
+                            <ArrowRight className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
+                            {ev.new_value && <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded font-medium">{ev.new_value}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }
