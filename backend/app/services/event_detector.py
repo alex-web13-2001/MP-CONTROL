@@ -499,11 +499,24 @@ class EventDetector:
                     bid_search = int(bids.get("search") or 0)
                     bid_reco = int(bids.get("recommendations") or 0)
                     
+                    # DEBOUNCING: WB API periodically returns bids_kopecks=0 during
+                    # "API storms" — skip zero bids entirely to avoid garbage events
+                    # and Redis state corruption. Real bid removal = campaign deletion
+                    # (caught by STATUS_CHANGE), not zero bids.
+                    if bid_search == 0 and bid_reco == 0:
+                        logger.debug(
+                            f"Skipping zero bids for advert={advert_id} nm={nm_id} "
+                            f"(likely API storm garbage)"
+                        )
+                        continue
+                    
                     # Compare with Redis: per-nm_id bids
                     old_bid_search = self.state_manager.get_bid(shop_id, advert_id, nm_id, "search")
                     old_bid_reco = self.state_manager.get_bid(shop_id, advert_id, nm_id, "recommendations")
                     
-                    if old_bid_search is not None and bid_search != old_bid_search:
+                    # Only log real changes: both old and new must be > 0
+                    if (old_bid_search is not None and old_bid_search > 0
+                            and bid_search > 0 and bid_search != old_bid_search):
                         events.append({
                             "shop_id": shop_id,
                             "advert_id": advert_id,
@@ -523,7 +536,8 @@ class EventDetector:
                             f"nm={nm_id} {old_bid_search} -> {bid_search} kopecks"
                         )
                     
-                    if old_bid_reco is not None and bid_reco != old_bid_reco:
+                    if (old_bid_reco is not None and old_bid_reco > 0
+                            and bid_reco > 0 and bid_reco != old_bid_reco):
                         events.append({
                             "shop_id": shop_id,
                             "advert_id": advert_id,
@@ -543,9 +557,11 @@ class EventDetector:
                             f"nm={nm_id} {old_bid_reco} -> {bid_reco} kopecks"
                         )
                     
-                    # Update per-nm_id bid state in Redis
-                    self.state_manager.set_bid(shop_id, advert_id, nm_id, "search", bid_search)
-                    self.state_manager.set_bid(shop_id, advert_id, nm_id, "recommendations", bid_reco)
+                    # Update per-nm_id bid state in Redis (only non-zero values)
+                    if bid_search > 0:
+                        self.state_manager.set_bid(shop_id, advert_id, nm_id, "search", bid_search)
+                    if bid_reco > 0:
+                        self.state_manager.set_bid(shop_id, advert_id, nm_id, "recommendations", bid_reco)
                 
                 # ===== ITEM_ADD / ITEM_REMOVE =====
                 # Skip for brand-new campaigns (items already in CAMPAIGN_CREATED metadata)
