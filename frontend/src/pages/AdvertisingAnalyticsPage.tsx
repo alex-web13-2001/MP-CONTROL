@@ -1622,13 +1622,11 @@ function CampaignsTable({
                 {/* Campaign row */}
                 <tr
                   className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.15)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
-                  onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
+                  onClick={() => toggleExpand(c.campaign_id)}
                 >
                     <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
                     <div className="flex items-center gap-2">
-                      {c.items.length > 0 && (
-                        <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                      )}
+                      <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       <div className="flex flex-col min-w-0 gap-1 flex-1">
                         {c.title ? (
                           <span className="font-semibold text-[14px] leading-snug line-clamp-2" title={c.title}>{c.title}</span>
@@ -1694,7 +1692,7 @@ function CampaignsTable({
                 </tr>
 
                 {/* Per-SKU rows */}
-                {isExpanded && c.items.map((s) => (
+                {isExpanded && c.items.length > 0 && c.items.map((s) => (
                   <tr
                     key={`${c.campaign_id}-${s.sku}`}
                     className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.06)]"
@@ -1744,6 +1742,15 @@ function CampaignsTable({
                     </td>
                   </tr>
                 ))}
+
+                {/* Empty state when no items */}
+                {isExpanded && c.items.length === 0 && (
+                  <tr className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)]">
+                    <td colSpan={14} className="px-10 py-4 text-center text-[13px] text-[hsl(var(--muted-foreground)/0.5)] italic">
+                      Нет данных по товарам — откройте статистику 📊 для подробностей
+                    </td>
+                  </tr>
+                )}
 
                 {/* Associated / cross-sell items (WB) */}
                 {isExpanded && c.associated_items && c.associated_items.length > 0 && (
