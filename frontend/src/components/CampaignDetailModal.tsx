@@ -548,46 +548,46 @@ export function CampaignDetailModal({
           const totalCpo = totalOrders > 0 ? (spend / totalOrders) : 0
           return (
             <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-              <div className="text-[13px] text-[hsl(var(--muted-foreground))] font-semibold mb-2">Вся кампания</div>
+              <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold mb-2">Вся кампания</div>
               <div className="grid grid-cols-4 gap-3">
                 {/* Показы */}
                 <div>
-                  <div className="text-base font-bold text-[hsl(var(--foreground))]">{formatNumber(views)}</div>
-                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Показы</div>
-                  {viewsD !== null && <span className={`text-[10px] font-medium ${deltaColor(viewsD)}`}>{deltaStr(viewsD)}</span>}
-                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                  <div className="text-lg font-bold text-[hsl(var(--foreground))]">{formatNumber(views)}</div>
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Показы</div>
+                  {viewsD !== null && <span className={`text-[13px] font-medium ${deltaColor(viewsD)}`}>{deltaStr(viewsD)}</span>}
+                  <div className="mt-1 text-[13px] text-[hsl(var(--muted-foreground))]">
                     CPM <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(cpm)}</span>
                   </div>
                 </div>
                 {/* Клики */}
                 <div>
-                  <div className="text-base font-bold text-[hsl(var(--foreground))]">{formatNumber(clicks)}</div>
-                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Клики</div>
-                  {clicksD !== null && <span className={`text-[10px] font-medium ${deltaColor(clicksD)}`}>{deltaStr(clicksD)}</span>}
-                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                  <div className="text-lg font-bold text-[hsl(var(--foreground))]">{formatNumber(clicks)}</div>
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Клики</div>
+                  {clicksD !== null && <span className={`text-[13px] font-medium ${deltaColor(clicksD)}`}>{deltaStr(clicksD)}</span>}
+                  <div className="mt-1 text-[13px] text-[hsl(var(--muted-foreground))]">
                     CTR <span className="text-[hsl(var(--foreground))] font-medium">{cur.ctr.toFixed(2)}%</span>
                     {' · '}CPC <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(cpc)}</span>
                   </div>
                 </div>
                 {/* Заказы */}
                 <div>
-                  <div className="text-base font-bold text-purple-400">{totalOrders}</div>
-                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Заказы</div>
-                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                  <div className="text-lg font-bold text-purple-400">{totalOrders}</div>
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Заказы</div>
+                  <div className="mt-1 text-[13px] text-[hsl(var(--muted-foreground))]">
                     CR <span className="text-[hsl(var(--foreground))] font-medium">{cr.toFixed(1)}%</span>
                     {' · '}CPO <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(totalCpo)}</span>
                   </div>
                 </div>
                 {/* Расход + Выручка + ДРР */}
                 <div>
-                  <div className="text-base font-bold text-red-400">{totalDrr.toFixed(1)}%</div>
-                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР</div>
-                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                  <div className="text-lg font-bold text-red-400">{totalDrr.toFixed(1)}%</div>
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">ДРР</div>
+                  <div className="mt-1 text-[13px] text-[hsl(var(--muted-foreground))]">
                     Выр. <span className="text-emerald-400 font-medium">{formatMoney(totalRevenue)}</span>
                   </div>
-                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                  <div className="text-[13px] text-[hsl(var(--muted-foreground))]">
                     Расх. <span className="text-red-400 font-medium">{formatMoney(spend)}</span>
-                    {spendD !== null && <span className={`ml-1 text-[10px] ${deltaColor(spendD, true)}`}>{deltaStr(spendD)}</span>}
+                    {spendD !== null && <span className={`ml-1 text-[13px] ${deltaColor(spendD, true)}`}>{deltaStr(spendD)}</span>}
                   </div>
                 </div>
               </div>
@@ -604,40 +604,40 @@ export function CampaignDetailModal({
           return (<>
         <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
           <div className="flex items-center gap-2 mb-2">
-            <span className="text-[13px] text-emerald-400 font-semibold">Прямой товар</span>
-            <span className="text-lg font-bold text-emerald-400">{directPct.toFixed(0)}%</span>
-            <span className="text-[11px] text-[hsl(var(--muted-foreground))]">от выручки</span>
+            <span className="text-[14px] text-emerald-400 font-semibold">Прямой товар</span>
+            <span className="text-xl font-bold text-emerald-400">{directPct.toFixed(0)}%</span>
+            <span className="text-[13px] text-[hsl(var(--muted-foreground))]">от выручки</span>
           </div>
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
             <div>
-              <div className="text-base font-bold text-emerald-400">{formatMoney(cur.ad_revenue)}</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Выр. рекл.</div>
-              {adRevD !== null && <span className={`text-[10px] font-medium ${deltaColor(adRevD)}`}>{deltaStr(adRevD)}</span>}
+              <div className="text-lg font-bold text-emerald-400">{formatMoney(cur.ad_revenue)}</div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Выр. рекл.</div>
+              {adRevD !== null && <span className={`text-[13px] font-medium ${deltaColor(adRevD)}`}>{deltaStr(adRevD)}</span>}
             </div>
             <div>
-              <div className="text-base font-bold text-teal-400">{formatMoney(cur.product_revenue)}</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Выр. общая</div>
-              {prodRevD !== null && <span className={`text-[10px] font-medium ${deltaColor(prodRevD)}`}>{deltaStr(prodRevD)}</span>}
+              <div className="text-lg font-bold text-teal-400">{formatMoney(cur.product_revenue)}</div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Выр. общая</div>
+              {prodRevD !== null && <span className={`text-[13px] font-medium ${deltaColor(prodRevD)}`}>{deltaStr(prodRevD)}</span>}
             </div>
             <div>
-              <div className="text-base font-bold text-purple-400">{cur.orders} <span className="text-[hsl(var(--muted-foreground))] text-[13px] font-normal">/ {cur.cart}</span></div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Заказы / Корз.</div>
-              {ordersD !== null && <span className={`text-[10px] font-medium ${deltaColor(ordersD)}`}>{deltaStr(ordersD)}</span>}
+              <div className="text-lg font-bold text-purple-400">{cur.orders} <span className="text-[hsl(var(--muted-foreground))] text-[14px] font-normal">/ {cur.cart}</span></div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Заказы / Корз.</div>
+              {ordersD !== null && <span className={`text-[13px] font-medium ${deltaColor(ordersD)}`}>{deltaStr(ordersD)}</span>}
             </div>
             <div>
-              <div className="text-base font-bold text-pink-400">{(cur.drr_ad || 0).toFixed(1)}%</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР рекл.</div>
-              {drrAdD !== null && <span className={`text-[10px] font-medium ${deltaColor(drrAdD, true)}`}>{drrAdD > 0 ? '+' : ''}{drrAdD.toFixed(1)} п.п.</span>}
+              <div className="text-lg font-bold text-pink-400">{(cur.drr_ad || 0).toFixed(1)}%</div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">ДРР рекл.</div>
+              {drrAdD !== null && <span className={`text-[13px] font-medium ${deltaColor(drrAdD, true)}`}>{drrAdD > 0 ? '+' : ''}{drrAdD.toFixed(1)} п.п.</span>}
             </div>
             <div>
-              <div className="text-base font-bold text-amber-400">{(cur.drr_product || 0).toFixed(1)}%</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР общий</div>
-              {drrProdD !== null && <span className={`text-[10px] font-medium ${deltaColor(drrProdD, true)}`}>{drrProdD > 0 ? '+' : ''}{drrProdD.toFixed(1)} п.п.</span>}
+              <div className="text-lg font-bold text-amber-400">{(cur.drr_product || 0).toFixed(1)}%</div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">ДРР общий</div>
+              {drrProdD !== null && <span className={`text-[13px] font-medium ${deltaColor(drrProdD, true)}`}>{drrProdD > 0 ? '+' : ''}{drrProdD.toFixed(1)} п.п.</span>}
             </div>
             <div>
-              <div className="text-base font-bold text-purple-400">{cur.cpo > 0 ? formatMoney(cur.cpo) : '—'}</div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">CPO</div>
-              {cpoD !== null && <span className={`text-[10px] font-medium ${deltaColor(cpoD, true)}`}>{deltaStr(cpoD)}</span>}
+              <div className="text-lg font-bold text-purple-400">{cur.cpo > 0 ? formatMoney(cur.cpo) : '—'}</div>
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))]">CPO</div>
+              {cpoD !== null && <span className={`text-[13px] font-medium ${deltaColor(cpoD, true)}`}>{deltaStr(cpoD)}</span>}
             </div>
           </div>
         </div>
@@ -647,22 +647,22 @@ export function CampaignDetailModal({
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-2.5">
               <div className="flex items-center gap-2">
-                <span className="text-[12px] text-blue-400 font-semibold">Модель</span>
-                <span className="text-lg font-bold text-blue-300">{modelPct.toFixed(0)}%</span>
+                <span className="text-[14px] text-blue-400 font-semibold">Модель</span>
+                <span className="text-xl font-bold text-blue-300">{modelPct.toFixed(0)}%</span>
               </div>
               <div className="flex items-baseline gap-2 mt-0.5">
-                <span className="text-[13px] font-bold text-blue-300">{cur.model_orders} шт.</span>
-                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.model_revenue)}</span>
+                <span className="text-[15px] font-bold text-blue-300">{cur.model_orders} шт.</span>
+                <span className="text-[14px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.model_revenue)}</span>
               </div>
             </div>
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5">
               <div className="flex items-center gap-2">
-                <span className="text-[12px] text-amber-400 font-semibold">Ассоц. конверсии</span>
-                <span className="text-lg font-bold text-amber-300">{assocPct.toFixed(0)}%</span>
+                <span className="text-[14px] text-amber-400 font-semibold">Ассоц. конверсии</span>
+                <span className="text-xl font-bold text-amber-300">{assocPct.toFixed(0)}%</span>
               </div>
               <div className="flex items-baseline gap-2 mt-0.5">
-                <span className="text-[13px] font-bold text-amber-300">{cur.associated_orders} шт.</span>
-                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.associated_revenue)}</span>
+                <span className="text-[15px] font-bold text-amber-300">{cur.associated_orders} шт.</span>
+                <span className="text-[14px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.associated_revenue)}</span>
               </div>
             </div>
           </div>
