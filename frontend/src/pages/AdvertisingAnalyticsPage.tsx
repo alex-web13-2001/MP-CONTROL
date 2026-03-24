@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, Fragment, useRef, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   DollarSign,
@@ -26,6 +27,11 @@ import {
   Search,
   CalendarDays,
   Check,
+  AlertTriangle,
+  Ban,
+  Trophy,
+  Gauge,
+  Info,
 } from 'lucide-react'
 import { DayPicker, type DateRange } from 'react-day-picker'
 import { ru } from 'date-fns/locale/ru'
@@ -1007,6 +1013,99 @@ function EventsDetailModal({
    Campaigns Table
    ═══════════════════════════════════════════════════════════ */
 
+/* ═══ Recommendation classification ═══ */
+type RecType = 'lowSpend' | 'burning' | 'highDrr' | 'effective' | null
+
+const REC_CONFIG: Record<Exclude<RecType, null>, { label: string; icon: React.ElementType; color: string; bgColor: string; borderColor: string }> = {
+  lowSpend: { label: 'Мало показов', icon: Gauge, color: '#a1a1aa', bgColor: 'bg-zinc-500/10', borderColor: 'border-zinc-500' },
+  burning: { label: 'Сливает бюджет', icon: Ban, color: '#f87171', bgColor: 'bg-red-500/10', borderColor: 'border-red-500' },
+  highDrr: { label: 'Высокий ДРР', icon: AlertTriangle, color: '#fbbf24', bgColor: 'bg-amber-500/10', borderColor: 'border-amber-500' },
+  effective: { label: 'Эффективная', icon: Trophy, color: '#34d399', bgColor: 'bg-emerald-500/10', borderColor: 'border-emerald-500' },
+}
+
+function classifyRec(c: { spend: number; views: number; orders: number; drr: number; ctr: number; cart: number }, periodDays: number): RecType {
+  if (c.spend > 0 && c.spend < 30 * periodDays && c.views < 500 * periodDays) return 'lowSpend'
+  if (c.orders === 0 && c.spend > 0) return 'burning'
+  if (c.orders > 0 && c.drr > 50) return 'highDrr'
+  if (c.orders >= 2 && c.drr > 0 && c.drr < 40 && c.spend > 100) return 'effective'
+  return null
+}
+
+function getRecExplanation(rec: RecType, c: { spend: number; views: number; orders: number; drr: number; cart: number; revenue: number }, periodDays: number): string {
+  const fmtM = (v: number) => v.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
+  switch (rec) {
+    case 'lowSpend': return `Ставка слишком низкая — алгоритм не показывает объявление. Расход ${fmtM(Math.round(c.spend / periodDays))}/день, всего ${c.views.toLocaleString('ru-RU')} показов.`
+    case 'burning': return c.cart === 0 ? `Расход ${fmtM(c.spend)}, ${c.views.toLocaleString('ru-RU')} показов → 0 корзин и 0 заказов. Товар не интересен аудитории.` : `Расход ${fmtM(c.spend)}, ${c.cart} корзин → 0 заказов. Проблема с ценой или доставкой.`
+    case 'highDrr': return `ДРР ${c.drr.toFixed(1)}% — реклама убыточна. Расход ${fmtM(c.spend)} на ${c.orders} заказ(ов). Снизьте ставки или оптимизируйте карточку.`
+    case 'effective': {
+      const romi = c.spend > 0 ? c.revenue / c.spend * 100 : 0
+      return `ДРР ${c.drr.toFixed(1)}%, ROMI ${romi.toFixed(0)}% — отличная эффективность. Увеличьте бюджет для масштабирования.`
+    }
+    default: return ''
+  }
+}
+
+/* ═══ Rec Popup ═══ */
+function RecBadge({ rec, explanation }: { rec: RecType; explanation: string }) {
+  const [showPopup, setShowPopup] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [popupPos, setPopupPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 })
+
+  useEffect(() => {
+    if (!showPopup) return
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node) && btnRef.current && !btnRef.current.contains(e.target as Node)) setShowPopup(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [showPopup])
+
+  if (!rec) return <span className="text-[hsl(var(--muted-foreground)/0.2)]">—</span>
+  const cfg = REC_CONFIG[rec]
+  const Icon = cfg.icon
+
+  const openPopup = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!showPopup && btnRef.current) {
+      const rect = btnRef.current.getBoundingClientRect()
+      const popW = 300
+      const vw = window.innerWidth
+      let left = rect.right - popW
+      if (left < 8) left = 8
+      if (left + popW > vw - 8) left = vw - popW - 8
+      setPopupPos({ top: rect.bottom + 4, left })
+    }
+    setShowPopup(!showPopup)
+  }
+
+  return (
+    <div className="relative inline-flex">
+      <button
+        ref={btnRef}
+        onClick={openPopup}
+        className={`flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-medium transition-all border ${cfg.bgColor} ${cfg.borderColor}/30 hover:${cfg.borderColor}/60`}
+        style={{ color: cfg.color }}
+        title={cfg.label}
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </button>
+      {showPopup && createPortal(
+        <div
+          ref={ref}
+          className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3 shadow-xl"
+          style={{ position: 'fixed', top: popupPos.top, left: popupPos.left, width: 300, zIndex: 9999, animation: 'dpPop 120ms ease-out' }}
+        >
+          <div className="flex items-center gap-1.5 mb-2">
+            <Icon className="h-4 w-4 shrink-0" style={{ color: cfg.color }} />
+            <span className="text-[13px] font-bold" style={{ color: cfg.color }}>{cfg.label}</span>
+          </div>
+          <p className="text-[13px] text-[hsl(var(--foreground)/0.8)] leading-relaxed" style={{ overflowWrap: 'break-word', wordBreak: 'break-word' }}>{explanation}</p>
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
+
 function CampaignsTable({ 
   campaigns,
   marketplace,
@@ -1027,6 +1126,14 @@ function CampaignsTable({
   const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
   const [expandedProductSku, setExpandedProductSku] = useState<Set<number>>(new Set())
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [recFilter, setRecFilter] = useState<RecType>(null)
+
+  // Compute period days
+  const periodDays = useMemo(() => {
+    const from = new Date(dateFrom)
+    const to = new Date(dateTo)
+    return Math.max(1, Math.round((to.getTime() - from.getTime()) / 86400000) + 1)
+  }, [dateFrom, dateTo])
 
   // Aggregate all items by SKU for products view
   const aggregatedProducts = useMemo(() => {
@@ -1085,17 +1192,22 @@ function CampaignsTable({
   }, [campaigns])
 
   // Filter & sort products
-  const filteredProducts = searchQuery.trim()
-    ? aggregatedProducts.filter(p => {
-        const q = searchQuery.trim().toLowerCase()
-        return (
-          p.offer_id?.toLowerCase().includes(q) ||
-          p.name?.toLowerCase().includes(q) ||
-          String(p.sku).includes(q) ||
-          String(p.product_id).includes(q)
-        )
-      })
-    : aggregatedProducts
+  const filteredProducts = useMemo(() => {
+    let result = aggregatedProducts
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      result = result.filter(p =>
+        p.offer_id?.toLowerCase().includes(q) ||
+        p.name?.toLowerCase().includes(q) ||
+        String(p.sku).includes(q) ||
+        String(p.product_id).includes(q)
+      )
+    }
+    if (recFilter) {
+      result = result.filter(p => classifyRec(p, periodDays) === recFilter)
+    }
+    return result
+  }, [aggregatedProducts, searchQuery, recFilter, periodDays])
 
   const sortedProducts = [...filteredProducts].sort((a, b) => {
     const va = (a as any)[sortKey] ?? 0
@@ -1113,13 +1225,24 @@ function CampaignsTable({
   }
 
   // Universal search filter
-  const filtered = searchQuery.trim()
-    ? campaigns.filter(c => {
-        const q = searchQuery.trim().toLowerCase()
-        // Search in campaign title & id
+  // Rec counts for filter badges
+  const recCounts = useMemo(() => {
+    const counts = { lowSpend: 0, burning: 0, highDrr: 0, effective: 0 }
+    const src = viewMode === 'campaigns' ? campaigns : aggregatedProducts
+    for (const c of src) {
+      const r = classifyRec(c, periodDays)
+      if (r) counts[r]++
+    }
+    return counts
+  }, [campaigns, aggregatedProducts, periodDays, viewMode])
+
+  const filtered = useMemo(() => {
+    let result = campaigns as CampaignRow[]
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase()
+      result = result.filter(c => {
         if (c.title?.toLowerCase().includes(q)) return true
         if (String(c.campaign_id).includes(q)) return true
-        // Search in items: sku, product_id, offer_id, name
         if (c.items?.some(item =>
           String(item.sku).includes(q) ||
           String(item.product_id).includes(q) ||
@@ -1128,7 +1251,12 @@ function CampaignsTable({
         )) return true
         return false
       })
-    : campaigns
+    }
+    if (recFilter) {
+      result = result.filter(c => classifyRec(c, periodDays) === recFilter)
+    }
+    return result
+  }, [campaigns, searchQuery, recFilter, periodDays])
 
   const sorted = [...filtered].sort((a, b) => {
     const va = (a as any)[sortKey] ?? 0
@@ -1256,15 +1384,59 @@ function CampaignsTable({
             Найдено: {viewMode === 'campaigns' ? `${filtered.length} из ${campaigns.length} кампаний` : `${filteredProducts.length} из ${aggregatedProducts.length} товаров`}
           </div>
         )}
+
+        {/* ═══ Recommendation filter buttons ═══ */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.5)] mr-1">Рекомендации:</span>
+          {(
+            [
+              { key: 'lowSpend' as const, label: 'Мало показов', icon: Gauge, color: '#a1a1aa' },
+              { key: 'burning' as const, label: 'Сливают', icon: Ban, color: '#f87171' },
+              { key: 'highDrr' as const, label: 'Высокий ДРР', icon: AlertTriangle, color: '#fbbf24' },
+              { key: 'effective' as const, label: 'Эффективные', icon: Trophy, color: '#34d399' },
+            ] as const
+          ).map(f => {
+            const count = recCounts[f.key]
+            const isActive = recFilter === f.key
+            const FIcon = f.icon
+            return (
+              <button
+                key={f.key}
+                onClick={() => setRecFilter(isActive ? null : f.key)}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium transition-all duration-200`}
+                style={{
+                  background: isActive ? f.color + '20' : 'transparent',
+                  border: `1.5px solid ${isActive ? f.color : 'hsl(var(--border))'}`,
+                  color: isActive ? f.color : 'hsl(var(--muted-foreground))',
+                  opacity: count === 0 ? 0.4 : 1,
+                }}
+                disabled={count === 0}
+              >
+                <FIcon className="h-3.5 w-3.5" />
+                {f.label}
+                <span className="text-[12px] font-bold" style={{ color: isActive ? f.color : 'hsl(var(--muted-foreground)/0.5)' }}>{count}</span>
+              </button>
+            )
+          })}
+          {recFilter && (
+            <button
+              onClick={() => setRecFilter(null)}
+              className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted)/0.15)] transition-all"
+            >
+              <X className="h-3 w-3" />
+              Сбросить
+            </button>
+          )}
+        </div>
       </div>
 
       {viewMode === 'products' ? (
         /* ═══ Products Table ═══ */
         <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
-          <table className="w-full min-w-[1300px]" style={{ borderCollapse: 'collapse' }}>
+          <table className="w-full min-w-[1500px]" style={{ borderCollapse: 'collapse' }}>
             <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
               <tr className="bg-[hsl(var(--card))]">
-                <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('offer_id')}>
+                <th className="sticky left-0 z-40 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('offer_id')}>
                   Товар<SortIcon k="offer_id" />
                 </th>
                 <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
@@ -1278,6 +1450,7 @@ function CampaignsTable({
                 <th className={thCls} onClick={() => handleSort('total_revenue')}>Общ. выр.<SortIcon k="total_revenue" /></th>
                 <th className={thCls} onClick={() => handleSort('total_drr')}>Общ. ДРР<SortIcon k="total_drr" /></th>
                 <th className={thCls} onClick={() => handleSort('avg_cpc')}>CPC<SortIcon k="avg_cpc" /></th>
+                <th className={thCls + ' w-[60px]'}>Рек.</th>
               </tr>
             </thead>
             <tbody>
@@ -1301,7 +1474,7 @@ function CampaignsTable({
                       className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.1)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
                       onClick={toggleExpand}
                     >
-                      <td className="sticky left-0 z-20 bg-[hsl(var(--card))] pl-4 pr-2 py-3">
+                      <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
                         <div className="flex items-center gap-3">
                           {/* Expand arrow */}
                           <ChevronRight className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.4)] transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
@@ -1364,18 +1537,21 @@ function CampaignsTable({
                         <span className={drrColor(p.total_drr)}>{p.total_drr.toFixed(1)}%</span>
                       </td>
                       <td className={tdCls}>{formatMoney(p.avg_cpc)}</td>
+                      <td className={tdCls}>
+                        <RecBadge rec={classifyRec(p, periodDays)} explanation={getRecExplanation(classifyRec(p, periodDays), p, periodDays)} />
+                      </td>
                     </tr>
                     {/* Expanded campaigns */}
                     {isExpanded && (
-                      <tr>
-                        <td colSpan={12} className="p-0">
-                          <div className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)] px-6 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <tr className="bg-[hsl(var(--muted)/0.04)] border-b border-[hsl(var(--border)/0.3)]">
+                        <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                          <div className="pl-6">
                             <div className="text-[11px] font-medium text-[hsl(var(--muted-foreground)/0.4)] mb-1.5">Кампании с этим товаром:</div>
                             <div className="space-y-1">
                               {p.campaignInfos.map(ci => (
                                 <div key={ci.id} className="flex items-center gap-2 group">
                                   <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)] font-bold font-mono">#{ci.id}</span>
-                                  <span className="text-[12px] text-[hsl(var(--foreground)/0.7)] truncate max-w-[280px]">{ci.title}</span>
+                                  <span className="text-[12px] text-[hsl(var(--foreground)/0.7)] truncate max-w-[240px]">{ci.title}</span>
                                   <button
                                     className="shrink-0 w-7 h-7 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors opacity-60 group-hover:opacity-100"
                                     title="Статистика кампании"
@@ -1392,6 +1568,7 @@ function CampaignsTable({
                             </div>
                           </div>
                         </td>
+                        <td colSpan={12}></td>
                       </tr>
                     )}
                   </React.Fragment>
@@ -1416,10 +1593,10 @@ function CampaignsTable({
       /* ═══ Campaigns Table (original) ═══ */
       <>
       <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
-        <table className="w-full min-w-[1200px]" style={{ borderCollapse: 'collapse' }}>
+        <table className="w-full min-w-[1500px]" style={{ borderCollapse: 'collapse' }}>
           <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
             <tr className="bg-[hsl(var(--card))]">
-              <th className="sticky left-0 z-40 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
+              <th className="sticky left-0 z-40 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors" onClick={() => handleSort('campaign_id')}>
                 Кампания<SortIcon k="campaign_id" />
               </th>
               <th className={thCls} onClick={() => handleSort('spend')}>Расход<SortIcon k="spend" /></th>
@@ -1434,6 +1611,7 @@ function CampaignsTable({
               <th className={thCls} onClick={() => handleSort('revenue')}>Выручка<SortIcon k="revenue" /></th>
               <th className={thCls}>CPO</th>
               <th className={thCls} onClick={() => handleSort('drr')}>ДРР<SortIcon k="drr" /></th>
+              <th className={thCls + ' w-[60px]'}>Рек.</th>
             </tr>
           </thead>
         <tbody>
@@ -1446,7 +1624,7 @@ function CampaignsTable({
                   className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.15)] cursor-pointer ${isExpanded ? 'bg-[hsl(var(--muted)/0.08)]' : ''}`}
                   onClick={() => c.items.length > 0 && toggleExpand(c.campaign_id)}
                 >
-                    <td className="sticky left-0 z-20 w-[300px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
+                    <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
                     <div className="flex items-center gap-2">
                       {c.items.length > 0 && (
                         <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
@@ -1510,6 +1688,9 @@ function CampaignsTable({
                   <td className={tdCls}>
                     <span className={drrColor(c.drr)}>{c.drr.toFixed(1)}%</span>
                   </td>
+                  <td className={tdCls}>
+                    <RecBadge rec={classifyRec(c, periodDays)} explanation={getRecExplanation(classifyRec(c, periodDays), c, periodDays)} />
+                  </td>
                 </tr>
 
                 {/* Per-SKU rows */}
@@ -1518,7 +1699,7 @@ function CampaignsTable({
                     key={`${c.campaign_id}-${s.sku}`}
                     className="border-b border-[hsl(var(--border)/0.15)] bg-[hsl(var(--muted)/0.06)]"
                   >
-                    <td className="sticky left-0 z-20 w-[300px] bg-[hsl(var(--muted)/0.06)] pl-4 pr-2 py-3">
+                    <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-3">
                       <div className="flex flex-col pl-6 min-w-0 gap-1.5">
                         <span className="text-[13px] font-medium leading-snug line-clamp-2" title={s.name || `SKU ${s.sku}`}>
                           {s.name || `SKU ${s.sku}`}
@@ -1568,16 +1749,17 @@ function CampaignsTable({
                 {isExpanded && c.associated_items && c.associated_items.length > 0 && (
                   <>
                     <tr className="border-b border-teal-500/20 bg-teal-500/5">
-                      <td colSpan={13} className="pl-10 py-1.5 text-[12px] font-semibold text-teal-400">
+                      <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-10 py-1.5 text-[12px] font-semibold text-teal-400">
                         Кросс-продажи ({c.associated_items.length} товаров · {formatNumber(c.associated_items.reduce((a, s) => a + s.orders, 0))} заказов)
                       </td>
+                      <td colSpan={13}></td>
                     </tr>
                     {c.associated_items.map((s) => (
                       <tr
                         key={`${c.campaign_id}-assoc-${s.sku}`}
                         className="border-b border-[hsl(var(--border)/0.1)] bg-teal-500/[0.02]"
                       >
-                        <td className="sticky left-0 z-20 w-[300px] bg-[hsl(var(--muted)/0.04)] pl-4 pr-2 py-2">
+                        <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-2">
                           <div className="flex flex-col pl-6 min-w-0 gap-0.5">
                             <span className="text-[12px] text-teal-400/80 leading-snug line-clamp-1" title={s.name || `SKU ${s.sku}`}>
                               {s.name || `SKU ${s.sku}`}
@@ -1878,20 +2060,7 @@ export default function AdvertisingAnalyticsPage() {
         </Card>
       </motion.div>
 
-      {/* ── Campaign Insights ── */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, delay: 0.35 }}
-      >
-        <Card>
-          <CardContent className="pt-5">
-            <CampaignInsights
-              shopId={currentShop!.id}
-            />
-          </CardContent>
-        </Card>
-      </motion.div>
+      {/* Campaign Insights removed — recommendations moved to table filters */}
 
       {/* ── Campaigns Table ── */}
       <motion.div
