@@ -11,6 +11,9 @@ export interface CampaignStatsRow {
   ctr: number
   drr: number
   product_revenue: number
+  direct_revenue: number
+  model_revenue: number
+  associated_revenue: number
 }
 
 export interface CampaignEventRow {
@@ -22,6 +25,7 @@ export interface CampaignEventRow {
   offer_id?: string
   old_value?: string
   new_value?: string
+  event_metadata?: Record<string, unknown>
 }
 
 export interface CampaignPhraseRow {
@@ -47,13 +51,13 @@ export interface CampaignPurchaseRow {
   quantity: number
   revenue: number
   avg_price: number
-  is_cross: boolean
+  sale_type: 'direct' | 'model' | 'associated'
 }
 
 export interface KpiPeriod {
   spend: number
   ad_revenue: number
-  product_revenue: number
+  product_revenue: number  // total product sales (organic+ad) from fact_orders_raw
   orders: number
   cart: number
   clicks: number
@@ -62,6 +66,13 @@ export interface KpiPeriod {
   drr_ad: number
   drr_product: number
   cpo: number
+  // Breakdown by sale type (ad-attributed)
+  direct_revenue: number
+  direct_orders: number
+  model_revenue: number
+  model_orders: number
+  associated_revenue: number
+  associated_orders: number
 }
 
 export interface CampaignKpiResponse {

@@ -142,7 +142,9 @@ function fmtNum(n: number, suffix = ''): string {
 /* ── Chart metric config ────────────────────────────────── */
 const CHART_METRICS = [
   { key: 'spend', label: 'Расход', color: '#ef4444', type: 'area' },
-  { key: 'revenue', label: 'Выручка рекл.', color: '#10b981', type: 'area' },
+  { key: 'direct_revenue', label: 'Прямые', color: '#10b981', type: 'bar' },
+  { key: 'model_revenue', label: 'Модель', color: '#3b82f6', type: 'bar' },
+  { key: 'associated_revenue', label: 'Ассоц.', color: '#f59e0b', type: 'bar' },
   { key: 'product_revenue', label: 'Выручка общая', color: '#06b6d4', type: 'area' },
   { key: 'orders', label: 'Заказы', color: '#8b5cf6', type: 'bar' },
   { key: 'cart', label: 'Корзины', color: '#f97316', type: 'bar' },
@@ -264,7 +266,7 @@ export function CampaignDetailModal({
   const [period, setPeriod] = useState('30d')
   const [selectedSku, setSelectedSku] = useState<number | undefined>(initialSku)
   const [showSkuDropdown, setShowSkuDropdown] = useState(false)
-  const [scope, setScope] = useState<'all' | 'main' | 'cross'>('all')
+  const scope = 'all' // Always show direct product data (scope toggle removed)
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo] = useState('')
 
@@ -295,7 +297,7 @@ export function CampaignDetailModal({
   }, [aiStorageKey])
 
   // Visible chart metrics
-  const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(new Set(['spend', 'revenue', 'orders', 'cart']))
+  const [visibleMetrics, setVisibleMetrics] = useState<Set<string>>(new Set(['spend', 'direct_revenue', 'model_revenue', 'associated_revenue', 'orders', 'cart']))
 
   const { startDate, endDate } = computeDates(period, customFrom, customTo)
 
@@ -357,9 +359,9 @@ export function CampaignDetailModal({
       setLoadedTabs(prev => new Set(prev).add(cacheKey))
     } catch (err) { console.error(`Failed to load ${tab}:`, err) }
     finally { setLoading(false) }
-  }, [marketplace, campaignId, startDate, endDate, selectedSku, scope, loadedTabs, events.length, stats.length])
+  }, [marketplace, campaignId, startDate, endDate, selectedSku, loadedTabs, events.length, stats.length])
 
-  useEffect(() => { setLoadedTabs(new Set()) }, [period, selectedSku, scope])
+  useEffect(() => { setLoadedTabs(new Set()) }, [period, selectedSku])
   useEffect(() => { if (isOpen) loadTabData(activeTab) }, [isOpen, activeTab, loadTabData])
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -510,7 +512,7 @@ export function CampaignDetailModal({
     }
 
     // Determine which axes are active
-    const moneyActive = visibleMetrics.has('spend') || visibleMetrics.has('revenue') || visibleMetrics.has('product_revenue')
+    const moneyActive = visibleMetrics.has('spend') || visibleMetrics.has('direct_revenue') || visibleMetrics.has('model_revenue') || visibleMetrics.has('associated_revenue') || visibleMetrics.has('product_revenue')
     const countActive = visibleMetrics.has('orders') || visibleMetrics.has('cart') || visibleMetrics.has('clicks') || visibleMetrics.has('views')
 
     // KPI delta values
@@ -527,99 +529,141 @@ export function CampaignDetailModal({
 
     return (
       <div className="space-y-4">
-        {/* KPI Cards — 6 cards in 2 rows */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-          {/* Расход */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Расход</div>
-            <div className="text-lg font-bold text-red-400 mt-0.5">{formatMoney(cur?.spend || 0)}</div>
-            {spendD !== null && (
-              <div className={`text-[11px] font-medium ${deltaColor(spendD, true)}`}>
-                {deltaStr(spendD)} vs пред. период
-              </div>
-            )}
-          </div>
-
-          {/* Выручка — реклама + товары */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Выручка</div>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <div>
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Рекламная</div>
-                <div className="text-base font-bold text-emerald-400">{formatMoney(cur?.ad_revenue || 0)}</div>
-                {adRevD !== null && <span className={`text-[13px] font-medium ${deltaColor(adRevD)}`}>{deltaStr(adRevD)}</span>}
-              </div>
-              <div className="border-l border-[hsl(var(--border))] pl-2">
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Товаров</div>
-                <div className="text-base font-bold text-teal-400">{formatMoney(cur?.product_revenue || 0)}</div>
-                {prodRevD !== null && <span className={`text-[13px] font-medium ${deltaColor(prodRevD)}`}>{deltaStr(prodRevD)}</span>}
-              </div>
-            </div>
-          </div>
-
-          {/* Заказы + Корзины */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Заказы / Корзины</div>
-            <div className="flex items-baseline gap-3 mt-0.5">
-              <div>
-                <div className="text-lg font-bold text-purple-400">{cur?.orders || 0}</div>
-                {ordersD !== null && <span className={`text-[13px] font-medium ${deltaColor(ordersD)}`}>{deltaStr(ordersD)}</span>}
-              </div>
-              <div className="text-[hsl(var(--muted-foreground))]">/</div>
-              <div>
-                <div className="text-lg font-bold text-orange-400">{cur?.cart || 0}</div>
-                {cartD !== null && <span className={`text-[13px] font-medium ${deltaColor(cartD)}`}>{deltaStr(cartD)}</span>}
-              </div>
-            </div>
-          </div>
-
-          {/* ДРР — рекламный + общий */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">ДРР</div>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <div>
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Рекламный</div>
-                <div className="text-base font-bold text-pink-400">{(cur?.drr_ad || 0).toFixed(1)}%</div>
-                {drrAdD !== null && <span className={`text-[13px] font-medium ${deltaColor(drrAdD, true)}`}>{drrAdD > 0 ? '+' : ''}{drrAdD.toFixed(1)} п.п.</span>}
-              </div>
-              <div className="border-l border-[hsl(var(--border))] pl-2">
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Общий</div>
-                <div className="text-base font-bold text-amber-400">{(cur?.drr_product || 0).toFixed(1)}%</div>
-                {drrProdD !== null && <span className={`text-[13px] font-medium ${deltaColor(drrProdD, true)}`}>{drrProdD > 0 ? '+' : ''}{drrProdD.toFixed(1)} п.п.</span>}
+        {/* ═══ БЛОК 1: Вся кампания ═══ */}
+        {cur && (() => {
+          const totalOrders = cur.direct_orders + cur.model_orders + cur.associated_orders
+          const totalRevenue = cur.direct_revenue + cur.model_revenue + cur.associated_revenue
+          const spend = cur.spend
+          const views = cur.views
+          const clicks = cur.clicks
+          const cpm = views > 0 ? (spend / views * 1000) : 0
+          const cpc = clicks > 0 ? (spend / clicks) : 0
+          const cr = clicks > 0 ? (totalOrders / clicks * 100) : 0
+          const totalDrr = totalRevenue > 0 ? (spend / totalRevenue * 100) : 0
+          const totalCpo = totalOrders > 0 ? (spend / totalOrders) : 0
+          return (
+            <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
+              <div className="text-[13px] text-[hsl(var(--muted-foreground))] font-semibold mb-2">Вся кампания</div>
+              <div className="grid grid-cols-4 gap-3">
+                {/* Показы */}
+                <div>
+                  <div className="text-base font-bold text-[hsl(var(--foreground))]">{formatNumber(views)}</div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Показы</div>
+                  {viewsD !== null && <span className={`text-[10px] font-medium ${deltaColor(viewsD)}`}>{deltaStr(viewsD)}</span>}
+                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                    CPM <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(cpm)}</span>
+                  </div>
+                </div>
+                {/* Клики */}
+                <div>
+                  <div className="text-base font-bold text-[hsl(var(--foreground))]">{formatNumber(clicks)}</div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Клики</div>
+                  {clicksD !== null && <span className={`text-[10px] font-medium ${deltaColor(clicksD)}`}>{deltaStr(clicksD)}</span>}
+                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                    CTR <span className="text-[hsl(var(--foreground))] font-medium">{cur.ctr.toFixed(2)}%</span>
+                    {' · '}CPC <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(cpc)}</span>
+                  </div>
+                </div>
+                {/* Заказы */}
+                <div>
+                  <div className="text-base font-bold text-purple-400">{totalOrders}</div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Заказы</div>
+                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                    CR <span className="text-[hsl(var(--foreground))] font-medium">{cr.toFixed(1)}%</span>
+                    {' · '}CPO <span className="text-[hsl(var(--foreground))] font-medium">{formatMoney(totalCpo)}</span>
+                  </div>
+                </div>
+                {/* Расход + Выручка + ДРР */}
+                <div>
+                  <div className="text-base font-bold text-red-400">{totalDrr.toFixed(1)}%</div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР</div>
+                  <div className="mt-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+                    Выр. <span className="text-emerald-400 font-medium">{formatMoney(totalRevenue)}</span>
+                  </div>
+                  <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                    Расх. <span className="text-red-400 font-medium">{formatMoney(spend)}</span>
+                    {spendD !== null && <span className={`ml-1 text-[10px] ${deltaColor(spendD, true)}`}>{deltaStr(spendD)}</span>}
+                  </div>
+                </div>
               </div>
             </div>
-          </div>
+          )
+        })()}
 
-          {/* CPO */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">CPO (стоимость заказа)</div>
-            <div className="text-lg font-bold text-purple-400 mt-0.5">{(cur?.cpo || 0) > 0 ? formatMoney(cur!.cpo) : '—'}</div>
-            {cpoD !== null && (
-              <div className={`text-[11px] font-medium ${deltaColor(cpoD, true)}`}>{deltaStr(cpoD)}</div>
-            )}
+        {/* ═══ БЛОК 2: Прямой товар ═══ */}
+        {cur && (() => {
+          const totalRev = cur.direct_revenue + cur.model_revenue + cur.associated_revenue
+          const directPct = totalRev > 0 ? (cur.direct_revenue / totalRev * 100) : 100
+          const modelPct = totalRev > 0 ? (cur.model_revenue / totalRev * 100) : 0
+          const assocPct = totalRev > 0 ? (cur.associated_revenue / totalRev * 100) : 0
+          return (<>
+        <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[13px] text-emerald-400 font-semibold">Прямой товар</span>
+            <span className="text-lg font-bold text-emerald-400">{directPct.toFixed(0)}%</span>
+            <span className="text-[11px] text-[hsl(var(--muted-foreground))]">от выручки</span>
           </div>
-
-          {/* Клики + Показы + CTR */}
-          <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-3">
-            <div className="text-[14px] text-[hsl(var(--muted-foreground))] font-semibold">Трафик</div>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <div>
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Клики</div>
-                <div className="text-base font-bold text-blue-400">{formatNumber(cur?.clicks || 0)}</div>
-                {clicksD !== null && <span className={`text-[13px] font-medium ${deltaColor(clicksD)}`}>{deltaStr(clicksD)}</span>}
-              </div>
-              <div className="border-l border-[hsl(var(--border))] pl-2">
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">CTR</div>
-                <div className="text-base font-bold text-teal-400">{(cur?.ctr || 0).toFixed(2)}%</div>
-              </div>
-              <div className="border-l border-[hsl(var(--border))] pl-2">
-                <div className="text-[13px] text-[hsl(var(--muted-foreground))]">Показы</div>
-                <div className="text-base font-bold text-amber-400">{formatNumber(cur?.views || 0)}</div>
-                {viewsD !== null && <span className={`text-[13px] font-medium ${deltaColor(viewsD)}`}>{deltaStr(viewsD)}</span>}
-              </div>
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+            <div>
+              <div className="text-base font-bold text-emerald-400">{formatMoney(cur.ad_revenue)}</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Выр. рекл.</div>
+              {adRevD !== null && <span className={`text-[10px] font-medium ${deltaColor(adRevD)}`}>{deltaStr(adRevD)}</span>}
+            </div>
+            <div>
+              <div className="text-base font-bold text-teal-400">{formatMoney(cur.product_revenue)}</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Выр. общая</div>
+              {prodRevD !== null && <span className={`text-[10px] font-medium ${deltaColor(prodRevD)}`}>{deltaStr(prodRevD)}</span>}
+            </div>
+            <div>
+              <div className="text-base font-bold text-purple-400">{cur.orders} <span className="text-[hsl(var(--muted-foreground))] text-[13px] font-normal">/ {cur.cart}</span></div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">Заказы / Корз.</div>
+              {ordersD !== null && <span className={`text-[10px] font-medium ${deltaColor(ordersD)}`}>{deltaStr(ordersD)}</span>}
+            </div>
+            <div>
+              <div className="text-base font-bold text-pink-400">{(cur.drr_ad || 0).toFixed(1)}%</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР рекл.</div>
+              {drrAdD !== null && <span className={`text-[10px] font-medium ${deltaColor(drrAdD, true)}`}>{drrAdD > 0 ? '+' : ''}{drrAdD.toFixed(1)} п.п.</span>}
+            </div>
+            <div>
+              <div className="text-base font-bold text-amber-400">{(cur.drr_product || 0).toFixed(1)}%</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">ДРР общий</div>
+              {drrProdD !== null && <span className={`text-[10px] font-medium ${deltaColor(drrProdD, true)}`}>{drrProdD > 0 ? '+' : ''}{drrProdD.toFixed(1)} п.п.</span>}
+            </div>
+            <div>
+              <div className="text-base font-bold text-purple-400">{cur.cpo > 0 ? formatMoney(cur.cpo) : '—'}</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))]">CPO</div>
+              {cpoD !== null && <span className={`text-[10px] font-medium ${deltaColor(cpoD, true)}`}>{deltaStr(cpoD)}</span>}
             </div>
           </div>
         </div>
+
+        {/* ═══ БЛОК 3: Кросс-продажи ═══ */}
+        {(cur.model_orders > 0 || cur.associated_orders > 0) && (
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-blue-400 font-semibold">Модель</span>
+                <span className="text-lg font-bold text-blue-300">{modelPct.toFixed(0)}%</span>
+              </div>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-[13px] font-bold text-blue-300">{cur.model_orders} шт.</span>
+                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.model_revenue)}</span>
+              </div>
+            </div>
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-amber-400 font-semibold">Ассоц. конверсии</span>
+                <span className="text-lg font-bold text-amber-300">{assocPct.toFixed(0)}%</span>
+              </div>
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-[13px] font-bold text-amber-300">{cur.associated_orders} шт.</span>
+                <span className="text-[12px] text-[hsl(var(--muted-foreground))]">{formatMoney(cur.associated_revenue)}</span>
+              </div>
+            </div>
+          </div>
+        )}
+        </>)
+        })()}
 
         {/* Metric toggles */}
         <div className="flex flex-wrap gap-1.5">
@@ -710,11 +754,19 @@ export function CampaignDetailModal({
               {visibleMetrics.has('spend') && (
                 <Area yAxisId="money" type="monotone" dataKey="spend" stroke="#ef4444" fill="url(#gSpendM)" strokeWidth={2} name="spend" />
               )}
-              {visibleMetrics.has('revenue') && (
-                <Area yAxisId="money" type="monotone" dataKey="revenue" stroke="#10b981" fill="url(#gRevenueM)" strokeWidth={2} name="revenue" />
-              )}
               {visibleMetrics.has('product_revenue') && (
                 <Area yAxisId="money" type="monotone" dataKey="product_revenue" stroke="#06b6d4" fill="url(#gProdRevM)" strokeWidth={2} name="product_revenue" />
+              )}
+
+              {/* Stacked revenue bars — direct (green) + model (blue) + associated (amber) */}
+              {visibleMetrics.has('direct_revenue') && (
+                <Bar yAxisId="money" dataKey="direct_revenue" fill="#10b981" fillOpacity={0.85} barSize={16} stackId="revBreakdown" name="direct_revenue" radius={[0, 0, 0, 0]} />
+              )}
+              {visibleMetrics.has('model_revenue') && (
+                <Bar yAxisId="money" dataKey="model_revenue" fill="#3b82f6" fillOpacity={0.85} barSize={16} stackId="revBreakdown" name="model_revenue" radius={[0, 0, 0, 0]} />
+              )}
+              {visibleMetrics.has('associated_revenue') && (
+                <Bar yAxisId="money" dataKey="associated_revenue" fill="#f59e0b" fillOpacity={0.85} barSize={16} stackId="revBreakdown" name="associated_revenue" radius={[3, 3, 0, 0]} />
               )}
               {/* Bars on count axis — stacked so both visible */}
               {visibleMetrics.has('orders') && (
@@ -887,8 +939,48 @@ export function CampaignDetailModal({
                           </div>
                         )}
 
-                        {/* Non-numeric: show old → new */}
-                        {!isNumeric && (ev.old_value || ev.new_value) && (
+                        {/* Photo change preview */}
+                        {['CONTENT_MAIN_PHOTO_CHANGED', 'CONTENT_PHOTO_ORDER_CHANGED', 'CONTENT_PHOTO_ADDED', 'CONTENT_PHOTO_REMOVED', 'OZON_PHOTO_CHANGE'].includes(ev.event_type) && (() => {
+                          const imgUrl = (ev.event_metadata?.main_image_url as string) || ''
+                          const oldCount = (ev.event_metadata?.old_count as number) ?? null
+                          const newCount = (ev.event_metadata?.new_count as number) ?? null
+                          return (
+                            <div className="flex items-center gap-3 mt-2">
+                              {imgUrl ? (
+                                <img
+                                  src={imgUrl}
+                                  alt="Фото товара"
+                                  className="h-16 w-16 rounded-lg object-cover border border-[hsl(var(--border))] shadow-sm"
+                                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+                                />
+                              ) : (
+                                <div className="h-16 w-16 rounded-lg bg-[hsl(var(--muted)/0.3)] border border-[hsl(var(--border))] flex items-center justify-center">
+                                  <Image className="h-6 w-6 text-[hsl(var(--muted-foreground)/0.4)]" />
+                                </div>
+                              )}
+                              <div className="text-[12px] text-[hsl(var(--muted-foreground))]">
+                                {ev.event_type === 'CONTENT_MAIN_PHOTO_CHANGED' && (
+                                  <span>Главное фото заменено</span>
+                                )}
+                                {ev.event_type === 'CONTENT_PHOTO_ADDED' && oldCount !== null && newCount !== null && (
+                                  <span>Добавлено фото: {oldCount} → {newCount} шт.</span>
+                                )}
+                                {ev.event_type === 'CONTENT_PHOTO_REMOVED' && oldCount !== null && newCount !== null && (
+                                  <span>Удалено фото: {oldCount} → {newCount} шт.</span>
+                                )}
+                                {ev.event_type === 'CONTENT_PHOTO_ORDER_CHANGED' && (
+                                  <span>Порядок/состав фото изменён ({newCount ?? '?'} шт.)</span>
+                                )}
+                                {ev.event_type === 'OZON_PHOTO_CHANGE' && (
+                                  <span>Фото обновлено</span>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })()}
+
+                        {/* Non-numeric, non-photo: show old → new */}
+                        {!isNumeric && !['CONTENT_MAIN_PHOTO_CHANGED', 'CONTENT_PHOTO_ORDER_CHANGED', 'CONTENT_PHOTO_ADDED', 'CONTENT_PHOTO_REMOVED', 'OZON_PHOTO_CHANGE'].includes(ev.event_type) && (ev.old_value || ev.new_value) && (
                           <div className="flex items-center gap-2 mt-1.5 text-[12px]">
                             {ev.old_value && <span className="px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded font-medium">{ev.old_value}</span>}
                             <ArrowRight className="h-3 w-3 text-[hsl(var(--muted-foreground)/0.4)]" />
@@ -938,18 +1030,65 @@ export function CampaignDetailModal({
     if (purchases.length === 0) return <Empty text="Нет данных о покупках за этот период" />
     const totalQty = purchases.reduce((a, c) => a + c.quantity, 0)
     const totalRev = purchases.reduce((a, c) => a + c.revenue, 0)
+    
+    // Summary by sale_type
+    const directItems = purchases.filter(p => p.sale_type === 'direct')
+    const modelItems = purchases.filter(p => p.sale_type === 'model')
+    const assocItems = purchases.filter(p => p.sale_type === 'associated')
+    const directRev = directItems.reduce((a, c) => a + c.revenue, 0)
+    const modelRev = modelItems.reduce((a, c) => a + c.revenue, 0)
+    const assocRev = assocItems.reduce((a, c) => a + c.revenue, 0)
+    const directQty = directItems.reduce((a, c) => a + c.quantity, 0)
+    const modelQty = modelItems.reduce((a, c) => a + c.quantity, 0)
+    const assocQty = assocItems.reduce((a, c) => a + c.quantity, 0)
+    
+    const saleTypeBadge = (type: string) => {
+      const cfg = {
+        direct: { label: 'Прямые', bg: 'bg-emerald-500/15', text: 'text-emerald-400', border: 'border-emerald-500/30' },
+        model: { label: 'Модель', bg: 'bg-blue-500/15', text: 'text-blue-400', border: 'border-blue-500/30' },
+        associated: { label: 'Ассоц.', bg: 'bg-amber-500/15', text: 'text-amber-400', border: 'border-amber-500/30' },
+      }[type] || { label: type, bg: 'bg-gray-500/15', text: 'text-gray-400', border: 'border-gray-500/30' }
+      return <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${cfg.bg} ${cfg.text} border ${cfg.border}`}>{cfg.label}</span>
+    }
+    
+    const hasMultipleTypes = marketplace.toLowerCase() !== 'ozon' && (modelItems.length > 0 || assocItems.length > 0)
+    
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-4 text-[13px] text-[hsl(var(--muted-foreground))]">
+        <div className="flex items-center gap-4 text-[13px] text-[hsl(var(--muted-foreground))] flex-wrap">
           <span>Товаров: <strong className="text-[hsl(var(--foreground))]">{purchases.length}</strong></span>
           <span>Заказано: <strong className="text-[hsl(var(--foreground))]">{totalQty} шт.</strong></span>
           <span>Выручка: <strong className="text-emerald-400">{formatMoney(totalRev)}</strong></span>
         </div>
+        {/* Breakdown by sale type (WB only, when there are cross-sales) */}
+        {hasMultipleTypes && (
+          <div className="flex items-center gap-3 text-[12px] flex-wrap">
+            {directItems.length > 0 && (
+              <span className="flex items-center gap-1.5 text-emerald-400">
+                {saleTypeBadge('direct')}
+                <span className="text-[hsl(var(--muted-foreground))]">{directQty} шт. • {formatMoney(directRev)}</span>
+              </span>
+            )}
+            {modelItems.length > 0 && (
+              <span className="flex items-center gap-1.5 text-blue-400">
+                {saleTypeBadge('model')}
+                <span className="text-[hsl(var(--muted-foreground))]">{modelQty} шт. • {formatMoney(modelRev)}</span>
+              </span>
+            )}
+            {assocItems.length > 0 && (
+              <span className="flex items-center gap-1.5 text-amber-400">
+                {saleTypeBadge('associated')}
+                <span className="text-[hsl(var(--muted-foreground))]">{assocQty} шт. • {formatMoney(assocRev)}</span>
+              </span>
+            )}
+          </div>
+        )}
         <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden max-h-[380px] overflow-y-auto">
           <table className="w-full text-left">
             <thead className="sticky top-0 bg-[hsl(var(--card))] z-10 shadow-[0_1px_0_hsl(var(--border))]">
               <tr>
                 <th className="px-4 py-2.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))] uppercase">Товар</th>
+                {hasMultipleTypes && <th className="px-3 py-2.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))] uppercase">Тип</th>}
                 <th className="px-4 py-2.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))] text-right uppercase">Кол-во</th>
                 <th className="px-4 py-2.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))] text-right uppercase">Выручка</th>
                 <th className="px-4 py-2.5 text-[11px] font-medium text-[hsl(var(--muted-foreground))] text-right uppercase">Ср. цена</th>
@@ -962,6 +1101,7 @@ export function CampaignDetailModal({
                     <div className="text-[13px] font-medium truncate max-w-[280px]" title={p.product_name}>{p.product_name}</div>
                     <div className="text-[11px] text-[hsl(var(--muted-foreground))]">{p.offer_id || `SKU: ${p.sku}`}</div>
                   </td>
+                  {hasMultipleTypes && <td className="px-3 py-2.5">{saleTypeBadge(p.sale_type)}</td>}
                   <td className="px-4 py-2.5 text-[13px] text-right font-medium">{p.quantity} шт.</td>
                   <td className="px-4 py-2.5 text-[13px] text-right text-emerald-400 font-medium">{formatMoney(p.revenue)}</td>
                   <td className="px-4 py-2.5 text-[13px] text-right">{formatMoney(p.avg_price)}</td>
@@ -1202,18 +1342,7 @@ export function CampaignDetailModal({
               )}
             </div>
           )}
-          {/* Scope toggle (WB only — shows main vs cross-sell data) */}
-          {marketplace.toLowerCase() !== 'ozon' && (
-            <div className="flex items-center gap-0 bg-[hsl(var(--muted)/0.3)] rounded-lg p-0.5">
-              {([
-                { value: 'all' as const, label: 'Все продажи' },
-                { value: 'main' as const, label: 'Товары кампании' },
-                { value: 'cross' as const, label: 'Кросс' },
-              ]).map(opt => (
-                <button key={opt.value} onClick={() => setScope(opt.value)} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-all whitespace-nowrap ${scope === opt.value ? 'bg-[hsl(var(--background))] text-[hsl(var(--foreground))] shadow-sm' : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'}`}>{opt.label}</button>
-              ))}
-            </div>
-          )}
+          {/* Scope toggle removed — KPI always shows direct product data, breakdown in cards */}
           <button
             onClick={async () => {
               if (aiLoading && aiController) { aiController.abort(); setAiLoading(false); setShowAiPanel(false); return }

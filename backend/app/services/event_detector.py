@@ -1037,6 +1037,7 @@ class ContentEventDetector:
                     "event_metadata": {
                         "old_count": old.get("photos_count", 0),
                         "new_count": card["photos_count"],
+                        "main_image_url": card.get("main_image_url", ""),
                     },
                 })
                 logger.info(f"Detected CONTENT_MAIN_PHOTO_CHANGED: nm={nm_id}")
@@ -1072,6 +1073,7 @@ class ContentEventDetector:
                     "event_metadata": {
                         "old_count": old_count,
                         "new_count": new_count,
+                        "main_image_url": card.get("main_image_url", ""),
                     },
                 })
                 logger.info(f"Detected {gallery_event_type}: nm={nm_id} ({old_count}->{new_count})")
