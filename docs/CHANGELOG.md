@@ -1,3 +1,104 @@
+## 2026-03-24 (v17.18.2)
+
+### feat(events): Превью фото в событиях кампании
+
+**Проблема**: В попапе кампании события «Фото изменено» / «Фото добавлено» показывали сырые хэши (Content-Length fingerprint) вместо реальных фотографий.
+
+**Backend** (`event_detector.py`):
+- `detect_content_events()`: добавлен `main_image_url` в `event_metadata` для всех фото-событий (CONTENT_MAIN_PHOTO_CHANGED, CONTENT_PHOTO_ADDED/REMOVED/ORDER_CHANGED)
+
+**Backend** (`campaign_details.py`):
+- `CampaignEventRow` schema: новое поле `event_metadata: Optional[dict]`
+- SQL-запрос events: добавлена колонка `event_metadata`
+- `product_map`: обогащён `main_image_url` из `dim_products`/`dim_ozon_products`
+- Fallback: если `event_metadata` не содержит `main_image_url`, берётся из `product_map`
+
+**Frontend** (`CampaignDetailModal.tsx`):
+- Фото-события показывают **thumbnail 64×64** текущего фото товара + описательный текст:
+  - «Главное фото заменено»
+  - «Добавлено фото: 5 → 6 шт.»
+  - «Удалено фото: 6 → 5 шт.»
+  - «Порядок/состав фото изменён (6 шт.)»
+- Fallback placeholder (иконка Image) при отсутствии URL
+- `event_metadata` добавлен в TS-интерфейс `CampaignEventRow`
+
+---
+
+## 2026-03-24 (v17.18.1)
+
+### feat(advertising): KPI редизайн — 3 блока + CPM/CPC/CR
+
+**UI полностью переделан**: вместо 6 отдельных карточек + scope toggle (Все/Прямые/Кросс) — **3 визуальных блока**:
+
+**Блок 1 «Вся кампания»** (как в WB админке):
+- 4 колонки: Показы/CPM, Клики/CTR/CPC, Заказы/CR/CPO, ДРР/Выручка/Расход
+- Новые метрики: **CPM**, **CPC**, **CR** (вычисляются на frontend)
+
+**Блок 2 «Прямой товар»** (зелёная рамка):
+- 6 колонок: Выр. рекл. / Выр. общая / Заказы-Корзины / ДРР рекл. / ДРР общий / CPO
+- Данные только по прямым SKU (views>0/clicks>0/spend>0)
+- product_revenue = общая выручка прямых SKU из `fact_orders_raw`
+
+**Блок 3 «Кросс-продажи»** (инфо):
+- Модель (шт + выручка) / Ассоц. конверсии (шт + выручка)
+- Без ДРР/CPO — расход не атрибутируется
+
+**Backend** (`campaign_details.py`):
+- `_build_wb_scope_filter()`: scope='all' = 'main' (direct SKU only)
+- `_compute_sale_type_breakdown()` — imt_id-based классификация
+- 6 breakdown полей в `KpiPeriod`
+- `product_revenue` из `fact_orders_raw` для direct SKU
+
+**Frontend** (`CampaignDetailModal.tsx`):
+- Scope toggle UI удалён
+- scope = const 'all' (= main на backend)
+- 3-блочный лейаут KPI с CPM/CPC/CR
+
+---
+
+## 2026-03-23 (v17.18)
+
+### feat(advertising): 3-уровневая классификация продаж в кампаниях (imt_id)
+
+**Цель**: Разделить продажи в рекламных кампаниях WB на 3 типа:
+- **direct** (Прямые) — непосредственно рекламируемые товары
+- **model** (Модель) — товары из той же объединённой карточки (по `imt_id`)
+- **associated** (Ассоц.) — ассоциированные конверсии (другие товары)
+
+**Database** (`dim_products`):
+- Новая колонка `imt_id` (BigInteger, nullable) — ID объединённой карточки WB
+- Миграция Alembic: `2e105ad65fd8_add_imt_id_to_dim_products.py`
+- Индекс: `ix_dim_products_imt_id`
+
+**Backend** (`wb_content_service.py`):
+- `fetch_all_cards()`: извлекает `imtID` из WB Content API
+- `update_products_db()`: сохраняет `imt_id` в `dim_products`
+
+**Backend** (`campaign_details.py`):
+- `CampaignPurchaseRow.is_cross: bool` → `sale_type: str` (direct/model/associated)
+- Функция `classify_sale()`: использует `imt_id` из `dim_products` для классификации
+  - main SKU (views>0/clicks>0/spend>0) → `direct`
+  - тот же `imt_id` что у main → `model`
+  - другой `imt_id` или нет data → `associated`
+- Graceful fallback: если `imt_id` не заполнен → `associated` (консервативно)
+- Обогащение имён через `sku_imt_map` (один запрос вместо двух)
+
+**Frontend** (`campaignDetails.ts`):
+- `CampaignPurchaseRow.is_cross` → `sale_type: 'direct' | 'model' | 'associated'`
+
+**Frontend** (`CampaignDetailModal.tsx`):
+- Scope toggle: «Все продажи / Товары кампании / Кросс» → «Все / Прямые / Кросс»
+- Таблица Покупки: новая колонка «Тип» с цветными бейджами:
+  - 🟢 Прямые (emerald) — `direct`
+  - 🔵 Модель (blue) — `model`
+  - 🟡 Ассоц. (amber) — `associated`
+- Summary breakdown: «Прямые 23 шт. • 64 039 ₽ | Ассоц. 856 шт. • 473 421 ₽»
+- Колонка «Тип» показывается только при наличии нескольких типов
+
+**Заполнение imt_id**: происходит автоматически при ежедневном `sync_product_content` (Celery heavy queue).
+
+---
+
 ## 2026-03-23 (v17.17)
 
 ### feat(geography): Excel отчёт географии продаж + фикс AI timeout
