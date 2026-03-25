@@ -1854,37 +1854,38 @@ function CampaignsTable({
                 {/* Associated / cross-sell items (WB) */}
                 {isExpanded && c.associated_items && c.associated_items.length > 0 && (
                   <>
-                    <tr className="border-b border-teal-500/20 bg-teal-500/5">
-                      <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-10 py-1.5 text-[12px] font-semibold text-teal-400">
+                    <tr style={{ borderLeft: '3px solid #14b8a6' }} className="border-b border-[hsl(var(--border)/0.4)]" >
+                      <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] pl-10 py-2 text-[12px] font-bold" style={{ color: '#14b8a6', background: 'rgba(20,184,166,0.08)' }}>
                         Кросс-продажи ({c.associated_items.length} товаров · {formatNumber(c.associated_items.reduce((a, s) => a + s.orders, 0))} заказов)
                       </td>
-                      <td colSpan={13}></td>
+                      <td colSpan={13} style={{ background: 'rgba(20,184,166,0.08)' }}></td>
                     </tr>
                     {c.associated_items.map((s) => (
                       <tr
                         key={`${c.campaign_id}-assoc-${s.sku}`}
-                        className="border-b border-[hsl(var(--border)/0.1)] bg-teal-500/[0.02]"
+                        style={{ borderLeft: '3px solid rgba(20,184,166,0.3)' }}
+                        className="border-b border-[hsl(var(--border)/0.2)] hover:bg-[hsl(var(--muted)/0.1)] transition-colors"
                       >
                         <td className="sticky left-0 z-20 min-w-[340px] max-w-[400px] bg-[hsl(var(--card))] pl-4 pr-2 py-2">
                           <div className="flex flex-col pl-6 min-w-0 gap-0.5">
-                            <span className="text-[12px] text-teal-400/80 leading-snug line-clamp-1" title={s.name || `SKU ${s.sku}`}>
+                            <span className="text-[13px] text-[hsl(var(--foreground)/0.85)] leading-snug line-clamp-1" title={s.name || `SKU ${s.sku}`}>
                               {s.name || `SKU ${s.sku}`}
                             </span>
-                            {s.offer_id && <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">Арт: {s.offer_id}</span>}
+                            {s.offer_id && <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.7)]">Арт: {s.offer_id}</span>}
                           </div>
                         </td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px]`}>{formatNumber(s.cart)}</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-teal-400`}>{formatNumber(s.orders)}</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-teal-400`}>{formatMoney(s.revenue)}</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
-                        <td className={`${tdCls} text-[11px] text-[hsl(var(--muted-foreground)/0.5)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[13px] text-[hsl(var(--foreground)/0.8)]`}>{formatNumber(s.cart)}</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[13px] font-semibold`} style={{ color: '#14b8a6' }}>{formatNumber(s.orders)}</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[13px] font-semibold`} style={{ color: '#14b8a6' }}>{formatMoney(s.revenue)}</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
+                        <td className={`${tdCls} text-[12px] text-[hsl(var(--muted-foreground)/0.35)]`}>—</td>
                       </tr>
                     ))}
                   </>
