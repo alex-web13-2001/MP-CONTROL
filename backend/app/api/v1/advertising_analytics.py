@@ -840,6 +840,39 @@ async def _build_ozon_analytics(
             "total_drr": campaign_total_drr,
         })
 
+    # ── 3b. Append zero-stat Ozon campaigns from dim_ozon_campaigns ──
+    existing_cids = set(campaign_ids)
+    try:
+        zero_pg = await db.execute(
+            sa_text("""
+                SELECT campaign_id, title, state, campaign_type
+                FROM dim_ozon_campaigns
+                WHERE shop_id = :shop_id
+                  AND state NOT IN ('CAMPAIGN_STATE_ARCHIVED')
+            """),
+            {"shop_id": shop_id},
+        )
+        for row in zero_pg:
+            cid = int(row[0])
+            if cid in existing_cids:
+                continue
+            campaigns_table.append({
+                "campaign_id": cid,
+                "title": row[1] or "",
+                "status": row[2] or "",
+                "campaign_type": row[3] or "",
+                "sku_count": 0,
+                "items": [],
+                "spend": 0, "views": 0, "clicks": 0, "cart": 0,
+                "cart_conv": 0, "orders": 0, "order_conv": 0,
+                "direct_orders": 0, "model_orders": 0,
+                "revenue": 0, "direct_revenue": 0, "model_revenue": 0,
+                "halo_pct": 0, "ctr": 0, "avg_cpc": 0, "drr": 0,
+                "total_revenue": 0, "total_drr": 0,
+            })
+    except Exception as e:
+        logger.warning("Ozon zero-stat campaigns fetch failed: %s", e)
+
     # ── 4. Top SKUs ───────────────────────────────────
     top_skus_rows = ch.query("""
         SELECT
@@ -1981,6 +2014,65 @@ async def _build_wb_analytics(
             "total_revenue": round(campaign_total_rev, 2),
             "total_drr": campaign_total_drr,
         })
+
+    # ── 3b. Append zero-stat campaigns from dim_advert_campaigns ──
+    existing_cids = set(campaign_ids)
+    try:
+        zero_rows = ch.query("""
+            SELECT advert_id, name, type, status,
+                   payment_type, bid_type, search_enabled, recommendations_enabled
+            FROM mms_analytics.dim_advert_campaigns FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND status != -1
+        """, parameters={"shop_id": shop_id}).result_rows
+        for row in zero_rows:
+            cid = int(row[0])
+            if cid in existing_cids:
+                continue
+            raw_type_str = str(row[2]) if row[2] else ""
+            try:
+                raw_status = int(row[3]) if row[3] is not None else 0
+            except (ValueError, TypeError):
+                raw_status = 0
+            payment_type = str(row[4] or "")
+            bid_type = str(row[5] or "")
+            search_on = bool(row[6]) if row[6] is not None else False
+            recom_on = bool(row[7]) if row[7] is not None else False
+            type_label = WB_TYPE_ENUM_MAP.get(raw_type_str, raw_type_str)
+            payment_label = "CPM" if payment_type == "cpm" else ("CPC" if payment_type == "cpc" else "")
+            if bid_type == "manual":
+                bid_label = "Ручная ставка"
+            elif bid_type == "unified" and type_label != "Единая":
+                bid_label = "Единая ставка"
+            else:
+                bid_label = ""
+            full_type = " · ".join(filter(None, [type_label, payment_label, bid_label]))
+            placements = []
+            if search_on:
+                placements.append("Поиск")
+            if recom_on:
+                placements.append("Рекомендации")
+            campaigns_table.append({
+                "campaign_id": cid,
+                "title": row[1] or "",
+                "status": WB_STATUS_MAP.get(raw_status, str(raw_status)),
+                "status_code": raw_status,
+                "campaign_type": full_type,
+                "payment_type": payment_type,
+                "bid_type": bid_type,
+                "placements": placements,
+                "sku_count": 0,
+                "items": [],
+                "associated_items": [],
+                "spend": 0, "views": 0, "clicks": 0, "cart": 0,
+                "cart_conv": 0, "orders": 0, "order_conv": 0,
+                "direct_orders": 0, "model_orders": 0,
+                "revenue": 0, "direct_revenue": 0, "model_revenue": 0,
+                "halo_pct": 0, "ctr": 0, "avg_cpc": 0, "drr": 0,
+                "total_revenue": 0, "total_drr": 0,
+            })
+    except Exception as e:
+        logger.warning("WB zero-stat campaigns fetch failed: %s", e)
 
     # ── 4. Top SKUs (nm_id) — only ADVERTISED (filter associated via lookup) ──
     top_skus_rows = ch.query("""
