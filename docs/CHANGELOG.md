@@ -1,3 +1,19 @@
+## 2026-03-26 (v17.19.0)
+
+### feat(backend): Полноценный ИИ-анализ WB кампаний
+
+**campaign_ai_analysis.py** — расширена WB-ветка (ранее пустая) для полноценного AI-анализа:
+
+- **SYSTEM_PROMPT_WB**: WB-специфичные правила для Gemini — CPM в копейках, минус-фразы, типы размещения (Поиск/Рекомендации), СПП, 3 типа продаж (direct/model/associated через imt_id)
+- **Финансы WB**: per-SKU revenue, payout, комиссия, логистика, хранение, эквайринг из `fact_finances`
+- **Себестоимость**: из `product_costs` по vendor_code
+- **3-уровневая классификация продаж**: direct (рекламируемые) / model (та же карточка imt_id) / associated
+- **Ключевые фразы**: из `fact_advert_phrases_daily` (marketplace=1)
+- **P&L summary**: payout - COGS - реклама = чистая прибыль
+- **Промпт по маркетплейсу**: автоматический выбор SYSTEM_PROMPT vs SYSTEM_PROMPT_WB
+
+---
+
 ## 2026-03-26 (v17.18.5)
 
 ### feat(frontend): Улучшения UI рекламной аналитики

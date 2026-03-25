@@ -714,21 +714,77 @@ async def analyze_campaign_ai(
                     + (f", imt_id (объединённая карточка): {imt_id}" if imt_id else "")
                 )
 
-        # ── WB Financial data from fact_finances per-SKU ──
+        # ── WB: Sale type breakdown from fact_advert_stats_v3 (CAMPAIGN-ATTRIBUTED ONLY!) ──
+        sale_type_info = ""
+        wb_fin_rows = []
         try:
+            # Get per-SKU ad stats from fact_advert_stats_v3
+            ad_sku_rows = ch.query("""
+                SELECT nm_id,
+                       sum(orders) AS orders, sum(revenue) AS revenue,
+                       sum(views) AS views, sum(clicks) AS clicks, sum(spend) AS spend
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE advert_id = {cid:UInt64}
+                  AND date BETWEEN {start_date:Date} AND {end_date:Date}
+                GROUP BY nm_id
+            """, parameters={
+                "cid": campaign_id,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+
+            # Classify: direct = has views/clicks/spend, model = same imt_id, associated = other
+            direct_skus = set()
+            for r in ad_sku_rows:
+                nm = int(r[0])
+                if int(r[3]) > 0 or int(r[4]) > 0 or float(r[5]) > 0:
+                    direct_skus.add(nm)
+
+            direct_imt_ids = {wb_imt_ids[s] for s in direct_skus if s in wb_imt_ids and wb_imt_ids[s]}
+
+            direct_orders, direct_rev = 0, 0.0
+            model_orders, model_rev = 0, 0.0
+            assoc_orders, assoc_rev = 0, 0.0
+            for r in ad_sku_rows:
+                nm = int(r[0])
+                o_cnt = int(r[1])
+                o_rev = float(r[2] or 0)
+                if nm in direct_skus:
+                    direct_orders += o_cnt
+                    direct_rev += o_rev
+                else:
+                    imt = wb_imt_ids.get(nm)
+                    if imt and imt in direct_imt_ids:
+                        model_orders += o_cnt
+                        model_rev += o_rev
+                    else:
+                        assoc_orders += o_cnt
+                        assoc_rev += o_rev
+
+            total_camp_orders = direct_orders + model_orders + assoc_orders
+            total_camp_rev = direct_rev + model_rev + assoc_rev
+
+            sale_type_info = f"""\n### СТРУКТУРА ПРОДАЖ КАМПАНИИ (из рекламной статистики, fact_advert_stats_v3):
+ПРЯМЫЕ (direct, рекламируемые SKU): {direct_orders} заказов, {direct_rev:.0f}₽
+МОДЕЛЬ (model, та же карточка imt_id, другой размер/цвет): {model_orders} заказов, {model_rev:.0f}₽
+АССОЦИИРОВАННЫЕ (associated, кросс-продажи, другие карточки): {assoc_orders} заказов, {assoc_rev:.0f}₽
+ИТОГО по кампании: {total_camp_orders} заказов, {total_camp_rev:.0f}₽
+ВАЖНО: это ТОЛЬКО рекламно-атрибутированные заказы (модель последнего касания WB), НЕ все продажи магазина!
+\"модельные\" продажи — товары из той же объединённой карточки (тот же imt_id). Реклама одного размера/цвета продаёт всю карточку.
+\"ассоциированные\" — покупатель увидел рекламу одного товара, но купил другой (кросс-продажа)."""
+        except Exception as e:
+            logger.warning("WB sale type breakdown failed: %s", e)
+
+        # ── WB: Per-unit financial data from fact_finances (DIRECT products only) ──
+        try:
+            direct_skus_list = list(direct_skus) if direct_skus else filter_skus
             wb_fin_rows = ch.query("""
                 SELECT
                     JSONExtractUInt(raw_payload, 'nm_id') AS nm_id,
                     sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                        operation_type = 'Продажа') AS revenue,
-                    sumIf(payout_amount, operation_type = 'Продажа')
-                      - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
-                    sumIf(abs(wb_delivery_rub), 1) AS logistics,
-                    sumIf(abs(storage_fee), 1) AS storage,
-                    sumIf(abs(wb_acquiring), 1) AS acquiring,
-                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS sales,
-                    sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                        operation_type = 'Возврат') AS returns_rev
+                        operation_type = 'Продажа') AS total_revenue,
+                    sumIf(payout_amount, operation_type = 'Продажа') AS total_payout,
+                    sumIf(abs(wb_delivery_rub), operation_type = 'Продажа') AS total_logistics,
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS total_sales
                 FROM mms_analytics.fact_finances FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND marketplace = 1
@@ -736,36 +792,39 @@ async def analyze_campaign_ai(
                   AND event_date BETWEEN {start_date:Date} AND {end_date:Date}
                 GROUP BY nm_id
             """, parameters={
-                "shop_id": shop_id, "skus": filter_skus,
+                "shop_id": shop_id, "skus": direct_skus_list,
                 "start_date": start_date, "end_date": end_date
             }).result_rows
 
             if wb_fin_rows:
-                finance_summary = "\n### ФИНАНСОВЫЕ ДАННЫЕ WB (из отчётов реализации):\n"
-                finance_summary += "ВАЖНО: payout — это уже ПОСЛЕ комиссии и логистики!\n\n"
+                finance_summary = "\n### ЮНИТ-ЭКОНОМИКА WB ПО ПРЯМЫМ ТОВАРАМ (средние значения на 1 продажу из отчётов реализации):\n"
+                finance_summary += "ВАЖНО: payout уже ПОСЛЕ вычета комиссии WB и логистики! НЕ вычитай повторно!\n\n"
                 for wfr in wb_fin_rows:
                     fn_nm = int(wfr[0])
                     fn_name = product_names.get(fn_nm, str(fn_nm))
                     fn_rev = float(wfr[1] or 0)
                     fn_pay = float(wfr[2] or 0)
                     fn_log = float(wfr[3] or 0)
-                    fn_stor = float(wfr[4] or 0)
-                    fn_acq = float(wfr[5] or 0)
-                    fn_sales = int(wfr[6] or 0)
-                    fn_ret = float(wfr[7] or 0)
-                    fn_commission = fn_rev - fn_pay - fn_log if fn_rev > 0 else 0
-                    commission_pct = round(fn_commission / fn_rev * 100, 1) if fn_rev > 0 else 0
-                    logistics_pct = round(fn_log / fn_rev * 100, 1) if fn_rev > 0 else 0
+                    fn_sales = int(wfr[4] or 0)
 
-                    finance_summary += f"""--- {fn_name} (nm_id {fn_nm}) ---
-- Выручка (retail_price_withdisc_rub): {fn_rev:.0f}₽
-- Возвраты: {fn_ret:.0f}₽
-- Комиссия WB (вкл. СПП): {fn_commission:.0f}₽ ({commission_pct}%)
-- Логистика: {fn_log:.0f}₽ ({logistics_pct}%)
-- Хранение: {fn_stor:.0f}₽
-- Эквайринг: {fn_acq:.0f}₽
-- Payout (к перечислению): {fn_pay:.0f}₽
-- Продаж (шт): {fn_sales}
+                    if fn_sales > 0:
+                        rev_per_unit = round(fn_rev / fn_sales, 2)
+                        pay_per_unit = round(fn_pay / fn_sales, 2)
+                        log_per_unit = round(fn_log / fn_sales, 2)
+                        commission_per_unit = round(rev_per_unit - pay_per_unit, 2)
+                        commission_pct = round(commission_per_unit / rev_per_unit * 100, 1) if rev_per_unit > 0 else 0
+                        vc = wb_vendor_codes.get(fn_nm, "")
+                        unit_cost = cost_prices.get(vc, 0)
+
+                        finance_summary += f"""--- {fn_name} (nm_id {fn_nm}) ---
+Средние на 1 продажу (из {fn_sales} продаж за период):
+- Выручка (розничная цена со скидкой): {rev_per_unit}₽
+- Комиссия WB (вкл. СПП): -{commission_per_unit}₽ ({commission_pct}%)
+- Логистика: -{log_per_unit}₽
+- Payout (к перечислению): {pay_per_unit}₽
+- Себестоимость: -{unit_cost}₽
+- Прибыль на 1 шт до рекламы: {round(pay_per_unit - unit_cost, 2)}₽
+- Допустимый CAC (безубыточный): {round(pay_per_unit - unit_cost, 2)}₽
 """
         except Exception as e:
             logger.warning("WB finance query failed: %s", e)
@@ -798,53 +857,6 @@ async def analyze_campaign_ai(
                 await db.rollback()
             except Exception:
                 pass
-
-        # ── WB 3-level sale type breakdown (direct/model/associated) ──
-        sale_type_info = ""
-        try:
-            # Direct nm_ids = those with ad stats (views/clicks/spend)
-            direct_nm_ids = set(filter_skus)
-            # imt_ids of direct products
-            direct_imt_ids = set(wb_imt_ids.get(nm, 0) for nm in direct_nm_ids if wb_imt_ids.get(nm))
-
-            # All orders for this shop's products in period
-            orders_rows = ch.query("""
-                SELECT nm_id, count() AS orders, sum(finished_price) AS revenue
-                FROM mms_analytics.fact_orders_raw FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND is_cancel = 0
-                GROUP BY nm_id
-            """, parameters={
-                "shop_id": shop_id,
-                "start_date": start_date, "end_date": end_date
-            }).result_rows
-
-            # Classify each nm_id
-            direct_orders, direct_rev = 0, 0.0
-            model_orders, model_rev = 0, 0.0
-            assoc_orders, assoc_rev = 0, 0.0
-            for orow in orders_rows:
-                o_nm = int(orow[0])
-                o_cnt = int(orow[1])
-                o_rev = float(orow[2] or 0)
-                o_imt = wb_imt_ids.get(o_nm, 0)
-                if o_nm in direct_nm_ids:
-                    direct_orders += o_cnt
-                    direct_rev += o_rev
-                elif o_imt and o_imt in direct_imt_ids:
-                    model_orders += o_cnt
-                    model_rev += o_rev
-                # associated = not counted here (only campaign-attributed)
-
-            sale_type_info = f"""\n### СТРУКТУРА ПРОДАЖ (3-уровневая классификация):
-- ПРЯМЫЕ (direct, рекламируемые SKU): {direct_orders} заказов, {direct_rev:.0f}₽
-- МОДЕЛЬ (model, та же карточка imt_id): {model_orders} заказов, {model_rev:.0f}₽
-- АССОЦИИРОВАННЫЕ (associated): определяются на уровне рекламной статистики
-Всего заказов по прямым+модельным: {direct_orders + model_orders} шт, {direct_rev + model_rev:.0f}₽
-ВАЖНО: "модельные" продажи — это товары из той же объединённой карточки. Реклама одного размера/цвета продаёт всю карточку."""
-        except Exception as e:
-            logger.warning("WB sale type breakdown failed: %s", e)
 
         # NOTE: WB P&L summary is computed AFTER total_spend is known (see below)
 
@@ -957,33 +969,41 @@ async def analyze_campaign_ai(
     # ── WB deferred P&L summary (needs total_spend) ──
     if mp != "ozon":
         try:
-            wb_fin_rows_local = locals().get('wb_fin_rows', [])
+            wb_fin_local = locals().get('wb_fin_rows', [])
             wb_vc = locals().get('wb_vendor_codes', {})
-            if wb_fin_rows_local and cost_price_info:
-                total_payout_wb = sum(float(r[2] or 0) for r in wb_fin_rows_local)
-                total_cogs_wb = 0.0
-                for wfr in wb_fin_rows_local:
+            st_info = locals().get('sale_type_info', '')
+            d_orders = locals().get('direct_orders', 0)
+            
+            if wb_fin_local and d_orders > 0:
+                # Calculate weighted average per-unit profit across direct products
+                total_profit_per_unit = 0.0
+                sku_count = 0
+                for wfr in wb_fin_local:
                     fn_nm = int(wfr[0])
-                    fn_sales_cnt = int(wfr[6] or 0)
-                    vc_key = wb_vc.get(fn_nm, "")
-                    unit_cost = cost_prices.get(vc_key, 0)
-                    total_cogs_wb += unit_cost * fn_sales_cnt
+                    fn_rev = float(wfr[1] or 0)
+                    fn_pay = float(wfr[2] or 0)
+                    fn_sales = int(wfr[4] or 0)
+                    if fn_sales > 0:
+                        pay_pu = fn_pay / fn_sales
+                        vc_k = wb_vc.get(fn_nm, "")
+                        uc = cost_prices.get(vc_k, 0)
+                        total_profit_per_unit += (pay_pu - uc)
+                        sku_count += 1
 
-                profit_before_ads_wb = total_payout_wb - total_cogs_wb
-                profit_after_ads_wb = profit_before_ads_wb - total_spend
-                sale_type_block = locals().get('sale_type_info', '')
+                if sku_count > 0:
+                    avg_profit_per_unit = total_profit_per_unit / sku_count
+                    est_profit_before_ads = avg_profit_per_unit * d_orders
+                    est_profit_after_ads = est_profit_before_ads - total_spend
 
-                finance_summary += f"""
-### ПРЕДРАССЧИТАННЫЙ P&L WB:
-- Общий payout: {total_payout_wb:.0f}₽
-- Общая себестоимость: -{total_cogs_wb:.0f}₽
-- ПРИБЫЛЬ ДО РЕКЛАМЫ: {profit_before_ads_wb:.0f}₽
+                    finance_summary += f"""
+### ОЦЕНОЧНЫЙ P&L КАМПАНИИ (прямые рекламные заказы × средняя прибыль на 1 шт):
+- Прямых рекламных заказов: {d_orders} шт
+- Средняя прибыль на 1 шт (до рекламы): {avg_profit_per_unit:.0f}₽
+- ПРИБЫЛЬ ДО РЕКЛАМЫ (оценка): {est_profit_before_ads:.0f}₽
 - Расход на рекламу: -{total_spend:.0f}₽
-- ЧИСТАЯ ПРИБЫЛЬ: {profit_after_ads_wb:.0f}₽
-- Маржинальность: {round(profit_after_ads_wb / total_payout_wb * 100, 1) if total_payout_wb > 0 else 0}%
-ВАЖНО: payout — уже ПОСЛЕ комиссии и логистики WB! НЕ вычитай повторно!
+- ЧИСТАЯ ПРИБЫЛЬ (оценка): {est_profit_after_ads:.0f}₽
 {cost_price_info}
-{sale_type_block}
+{st_info}
 """
         except Exception as e:
             logger.warning("WB P&L summary failed: %s", e)
