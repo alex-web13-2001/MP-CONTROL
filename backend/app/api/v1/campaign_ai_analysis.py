@@ -203,6 +203,107 @@ SYSTEM_PROMPT = """Ты — эксперт-аналитик рекламных �
 - Будь КРАТКИМ. Бизнесу нужны цифры и действия, не рассуждения.
 """
 
+SYSTEM_PROMPT_WB = """Ты — эксперт-аналитик рекламных кампаний на Wildberries. Анализируешь данные одной кампании и даёшь конкретную стратегию.
+
+## ОГРАНИЧЕНИЯ И ВОЗМОЖНОСТИ РЕКЛАМЫ НА WILDBERRIES
+
+### Что МОЖНО настроить:
+- Ставка CPM (в КОПЕЙКАХ! 1000 коп = 10₽). Минимум 125 коп в Поиске, 100 коп в Каталоге
+- Бюджет кампании (общий, не дневной/недельный)
+- Места размещения: Поиск (search) и/или Рекомендации (catalog/recommendations) — можно включать оба или один
+- Минус-фразы (до 1000 шт.) — ИСКЛЮЧИТЬ нерелевантные запросы
+- Фиксированные фразы — ЗАКРЕПИТЬ важные запросы
+- Тип кампании: Единая (автоматическая), Поиск, Каталог, Рекомендации, Карточка
+- Товары в кампании — добавить/убрать
+- Включить/выключить/приостановить кампанию
+
+### WB-специфика:
+- **СПП (Скидка Постоянного Покупателя)**: WB автоматически применяет скидку, покупатель видит цену НИЖЕ установленной. СПП = 0-30%, мы не контролируем. Цена для покупателя ≈ цена_на_сайте × (1 - СПП%)
+- **Ставки CPM в копейках**: WB API принимает ставки в копейках. 1000 коп = 10₽ CPM
+- **revenue из fact_advert_stats**: это выручка по заказам, атрибутированным к рекламе WB (модель последнего касания)
+- **Нет Price Index**: на WB нет аналога Ozon Price Index
+- **3 типа продаж**:
+  - **Прямые (direct)** — рекламируемые SKU (views/clicks/spend > 0)
+  - **Модель (model)** — другие товары из той же объединённой карточки (imt_id). Покупатель видит рекламу одного товара, но покупает другой размер/цвет
+  - **Ассоциированные (associated)** — товары из других карточек (сross-sell)
+- **Объединённая карточка (imt_id)**: WB объединяет товары (размеры, цвета) в одну карточку. Реклама одного nm_id показывает всю карточку
+
+### ПРАВИЛА ЛОГИКИ ПРИ АНАЛИЗЕ:
+- Снижение цены НЕ МОЖЕТ убивать продажи. Если цена снизилась и продажи упали — ищи другие причины
+- При малом количестве данных (менее 30 заказов) — оговорка о статистической незначимости
+- НЕ делай ложных причинно-следственных связей
+- revenue WB (retail_price_withdisc_rub) — это цена со скидкой БЕЗ СПП. Реальная цена покупателя ниже
+- payout (ppvz_for_pay) — сумма к перечислению продавцу после комиссии и логистики
+- Комиссия WB = revenue - payout (включает SPP + комиссию площадки)
+
+## ФОРМАТ ОТВЕТА — JSON
+
+Верни ответ СТРОГО в JSON формате. Каждая секция — отдельный объект. Массив секций.
+Не добавляй текст ВНЕ JSON. Не оборачивай в ```json```. Только чистый JSON-массив.
+
+[
+  {
+    "id": "verdict",
+    "title": "🎯 Вердикт",
+    "content": "2-3 предложения. P&L одной цифрой. Эффективна/убыточна/потенциальна.",
+    "type": "verdict",
+    "status": "negative|neutral|positive"
+  },
+  {
+    "id": "unit_economics",
+    "title": "💰 Юнит-экономика",
+    "content": "Если несколько товаров — ОТДЕЛЬНУЮ таблицу для КАЖДОГО!\nПараметр | Сумма (₽) | Доля от выручки (%)\n---|---|---\nВыручка (retail_price_withdisc_rub) | X | 100\nКомиссия WB (вкл. СПП) | -X | -X%\nЛогистика | -X | -X%\nХранение | -X | -X%\nPayout (к перечислению) | X | X%\nСебестоимость | -X | -X%\n**Прибыль до рекламы** | **X** | **X%**\nРасход на рекламу | -X | -X%\n**Чистая прибыль** | **X** | **X%**\nДопустимый CAC (безубыт.) | X | —\nРеальный CAC | X | —",
+    "type": "section"
+  },
+  {
+    "id": "sales_breakdown",
+    "title": "📦 Структура продаж",
+    "content": "Разбивка заказов: прямые / модель (та же карточка imt_id) / ассоциированные. Влияет ли реклама на продажи всей объединённой карточки?",
+    "type": "section"
+  },
+  {
+    "id": "keywords",
+    "title": "🔑 Ключевые фразы",
+    "content": "Топ фразы по кликам/показам. Какие добавить в минус-фразы? Какие закрепить? Только показы, клики, CTR — заказы по фразам неизвестны!",
+    "type": "section"
+  },
+  {
+    "id": "ad_effect",
+    "title": "📈 Реклама",
+    "content": "Средние CTR, CPC, CR, DRR. Тренды. Ключевые дни.",
+    "type": "section"
+  },
+  {
+    "id": "events",
+    "title": "⚡ События",
+    "content": "Для каждого ключевого: дата → изменение → результат. Кратко.",
+    "type": "section"
+  },
+  {
+    "id": "strategy",
+    "title": "💡 Стратегия",
+    "content": "КОНКРЕТНЫЕ цифры. Ставка CPM: X коп (Поиск) / Y коп (Каталог). Бюджет: Z₽. Цена товара: W₽. Минус-фразы: список. P&L прогноз.",
+    "type": "strategy",
+    "actions": [
+      {"action": "Описание действия", "value": "конкретное значение", "priority": "high|medium|low"}
+    ]
+  }
+]
+
+ПРАВИЛА:
+- Каждая секция = КРАТКИЙ текст (3-7 предложений, НЕ портянка)
+- Называй товары по именам/артикулам
+- Конкретные даты и числа из данных
+- Рекомендуй КОНКРЕТНЫЕ минус-фразы на основе данных по фразам
+- Ставки указывай в КОПЕЙКАХ (1₽ = 100 коп)
+- Рекомендуй ТОЛЬКО: ставку CPM, бюджет, цену товара, минус-фразы, места размещения, вкл/выкл
+- DRR считай и от рекл.выручки, и от ОБЩЕЙ выручки
+- КРИТИЧЕСКИ ВАЖНО: рекламные заказы УЖЕ ВКЛЮЧЕНЫ в общие! НЕ складывай!
+- Себестоимость: ТОЛЬКО из данных, НЕ придумывай
+- Учитывай imt_id при анализе: модельные продажи — это НЕ кросс, это та же карточка
+- Пиши на русском. Будь КРАТКИМ.
+"""
+
 
 def _to_date(v):
     """Normalize datetime→date."""
@@ -320,12 +421,12 @@ async def analyze_campaign_ai(
                     prod_orders_by_sku[int(r[0])] = int(r[1])
         else:
             prod_rows = ch.query("""
-                SELECT toDate(date) AS d, sum(finishedPrice * quantity) AS rev, count() AS cnt
+                SELECT toDate(date) AS d, sum(finished_price) AS rev, count() AS cnt
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND nmId IN {skus:Array(UInt64)}
+                  AND nm_id IN {skus:Array(UInt64)}
                   AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND isCancel = 0
+                  AND is_cancel = 0
                 GROUP BY d ORDER BY d
             """, parameters={
                 "shop_id": shop_id, "skus": filter_skus,
@@ -388,30 +489,30 @@ async def analyze_campaign_ai(
                 "start_date": start_date, "end_date": end_date
             }).result_rows
 
-        # ── 5. Top keyword phrases (Ozon) ──
+        # ── 5. Top keyword phrases ──
         phrases_lines = []
-        if mp == "ozon":
-            try:
-                phrases_rows = ch.query("""
-                    SELECT phrase, sum(views) as vw, sum(clicks) as cl,
-                           round(if(sum(views)>0, sum(clicks)/sum(views)*100, 0), 2) as ctr
-                    FROM mms_analytics.fact_advert_phrases_daily FINAL
-                    WHERE marketplace = 2 AND campaign_id = {cid:UInt64}
-                      AND dt BETWEEN {start_date:Date} AND {end_date:Date}
-                    GROUP BY phrase
-                    ORDER BY cl DESC, vw DESC
-                    LIMIT 40
-                """, parameters={
-                    "cid": campaign_id,
-                    "start_date": start_date, "end_date": end_date
-                }).result_rows
-                
-                for r in phrases_rows:
-                    phrases_lines.append(
-                        f"«{r[0]}» — {r[1]} показов, {r[2]} кликов, CTR {r[3]}%"
-                    )
-            except Exception as e:
-                logger.warning("Failed to get phrases: %s", e)
+        mp_code = 2 if mp == "ozon" else 1
+        try:
+            phrases_rows = ch.query("""
+                SELECT phrase, sum(views) as vw, sum(clicks) as cl,
+                       round(if(sum(views)>0, sum(clicks)/sum(views)*100, 0), 2) as ctr
+                FROM mms_analytics.fact_advert_phrases_daily FINAL
+                WHERE marketplace = {mp_code:UInt8} AND campaign_id = {cid:UInt64}
+                  AND dt BETWEEN {start_date:Date} AND {end_date:Date}
+                GROUP BY phrase
+                ORDER BY cl DESC, vw DESC
+                LIMIT 40
+            """, parameters={
+                "mp_code": mp_code, "cid": campaign_id,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+            
+            for r in phrases_rows:
+                phrases_lines.append(
+                    f"«{r[0]}» — {r[1]} показов, {r[2]} кликов, CTR {r[3]}%"
+                )
+        except Exception as e:
+            logger.warning("Failed to get phrases: %s", e)
 
         # ── 6. Repeat buyers (posting_number appears 2+ times = retention) ──
         repeat_info = ""
@@ -447,6 +548,8 @@ async def analyze_campaign_ai(
     product_names: dict[int, str] = {}
     product_info_lines = []
     cost_price_info = ""
+    cost_prices: dict[str, float] = {}  # offer_id -> total cost
+    finance_summary = ""
 
     if mp == "ozon":
         pg_res = await db.execute(
@@ -496,8 +599,6 @@ async def analyze_campaign_ai(
             product_info_lines.append(info)
 
         # ── Get cost_price from product_costs table (per-SKU as numbers) ──
-        cost_prices: dict[str, float] = {}  # offer_id -> total cost
-        cost_price_info = ""
         try:
             cp_res = await db.execute(
                 text("""
@@ -591,16 +692,161 @@ async def analyze_campaign_ai(
             logger.warning("Could not get retention data: %s", e)
 
     else:
-        # WB
-        retention_info = ""  # WB retention not yet supported
+        # WB — full product info, financials, cost_price, sale_type breakdown
+        retention_info = ""
         pg_res = await db.execute(
-            text("SELECT nm_id, imt_name, vendor_code FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:skus)"),
+            text("SELECT nm_id, name, vendor_code, imt_id FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:skus)"),
             {"sid": shop_id, "skus": campaign_skus}
         )
+        wb_imt_ids: dict[int, int] = {}  # nm_id -> imt_id
+        wb_vendor_codes: dict[int, str] = {}  # nm_id -> vendor_code
         for r in pg_res.fetchall():
             nmid, name, vc = r[0], r[1] or "", r[2] or ""
+            imt_id = r[3]
             label = f"{name[:50]} ({vc})" if name and vc else name[:60] or str(nmid)
             product_names[nmid] = label
+            if imt_id:
+                wb_imt_ids[nmid] = int(imt_id)
+            if vc:
+                wb_vendor_codes[nmid] = vc
+                product_info_lines.append(
+                    f"Товар: {label}\n  nm_id: {nmid}, Артикул: {vc}"
+                    + (f", imt_id (объединённая карточка): {imt_id}" if imt_id else "")
+                )
+
+        # ── WB Financial data from fact_finances per-SKU ──
+        try:
+            wb_fin_rows = ch.query("""
+                SELECT
+                    JSONExtractUInt(raw_payload, 'nm_id') AS nm_id,
+                    sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                        operation_type = 'Продажа') AS revenue,
+                    sumIf(payout_amount, operation_type = 'Продажа')
+                      - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                    sumIf(abs(wb_delivery_rub), 1) AS logistics,
+                    sumIf(abs(storage_fee), 1) AS storage,
+                    sumIf(abs(wb_acquiring), 1) AS acquiring,
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS sales,
+                    sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                        operation_type = 'Возврат') AS returns_rev
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND marketplace = 1
+                  AND JSONExtractUInt(raw_payload, 'nm_id') IN {skus:Array(UInt64)}
+                  AND event_date BETWEEN {start_date:Date} AND {end_date:Date}
+                GROUP BY nm_id
+            """, parameters={
+                "shop_id": shop_id, "skus": filter_skus,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+
+            if wb_fin_rows:
+                finance_summary = "\n### ФИНАНСОВЫЕ ДАННЫЕ WB (из отчётов реализации):\n"
+                finance_summary += "ВАЖНО: payout — это уже ПОСЛЕ комиссии и логистики!\n\n"
+                for wfr in wb_fin_rows:
+                    fn_nm = int(wfr[0])
+                    fn_name = product_names.get(fn_nm, str(fn_nm))
+                    fn_rev = float(wfr[1] or 0)
+                    fn_pay = float(wfr[2] or 0)
+                    fn_log = float(wfr[3] or 0)
+                    fn_stor = float(wfr[4] or 0)
+                    fn_acq = float(wfr[5] or 0)
+                    fn_sales = int(wfr[6] or 0)
+                    fn_ret = float(wfr[7] or 0)
+                    fn_commission = fn_rev - fn_pay - fn_log if fn_rev > 0 else 0
+                    commission_pct = round(fn_commission / fn_rev * 100, 1) if fn_rev > 0 else 0
+                    logistics_pct = round(fn_log / fn_rev * 100, 1) if fn_rev > 0 else 0
+
+                    finance_summary += f"""--- {fn_name} (nm_id {fn_nm}) ---
+- Выручка (retail_price_withdisc_rub): {fn_rev:.0f}₽
+- Возвраты: {fn_ret:.0f}₽
+- Комиссия WB (вкл. СПП): {fn_commission:.0f}₽ ({commission_pct}%)
+- Логистика: {fn_log:.0f}₽ ({logistics_pct}%)
+- Хранение: {fn_stor:.0f}₽
+- Эквайринг: {fn_acq:.0f}₽
+- Payout (к перечислению): {fn_pay:.0f}₽
+- Продаж (шт): {fn_sales}
+"""
+        except Exception as e:
+            logger.warning("WB finance query failed: %s", e)
+
+        # ── WB Cost price from product_costs ──
+        try:
+            vc_list = [vc for vc in wb_vendor_codes.values() if vc]
+            if vc_list:
+                cp_res = await db.execute(
+                    text("""
+                        SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost,
+                               cost_price, packaging_cost
+                        FROM product_costs
+                        WHERE shop_id = :sid AND offer_id = ANY(:vcs)
+                    """),
+                    {"sid": shop_id, "vcs": vc_list}
+                )
+                for cp_row in cp_res.fetchall():
+                    offer_id = cp_row[0]
+                    total_cost = float(cp_row[1] or 0)
+                    cost = float(cp_row[2] or 0)
+                    packaging = float(cp_row[3] or 0)
+                    cost_prices[offer_id] = total_cost
+                    cost_price_info += f"\n  Себестоимость ({offer_id}): {cost}₽"
+                    if packaging > 0:
+                        cost_price_info += f" + упаковка {packaging}₽ = {total_cost:.0f}₽"
+        except Exception as e:
+            logger.warning("WB cost_price query failed: %s", e)
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
+        # ── WB 3-level sale type breakdown (direct/model/associated) ──
+        sale_type_info = ""
+        try:
+            # Direct nm_ids = those with ad stats (views/clicks/spend)
+            direct_nm_ids = set(filter_skus)
+            # imt_ids of direct products
+            direct_imt_ids = set(wb_imt_ids.get(nm, 0) for nm in direct_nm_ids if wb_imt_ids.get(nm))
+
+            # All orders for this shop's products in period
+            orders_rows = ch.query("""
+                SELECT nm_id, count() AS orders, sum(finished_price) AS revenue
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
+                  AND is_cancel = 0
+                GROUP BY nm_id
+            """, parameters={
+                "shop_id": shop_id,
+                "start_date": start_date, "end_date": end_date
+            }).result_rows
+
+            # Classify each nm_id
+            direct_orders, direct_rev = 0, 0.0
+            model_orders, model_rev = 0, 0.0
+            assoc_orders, assoc_rev = 0, 0.0
+            for orow in orders_rows:
+                o_nm = int(orow[0])
+                o_cnt = int(orow[1])
+                o_rev = float(orow[2] or 0)
+                o_imt = wb_imt_ids.get(o_nm, 0)
+                if o_nm in direct_nm_ids:
+                    direct_orders += o_cnt
+                    direct_rev += o_rev
+                elif o_imt and o_imt in direct_imt_ids:
+                    model_orders += o_cnt
+                    model_rev += o_rev
+                # associated = not counted here (only campaign-attributed)
+
+            sale_type_info = f"""\n### СТРУКТУРА ПРОДАЖ (3-уровневая классификация):
+- ПРЯМЫЕ (direct, рекламируемые SKU): {direct_orders} заказов, {direct_rev:.0f}₽
+- МОДЕЛЬ (model, та же карточка imt_id): {model_orders} заказов, {model_rev:.0f}₽
+- АССОЦИИРОВАННЫЕ (associated): определяются на уровне рекламной статистики
+Всего заказов по прямым+модельным: {direct_orders + model_orders} шт, {direct_rev + model_rev:.0f}₽
+ВАЖНО: "модельные" продажи — это товары из той же объединённой карточки. Реклама одного размера/цвета продаёт всю карточку."""
+        except Exception as e:
+            logger.warning("WB sale type breakdown failed: %s", e)
+
+        # NOTE: WB P&L summary is computed AFTER total_spend is known (see below)
 
     product_list = ", ".join(product_names[s] for s in campaign_skus if s in product_names)
 
@@ -708,9 +954,44 @@ async def analyze_campaign_ai(
     organic_orders = total_prod_orders - total_ad_orders
     halo_pct = round(organic_orders / total_prod_orders * 100, 1) if total_prod_orders > 0 else 0
 
-    # ── 10. Build finance summary (per-SKU with cost) ──
-    finance_summary = ""
-    if order_fin_rows:
+    # ── WB deferred P&L summary (needs total_spend) ──
+    if mp != "ozon":
+        try:
+            wb_fin_rows_local = locals().get('wb_fin_rows', [])
+            wb_vc = locals().get('wb_vendor_codes', {})
+            if wb_fin_rows_local and cost_price_info:
+                total_payout_wb = sum(float(r[2] or 0) for r in wb_fin_rows_local)
+                total_cogs_wb = 0.0
+                for wfr in wb_fin_rows_local:
+                    fn_nm = int(wfr[0])
+                    fn_sales_cnt = int(wfr[6] or 0)
+                    vc_key = wb_vc.get(fn_nm, "")
+                    unit_cost = cost_prices.get(vc_key, 0)
+                    total_cogs_wb += unit_cost * fn_sales_cnt
+
+                profit_before_ads_wb = total_payout_wb - total_cogs_wb
+                profit_after_ads_wb = profit_before_ads_wb - total_spend
+                sale_type_block = locals().get('sale_type_info', '')
+
+                finance_summary += f"""
+### ПРЕДРАССЧИТАННЫЙ P&L WB:
+- Общий payout: {total_payout_wb:.0f}₽
+- Общая себестоимость: -{total_cogs_wb:.0f}₽
+- ПРИБЫЛЬ ДО РЕКЛАМЫ: {profit_before_ads_wb:.0f}₽
+- Расход на рекламу: -{total_spend:.0f}₽
+- ЧИСТАЯ ПРИБЫЛЬ: {profit_after_ads_wb:.0f}₽
+- Маржинальность: {round(profit_after_ads_wb / total_payout_wb * 100, 1) if total_payout_wb > 0 else 0}%
+ВАЖНО: payout — уже ПОСЛЕ комиссии и логистики WB! НЕ вычитай повторно!
+{cost_price_info}
+{sale_type_block}
+"""
+        except Exception as e:
+            logger.warning("WB P&L summary failed: %s", e)
+
+    # ── 10. Build finance summary (per-SKU with cost) — Ozon only ──
+    if mp == "ozon":
+        finance_summary = ""
+    if order_fin_rows and mp == "ozon":
         if len(order_fin_rows) == 1:
             # Single SKU
             ofr = order_fin_rows[0]
@@ -827,8 +1108,9 @@ async def analyze_campaign_ai(
 Проанализируй ВСЕ данные. Рассчитай полную юнит-экономику. Найди оптимальную стратегию масштабирования с МАКСИМАЛЬНОЙ прибылью! Не зацикливайся на 20% — ищи реальный оптимум цена/ставка/бюджет. Рекомендации по бюджету — в НЕДЕЛЬНЫХ суммах."""
 
     # ── 12. Stream from Gemini ──
+    system_prompt = SYSTEM_PROMPT_WB if mp == "wb" else SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
+        {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
     ]
     if previous_analysis:
         messages.append({"role": "user", "content": [{"type": "text", "text": f"Предыдущий анализ этой кампании (для сравнения):\n{previous_analysis[:3000]}"}]})
