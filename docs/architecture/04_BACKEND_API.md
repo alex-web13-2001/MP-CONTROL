@@ -326,6 +326,92 @@ date_from / date_to: date (optional) — кастомный диапазон
 | `POST` | `/advertising/sync`             | Старт рекламной синхронизации | —    |
 | `GET`  | `/advertising/status/{task_id}` | Статус задачи                 | —    |
 
+### Рекламная аналитика — `/api/v1/advertising/analytics`
+
+> **Файл:** `backend/app/api/v1/advertising_analytics.py` (~2230 строк)  
+> **Универсальный:** Ozon + WB в одном endpoint, выбор по `marketplace` магазина
+
+| Метод | Path                         | Описание                                          | Auth   |
+| ----- | ---------------------------- | ------------------------------------------------- | ------ |
+| `GET` | `/advertising/analytics`     | Полная аналитика: KPI, графики, кампании, ТОП SKU | Bearer |
+
+#### Query Parameters
+
+```
+shop_id: int (required)
+period: "today" | "7d" | "14d" | "30d" | "custom" (default: "7d")
+date_from: date (optional) — начало кастомного диапазона
+date_to: date (optional) — конец кастомного диапазона
+```
+
+#### Response Schema
+
+```
+{
+  kpi: {
+    spend, spend_delta,
+    views, views_delta,
+    clicks, clicks_delta,
+    ctr, ctr_delta,
+    carts, carts_delta,
+    orders, orders_delta,
+    revenue, revenue_delta,
+    drr, drr_delta,
+    avg_cpc, avg_cpc_delta
+  },
+  charts: {
+    daily: [{ date, spend, views, clicks, carts, orders, revenue, ctr, drr, total_drr }]
+  },
+  campaigns_table: [{
+    campaign_id, title, status, status_code, campaign_type,
+    payment_type, bid_type, placements,
+    sku_count,
+    items: [{ sku, product_id, offer_id, name, image_url,
+              spend, views, clicks, cart, cart_conv, orders, order_conv,
+              direct_orders, model_orders, revenue, direct_revenue, model_revenue,
+              halo_pct, ctr, avg_cpc, drr, total_revenue, total_drr, bid }],
+    associated_items: [...],  // WB: кросс-продажи (is_associated=1)
+    spend, views, clicks, cart, cart_conv, orders, order_conv,
+    direct_orders, model_orders, revenue, direct_revenue, model_revenue,
+    halo_pct, ctr, avg_cpc, drr, total_revenue, total_drr
+  }],
+  top_skus: [{
+    nm_id, vendor_code, name, image_url,
+    spend, orders, revenue, drr
+  }]
+}
+```
+
+#### Ключевая логика
+
+**Ozon** (`_build_ozon_analytics`):
+- Stats из `fact_ozon_ad_daily FINAL`, orders из `fact_ozon_orders`
+- Campaigns enrichment из PostgreSQL `dim_ozon_campaigns` + `dim_ozon_campaign_products`
+- **Zero-stat campaigns:** добавляются из `dim_ozon_campaigns` с нулевой статистикой (кроме `CAMPAIGN_STATE_ARCHIVED`)
+- SKU enrichment из `dim_ozon_products`, images из `primary_image_url`
+
+**WB** (`_build_wb_analytics`):
+- Stats из `fact_advert_stats_v3 FINAL`, orders из `fact_orders_raw`
+- **Advertised vs Associated SKU:** `ads_raw_history.is_associated` → раздельные списки `items` и `associated_items`
+- Campaigns enrichment из ClickHouse `dim_advert_campaigns FINAL` (name, type Enum8, status, payment_type, bid_type, placements)
+- **Zero-stat campaigns:** добавляются из `dim_advert_campaigns` с нулевой статистикой (кроме status=-1 «Удалена»)
+- **Ставки WB:** из `log_wb_bids` (последняя ставка per nm_id per advert_id), конвертация из копеек в рубли
+- SKU enrichment из `dim_products`, images через `_wb_image_url(nm_id)` (CDN basket calculation)
+
+**WB Type Enum Map:**
+
+| Enum value               | Отображение         |
+| ------------------------ | ------------------- |
+| `search`                 | Поиск               |
+| `carousel`               | Каталог             |
+| `card`                   | Карточка            |
+| `recommend`              | Рекомендации        |
+| `auto`                   | Авто                |
+| `search_plus_catalog`    | Поиск + Каталог     |
+| `recommend_plus_carousel`| Единая              |
+
+**WB Status Map:** `-1`=Удалена, `4`=Готова, `7`=Завершена, `8`=Отменена, `9`=Активна, `11`=На паузе
+
 ---
 
 ## Детали кампаний — `/api/v1/campaign-details`
@@ -356,7 +442,7 @@ date_from / date_to: date (optional) — кастомный диапазон
 
 - **KPI:** ad stats + product revenue (из `fact_ozon_orders` / `fact_orders_raw`), вычисление дельт с предыдущим периодом той же длины
 - **Stats:** merge рекламных данных (`fact_ozon_ad_daily` / `fact_advert_stats_v3`) с product revenue per day
-- **Events:** конвертация Ozon SKU → product_id для поиска в `event_log` (sku и product_id — разные!), enrichment с названиями из `dim_ozon_products`
+- **Events:** конвертация Ozon SKU → product_id для поиска в `event_log` (sku и product_id — разные!), enrichment с названиями из `dim_ozon_products`; фильтрация `STATUS_CHANGE` событий
 - **Phrases:** агрегация из `fact_advert_phrases_daily` (marketplace Enum8: 1=WB, 2=Ozon)
 - **Heatmap:** группировка заказов по `toDayOfWeek()` × `toHour()` из таблиц заказов
 - **Purchases:** фактические покупки по SKU кампании с enrichment названий из PostgreSQL
@@ -798,785 +884,144 @@ use_ad_boost: bool (default: true)   — учитывать рекламный �
 25×25 кластеров Ozon. Источник: «Нормативное время доставки 01/2026».
 
 - Собственный кластер = 28ч, ближайшие = 45ч, далёкие = 60–75ч
-- `_resolve_hub(cluster)` — ищет кластер-источник с min часов доставки
-
-### Объединённые группы (CONSOLIDATED_GROUPS)
-
-9 хабов вместо 25 отдельных точек поставки:
-
-| Хаб          | Обслуживает                                |
-| ------------ | ------------------------------------------ |
-| Москва       | Москва, Тверь, Ярославль, Беларусь         |
-| СПб          | СПб                                        |
-| Казань       | Казань, Самара, Уфа                        |
-| Екатеринбург | Екатеринбург, Пермь, Тюмень, Оренбург      |
-| Воронеж      | Воронеж, Саратов                           |
-| Ростов       | Ростов, Краснодар, Невинномысск, Махачкала |
-| Красноярск   | Красноярск, Новосибирск, Омск, ДВ          |
-| Калининград  | Калининград                                |
-| Астана       | Астана, Алматы                             |
-
-### Ozon Excel-экспорт (5 листов)
-
-| Лист | Название              | Содержимое                                                                    |
-| ---- | --------------------- | ----------------------------------------------------------------------------- |
-| 1    | Рекомендации          | SKU × кластер: status, sold, daily, need, **Сток РФЦ**, **Склады**, hub, hours |
-| 2    | Сводка                | 1 строка на SKU: итого need, status, кол-во кластеров                         |
-| 3    | Параметры             | Период, target_days, safety, boost — мета-информация + формула per-warehouse  |
-| 4    | Поставка по кластерам | hub → SKU с need > 0 + колонка **Сток РФЦ**                                  |
-| 5    | Объединённые кластеры | 9 хабов → SKU × кластер спроса + колонка **Сток РФЦ**, ∑need, время доставки |
-
-### Ключевая логика
-
-1. `fact_ozon_warehouse_stocks` (ClickHouse) → FBO остатки **по каждому складу** (`GROUP BY offer_id, warehouse_name`)
-2. `WAREHOUSE_TO_CLUSTER` → агрегация `fbo_by_cluster: {offer_id: {cluster: qty}}`
-3. `fact_ozon_orders` (ClickHouse) → продажи по кластерам за `sales_period`
-4. `fact_ozon_ad_daily` (ClickHouse) → рекламная статистика 7д
-5. `dim_ozon_products` (PostgreSQL) → имена, изображения
-6. `need = max(0, ceil(daily_boosted × target_days × safety − wh_stock))` — **wh_stock = реальный сток на РФЦ кластера**
-7. `boost = (views > 0) ? max(1.0, min(5.0, (ad_carts × 3) / daily)) : 1.0`
-
-> **Важно:** до v2026-03-12 использовалась пропорциональная оценка `est_stock = fbo_total × share%`. Теперь сток берётся реальный по складам РФЦ, обслуживающим кластер.
-
----
-
-### Ozon Geography — `/api/v1/warehouses/ozon/geography`
-
-| Метод  | Path                                    | Описание                                        | Auth   |
-| ------ | --------------------------------------- | ----------------------------------------------- | ------ |
-| `GET`  | `/warehouses/ozon/geography`            | Кластеры доставки + города + стабильность + топ | Bearer |
-| `GET`  | `/warehouses/ozon/geography/city-products` | Drill-down товаров по городу                  | Bearer |
-| `GET`  | `/warehouses/ozon/geography/products-search` | Autocomplete для фильтра по SKU             | Bearer |
-| `POST` | `/warehouses/ozon/geography/ai-analysis`    | ИИ-анализ географии (Gemini 2.5 Flash)       | Bearer |
-
-#### Query Parameters (GET /geography)
-
-```
-shop_id: int (required)
-period: int (default: 30)            — период анализа (дни)
-sku_filter: int[] (optional)         — массив SKU для фильтрации
-```
-
-#### Ключевая логика
-
-- SQL: `fact_ozon_orders FINAL` GROUP BY `cluster_to`, `city`
-- Стабильность: `count(DISTINCT toDate(order_date)) / period * 100`
-- Топ товары per-cluster (top-5) и общие (top-50) с metadata из `dim_ozon_products`
-- **AI-анализ**: 7 шагов сбора данных (кластеры+города, товары, стоки, кросс-доставки), Gemini 2.5 Flash, кеш 6ч
-
----
-
-### Ozon Storage — `/api/v1/warehouses/ozon/storage`
-
-| Метод  | Path                                        | Описание                          | Auth   |
-| ------ | ------------------------------------------- | --------------------------------- | ------ |
-| `GET`  | `/warehouses/ozon/storage`                  | Аналитика хранения FBO per-SKU    | Bearer |
-| `POST` | `/warehouses/ozon/sync-placement-cost`      | Trigger синхронизации факт. данных| Bearer |
-| `POST` | `/warehouses/ozon/backfill-placement-cost`  | Бэкфилл факт. данных за N месяцев | Bearer |
-
-#### Ключевая логика
-
-- Per-SKU оборачиваемость: приоритетно из `fact_ozon_turnover`, fallback на `stock/daily_sales`
-- Зонирование: free (<120д), warning (120-160д), paid (>160д) — тарифы Ozon
-- **Объём**: `volume_weight × 2.87` (коэффициент из реверс-инжиниринга Ozon кабинета)
-- **Тариф**: 0.14 ₽/л/день (медиана из реверс-инжиниринга)
-- Прогноз 30д: убывание стока при продажах
-- **Фактические данные**: `fact_ozon_placement_cost` (приоритет над расчётным)
-  - `storage_source: "actual" | "estimated"` per-SKU
-  - KPI: `has_actual_data`, `actual_period` (from/to)
-
----
-
-### Ozon Overview — `/api/v1/warehouses/ozon/overview`
-
-| Метод | Path                                          | Описание                         | Auth   |
-| ----- | --------------------------------------------- | -------------------------------- | ------ |
-| `GET` | `/warehouses/ozon/overview`                   | Обзорный дашборд складов         | Bearer |
-| `GET` | `/warehouses/ozon/overview/stock-report/excel` | Excel-экспорт остатков (2 листа) | Bearer |
-
-#### Query Parameters
-
-```
-shop_id: int (required)
-period: int (default: 30)            — период анализа (дни)
-```
-
-#### Ключевая логика (~380 строк)
-
-- Стоки по `fact_ozon_warehouse_stocks` (warehouse_name × offer_id)
-- Заказы из `fact_ozon_orders` (текущий + предыдущий период для трендов)
-- Расходы: 9 типов из `fact_ozon_transactions` (логистика, эквайринг, возвраты, штрафы, хранение, FBO, кроссдокинг)
-- Фактическое хранение из `fact_ozon_placement_cost` (приоритет над расчётным)
-- Out-of-stock SKU: агрегация по всем складам, top-10 с `days_left < 14`
-- KPI с трендами vs prev period: `total_expenses`, `total_logistics`, `total_crossdocking`, `total_storage`, `total_returns`, `total_orders`, `cross_pct`
-- Per-warehouse: status (critical/empty/attention/overstocked/ok), daily_sales, turnover_days, cross_pct, top-50 SKU
-
-#### Excel экспорт (GET /ozon/overview/stock-report/excel)
-
-Параметры: `shop_id`, `period` (default: 30)
-
-**2 листа в .xlsx файле:**
-
-| Лист | Название       | Содержимое                                                                              |
-| ---- | -------------- | --------------------------------------------------------------------------------------- |
-| 1    | По складам     | Склад × SKU: offer_id, sku, stock, orders, daily, days_supply. Подсветка OOS/дефицит    |
-| 2    | По товарам     | SKU-сводка по всем складам: матрица (stock, orders, turnover), OOS/LOW/OVER подсветка    |
-
-**Подсветка:**
-- 🔴 OOS (красный) — stock=0, orders>0
-- 🟡 Дефицит (жёлтый) — days_supply < 14
-- 🟣 Излишек (фиолетовый) — days_supply > 120
-
-**OOS-товары:** инъектируются из `fact_ozon_orders` — SKU с заказами но без стока добавляются в данные. Имена товаров берутся из `dim_ozon_products` (PostgreSQL).
-
----
-
-### WB Overview — `/api/v1/warehouses/wb/analytics`
-
-| Метод | Path                                        | Описание                         | Auth   |
-| ----- | ------------------------------------------- | -------------------------------- | ------ |
-| `GET` | `/warehouses/wb/analytics`                  | Аналитика складов WB (JSON)      | Bearer |
-| `GET` | `/warehouses/wb/analytics/stock-report/excel` | Excel-экспорт остатков (2 листа) | Bearer |
-
-#### Excel экспорт (GET /wb/analytics/stock-report/excel)
-
-Параметры: `shop_id`, `period` (default: 30)
-
-**2 листа в .xlsx файле:**
-
-| Лист | Название       | Содержимое                                                                              |
-| ---- | -------------- | --------------------------------------------------------------------------------------- |
-| 1    | По складам     | Склад × SKU: vendor_code, nm_id, stock, orders, daily, days_supply. Подсветка OOS/дефицит |
-| 2    | По товарам     | SKU-сводка по всем складам: матрица (stock, orders, turnover), OOS/LOW/OVER подсветка    |
-
-**Подсветка:** аналогична Ozon (OOS/дефицит/излишек). OOS-товары инъектируются из `fact_orders_raw`. Имена из `dim_products` (PostgreSQL).
-
-**Общая функция:** `_build_stock_report_excel(warehouses, marketplace, shop_id, period, db, ch)` — shared логика для WB и Ozon.
-
----
-
-### Ozon Cross — `/api/v1/warehouses/ozon/cross`
-
-Отдельный endpoint не создан — кросс-анализ Ozon включён в `GET /ozon/analytics` и визуализируется фронтендом через адаптер `normalizeOzonToCrossData()`.
-
-| Метод  | Path                                        | Описание                                    | Auth   |
-| ------ | ------------------------------------------- | ------------------------------------------- | ------ |
-| `POST` | `/warehouses/ozon/cross/ai-analysis`        | ИИ-анализ кросс-логистики (Gemini 2.5 Flash)| Bearer |
-
-#### Кросс-анализ логика
-
-- SQL: `sku × warehouse_name × cluster_to` из `fact_ozon_orders`
-- Per-warehouse: `cross_pct`, `cross_orders`, `local_orders` через `_get_cluster_for_warehouse`
-- Per-SKU: `cross_pct`, `cross_orders`, `geography[]` с `is_local` флагом
-- `cross_map`: матрица `warehouse × cluster`
-
-#### AI-анализ кросс-логистики
-
-- **Промпт V4**: обзорный формат — `warehouse_assessments` (оценка каждого склада: status, cross_pct, main_cross_destinations) + `priority_actions` (текстовые действия с impact и link_to_supply)
-- Данные: кросс-маршруты per-SKU, стоки per-warehouse, общая статистика
-- ИИ запрещено считать конкретные qty, давать формулы перемещений
-- Кеширование 6ч в Redis, force-refresh параметр
-
----
+- Используется для упорядочивания хабов по приоритету доставки
 
 ### WB Supply — `/api/v1/warehouses/wb/supply`
 
-| Метод | Path                         | Описание                        | Auth   |
-| ----- | ---------------------------- | ------------------------------- | ------ |
+Аналогичная структура, но адаптирована под WB:
+
+| Метод | Path                       | Описание                        | Auth   |
+| ----- | -------------------------- | ------------------------------- | ------ |
 | `GET` | `/warehouses/wb/supply`      | Рекомендации по поставке (JSON) | Bearer |
-| `GET` | `/warehouses/wb/supply/xlsx` | Excel-экспорт (5 листов)        | Bearer |
+| `GET` | `/warehouses/wb/supply/xlsx` | Excel-экспорт (4 листа)        | Bearer |
 
-### Query Parameters
+**WB-специфика:**
 
-```
-shop_id: int (required)
-sales_period: int (default: 30)      — период анализа продаж (дни)
-target_days: int (default: 45)       — на сколько дней формировать запас
-safety: float (default: 1.15)        — коэффициент безопасности
-```
+- food/SGT: привязка к `:Питание` складам, парный stock/daily
+- Storage: платное с 1-го дня (нет free period)
+- cross-drain re-balance: `need` центрального склада уменьшается на долю кросс-drain
+- global cap: `sum(needs) ≤ boosted_daily × target_days × safety − total_stock`
 
-> **Важно**: WB не поддерживает Ad Boost (в отличие от Ozon).
+### WB Analytics — `/api/v1/warehouses/wb/analytics`
 
-### Response Schema (GET /wb/supply)
-
-```
-{
-  kpi: {
-    total_need, critical_count, attention_count, overstock_count,
-    avg_days_supply, total_stock, total_sku, total_storage_month
-  },
-  items: [{
-    nm_id, vendor_code, name, image_url, vol_liters,
-    total_sold, total_stock, daily_avg, turnover_days,
-    effective_days,              // реальный запас с учётом кросс-складского расхода (null если нет данных)
-    total_need,
-    status: "critical" | "attention" | "ok" | "overstock",
-    storage_cost_month,
-    product_type: "food" | "sgt" | "normal",
-    warehouses: [{
-      warehouse, stock, orders, daily, turnover_days,
-      effective_days,            // реальный запас на этом складе (с учётом кросс-расхода)
-      cross_daily,               // чужих заказов/день (из других округов)
-      cross_okrugs: [{           // детализация кросс-расхода
-        okrug, qty, daily
-      }],
-      need, storage_per_day, storage_per_month,
-      storage_coef, storage_source,  // "actual" (fact_wb_paid_storage) или "tariff"
-      acceptance_coef, acceptance, revenue,
-      regional_orders, regional_daily, demand_regions,
-      daily_boosted,
-      paired_orders, paired_revenue  // для food/SGT: заказы/выручка парного обычного склада
-    }]
-  }],
-  warehouse_summary: [{
-    warehouse, items_count, total_stock, total_orders,
-    total_need, total_revenue, storage_coef, acceptance
-  }]
-}
-```
-
-### Маппинг складов → округа (WAREHOUSE_TO_OKRUG)
-
-50+ складов WB привязаны к 8 федеральным округам (включая варианты `:Питание` и `СГТ`):
-
-| Склад (warehouse_name)                | Федеральный округ   |
-| -------------------------------------- | ------------------- |
-| Котовск, Подольск 4, Домодедово 2      | Центральный         |
-| Шушары, СПб Шушары                     | Северо-Западный     |
-| Казань, Самара (Новосемейкино)         | Приволжский         |
-| Екатеринбург, Челябинск                | Уральский           |
-| Краснодар (Тихорецкая), Волгоград      | Южный               |
-| Новосибирск                            | Сибирский           |
-| Хабаровск                              | Дальневосточный     |
-| Ростов, Минеральные Воды               | Северо-Кавказский   |
-
-### Кросс-складской анализ
-
-Анализ фактического расхода стока по `warehouse_name × nm_id × oblast_okrug_name`:
-
-1. SQL: `GROUP BY nm_id, warehouse_name, oblast_okrug_name` из `fact_orders_raw`
-2. Если `oblast_okrug_name != WAREHOUSE_TO_OKRUG[warehouse_name]` → **кросс-слив**
-3. `effective_days = stock / actual_daily` (включая кросс-заказы)
-4. Пересчёт статуса: `effective_days < 14` → `critical`, `< target_days` → `attention`
-
-### Cross-drain Re-balance (v8)
-
-После начального расчёта `need` по складам, но **перед** global cap:
-
-1. Если `need > 0` у регионального склада → уменьшаем `effective_daily` центрального склада на долю кросс-drain в этот регион
-2. Пересчёт `need` центрального с уменьшенным `effective_daily`
-3. **Food/SGT**: кросс-drain НЕ вычитается если в целевом регионе нет food-совместимого склада (кросс неизбежен)
-
-### Food / SGT логика
-
-- **Классификация**: категория `Товары для животных`, `Продукты питания` и т.д. → тип `food`
-- **Ограничение**: food-товары принимают ТОЛЬКО склады с суффиксом `: Питание`
-- **Парные склады**: «Котовск» и «Котовск: Питание» — одна физическая локация
-- **need = 0** на обычном складе для food-товара (поставка только на `:Питание`)
-- **paired_stock**: food-вариант учитывает stock парного обычного склада
-- **paired_daily**: food-вариант агрегирует продажи парного склада (WB записывает под обычным именем)
-
-### WB Excel-экспорт (5 листов)
-
-| Лист | Название              | Содержимое                                                                                    |
-| ---- | --------------------- | --------------------------------------------------------------------------------------------- |
-| 1    | Рекомендации по складам | SKU × склад: status, sold, daily, need, хранение руб/день и руб/мес, коэфф приёмки         |
-| 2    | Сводка по товарам     | 1 строка на SKU: оборачиваемость, прогноз хранения, текстовая рекомендация                    |
-| 3    | Тарифы складов WB     | 144+ склада: коэффициенты хранения/логистики/приёмки, тарифы                                  |
-| 4    | Поставка по складам   | Склад → SKU с need > 0, paired_orders/revenue для food/SGT, итоги                            |
-| 5    | Риск перезатаривания  | SKU с `turnover_days > target_days`, excess_qty, storage_per_month, рекомендация              |
-
-### WB-специфика
-
-- **Хранение платное с 1-го дня** — нет бесплатного периода
-- **Фиксация коэффициентов**: 60 дней (большинство категорий), 90 дней (одежда/обувь)
-- **Overstock**: `turnover_days > target_days` (настраиваемый порог)
-- **Acceptance**: коэффициент приёмки склада (`"Без коэфф."` или `"x{N}"`)
-- **storage_cost_month**: приоритет — реальные данные из `fact_wb_paid_storage` (avg 14д), fallback — тариф `vol_liters × tariff_per_liter × storage_coef × stock × 30`
-- **storage_source**: `"actual"` (fact_wb_paid_storage) или `"tariff"` — источник расчёта хранения для каждого склада
-- **helper**: `_build_wb_supply_data()` — общая логика для JSON и Excel endpoints
-
-### Источники данных
-
-1. `fact_inventory_snapshot` (ClickHouse) → остатки по складам
-2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period` (включая `warehouse_name`, `oblast_okrug_name`)
-3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
-4. `fact_wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
-5. `fact_wb_paid_storage` (ClickHouse) → реальная стоимость хранения per-SKU per-warehouse (avg 14д)
-6. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
+| Метод | Path                                     | Описание                   | Auth   |
+| ----- | ---------------------------------------- | -------------------------- | ------ |
+| `GET` | `/warehouses/wb/analytics`               | Обзор складов + кросс      | Bearer |
+| `GET` | `/warehouses/wb/analytics/stock-report/excel` | Excel остатков (2 листа)  | Bearer |
 
 ---
 
-### WB Supply — `/api/v1/warehouses/wb/supply`
-
-| Метод | Path                         | Описание                        | Auth   |
-| ----- | ---------------------------- | ------------------------------- | ------ |
-| `GET` | `/warehouses/wb/supply`      | Рекомендации по поставке (JSON) | Bearer |
-| `GET` | `/warehouses/wb/supply/xlsx` | Excel-экспорт (4 листа)         | Bearer |
-
-### Query Parameters
-
-```
-shop_id: int (required)
-sales_period: int (default: 30)      — период анализа продаж (дни)
-target_days: int (default: 45)       — на сколько дней формировать запас
-safety: float (default: 1.15)        — коэффициент безопасности
-```
-
-> **Важно**: WB не поддерживает Ad Boost (в отличие от Ozon).
-
-### Response Schema (GET /wb/supply)
-
-```
-{
-  kpi: {
-    total_need, critical_count, attention_count, overstock_count,
-    avg_days_supply, total_stock, total_sku, total_storage_month
-  },
-  items: [{
-    nm_id, vendor_code, name, image_url, vol_liters,
-    total_sold, total_stock, daily_avg, turnover_days,
-    effective_days,              // реальный запас с учётом кросс-складского расхода (null если нет данных)
-    total_need,
-    status: "critical" | "attention" | "ok" | "overstock",
-    storage_cost_month,
-    product_type: "food" | "sgt" | "normal",
-    warehouses: [{
-      warehouse, stock, orders, daily, turnover_days,
-      effective_days,            // реальный запас на этом складе (с учётом кросс-расхода)
-      cross_daily,               // чужих заказов/день (из других округов)
-      cross_okrugs: [{           // детализация кросс-расхода
-        okrug, qty, daily
-      }],
-      need, storage_per_day, storage_per_month,
-      storage_coef, storage_source,  // "actual" (fact_wb_paid_storage) или "tariff"
-      acceptance_coef, acceptance, revenue,
-      regional_orders, regional_daily, demand_regions,
-      daily_boosted
-    }]
-  }],
-  warehouse_summary: [{
-    warehouse, items_count, total_stock, total_orders,
-    total_need, total_revenue, storage_coef, acceptance
-  }]
-}
-```
-
-### Маппинг складов → округа (WAREHOUSE_TO_OKRUG)
-
-50+ складов WB привязаны к 8 федеральным округам (включая варианты `:Питание` и `СГТ`):
-
-| Склад (warehouse_name)                | Федеральный округ   |
-| -------------------------------------- | ------------------- |
-| Котовск, Подольск 4, Домодедово 2      | Центральный         |
-| Шушары, СПб Шушары                     | Северо-Западный     |
-| Казань, Самара (Новосемейкино)         | Приволжский         |
-| Екатеринбург, Челябинск                | Уральский           |
-| Краснодар (Тихорецкая), Волгоград      | Южный               |
-| Новосибирск                            | Сибирский           |
-| Хабаровск                              | Дальневосточный     |
-| Ростов, Минеральные Воды               | Северо-Кавказский   |
-
-### Кросс-складской анализ
-
-Анализ фактического расхода стока по `warehouse_name × nm_id × oblast_okrug_name`:
-
-1. SQL: `GROUP BY nm_id, warehouse_name, oblast_okrug_name` из `fact_orders_raw`
-2. Если `oblast_okrug_name != WAREHOUSE_TO_OKRUG[warehouse_name]` → **кросс-слив**
-3. `effective_days = stock / actual_daily` (включая кросс-заказы)
-4. Пересчёт статуса: `effective_days < 14` → `critical`, `< target_days` → `attention`
-
-### Food / SGT логика
-
-- **Классификация**: категория `Товары для животных`, `Продукты питания` и т.д. → тип `food`
-- **Ограничение**: food-товары принимают ТОЛЬКО склады с суффиксом `: Питание`
-- **Парные склады**: «Котовск» и «Котовск: Питание» — одна физическая локация
-- **need = 0** на обычном складе для food-товара (поставка только на `:Питание`)
-- **paired_stock**: food-вариант учитывает stock парного обычного склада
-- **paired_daily**: food-вариант агрегирует продажи парного склада (WB записывает под обычным именем)
-
-### WB-специфика
-
-- **Хранение платное с 1-го дня** — нет бесплатного периода
-- **Фиксация коэффициентов**: 60 дней (большинство категорий), 90 дней (одежда/обувь)
-- **Overstock**: `turnover_days > target_days` (настраиваемый порог)
-- **Acceptance**: коэффициент приёмки склада (`"Без коэфф."` или `"x{N}"`)
-- **storage_cost_month**: приоритет — реальные данные из `fact_wb_paid_storage` (avg 14д), fallback — тариф `vol_liters × tariff_per_liter × storage_coef × stock × 30`
-- **storage_source**: `"actual"` (fact_wb_paid_storage) или `"tariff"` — источник расчёта хранения для каждого склада
-- **helper**: `_build_wb_supply_data()` — общая логика для JSON и Excel endpoints
-
-### Источники данных
-
-1. `fact_inventory_snapshot` (ClickHouse) → остатки по складам
-2. `fact_orders_raw` (ClickHouse) → заказы за `sales_period` (включая `warehouse_name`, `oblast_okrug_name`)
-3. `dim_products` (PostgreSQL) → габариты, имена, vendor_code
-4. `fact_wb_acceptance_tariffs` (ClickHouse) → тарифы приёмки/хранения/логистики
-5. `fact_wb_paid_storage` (ClickHouse) → реальная стоимость хранения per-SKU per-warehouse (avg 14д)
-6. Redis (`state:image_url:{shop_id}:{nm_id}`) → URL изображений
-
----
-
-### 2026-02-19
-
-- Добавлена секция `Дашборд Ozon — /api/v1/dashboard` с endpoint, response schema и логикой
-- Обновлён список роутеров (6 вместо 5)
-
-### 2026-02-21
-
-- Добавлен WB dashboard endpoint `GET /dashboard/wb`
-- Обновлена response schema: добавлен `ads_daily[]` в charts, `supplier_article` в top_products
-- Документировано использование `primary_image_url` вместо `main_image_url` для Ozon
-- Добавлена динамическая генерация CDN URL для WB (`wb_image_url(nm_id)`)
-
-### 2026-02-22
-
-- Добавлена полная секция «Товары — /api/v1/products» с 4 endpoints
-- PATCH `/ozon/cost`: trim() offer_id, warning при cost > price
-- POST `/ozon/cost/bulk`: warnings[] при cost > price
-- Стабильная сортировка с composite key для пагинации без дублей
-
-### 2026-02-24
-
-- **Ozon**: Гибридная формула прибыли: revenue из orders (price×qty), profit из transactions (txn_payout)
-- **Ozon**: `mp_fees` теперь = revenue − txn_payout (ВСЕ удержания Ozon), с детализацией: `mp_fees_commission`, `mp_fees_logistics`
-- **Ozon + WB**: Серверные `totals` в ответе GET `/products/ozon` и `/products/wb` — итоги по всем товарам до пагинации
-- **WB**: `mp_fees` из `fact_finances` за текущий период (ранее — пропорция за 90д), фактические суммы
-- **WB**: Детализация fees: `mp_fees_commission`, `mp_fees_logistics`, `mp_fees_storage`, `mp_fees_other`
-- **WB**: Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
-
-### 2026-02-25
-
-- **Ozon**: Формула прибыли переписана: `revenue − COGS − mp_fees − ad_spend` (ранее: `txn_payout − COGS − ad` — давала абсурд при отрицательном txn_payout за период)
-- **Ozon**: `totals` теперь содержит `payout` и `avg_price` (ранее: фронт показывал 0₽ / пустую ячейку)
-- **Ozon**: `margin_percent` = `cost / price × 100` (доля С/с в цене, всегда положительный; ранее: маржа прибыли)
-- **WB**: `margin` в backend = `gross_profit / sales_amount × 100` (ранее: / payout — % от выплаты)
-- **WB**: Frontend `wbToOzon`: `margin_percent` = `(cost + packaging) / price × 100`, `grossProfitPct` = `profit / sales_amount × 100`
-
-### 2026-02-26
-
-- **WB Финансы — полный пересмотр P&L расчёта:**
-  - **Source of truth:** `fact_finances FINAL` — единственный источник для P&L WB
-  - **Revenue:** `retail_price_withdisc_rub` из `raw_payload` (розничная цена до скидок, ранее: `retail_amount`)
-  - **Commission:** `revenue − payout` (включает SPP скидку + комиссию WB, ранее: только `commission_amount` = двойной счёт)
-  - **Deductions:** извлекаются из `raw_payload.deduction` (ранее: не учитывались, потеря до 25K/нед)
-  - **Operating expenses:** `logistics + storage + penalties + acquiring + acceptance + deductions`
-  - **Формула прибыли:** `payout − operating − ads − cogs` (ранее: `payout − mp_fees`, где mp_fees включал комиссию → двойной счёт)
-  - **Marketplace filter:** `marketplace = 1` (Enum8, ранее: `marketplace = 'wildberries'` — не работало)
-
-### 2026-02-27
-
-- **Ozon Финансы:** Расчёт товарной прибыли полностью переведён на транзакции (`fact_ozon_transactions`) для точного совпадения с балансом, устранено смешивание данных с `fact_ozon_orders`.
-- **Ozon Финансы:** В ответ `GET /api/v1/finances/ozon/products` добавлено поле `name`. Извлекается JOIN-ом из PostgreSQL `dim_ozon_products` по `offer_id` для замены технических артикулов вроде `01-0001055`.
-- **Ozon Dashboard:** Удалён фильтр `status NOT IN ('cancelled')` — теперь на дашборде учитываются ВСЕ заказы, включая отменённые, для совпадения с ЛК Ozon Seller.
-- **WB Dashboard:** Удалён фильтр `is_cancel = 0` — аналогично, все заказы включены.
-- **Ozon Dashboard:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(in_process_at, 3))` вместо `toDate(in_process_at)`.
-- **WB Dashboard:** Группировка по дате переведена на МСК (UTC+3): `toDate(addHours(date, 3))` вместо `toDate(date)`.
-- **Ozon Финансы (COGS):** Маппинг `sku → offer_id` для товарной прибыли переведён на `dim_ozon_products` (PG) вместо `fact_ozon_orders` (CH). В CH offer_id содержал артефакты (лишние пробелы), что ломало lookup в `product_costs`.
-- **Ozon + WB Финансы (COGS):** Расчёт себестоимости использует `net_qty = sales - returns` вместо `sales` — корректный учёт возвратов.
-
-### 2026-03-01
-
-- **Добавлена секция «Продажи — /api/v1/sales»** — 6 endpoints: Ozon/WB sales overview, product-daily, ABC/XYZ анализ
-- **Добавлена секция «Финансы — /api/v1/finances»** — 4 endpoints: P&L и товарная прибыль для Ozon/WB
-- **Роутинг обновлён:** 10 роутеров вместо 6 (добавлены products, wb_products, finances, sales)
-
-### 2026-03-02
-
-- **Добавлена секция «Товары WB — /api/v1/products/wb»** — 4 endpoints: GET list, PATCH cost, POST bulk, GET template
-- **Sales endpoints:** добавлены `/sales/ozon/forecast` и `/sales/wb/forecast` (LightGBM, SKU-уровень)
-- **Sales:** итого 8 endpoints в секции (+ forecast)
-- **Forecast engine:** `forecast_engine.py` — внутренняя утилита для SKU-рекомендаций, не отдельный роутер
-
-### 2026-03-03
-
-- **Добавлена секция «Клиентская аналитика (LTV)»** — 4 endpoints: Ozon/WB LTV + Purchase Chain
-- **Роутинг обновлён:** 12 роутеров (добавлены `ltv_router`, `wb_ltv_router`)
-- **WB LTV** (`wb_ltv.py`): buyer_id из srid, когорты, SKU repeat, chain L1→L5
-- **WB LTV обогащение:** `dim_products` (name, vendor_code) + `wb_image_url(nm_id)` CDN
-
-### 2026-03-10
-
-- **LTV Excel экспорт:** 2 новых endpoint'a `/sales/ozon/ltv/xlsx` и `/sales/wb/ltv/xlsx` — 7-листовый Excel
-- **`monthly_buyers`:** новый блок в LTV response — помесячные новые/повторные покупатели + выручка
-- **Лист «Переходы»:** кросс-SKU цепочки (dense_rank, reindex, top-3 на уровнях 2–5)
-- **Retention фикс:** `countDistinct` для b1 (все покупатели), `avgIf(purchase_num=1)` для avg_days
-- **Лист «Товары»:** понятные заголовки («Ср. чек повторных ₽», «Повтор в 2-ю покупку»)
-
-### 2026-03-06
-
-- **Добавлена секция «События — /api/v1/events»** — endpoint: GET `/events/feed` (лента событий)
-- **Роутинг обновлён:** 13 роутеров (добавлен `events_router`)
-- **Events feed:** обогащение товаров (фото, имя, артикул) из PG `dim_ozon_products`, campaign_title из 5-уровневого fallback (meta → STATUS_CHANGE → DB → Redis)
-
----
-
-## Лента событий — `/api/v1/events`
+## События — `/api/v1/events`
 
 ### Endpoints
 
-| Метод | Path           | Описание                               | Auth   |
-| ----- | -------------- | -------------------------------------- | ------ |
-| `GET` | `/events/feed` | Лента событий, сгруппированных по дням | Bearer |
+| Метод | Path             | Описание                         | Auth   |
+| ----- | ---------------- | -------------------------------- | ------ |
+| `GET` | `/events`        | Лента событий                    | Bearer |
+| `GET` | `/events/stats`  | График событий (по дням)         | Bearer |
 
 ### Query Parameters
 
 ```
-shop_id: int (required)  — ID магазина
-period: "today" | "7d" | "30d" | "90d"  — период (default: "7d")
+shop_id: int (required)
+period: "7d" | "14d" | "30d" | "custom" (default: "7d")
+date_from: date (optional)
+date_to: date (optional)
 category: "all" | "advertising" | "content" | "commercial"  — фильтр по категории
-date_from: date (optional) — начало кастомного диапазона (переопределяет period)
-date_to: date (optional) — конец кастомного диапазона (переопределяет period)
 ```
 
-### Response Schema
+### Response Schema (GET /events)
 
-```json
+```
 {
-  "total": 41,
-  "period": "7d",
-  "days": [
-    {
-      "date": "2026-03-02",
-      "label": "2 марта — понедельник",
-      "events": [
-        {
-          "id": 1234,
-          "created_at": "2026-03-02T13:33:34",
-          "event_type": "OZON_BID_CHANGE",
-          "category": "advertising",
-          "label": "Изменение ставки",
-          "advert_id": 19642583,
-          "campaign_title": "АМ-СОБ-МЕЛ-ЯГ-1 — Поиск",
-          "product": {
-            "nm_id": 2064330323,
-            "name": "Amare Сухой полнорационный корм...",
-            "offer_id": "АМ-СОБ-МЕЛ-ЯГ-1",
-            "image_url": "https://..."
-          },
-          "old_value": "12.00 ₽",
-          "new_value": "18.00 ₽",
-          "detail": "12.00 ₽ → 18.00 ₽",
-          "campaign_items": null
-        },
-        {
-          "id": 1235,
-          "event_type": "OZON_CAMPAIGN_CREATED",
-          "category": "advertising",
-          "label": "Новая кампания",
-          "campaign_title": "тест 111",
-          "detail": "Создана кампания · Активна · 8 товаров",
-          "campaign_items": [
-            {
-              "offer_id": "АМ-КШ-СТЕР-КР-10",
-              "nm_id": "2947854852",
-              "name": "Amare Корм..."
-            },
-            { "offer_id": "", "nm_id": "2946710642", "name": "Amare Корм..." }
-          ]
-        }
-      ]
+  events: [{
+    id: int,
+    event_type: str,
+    nm_id: int,
+    old_value: str?,
+    new_value: str?,
+    event_metadata: jsonb,
+    created_at: datetime,
+    product: {
+      vendor_code, name, image_url
     }
-  ]
+  }],
+  total: int
 }
 ```
 
-### Типы событий
+### Event Types
 
-| event_type              | category    | Описание                                          |
-| ----------------------- | ----------- | ------------------------------------------------- |
+**Ozon:**
+
+| Тип                     | Категория   | Описание                                              |
+| ----------------------- | ----------- | ----------------------------------------------------- |
 | `OZON_BID_CHANGE`       | advertising | Изменение ставки                                  |
 | `OZON_STATUS_CHANGE`    | advertising | Статус кампании изменён                           |
 | `OZON_BUDGET_CHANGE`    | advertising | Бюджет кампании изменён                           |
 | `OZON_ITEM_ADD`         | advertising | Товар добавлен в кампанию                         |
 | `OZON_ITEM_REMOVE`      | advertising | Товар удалён из кампании                          |
 | `OZON_CAMPAIGN_CREATED` | advertising | Новая кампания Ozon (с `campaign_items`)          |
-| `OZON_SEO_CHANGE`       | content     | SEO-контент изменён                               |
-| `OZON_PHOTO_CHANGE`     | content     | Фото изменено (`field`: `main_image` / `gallery`) |
-| `OZON_CONTENT_CHANGE`   | content     | Контент (название) изменён                        |
-| `OZON_PRICE_CHANGE`     | commercial  | Цена изменена                                     |
-| `OZON_STOCK_OUT`        | commercial  | Товар закончился (остатки → 0)                    |
-| `OZON_STOCK_REPLENISH`  | commercial  | Поступление на склад (0 → N)                      |
+| `OZON_PRICE_CHANGE`     | commercial  | Цена товара изменена                              |
+| `OZON_STOCK_OUT`        | commercial  | Товар ушёл в out-of-stock                         |
+| `OZON_STOCK_REPLENISH`  | commercial  | Товар вернулся на склад                           |
+| `OZON_CONTENT_CHANGE`   | content     | Изменение контента карточки                       |
+| `OZON_PHOTO_CHANGE`     | content     | Изменение фото (main_image или gallery)           |
+
+**WB:**
+
+| Тип                     | Категория   | Описание                                              |
+| ----------------------- | ----------- | ----------------------------------------------------- |
 | `ITEM_INACTIVE`         | advertising | Товар деактивирован (WB)                          |
 | `BID_CHANGE`            | advertising | Изменение ставки (WB)                             |
 | `STATUS_CHANGE`         | advertising | Статус кампании изменён (WB)                      |
 | `ITEM_ADD`              | advertising | Товар добавлен (WB)                               |
 | `ITEM_REMOVE`           | advertising | Товар удалён (WB)                                 |
 | `CAMPAIGN_CREATED`      | advertising | Новая кампания WB (с `campaign_items`)            |
-| `CONTENT_CHANGE`        | content     | Контент изменён (WB)                              |
-| `CONTENT_DESC_CHANGED`  | content     | Описание товара изменено (WB)                     |
-| `PRICE_CHANGE`          | commercial  | Цена изменена (WB)                                |
-| `STOCK_OUT`             | commercial  | Товар закончился (WB)                             |
-| `STOCK_REPLENISH`       | commercial  | Поступление на склад (WB)                         |
-
-### Обогащение данных
-
-- **Товар:** JOIN `event_log.nm_id` → `dim_ozon_products` по `sku` ИЛИ `product_id` → name, offer_id, image_url
-- **Товары кампании (CAMPAIGN_CREATED):** nm_ids из `metadata.items` тоже добавляются в product_map lookup → offer_id обогащается из БД
-- **Campaign title:** 5-уровневый fallback:
-  1. `event_metadata.campaign_title` (новые события)
-  2. `event_metadata.title` только для STATUS_CHANGE/BUDGET_CHANGE
-  3. STATUS_CHANGE из БД (того же advert_id)
-  4. `campaign_title` из любых событий в БД
-  5. Redis-кеш: Ozon → `get_ozon_campaign_state().title`, WB → `get_state().campaign_name`
-
-### Changelog
-
-#### 2026-03-06
-
-- Добавлены типы: OZON_PRICE_CHANGE, OZON_STOCK_OUT, OZON_STOCK_REPLENISH, OZON_CONTENT_CHANGE
-- Product lookup: поиск по `product_id` OR `sku` (ценовые события используют product_id)
-- `_format_value`: OZON_PRICE_CHANGE форматируется как `X ₽`
-
-#### 2026-03-07
-
-- OZON_PHOTO_CHANGE: поддержка `field: gallery` (ранее только `images_order`) в detail-тексте
-- `advert_id` больше не обязателен — контентные события (OZON_PHOTO_CHANGE и др.) корректно записываются с `advert_id = NULL`
-
-#### 2026-03-09
-
-- **`date_from`/`date_to`**: добавлены query parameters для кастомного диапазона дат (переопределяют `period`)
-- **`campaign_items`**: новое поле в response — структурированный список товаров для `CAMPAIGN_CREATED`/`OZON_CAMPAIGN_CREATED` (`[{offer_id, nm_id, name}]`)
-- **`_pluralize()`**: helper для русского склонения «товар/товара/товаров» в detail-строке
-- **Product enrichment**: nm_ids из `CAMPAIGN_CREATED` metadata.items добавляются в `product_map` lookup → offer_id обогащается из `dim_products`/`dim_ozon_products`
-- **WB Redis fallback**: `get_state().campaign_name` используется для резолва названий WB кампаний (ранее — только Ozon через `get_ozon_campaign_state().title`)
-- **Emoji cleanup**: убран дублирующий 🚀 из лейблов CAMPAIGN_CREATED/OZON_CAMPAIGN_CREATED (иконка уже в EVENT_STYLE)
+| `PRICE_CHANGE`          | commercial  | Цена товара изменена (WB)                         |
+| `STOCK_OUT`             | commercial  | Out-of-stock (WB)                                 |
+| `STOCK_REPLENISH`       | commercial  | Товар пополнен (WB)                               |
+| `CONTENT_CHANGE`        | content     | Изменение контента карточки (WB)                  |
+| `PHOTO_CHANGE`          | content     | Изменение фото (WB)                               |
 
 ---
 
-## ИИ-анализ событий — `/api/v1/events/analysis`
+## Changelog
 
-### Endpoint
+### 2026-02-19
 
-| Метод  | Path               | Описание                                        | Auth   |
-| ------ | ------------------ | ----------------------------------------------- | ------ |
-| `POST` | `/events/analysis` | SSE-стрим ИИ-анализа событий (Gemini 2.5 Flash) | Bearer |
+- **CRUD шифрование ключей** при создании магазина
+- **validate_key**: проверка 7 WB API доменов + Ozon seller+perf раздельно
+- **delete_shop**: ClickHouse (6 таблиц) + PG каскад + Redis
 
-### Request Body
+### 2026-02-21
 
-```json
-{
-  "shop_id": 18,
-  "period": "30d",
-  "group_by": "day"
-}
-```
+- **Dashboard WB**: поддержка WB в dashboard endpoint
+- **WB CDN**: `wb_image_url()` для динамической генерации URL фото
 
-### Механизм
+### 2026-02-22
 
-1. **Каталог товаров** (PostgreSQL):
-   - WB: `dim_products` → `nm_id`, `name`, `vendor_code`
-   - Ozon: `dim_ozon_products` → `product_id`, `name`, `offer_id`
+- **Ozon marketing_seller_price**: `/v5/product/info/prices` интеграция
+- **WB acquiring_fee**: маппинг в `fact_finances`
 
-2. **События** (PostgreSQL `event_log`):
-   - Все события за period → формат: `[дата] [категория] тип | товар: Название (артикул) | old → new`
-   - Привязка к товарам через `nm_id` → lookup в каталоге
+### 2026-03-09
 
-3. **KPI-метрики** (ClickHouse):
-   - Заказы + выручка из `fact_ozon_orders` / `fact_orders_raw`
-   - Реклама из `fact_ozon_ad_daily` / `fact_advert_stats_v3`
-   - Группировка по bucket (день/неделя)
-
-4. **Per-product funnel** (ClickHouse):
-   - TOP-50 товаров по рекламному расходу
-   - Ozon: `fact_ozon_ad_daily` → `sku`, views, clicks, add_to_cart, orders, money_spent
-   - WB: `fact_advert_stats_v3` → `nm_id`, views, clicks, atbs, orders, spend
-   - Расчёт: CTR%, CR→корзину%, CR→заказ%
-
-5. **Промпт → Gemini 2.5 Flash** (через `api.kie.ai`):
-   - System prompt с инструкциями анализа
-   - User prompt: каталог + события + KPI таблица + per-product funnel таблица
-
-6. **SSE streaming**: ответ стримится клиенту chunk-by-chunk
-
-### Response (Server-Sent Events)
-
-```
-data: {"content": "## 🔍 Ключевые находки\n\n"}
-data: {"content": "За период наблюдалось..."}
-...
-data: [DONE]
-```
-
-### Зависимости
-
-- **API ключ**: `KIE_AI_API_KEY` в `.env`
-- **Модель**: `gemini-2.5-flash` через `https://api.kie.ai/gemini-2.5-flash/v1/chat/completions`
-
-### Changelog
-
-#### 2026-03-09
-
-- Создан endpoint `POST /events/analysis`
-- Обогащение: каталог товаров (имена + артикулы), события привязаны к товарам, per-product funnel (CTR, CR, DRR)
-
-### 2026-03-09 (Склады)
-
-- **Новый роутер:** `warehouses_router` — `/api/v1/warehouses/*`
-- **2 endpoints:** `GET /ozon/supply` (JSON) + `GET /ozon/supply/xlsx` (Excel 5 листов)
-- **DELIVERY_HOURS** 25×25 — матрица нормативного времени доставки между кластерами Ozon
-- **CONSOLIDATED_GROUPS** — 9 объединённых групп кластеров для минимизации точек поставки
-- **`_resolve_hub()`** — определение приоритетного склада отгрузки для кластера спроса
-- **Excel Sheet 1:** добавлены колонки «Склад отгрузки» + «Доставка, ч» с цветовой индикацией
-- **Excel Sheet 5:** «Объединённые кластеры» — сводная поставка по 9 хабам
+- **WB Supply**: рекомендации по поставке FBO с кластерной разбивкой
 
 ### 2026-03-10
 
-- **Ozon comparison:** Добавлен ключ `operating` в `comparison.current` / `comparison.previous` — строка «Расходы МП (ОПЕКС)» ранее показывала 0₽
-- **Ozon comparison:** Добавлены ключи `penalties`, `refunds` (ранее отсутствовали)
-- **Формула:** `operating = services + bulk_charges (excl. marketing)`
-
-### 2026-03-10 (WB Supply)
-
-- **Новый endpoint:** `GET /warehouses/wb/supply/xlsx` — рекомендации поставок WB с учётом платного хранения
-- **Параметры:** `shop_id`, `sales_period` (7-90, def 30), `target_days` (14-60, def 45), `safety` (1.0-2.0, def 1.15)
-- **4 листа Excel:**
-  1. **Рекомендации по складам** — SKU × склад: продажи, остатки, потребность, хранение руб/день и руб/мес, коэфф. приёмки
-  2. **Сводка по товарам** — 1 строка на SKU: оборачиваемость, прогноз расходов хранения, текстовая рекомендация
-  3. **Тарифы складов WB** — все 144 склада: коэффициенты хранения/логистики/приёмки, базовые и доп тарифы
-  4. **Риск перезатаривания** — SKU с оборачиваемостью > 45 дней, оценка доп расходов на хранение
-- **Источники данных:** `fact_inventory_snapshot`, `fact_orders_raw_latest`, `dim_products`, `fact_wb_acceptance_tariffs`
-- **Ключевая логика:** хранение платное с 1-го дня, формула: `base_tariff × vol + add_tariff × (vol - 1)`
-- **Исправление:** `product_name` → `name` в запросе к `dim_products`
-
-### 2026-03-10 (v2)
-
-- Добавлена секция «WB Supply» с JSON endpoint `GET /warehouses/wb/supply`
-- Response schema: `kpi` + `items[]` (с `warehouses[]`) + `warehouse_summary[]`
-
-### 2026-03-14
-
-- WB Supply: `storage_per_day` теперь приоритетно из `fact_wb_paid_storage` (avg 14д), fallback — тарифная оценка
-- Добавлен `storage_source` (actual/tariff) в response schema warehouse
-- WB Analytics: исправлен `total_penalties` — только native `operation_type='Штраф'`, «Списание за отзыв» выделено отдельно
-- WB-специфика: хранение платное с 1-го дня, фиксация коэффициентов 60/90 дней
-- Overstock = `turnover_days > target_days` (не > 60)
-- Acceptance: «Без коэфф.» вместо «Бесплатно»
-- 5 источников данных: CH (stocks, orders, tariffs), PG (products), Redis (images)
-
-### 2026-03-10 (v3)
-
-- Добавлены endpoints `GET /sales/ozon/abc-xyz/xlsx` и `GET /sales/wb/abc-xyz/xlsx`
-- Excel: 3 листа (товары 19 колонок + матрица 3×3 + сводка), openpyxl
-- Цветовое кодирование ABC/XYZ групп, условное форматирование маржи/прибыли
-- RFC 5987 `filename*=UTF-8''` для кириллицы в Content-Disposition
-- Функция `_build_abc_xyz_xlsx()` — единая для Ozon и WB
+- **WB Supply**: единый интерфейс Ozon + WB, Excel экспорт
+- **ABC/XYZ Excel**: 3 листа, цветовое кодирование
+- **LTV Excel**: 7 листов, цепочки покупок
 
 ### 2026-03-12
 
-- **Ozon Supply — per-warehouse stocks:**
-  - Маппинг `WAREHOUSE_TO_CLUSTER` (34 РФЦ → кластеры) + обратный `CLUSTER_TO_WAREHOUSES_OZON`
-  - `_compute_supply()` переписан: стоки из `fact_ozon_warehouse_stocks` по каждому складу
-  - Формула: `need = max(0, daily×target×safety − реальный_сток_на_РФЦ)` (не пропорциональная оценка)
-  - Response: новые поля `wh_stock`, `warehouse`, `warehouses[]` в clusters и hubs
-  - Excel: «Сток РФЦ» + «Склады» во всех листах, обновлённая методология
+- **Ozon Supply per-warehouse stocks**: реальные остатки на РФЦ
 
-### 2026-03-13
+### 2026-03-14
 
-- **WB Supply — кросс-складской анализ:**
-  - `WAREHOUSE_TO_OKRUG`: маппинг 50+ складов WB → 8 федеральных округов (вкл. `:Питание`, `СГТ`)
-  - Новый SQL: `warehouse_name × nm_id × oblast_okrug_name` → `wh_consumption`
-  - Response: новые поля `effective_days`, `cross_daily`, `cross_okrugs[]`, `product_type`
-  - Пересчёт `status` по `effective_days` (ok→attention→critical)
+- **Ozon/WB Supply — cross-drain, real_days_supply, food/SGT paired warehouses**
+- **WB Supply Excel**: 4 листа (Рекомендации, По складам, Поставка по складам, Риск перезатаривания)
   - Excel: колонки «Реал.зап, дн» + «Кросс» в листе Рекомендации
 - **WB Supply — food/SGT paired warehouse fix:**
   - `need = 0` на обычных складах для food-товаров (поставка только на `:Питание`)
@@ -1629,3 +1074,18 @@ data: [DONE]
 - **Retention per-SKU**: запрос повторных покупок из `fact_ozon_orders` (total_buyers, repeat_rate, avg_ltv_repeat)
 - **Системный промпт**: правила логики (корреляция ≠ причинность), субсидии Ozon (СПП аналог), min_price ≠ цена конкурента
 - Добавлена секция `campaign_ai_router` в роутинг
+
+### 2026-03-25
+
+- **`advertising_analytics.py`** — полная WB-рекламная аналитика:
+  - Advertised vs Associated SKU разделение через `ads_raw_history.is_associated`
+  - WB campaign enrichment: `dim_advert_campaigns` (ClickHouse) — name, type Enum8, status, payment_type, bid_type, placements
+  - WB ставки из `log_wb_bids` (kopecks→rub), per-SKU total_drr из `fact_orders_raw`
+  - WB CDN: `_wb_image_url()` — динамический расчёт basket host по vol диапазонам (vol>4781 → basket-18)
+- **Zero-stat campaigns:** кампании без данных за выбранный период теперь отображаются с нулевой статистикой
+  - WB: дополнительный запрос `dim_advert_campaigns FINAL` (исключая status=-1)
+  - Ozon: запрос `dim_ozon_campaigns` (PostgreSQL) (исключая CAMPAIGN_STATE_ARCHIVED)
+- **`campaign_details.py`** — фильтрация `STATUS_CHANGE` из событий popup, фикс `advert_id` фильтрации
+- **`event_detector.py`** — debounce zero-bid API storm (WB BID_CHANGE)
+- Добавлена секция «Рекламная аналитика» с полными response schemas
+

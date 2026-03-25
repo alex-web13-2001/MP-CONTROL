@@ -586,3 +586,8 @@ FBO + FBS возвраты Ozon.
   - Бюджет: автоконвертация из микрорублей
   - Cleanup: удаляет SKU из БД, которых больше нет в API Ozon
 - Обновлена сводная таблица Service → API → Storage (26 сервисов)
+
+### 2026-03-25
+
+- **`event_detector.py`**: debounce zero-bid API storm — `BID_CHANGE` с `new_value=0` пропускается (WB API иногда возвращает 0 при временных ошибках)
+- **`event_detector.py`**: фото товара добавляется в `event_metadata.photo_url` для всех событий WB (из Redis `state:content:{shop}:{nm_id}` → `image_url`)
