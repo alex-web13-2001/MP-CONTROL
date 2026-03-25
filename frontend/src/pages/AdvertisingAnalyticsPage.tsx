@@ -1128,6 +1128,44 @@ function CampaignsTable({
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [recFilter, setRecFilter] = useState<RecType>(null)
 
+  // Status filter with localStorage persistence
+  const FINISHED_STATUSES = useMemo(() => new Set(['Завершена', 'Удалена', 'Отменена', 'CAMPAIGN_STATE_ARCHIVED']), [])
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('ad_status_filter')
+      if (saved) return new Set(JSON.parse(saved))
+    } catch {}
+    // Default: all except finished
+    return new Set<string>()
+  })
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
+  const statusDropRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!statusDropdownOpen) return
+    const h = (e: MouseEvent) => { if (statusDropRef.current && !statusDropRef.current.contains(e.target as Node)) setStatusDropdownOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [statusDropdownOpen])
+
+  const toggleStatus = (s: string) => {
+    setStatusFilter(prev => {
+      const next = new Set(prev)
+      if (next.has(s)) next.delete(s); else next.add(s)
+      localStorage.setItem('ad_status_filter', JSON.stringify([...next]))
+      return next
+    })
+  }
+
+  // Collect unique campaign statuses
+  const availableStatuses = useMemo(() => {
+    const statuses = new Set<string>()
+    for (const c of campaigns) {
+      if (c.status) statuses.add(c.status)
+    }
+    return [...statuses].sort()
+  }, [campaigns])
+
   // Compute period days
   const periodDays = useMemo(() => {
     const from = new Date(dateFrom)
@@ -1238,6 +1276,13 @@ function CampaignsTable({
 
   const filtered = useMemo(() => {
     let result = campaigns as CampaignRow[]
+    // Apply status filter: if user selected specific statuses, show only those;
+    // otherwise hide finished by default
+    if (statusFilter.size > 0) {
+      result = result.filter(c => statusFilter.has(c.status))
+    } else {
+      result = result.filter(c => !FINISHED_STATUSES.has(c.status))
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.trim().toLowerCase()
       result = result.filter(c => {
@@ -1256,7 +1301,7 @@ function CampaignsTable({
       result = result.filter(c => classifyRec(c, periodDays) === recFilter)
     }
     return result
-  }, [campaigns, searchQuery, recFilter, periodDays])
+  }, [campaigns, searchQuery, recFilter, periodDays, statusFilter, FINISHED_STATUSES])
 
   const sorted = [...filtered].sort((a, b) => {
     const va = (a as any)[sortKey] ?? 0
@@ -1426,6 +1471,62 @@ function CampaignsTable({
               <X className="h-3 w-3" />
               Сбросить
             </button>
+          )}
+
+          {/* ═══ Campaign status select dropdown ═══ */}
+          {viewMode === 'campaigns' && availableStatuses.length > 0 && (
+            <>
+              <div className="w-px bg-[hsl(var(--border))] mx-1 self-stretch" />
+              <div className="relative" ref={statusDropRef}>
+                <button
+                  onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
+                  className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-all duration-200"
+                  style={{
+                    background: statusFilter.size > 0 ? '#6366f115' : 'transparent',
+                    border: `1.5px solid ${statusFilter.size > 0 ? '#6366f1' : 'hsl(var(--border))'}`,
+                    color: statusFilter.size > 0 ? '#6366f1' : 'hsl(var(--muted-foreground))',
+                  }}
+                >
+                  Статус{statusFilter.size > 0 && ` (${statusFilter.size})`}
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${statusDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {statusDropdownOpen && (
+                  <div className="absolute left-0 top-full z-50 mt-1.5 min-w-[200px] rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-xl p-1.5" style={{ animation: 'dpPop 160ms ease-out' }}>
+                    {availableStatuses.map(s => {
+                      const isChecked = statusFilter.has(s)
+                      const statusStyle = (OZON_STATUS_MAP as Record<string, {label:string;cls:string}>)[s]
+                      const label = statusStyle?.label || s
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => toggleStatus(s)}
+                          className="flex items-center gap-2.5 w-full rounded-lg px-3 py-2 text-[13px] font-medium hover:bg-[hsl(var(--muted)/0.2)] transition-colors text-left"
+                        >
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                            isChecked ? 'bg-[#6366f1] border-[#6366f1]' : 'border-[hsl(var(--border))]'
+                          }`}>
+                            {isChecked && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                          <span style={{ color: isChecked ? 'hsl(var(--foreground))' : 'hsl(var(--muted-foreground))' }}>{label}</span>
+                        </button>
+                      )
+                    })}
+                    {statusFilter.size > 0 && (
+                      <>
+                        <div className="h-px bg-[hsl(var(--border)/0.4)] my-1" />
+                        <button
+                          onClick={() => { setStatusFilter(new Set()); localStorage.removeItem('ad_status_filter') }}
+                          className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-[12px] text-[hsl(var(--muted-foreground)/0.6)] hover:text-[hsl(var(--foreground))] transition-colors"
+                        >
+                          <X className="w-3 h-3" />
+                          Сбросить фильтр
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -1633,9 +1734,12 @@ function CampaignsTable({
                         ) : (
                           <span className="font-semibold text-[14px]">{c.campaign_id}</span>
                         )}
-                        {c.campaign_type && (
-                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.8)] leading-tight mb-0.5">
+                        {(c.campaign_type || (c.placements && c.placements.length > 0)) && (
+                          <span className="text-[13px] font-medium text-[hsl(var(--muted-foreground)/0.7)] leading-tight">
                             {CAMPAIGN_TYPE_MAP[c.campaign_type] || c.campaign_type}
+                            {c.placements && c.placements.length > 0 && (
+                              <span className="text-[hsl(var(--muted-foreground)/0.5)]"> · {c.placements.join(' · ')}</span>
+                            )}
                           </span>
                         )}
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -1645,11 +1749,6 @@ function CampaignsTable({
                           {c.status && OZON_STATUS_MAP[c.status] && (
                             <span className={`text-[12px] px-2 py-0.5 rounded-full font-semibold ${OZON_STATUS_MAP[c.status].cls}`}>
                               {OZON_STATUS_MAP[c.status].label}
-                            </span>
-                          )}
-                          {c.placements && c.placements.length > 0 && (
-                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
-                              {c.placements.join(' · ')}
                             </span>
                           )}
                         </div>

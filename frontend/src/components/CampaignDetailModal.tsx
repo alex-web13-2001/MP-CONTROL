@@ -436,15 +436,27 @@ export function CampaignDetailModal({
       return d > 0 ? 'text-emerald-400' : d < 0 ? 'text-red-400' : 'text-[hsl(var(--muted-foreground))]'
     }
 
-    // Enrich chart data with event counts
-    const chartData = stats.map(s => ({
-      ...s,
-      eventCount: (eventsByDate[s.dt] || []).length,
-    }))
+    // Enrich chart data with event counts + inject empty rows for event-only dates
+    const statsDates = new Set(stats.map(s => s.dt))
+    const extraEventDates = Object.keys(eventsByDate).filter(d =>
+      !statsDates.has(d) && d >= startDate && d <= endDate
+    )
+    const chartData = [
+      ...stats.map(s => ({
+        ...s,
+        eventCount: (eventsByDate[s.dt] || []).length,
+      })),
+      ...extraEventDates.map(d => ({
+        dt: d, views: 0, clicks: 0, orders: 0, cart: 0,
+        revenue: 0, spend: 0, ctr: 0, drr: 0,
+        product_revenue: 0, direct_revenue: 0, model_revenue: 0, associated_revenue: 0,
+        eventCount: (eventsByDate[d] || []).length,
+      })),
+    ].sort((a, b) => a.dt.localeCompare(b.dt))
 
     // Dates where events occurred for reference lines
     const eventDates = Object.keys(eventsByDate).filter(d =>
-      stats.some(s => s.dt === d)
+      d >= startDate && d <= endDate
     )
 
     const toggleMetric = (key: string) => {
@@ -1626,7 +1638,7 @@ export function CampaignDetailModal({
         let dateLabel = eventDayDetail
         try { dateLabel = format(parseISO(eventDayDetail), 'dd MMMM yyyy', { locale: ru }) } catch {}
         return (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setEventDayDetail(null)}>
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={(e) => { e.stopPropagation(); setEventDayDetail(null) }}>
             <div className="w-full max-w-[520px] max-h-[80vh] bg-[hsl(var(--background))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col animate-in fade-in zoom-in-95 duration-200" onClick={e => e.stopPropagation()}>
               {/* Header */}
               <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))]">
