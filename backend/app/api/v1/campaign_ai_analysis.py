@@ -12,6 +12,7 @@ POST /campaign-details/{marketplace}/{campaign_id}/ai-analysis  →  SSE streami
 - Retention / повторные покупки vs Halo Effect
 - Влияние событий (ставки, цены, контент) на показатели
 """
+import asyncio
 import json
 import logging
 import os
@@ -1360,50 +1361,71 @@ P&L по типам продаж:
     messages.append({"role": "user", "content": [{"type": "text", "text": user_message}]})
 
     async def generate():
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        max_retries = 2
+        for attempt in range(max_retries + 1):
             try:
-                async with client.stream(
-                    "POST",
-                    KIE_AI_URL,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {api_key}",
-                    },
-                    json={
-                        "messages": messages,
-                        "stream": True,
-                        "include_thoughts": False,
-                    },
-                ) as response:
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        logger.error("Gemini API error %s: %s", response.status_code, body[:500])
-                        yield f"data: {json.dumps({'error': f'API error {response.status_code}'})}\n\n"
-                        return
-
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
-                            continue
-                        payload = line[6:]
-                        if payload.strip() == "[DONE]":
-                            yield "data: [DONE]\n\n"
-                            break
-                        try:
-                            chunk = json.loads(payload)
-                            choices = chunk.get("choices", [])
-                            if not choices:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=15.0, read=170.0, write=10.0, pool=10.0)
+                ) as client:
+                    async with client.stream(
+                        "POST",
+                        KIE_AI_URL,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {api_key}",
+                        },
+                        json={
+                            "messages": messages,
+                            "stream": True,
+                            "include_thoughts": False,
+                        },
+                    ) as response:
+                        if response.status_code in (429, 503):
+                            body = await response.aread()
+                            logger.warning("Gemini API %s (attempt %d/%d): %s",
+                                           response.status_code, attempt + 1, max_retries + 1, body[:200])
+                            if attempt < max_retries:
+                                await asyncio.sleep(3 * (attempt + 1))
                                 continue
-                            delta = choices[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield f"data: {json.dumps({'content': content})}\n\n"
-                        except json.JSONDecodeError:
-                            continue
-            except httpx.ReadTimeout:
-                yield f"data: {json.dumps({'error': 'Timeout — модель думает слишком долго'})}\n\n"
+                            yield f"data: {json.dumps({'error': f'API перегружен (код {response.status_code}), попробуйте через минуту'})}\n\n"
+                            return
+
+                        if response.status_code != 200:
+                            body = await response.aread()
+                            logger.error("Gemini API error %s: %s", response.status_code, body[:500])
+                            yield f"data: {json.dumps({'error': f'API error {response.status_code}'})}\n\n"
+                            return
+
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            payload = line[6:]
+                            if payload.strip() == "[DONE]":
+                                yield "data: [DONE]\n\n"
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                choices = chunk.get("choices", [])
+                                if not choices:
+                                    continue
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield f"data: {json.dumps({'content': content})}\n\n"
+                            except json.JSONDecodeError:
+                                continue
+                    return  # Streaming completed successfully
+
+            except (httpx.ReadTimeout, httpx.ConnectTimeout) as timeout_err:
+                logger.warning("Gemini %s (attempt %d/%d)", type(timeout_err).__name__, attempt + 1, max_retries + 1)
+                if attempt < max_retries:
+                    await asyncio.sleep(2)
+                    continue
+                yield f"data: {json.dumps({'error': 'Timeout — модель думает слишком долго, попробуйте ещё раз'})}\n\n"
             except Exception as e:
                 logger.exception("Gemini streaming error for campaign analysis")
                 yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                return
 
     return StreamingResponse(
         generate(),
