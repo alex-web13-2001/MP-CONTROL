@@ -943,7 +943,19 @@ async def analyze_campaign_ai(
         parts = [f"[{ev_date}] {label}"]
         if pname:
             parts.append(f"товар: {pname}")
-        if old_val and new_val:
+
+        # WB: convert BID_CHANGE values from kopecks to rubles
+        if mp == "wb" and etype == "BID_CHANGE" and old_val and new_val:
+            try:
+                old_rub = float(old_val) / 100
+                new_rub = float(new_val) / 100
+                parts.append(f"{old_rub:.0f}₽ → {new_rub:.0f}₽")
+            except (ValueError, TypeError):
+                parts.append(f"{old_val} → {new_val}")
+        elif mp == "wb" and etype == "STOCK_OUT":
+            # Clarify: this is a regional warehouse stock-out, not global
+            parts.append(f"остаток на складе: {old_val} → {new_val} шт (региональный склад)")
+        elif old_val and new_val:
             parts.append(f"{old_val} → {new_val}")
         elif new_val:
             parts.append(new_val)
@@ -1048,13 +1060,38 @@ async def analyze_campaign_ai(
                     est_profit_before_ads = avg_profit_per_unit * d_orders
                     est_profit_after_ads = est_profit_before_ads - total_spend
 
+                    # Also calculate model profit estimate
+                    m_orders = locals().get('model_orders', 0)
+                    m_rev = locals().get('model_rev', 0)
+                    est_model_profit = avg_profit_per_unit * m_orders if m_orders > 0 else 0
+                    est_total_profit = est_profit_before_ads + est_model_profit
+
+                    # Get payout and cost separately for transparency
+                    avg_payout = 0.0
+                    avg_cost = 0.0
+                    for wfr2 in wb_fin_local:
+                        fn_s2 = int(wfr2[4] or 0)
+                        if fn_s2 > 0:
+                            avg_payout = float(wfr2[2] or 0) / fn_s2
+                            vc_k2 = wb_vc.get(int(wfr2[0]), "")
+                            avg_cost = cost_prices.get(vc_k2, 0)
+                            break
+
                     finance_summary += f"""
-### ОЦЕНОЧНЫЙ P&L КАМПАНИИ (прямые рекламные заказы × средняя прибыль на 1 шт):
-- Прямых рекламных заказов: {d_orders} шт
-- Средняя прибыль на 1 шт (до рекламы): {avg_profit_per_unit:.0f}₽
-- ПРИБЫЛЬ ДО РЕКЛАМЫ (оценка): {est_profit_before_ads:.0f}₽
+### ОЦЕНОЧНЫЙ P&L КАМПАНИИ:
+
+Расчёт прибыли (прозрачная формула):
+- Средний payout на 1 продажу (после комиссии WB): {avg_payout:.0f}₽
+- Средняя себестоимость: -{avg_cost:.0f}₽
+- Средняя прибыль на 1 шт = payout - себестоимость = {avg_payout:.0f} - {avg_cost:.0f} = {avg_profit_per_unit:.0f}₽
+
+P&L по типам продаж:
+- ПРЯМЫЕ: {d_orders} заказов × {avg_profit_per_unit:.0f}₽ = {est_profit_before_ads:.0f}₽
+- МОДЕЛЬНЫЕ: {m_orders} заказов × {avg_profit_per_unit:.0f}₽ ≈ {est_model_profit:.0f}₽ (оценка, т.к. товар из той же карточки)
+- АССОЦИИРОВАННЫЕ: выручка {locals().get('assoc_rev', 0):.0f}₽ (прибыль не оценивается — другие товары)
+- ИТОГО прибыль до рекламы: {est_total_profit:.0f}₽
 - Расход на рекламу: -{total_spend:.0f}₽
-- ЧИСТАЯ ПРИБЫЛЬ (оценка): {est_profit_after_ads:.0f}₽
+- ЧИСТАЯ ПРИБЫЛЬ: {est_total_profit - total_spend:.0f}₽
 {cost_price_info}
 {st_info}
 """
