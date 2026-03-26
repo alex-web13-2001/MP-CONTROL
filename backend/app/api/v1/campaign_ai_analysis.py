@@ -901,6 +901,70 @@ async def analyze_campaign_ai(
 
         # NOTE: WB P&L summary is computed AFTER total_spend is known (see below)
 
+        # ── WB fallback: if fact_finances has no data, use fact_orders_raw + product_costs ──
+        if not wb_fin_rows and direct_skus:
+            logger.info("WB FALLBACK: fact_finances empty for direct SKUs %s, trying fact_orders_raw", list(direct_skus))
+            try:
+                direct_skus_list_fb = list(direct_skus)
+                fb_rows = ch.query("""
+                    SELECT nm_id,
+                           avg(price_with_disc) AS avg_price,
+                           avg(finished_price) AS avg_finished,
+                           avg(spp) AS avg_spp,
+                           countIf(is_cancel = 0) AS sales
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND nm_id IN {skus:Array(UInt64)}
+                      AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
+                      AND is_cancel = 0
+                    GROUP BY nm_id
+                """, parameters={
+                    "shop_id": shop_id, "skus": direct_skus_list_fb,
+                    "start_date": start_date, "end_date": end_date
+                }).result_rows
+
+                if fb_rows:
+                    finance_summary = "\n### ЮНИТ-ЭКОНОМИКА WB (оценка из оперативных заказов, финотчёт ещё не поступил):\n"
+                    finance_summary += "ВНИМАНИЕ: Payout оценён по формуле finished_price (цена после СПП). Точные данные появятся после поступления финотчёта.\n\n"
+
+                    wb_fin_rows = []  # Fill with estimated data for P&L calculation
+                    for fb in fb_rows:
+                        fb_nm = int(fb[0])
+                        fb_price = float(fb[1] or 0)  # price_with_disc (retail price)
+                        fb_finished = float(fb[2] or 0)  # finished_price (after SPP, approx buyer price)
+                        fb_spp = float(fb[3] or 0)  # avg SPP %
+                        fb_sales = int(fb[4] or 0)
+
+                        if fb_sales > 0 and fb_price > 0:
+                            fb_name = product_names.get(fb_nm, str(fb_nm))
+                            vc = wb_vendor_codes.get(fb_nm, "")
+                            unit_cost = cost_prices.get(vc, 0)
+
+                            # Estimate payout: finished_price = price after SPP for buyer
+                            # WB commission is typically 15-25% of price_with_disc
+                            # Approximate payout = finished_price * 0.78 (rough after WB commission + logistics)
+                            # Better estimate: use average commission ratio from other products if available
+                            est_payout = round(fb_finished * 0.80, 2)  # ~20% WB total fees estimate
+                            commission = round(fb_price - est_payout, 2)
+                            commission_pct = round(commission / fb_price * 100, 1) if fb_price > 0 else 0
+                            profit_per_unit = round(est_payout - unit_cost, 2)
+
+                            # Fake wb_fin_rows entry for P&L calculation downstream
+                            wb_fin_rows.append((fb_nm, fb_price * fb_sales, est_payout * fb_sales, 0, fb_sales))
+
+                            finance_summary += f"""--- {fb_name} (nm_id {fb_nm}) ---
+Средние на 1 продажу (из {fb_sales} заказов за период, оценка):
+- Розничная цена: {fb_price:.0f}₽
+- СПП (Скидка Постоянного Покупателя): {fb_spp:.1f}%
+- Цена для покупателя (после СПП): {fb_finished:.0f}₽
+- Payout (оценка ~80% от цены после СПП): ≈{est_payout:.0f}₽
+- Себестоимость: -{unit_cost:.0f}₽
+- Оценочная прибыль на 1 шт до рекламы: ≈{profit_per_unit:.0f}₽
+- Допустимый CAC (безубыточный): ≈{profit_per_unit:.0f}₽
+"""
+            except Exception as e:
+                logger.warning("WB fallback fact_orders_raw query failed: %s", e)
+
     product_list = ", ".join(product_names[s] for s in campaign_skus if s in product_names)
 
     # ── 8. Events ──
