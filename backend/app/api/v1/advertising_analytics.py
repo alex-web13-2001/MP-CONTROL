@@ -340,11 +340,17 @@ async def get_events_detail(
         # Format detail string
         detail = ""
         if event_type in ("OZON_BID_CHANGE", "BID_CHANGE"):
-            old_fmt = f"{float(old_value):.2f} ₽" if old_value else ""
-            new_fmt = f"{float(new_value):.2f} ₽" if new_value else ""
+            # WB BID_CHANGE values are stored in kopecks → convert to rubles
+            old_val_num = float(old_value) if old_value else 0
+            new_val_num = float(new_value) if new_value else 0
+            if event_type == "BID_CHANGE":
+                old_val_num /= 100
+                new_val_num /= 100
+            old_fmt = f"{old_val_num:.0f} ₽" if old_value else ""
+            new_fmt = f"{new_val_num:.0f} ₽" if new_value else ""
             bid_field = meta.get("bid_field", "")
             prefix = {"search": "Поиск", "recommendation": "Рекомендации"}.get(bid_field, "")
-            detail = f"{prefix}: {old_fmt} → {new_fmt}" if prefix else f"{old_fmt} → {new_fmt}"
+            detail = f"{prefix}: {old_fmt} → {new_fmt}" if prefix else f"Ставки: {old_fmt} → {new_fmt}"
         elif event_type in ("OZON_BUDGET_CHANGE",):
             old_fmt = f"{float(old_value):,.0f} ₽" if old_value else ""
             new_fmt = f"{float(new_value):,.0f} ₽" if new_value else ""
