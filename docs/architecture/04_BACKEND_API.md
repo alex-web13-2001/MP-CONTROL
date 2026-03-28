@@ -512,7 +512,9 @@ data: {"type": "error", "data": "..."}           // ошибка
 ]
 ```
 
-### Источники данных (11 запросов)
+### Источники данных
+
+**Ozon (11 запросов):**
 
 | # | Источник | Что запрашивается |
 |---|----------|-------------------|
@@ -528,27 +530,53 @@ data: {"type": "error", "data": "..."}           // ошибка
 | 10 | PostgreSQL `event_log` | События за период: изменения ставок, цен, контента |
 | 11 | Gemini 2.5 Flash | Streaming ИИ-анализ через kie.ai API (SSE) |
 
+**WB (11 запросов):**
+
+| # | Источник | Что запрашивается |
+|---|----------|-------------------|
+| 1 | ClickHouse `fact_advert_stats_v3` | Ежедневная статистика: views, clicks, spend, orders, carts |
+| 2 | ClickHouse `fact_orders_raw` | Ежедневные заказы (direct + model + associated), выручка |
+| 3 | ClickHouse `fact_finances` | Per-SKU unit economics: revenue, payout, комиссия, логистика, хранение, эквайринг |
+| 4 | ClickHouse `fact_advert_phrases_daily` | Ключевые фразы (marketplace=1): views, clicks, spend, revenue |
+| 5 | PostgreSQL `dim_products` | Каталог: name, vendor_code, imt_id, main_image_url |
+| 6 | ClickHouse `dim_advert_campaigns` | Информация: название, тип, статус, payment_type |
+| 7 | PostgreSQL `product_costs` + `dim_products` | Себестоимость per-SKU (cost_price + packaging) |
+| 8 | PostgreSQL `event_log` | События за период |
+| 9 | ClickHouse `fact_orders_raw` | **Fallback unit economics** — при пустом `fact_finances` |
+| 10 | PostgreSQL `dim_products` | imt_id для 3-уровневой классификации продаж |
+| 11 | Gemini 2.5 Flash | Streaming ИИ-анализ через kie.ai API (SSE) |
+
 ### Ключевая логика
 
 **P&L расчёт (pre-calculated, не AI):**
-- `total_prod_orders` из `fact_ozon_orders` (все заказы, не только рекламные)
-- `avg_payout` из `fact_ozon_transactions` (финансово точные per-unit данные)
+- `total_prod_orders` из таблицы заказов (все заказы, не только рекламные)
+- `avg_payout` из финансовых таблиц (per-unit данные)
 - `total_payout = total_prod_orders × avg_payout`
 - `total_cost = total_prod_orders × cost_per_unit` (из `product_costs`)
 - `profit_after_ads = total_payout − total_cost − ad_spend`
 - Для multi-SKU: раздельный P&L по каждому товару через `prod_orders_by_sku`
 
+**WB-специфика:**
+- **Классификация продаж** (3 типа): direct (рекламируемые SKU) / model (тот же imt_id) / associated (другие)
+- **Ставки** хранятся в копейках → конвертация в рубли (÷100) в данных для ИИ
+- **Промпт WB** (`SYSTEM_PROMPT_WB`): CPM (оплата за показы), минус-фразы, размещения Поиск/Рекомендации, СПП (Скидка Постоянного Покупателя)
+- **Fallback юнит-экономика**: при пустом `fact_finances` (новый товар, нет отчётов) — операционные данные из `fact_orders_raw`: revenue per unit, estimated commission (27%), estimated logistics (15%), aggregate P&L
+
 **Retention/LTV (per-SKU, за всё время):**
-- `client_id = splitByChar('-', posting_number)[1]`
+- `client_id = splitByChar('-', posting_number)[1]` (Ozon) / `substring(srid, ...)` (WB)
 - `repeat_rate = repeat_buyers / total_buyers × 100`
 - `avg_days_between` — средний интервал повторных покупок
 - `avg_ltv_repeat` — средний LTV повторного покупателя
 - Используется для расчёта эффективного CAC: `CAC / avg_orders_per_buyer`
 
+**Retry / Timeout (Gemini API):**
+- **Timeout**: connect=15s, read=170s (decoupled для long-thinking models)
+- **Retry**: до 2 retries с exponential backoff (2с→4с) на HTTP 429 (Rate Limit), 503 (Server Overload), ReadTimeout, ConnectTimeout
+- **Async sleep**: `asyncio.sleep()` для non-blocking retry delays
+
 **Системный промпт — ключевые правила:**
-- Ozon Performance Max: нет минус-фраз, нет фильтрации фраз, только CPC и бюджет
-- Субсидии Ozon (аналог СПП WB): покупатель видит цену на 30-50% ниже
-- `min_price` — порог автоакций, НЕ цена конкурента
+- **Ozon**: нет минус-фраз, только CPC и бюджет, субсидии (аналог СПП WB), `min_price` ≠ цена конкурента
+- **WB**: CPM (оплата за показы), минус-фразы, 3 типа размещения, СПП, 3 типа продаж
 - Снижение цены НЕ может убивать продажи (корреляция ≠ причинность)
 - При <30 заказах — оговорка о статистической незначимости
 - Рекламные заказы уже включены в общие (не складывать)
@@ -1088,4 +1116,24 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 - **`campaign_details.py`** — фильтрация `STATUS_CHANGE` из событий popup, фикс `advert_id` фильтрации
 - **`event_detector.py`** — debounce zero-bid API storm (WB BID_CHANGE)
 - Добавлена секция «Рекламная аналитика» с полными response schemas
+
+### 2026-03-26
+
+- **WB ИИ-анализ кампаний** (`campaign_ai_analysis.py`) — полноценная WB-ветка:
+  - **ROOT CAUSE** fix: `marketplace == "wildberries"` → `marketplace == "wb"` — WB промпт никогда не применялся, все кампании анализировались Ozon-промптом
+  - `SYSTEM_PROMPT_WB`: CPM в копейках, минус-фразы, размещения (Поиск/Рекомендации), СПП, типы продаж (direct/model/associated через imt_id)
+  - Финансы WB per-SKU: revenue, payout, комиссия, логистика, хранение, эквайринг из `fact_finances`
+  - Себестоимость из `product_costs` по vendor_code
+  - 3-уровневая классификация: direct / model (imt_id) / associated
+  - Ключевые фразы из `fact_advert_phrases_daily` (marketplace=1)
+  - P&L summary: payout - COGS - реклама = чистая прибыль
+  - Campaign-attributed данные вместо глобальных продаж магазина
+  - Имя кампании + ставки в рублях (из копеек) в ответе
+  - Таблицы JSON (`unit_economics_table`, `pl_summary_table`) для структурированного отображения
+
+### 2026-03-27
+
+- **Fallback юнит-экономика** (`campaign_ai_analysis.py`): при пустом `fact_finances` — fallback на операционные заказы из `fact_orders_raw` с расчётом revenue per unit, estimated commission/logistics, сводный P&L
+- **Retry логика Gemini API** (`campaign_ai_analysis.py`): до 2 retries с exponential backoff (2с→4с) на 429/503/ReadTimeout/ConnectTimeout; timeout разделён на connect=15s и read=170s
+- **Ставки WB в events-detail** (`advertising_analytics.py`): `BID_CHANGE` old/new_value конвертируются из копеек в рубли (÷100); `OZON_BID_CHANGE` оставлен как есть (рубли)
 

@@ -1,3 +1,95 @@
+## 2026-03-27 (v17.19.7)
+
+### fix(events): Ставки WB в попапе событий — копейки→рубли
+
+**Проблема**: В popup событий на странице рекламной аналитики (`/advertising-analytics/events-detail`) ставки WB показывались в копейках (например, «110000 ₽ → 150000 ₽» вместо «1100 ₽ → 1500 ₽»).
+
+**Backend** (`advertising_analytics.py`):
+- `events-detail` endpoint: для `BID_CHANGE` (WB) — деление old/new_value на 100 перед форматированием
+- `OZON_BID_CHANGE` — оставлен как есть (значения уже в рублях)
+- Формат ставок изменён с `:.2f` на `:.0f` (целые рубли)
+- Добавлен префикс «Ставки:» для событий без bid_field
+
+> **Примечание**: В ленте событий (`events.py` → `_format_value()`) конвертация уже была реализована корректно.
+
+---
+
+## 2026-03-27 (v17.19.6)
+
+### fix(ai): Retry логика для Gemini API + увеличен read timeout
+
+**Проблема**: Периодические 429/503 ошибки и таймауты при ИИ-анализе кампаний — первый запрос часто фейлился, повторный — проходил.
+
+**Backend** (`campaign_ai_analysis.py`):
+- **Retry**: до 2 retries с exponential backoff (2с→4с) на HTTP 429 (Rate Limit), 503 (Server Overload), ReadTimeout, ConnectTimeout
+- **Timeout**: decoupled — `connect=15s`, `read=170s` (было единый `timeout=120s`). Read timeout увеличен для long-thinking моделей (Gemini может «думать» до 120с перед первым chunk)
+- **Async**: `asyncio.sleep()` для non-blocking retry delays в async SSE generator
+- **Логирование**: retry attempt с причиной ошибки
+
+---
+
+## 2026-03-27 (v17.19.5)
+
+### feat(ai): Fallback юнит-экономика из fact_orders_raw
+
+**Проблема**: Для новых товаров или товаров без финансового отчёта WB `fact_finances` пуст — ИИ-анализ не получал данные по юнит-экономике.
+
+**Backend** (`campaign_ai_analysis.py`):
+- При пустом `fact_finances` → fallback на операционные заказы из `fact_orders_raw`
+- Расчёт: `revenue_per_unit`, `estimated_commission` (27% от цены), `estimated_logistics` (15% от цены)
+- Сводный P&L: `total_payout_est − total_cost − ad_spend = profit_after_ads`
+- Данные помечены как «оценочные» в промпте для ИИ
+
+---
+
+## 2026-03-26 (v17.19.4)
+
+### fix(ai): Себестоимость явно в P&L, стокауты помечены как региональные
+
+**Backend** (`campaign_ai_analysis.py`):
+- Себестоимость (COGS) теперь **явно** передаётся как отдельная строка в P&L для ИИ
+- Стокауты в событиях помечаются как `[региональный]` для складских событий (не товар полностью закончился)
+- Ставки WB конвертируются из копеек в рубли в данных для ИИ-промпта
+
+---
+
+## 2026-03-26 (v17.19.3)
+
+### feat(ai): Глубокая переработка WB AI-анализа — таблицы, имя кампании, рубли
+
+**Backend** (`campaign_ai_analysis.py`):
+- Имя кампании включено в данные для ИИ (из `dim_advert_campaigns`)
+- Ставки: конвертация копейки → рубли перед передачей в промпт
+- **JSON-таблицы**: `unit_economics_table` (per-SKU экономика) и `pl_summary_table` (P&L) — структурированные данные вместо текста
+- Убраны Ozon-специфичные термины из WB ветки (prod_orders, Halo, Price Index)
+- Campaign-attributed данные: только direct/model/associated заказы кампании, не все продажи магазина
+
+---
+
+## 2026-03-26 (v17.19.2)
+
+### fix(ai): ROOT CAUSE — WB промпт никогда не применялся
+
+**Проблема**: При ИИ-анализе WB кампаний использовался Ozon-промпт. Причина: сравнение `marketplace == "wildberries"` при фактическом значении `"wb"`.
+
+**Backend** (`campaign_ai_analysis.py`):
+- Fix: `marketplace == "wildberries"` → `marketplace == "wb"`
+- WB-кампании теперь анализируются с корректным `SYSTEM_PROMPT_WB`
+
+---
+
+## 2026-03-26 (v17.19.1)
+
+### feat(ai): WB AI-анализ — campaign-attributed данные
+
+**Backend** (`campaign_ai_analysis.py`):
+- Данные кампании: только заказы, атрибутированные к рекламе (direct SKU + model + associated), вместо всех продаж магазина
+- 3-уровневая классификация: direct (рекламируемые) / model (тот же imt_id) / associated (другие)
+- Финансы WB per-SKU: revenue, payout, комиссия, логистика, хранение, эквайринг из `fact_finances`
+- Ключевые фразы из `fact_advert_phrases_daily` (marketplace=1)
+
+---
+
 ## 2026-03-26 (v17.19.0)
 
 ### feat(backend): Полноценный ИИ-анализ WB кампаний
