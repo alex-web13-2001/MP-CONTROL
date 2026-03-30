@@ -6765,6 +6765,7 @@ async def export_ozon_storage_excel(
     shop = shop_result.scalar_one_or_none()
     if not shop or shop.marketplace != "ozon":
         raise HTTPException(status_code=404, detail="Shop not found")
+    shop_name = shop.name  # eagerly load before session context ends
 
     # Get analytics data (reuse existing function)
     analytics = await ozon_storage_analytics(
@@ -6933,7 +6934,7 @@ async def export_ozon_storage_excel(
         ai_hdr_font = Font(bold=True, size=11, color="FFFFFF")
 
         ws3.merge_cells("A1:F1")
-        c_title = ws3.cell(1, 1, f"ИИ-Анализ хранения Ozon — {shop.name}")
+        c_title = ws3.cell(1, 1, f"ИИ-Анализ хранения Ozon — {shop_name}")
         c_title.font = Font(bold=True, size=14, color="1A56DB")
 
         severity_labels = {"critical": "🔴 Критично", "warning": "🟡 Внимание", "ok": "🟢 Всё ОК"}
