@@ -288,6 +288,7 @@ class WBContentService:
 
             all_cards.append({
                 "nm_id": nm_id,
+                "imt_id": card.get("imtID"),  # Unified card ID for model grouping
                 "title": title,
                 "description": description,
                 "main_image_url": main_image_url,
@@ -319,8 +320,8 @@ class WBContentService:
             try:
                 await self.db.execute(
                     text("""
-                        INSERT INTO dim_products (shop_id, nm_id, name, main_image_url, length, width, height, category)
-                        VALUES (:shop_id, :nm_id, :name, :image_url, :length, :width, :height, :category)
+                        INSERT INTO dim_products (shop_id, nm_id, name, main_image_url, length, width, height, category, imt_id)
+                        VALUES (:shop_id, :nm_id, :name, :image_url, :length, :width, :height, :category, :imt_id)
                         ON CONFLICT (shop_id, nm_id)
                         DO UPDATE SET
                             name = EXCLUDED.name,
@@ -329,6 +330,7 @@ class WBContentService:
                             width = CASE WHEN EXCLUDED.width > 0 THEN EXCLUDED.width ELSE dim_products.width END,
                             height = CASE WHEN EXCLUDED.height > 0 THEN EXCLUDED.height ELSE dim_products.height END,
                             category = CASE WHEN EXCLUDED.category != '' THEN EXCLUDED.category ELSE dim_products.category END,
+                            imt_id = COALESCE(EXCLUDED.imt_id, dim_products.imt_id),
                             updated_at = NOW()
                     """),
                     {
@@ -340,6 +342,7 @@ class WBContentService:
                         "width": card["width"],
                         "height": card["height"],
                         "category": card["category"],
+                        "imt_id": card.get("imt_id"),
                     },
                 )
                 updated += 1
