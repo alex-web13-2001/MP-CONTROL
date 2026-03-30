@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, Fragment, useRef, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -31,7 +32,6 @@ import {
   Ban,
   Trophy,
   Gauge,
-  Info,
 } from 'lucide-react'
 import { DayPicker, type DateRange } from 'react-day-picker'
 import { ru } from 'date-fns/locale/ru'
@@ -51,7 +51,6 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CampaignDetailModal } from '@/components/CampaignDetailModal'
-import { CampaignInsights } from '@/components/CampaignInsights'
 import { useAppStore } from '@/stores/appStore'
 import {
   getAdvertisingAnalytics,
@@ -68,18 +67,18 @@ import {
    Constants & Helpers
    ═══════════════════════════════════════════════════════════ */
 
-const PERIODS = [
+export const PERIODS = [
   { key: 'today', label: 'Сегодня' },
   { key: '7d', label: '7 дней' },
   { key: '14d', label: '14 дней' },
   { key: '30d', label: '30 дней' },
 ] as const
 
-function formatMoney(value: number): string {
+export function formatMoney(value: number): string {
   return value.toLocaleString('ru-RU', { maximumFractionDigits: 0 }) + ' ₽'
 }
 
-function formatNumber(value: number): string {
+export function formatNumber(value: number): string {
   return value.toLocaleString('ru-RU')
 }
 
@@ -212,7 +211,7 @@ function KpiCard({
    Period Selector
    ═══════════════════════════════════════════════════════════ */
 
-function PeriodSelector({
+export function PeriodSelector({
   current,
   onChange,
   customRange,
@@ -1014,7 +1013,7 @@ function EventsDetailModal({
    ═══════════════════════════════════════════════════════════ */
 
 /* ═══ Recommendation classification ═══ */
-type RecType = 'lowSpend' | 'burning' | 'highDrr' | 'effective' | null
+export type RecType = 'lowSpend' | 'burning' | 'highDrr' | 'effective' | null
 
 const REC_CONFIG: Record<Exclude<RecType, null>, { label: string; icon: React.ElementType; color: string; bgColor: string; borderColor: string }> = {
   lowSpend: { label: 'Мало показов', icon: Gauge, color: '#a1a1aa', bgColor: 'bg-zinc-500/10', borderColor: 'border-zinc-500' },
@@ -1106,7 +1105,7 @@ function RecBadge({ rec, explanation }: { rec: RecType; explanation: string }) {
   )
 }
 
-function CampaignsTable({ 
+export function CampaignsTable({ 
   campaigns,
   marketplace,
   dateFrom,
@@ -1128,11 +1127,12 @@ function CampaignsTable({
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [recFilter, setRecFilter] = useState<RecType>(null)
 
-  // Status filter with localStorage persistence
+  // Status filter with localStorage persistence (per-marketplace)
   const FINISHED_STATUSES = useMemo(() => new Set(['Завершена', 'Удалена', 'Отменена', 'CAMPAIGN_STATE_ARCHIVED']), [])
+  const storageKey = `ad_status_filter_${marketplace}`
   const [statusFilter, setStatusFilter] = useState<Set<string>>(() => {
     try {
-      const saved = localStorage.getItem('ad_status_filter')
+      const saved = localStorage.getItem(storageKey)
       if (saved) return new Set(JSON.parse(saved))
     } catch {}
     // Default: all except finished
@@ -1140,6 +1140,20 @@ function CampaignsTable({
   })
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false)
   const statusDropRef = useRef<HTMLDivElement>(null)
+
+  // Reset status filter when marketplace changes (storageKey changes)
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey)
+      if (saved) {
+        setStatusFilter(new Set(JSON.parse(saved)))
+      } else {
+        setStatusFilter(new Set<string>())
+      }
+    } catch {
+      setStatusFilter(new Set<string>())
+    }
+  }, [storageKey])
 
   useEffect(() => {
     if (!statusDropdownOpen) return
@@ -1152,7 +1166,7 @@ function CampaignsTable({
     setStatusFilter(prev => {
       const next = new Set(prev)
       if (next.has(s)) next.delete(s); else next.add(s)
-      localStorage.setItem('ad_status_filter', JSON.stringify([...next]))
+      localStorage.setItem(storageKey, JSON.stringify([...next]))
       return next
     })
   }
@@ -1276,6 +1290,8 @@ function CampaignsTable({
 
   const filtered = useMemo(() => {
     let result = campaigns as CampaignRow[]
+    // Hide campaigns with zero activity in selected period
+    result = result.filter(c => c.spend > 0 || c.views > 0 || c.clicks > 0 || c.orders > 0)
     // Apply status filter: if user selected specific statuses, show only those;
     // otherwise hide finished by default
     if (statusFilter.size > 0) {
@@ -1515,7 +1531,7 @@ function CampaignsTable({
                       <>
                         <div className="h-px bg-[hsl(var(--border)/0.4)] my-1" />
                         <button
-                          onClick={() => { setStatusFilter(new Set()); localStorage.removeItem('ad_status_filter') }}
+                          onClick={() => { setStatusFilter(new Set()); localStorage.removeItem(storageKey) }}
                           className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-[12px] text-[hsl(var(--muted-foreground)/0.6)] hover:text-[hsl(var(--foreground))] transition-colors"
                         >
                           <X className="w-3 h-3" />
@@ -1992,7 +2008,7 @@ export default function AdvertisingAnalyticsPage() {
     )
   }
 
-  if (loading) return <AnalyticsSkeleton />
+  if (loading && !data) return <AnalyticsSkeleton />
 
   if (error) {
     return (
@@ -2152,6 +2168,14 @@ export default function AdvertisingAnalyticsPage() {
       </div>
 
       {/* ── Daily Chart ── */}
+      {loading && data && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-[2px]">
+          <div className="flex items-center gap-3 rounded-xl bg-[hsl(var(--card))] border border-[hsl(var(--border))] px-6 py-4 shadow-2xl">
+            <RefreshCw className="h-5 w-5 animate-spin text-[hsl(var(--primary))]" />
+            <span className="text-sm font-medium">Обновление данных...</span>
+          </div>
+        </div>
+      )}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -2167,34 +2191,30 @@ export default function AdvertisingAnalyticsPage() {
         </Card>
       </motion.div>
 
-      {/* Campaign Insights removed — recommendations moved to table filters */}
-
-      {/* ── Campaigns Table ── */}
+      {/* ── Link to Campaigns Page ── */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.4 }}
       >
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-baseline gap-3">
-              <CardTitle className="text-lg">Кампании за период</CardTitle>
-              <span className="text-[15px] font-semibold text-[hsl(var(--foreground)/0.8)]">
-                {new Date(data.date_from).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
-                {' — '}
-                {new Date(data.date_to).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <CampaignsTable 
-              campaigns={data.campaigns_table} 
-              marketplace={currentShop!.marketplace}
-              dateFrom={data.date_from}
-              dateTo={data.date_to}
-            />
-          </CardContent>
-        </Card>
+        <Link to="/advertising/campaigns">
+          <Card className="group cursor-pointer transition-all duration-200 hover:border-[hsl(var(--primary)/0.4)] hover:shadow-lg hover:shadow-[hsl(var(--primary)/0.05)]">
+            <CardContent className="flex items-center justify-between py-5">
+              <div className="flex items-center gap-4">
+                <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-[hsl(var(--primary)/0.1)]">
+                  <Megaphone className="h-5 w-5 text-[hsl(var(--primary))]" />
+                </div>
+                <div>
+                  <p className="font-semibold text-[15px]">Кампании за период</p>
+                  <p className="text-[13px] text-[hsl(var(--muted-foreground))]">
+                    {data.campaigns_table.length} кампани{data.campaigns_table.length === 1 ? 'я' : data.campaigns_table.length < 5 ? 'и' : 'й'} · Таблица, фильтры, рекомендации
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="h-5 w-5 text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--primary))] transition-colors" />
+            </CardContent>
+          </Card>
+        </Link>
       </motion.div>
 
 

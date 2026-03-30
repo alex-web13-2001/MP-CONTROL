@@ -290,7 +290,7 @@ export function CampaignDetailModal({
         setSavedAiDate(parsed.date)
         setSavedAiPeriod(parsed.period)
         setAiText(parsed.text)
-        setShowAiPanel(true)
+        // Panel stays collapsed by default — user clicks "Показать анализ" to expand
       }
     } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps

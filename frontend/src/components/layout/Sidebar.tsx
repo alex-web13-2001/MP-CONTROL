@@ -22,6 +22,7 @@ import {
   Globe,
   Settings2,
   Bot,
+  List,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -67,6 +68,7 @@ const navSections: NavSection[] = [
         icon: Megaphone,
         children: [
           { path: '/advertising/analytics', label: 'Обзор', icon: BarChart3 },
+          { path: '/advertising/campaigns', label: 'Кампании', icon: List },
         ],
       },
       { path: '/warehouses', label: 'Склады', icon: Warehouse, children: [

@@ -677,26 +677,33 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 Bоковая панель с вложенной навигацией (collapse + expand):
 
-| Секция         | Пункт            | Путь                 | Иконка          | Статус         |
-| -------------- | ---------------- | -------------------- | --------------- | -------------- |
-| **АНАЛИТИКА**  | Обзор            | `/`                  | LayoutDashboard | ✅ Активен     |
-|                | Товары           | `/products`          | Package         | ✅ Активен     |
-|                | Продажи ▾        |                      | ShoppingCart    | ✅ Группа      |
-|                | └ Обзор продаж   | `/sales`             | TrendingUp      | ✅ Активен     |
-|                | └ ABC/XYZ анализ | `/sales/abc-xyz`     | Grid3X3         | ✅ Активен     |
-|                | └ Прогноз        | `/sales/forecast`    | LineChart       | ✅ Активен     |
-|                | Воронка          | `/funnel`            | BarChart3       | 🚧 Placeholder |
-|                | Склады ▾         |                      | Warehouse       | ✅ Группа      |
-|                | └ Обзор          | `/warehouses/overview`   | BarChart3   | ✅ Активен     |
-|                | └ Кросс-логистика| `/warehouses/cross`      | ArrowLeftRight | ✅ Активен    |
-|                | └ Хранение       | `/warehouses/storage`    | Archive     | ✅ Активен     |
-|                | └ География      | `/warehouses/geography`  | MapPin      | ✅ Активен     |
-|                | └ Поставки       | `/warehouses/supply`     | TrendingUp  | ✅ Активен     |
-|                | Финансы          | `/finances`          | DollarSign      | ✅ Активен     |
-| **УПРАВЛЕНИЕ** | Реклама          | `/advertising`       | Megaphone       | 🚧 Placeholder |
-|                | События          | `/events`            | Activity        | 🚧 Placeholder |
-| **КЛИЕНТЫ**    | LTV              | `/customers/ltv`     | Users           | ✅ Активен     |
-| **СИСТЕМА**    | Настройки        | `/settings`          | Settings        | ✅ Активен     |
+| Секция         | Пункт            | Путь                       | Иконка          | Статус         |
+| -------------- | ---------------- | -------------------------- | --------------- | -------------- |
+| **АНАЛИТИКА**  | Обзор            | `/`                        | LayoutDashboard | ✅ Активен     |
+|                | Товары           | `/products`                | Package         | ✅ Активен     |
+|                | Продажи ▾        |                            | ShoppingCart    | ✅ Группа      |
+|                | └ Обзор продаж   | `/sales`                   | TrendingUp      | ✅ Активен     |
+|                | └ ABC/XYZ анализ | `/sales/abc-xyz`           | Grid3X3         | ✅ Активен     |
+|                | └ Прогноз        | `/sales/forecast`          | LineChart       | ✅ Активен     |
+|                | Реклама ▾        |                            | Megaphone       | ✅ Группа      |
+|                | └ Обзор          | `/advertising/analytics`   | BarChart3       | ✅ Активен     |
+|                | └ Кампании       | `/advertising/campaigns`   | List            | ✅ Активен     |
+|                | Воронка          | `/funnel`                  | BarChart3       | 🚧 Placeholder |
+|                | Склады ▾         |                            | Warehouse       | ✅ Группа      |
+|                | └ Обзор          | `/warehouses/overview`     | BarChart3       | ✅ Активен     |
+|                | └ Кросс-логистика| `/warehouses/cross`        | ArrowLeftRight  | ✅ Активен     |
+|                | └ Хранение       | `/warehouses/storage`      | Archive         | ✅ Активен     |
+|                | └ География      | `/warehouses/geography`    | MapPin          | ✅ Активен     |
+|                | └ Поставки       | `/warehouses/supply`       | TrendingUp      | ✅ Активен     |
+|                | Финансы          | `/finances`                | DollarSign      | ✅ Активен     |
+| **УПРАВЛЕНИЕ** | Реклама ▾        |                            | Megaphone       | ✅ Группа      |
+|                | └ Управление     | `/advertising/campaigns`   | Settings2       | ✅ Активен     |
+|                | └ Автобиддер     | `/advertising/autobidder`  | Bot             | ✅ Активен     |
+|                | События ▾        |                            | Activity        | ✅ Группа      |
+|                | └ Лента          | `/events`                  | Activity        | ✅ Активен     |
+|                | └ Анализ         | `/events/analysis`         | Globe           | ✅ Активен     |
+| **КЛИЕНТЫ**    | LTV              | `/customers/ltv`           | Users           | ✅ Активен     |
+| **СИСТЕМА**    | Настройки        | `/settings`                | Settings        | ✅ Активен     |
 
 ---
 
@@ -1027,3 +1034,26 @@ Bоковая панель с вложенной навигацией (collapse 
   - Фото товара в карточках событий из `event_metadata.photo_url` (WB CDN / Ozon)
   - Увеличены шрифты KPI: вторичные метрики +2-3px для читаемости (labels 11→13px, deltas 10→13px, sub-metrics 11→13px)
 - **Sidebar:** пункт «Реклама → Обзор» (`/advertising`) — статус ✅ Активен (ранее 🚧 Placeholder)
+
+### 2026-03-30
+
+- **AdvertisingCampaignsPage** (НОВАЯ) — вынос таблицы кампаний на отдельную страницу:
+  - Полностью самостоятельная страница `/advertising/campaigns` с собственным API-вызовом (`getAdvertisingAnalytics`)
+  - Собственный `PeriodSelector`, KPI-полоска (6 карточек: Расход, Показы, Корзины, Заказы, Выручка, ДРР), `CampaignsTable`
+  - Overlay loader вместо Skeleton — DOM не пересоздаётся, scroll не сбрасывается при обновлении данных
+  - Кнопка «назад» (←) ведёт на `/advertising/analytics`
+  - KPI с дельтами к предыдущему периоду: зелёный = рост (позитивно), красный = падение; ДРР инвертирован (снижение = хорошо)
+- **AdvertisingAnalyticsPage** — рефакторинг:
+  - Удалена секция `CampaignsTable` — заменена карточкой-ссылкой «Кампании за период» со счётчиком кампаний
+  - `if (loading)` → `if (loading && !data)` — при повторной загрузке данные не исчезают
+  - Overlay loader поверх контента при обновлении (вместо полной замены DOM на Skeleton)
+  - Экспортированы `CampaignsTable`, `PeriodSelector`, `formatMoney`, `formatNumber`, `RecType` для переиспользования
+- **CampaignsTable** — улучшения фильтрации:
+  - Фильтр статуса теперь per-marketplace: `ad_status_filter_${marketplace}` в localStorage (WB и Ozon статусы не конфликтуют)
+  - При смене маркетплейса фильтр автоматически сбрасывается/загружается из правильного ключа
+  - Скрытие кампаний с нулевыми показателями: `spend=0 && views=0 && clicks=0 && orders=0` → не отображаются
+- **CampaignDetailModal** — ИИ-анализ скрыт по умолчанию:
+  - Убран `setShowAiPanel(true)` при загрузке кеша из localStorage
+  - Панель ИИ-анализа скрыта по умолчанию даже при наличии кешированного результата — раскрывается только по нажатию «Показать анализ»
+- **Sidebar** — обновлена навигация:
+  - Секция «Аналитика → Реклама» содержит: **Обзор** + **Кампании** (новый пункт с иконкой `List`)
