@@ -45,6 +45,9 @@ class DimProduct(Base):
 
     # Classification
     category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    
+    # WB unified card ID (imtID) — groups product variations in one card
+    imt_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
