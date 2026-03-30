@@ -6034,6 +6034,15 @@ async def wb_warehouse_analytics(
                 cost_month = cost_day * 30
                 source = "estimated"
 
+            # Calculate cost for the actual selected period (no extrapolation)
+            if actual_cost_period is not None:
+                cost_period_actual = actual_cost_period
+            elif has_actual_storage:
+                cost_period_actual = 0
+            else:
+                cost_day = stor_base * vol * qty * coef_mult
+                cost_period_actual = cost_day * period
+
             if nm_id not in sku_storage:
                 sku_storage[nm_id] = {
                     "nm_id": nm_id,
@@ -6042,11 +6051,13 @@ async def wb_warehouse_analytics(
                     "vol_liters": vol,
                     "total_stock": 0,
                     "est_cost_month": 0,
+                    "est_cost_period": 0,
                     "storage_source": source,  # "actual" if ANY warehouse has actual data
                     "warehouses": [],
                 }
             sku_storage[nm_id]["total_stock"] += qty
             sku_storage[nm_id]["est_cost_month"] += cost_month
+            sku_storage[nm_id]["est_cost_period"] += cost_period_actual
             if source == "actual":
                 sku_storage[nm_id]["storage_source"] = "actual"  # upgrade to actual
             sku_storage[nm_id]["warehouses"].append({
@@ -6092,6 +6103,7 @@ async def wb_warehouse_analytics(
     storage_skus = sorted(sku_storage.values(), key=lambda x: x["est_cost_month"], reverse=True)
     for s in storage_skus:
         s["est_cost_month"] = round(s["est_cost_month"], 2)
+        s["est_cost_period"] = round(s.get("est_cost_period", 0), 2)
 
     # 10e. Active ads in last 3 days (for ad status icon in table)
     ad_active_nm_ids: set[int] = set()
@@ -6349,7 +6361,7 @@ async def export_wb_storage_excel(
     headers = [
         ("Артикул", 24), ("nm_id", 14), ("Название", 40), ("Объём, л", 10),
         ("Остаток", 10), ("Прод/д", 8), ("Дней до распродажи", 16),
-        ("Хранение/30д", 15), ("Прогноз 30д", 14),
+        (f"Хранение/{period}д", 15), ("Прогноз 30д", 14),
         ("Реклама", 10),
     ]
     for ci, (name, w) in enumerate(headers, 1):
@@ -6368,7 +6380,7 @@ async def export_wb_storage_excel(
     total_stock = 0
 
     for ri, sku in enumerate(storage_skus, 2):
-        est_cost = sku.get("est_cost_month", 0)
+        est_cost = sku.get("est_cost_period", sku.get("est_cost_month", 0))
         forecast = sku.get("forecast_30d", 0) or 0
         total_cost += est_cost
         total_forecast += forecast

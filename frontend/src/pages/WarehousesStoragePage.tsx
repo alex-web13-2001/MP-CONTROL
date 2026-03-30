@@ -764,7 +764,7 @@ export default function WarehousesStoragePage() {
           {currentShop && <StorageAIInsight shopId={currentShop.id} period={period} marketplace="wildberries" />}
 
           {/* Storage SKUs Table — оригинальный с сортировкой, поиском, прогнозом 30д, итого */}
-          <StorageSkusTable skus={wbData.storage_skus} />
+          <StorageSkusTable skus={wbData.storage_skus} periodDays={period} />
         </>
       ) : isOzon && ozonData ? (
         <>
@@ -775,7 +775,7 @@ export default function WarehousesStoragePage() {
           {currentShop && <StorageAIInsight shopId={currentShop.id} period={period} marketplace="ozon" />}
 
           {/* Storage SKUs Table — reusing WB component, data format is compatible */}
-          <StorageSkusTable skus={ozonData.storage_skus as any} isEstimate={!(ozonData.kpi.has_actual_data)} />
+          <StorageSkusTable skus={ozonData.storage_skus as any} isEstimate={!(ozonData.kpi.has_actual_data)} periodDays={period} />
         </>
       ) : null}
     </div>

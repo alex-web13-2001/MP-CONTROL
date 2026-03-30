@@ -738,11 +738,11 @@ function CopyableText({ text, prefix, className }: { text: string; prefix?: stri
    Storage SKUs Table
    ═══════════════════════════════════════════════════════════ */
 
-export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; isEstimate?: boolean }) {
+export function StorageSkusTable({ skus, isEstimate, periodDays = 30 }: { skus: WBStorageSku[]; isEstimate?: boolean; periodDays?: number }) {
   if (skus.length === 0) return null
 
   const [search, setSearch] = React.useState('')
-  const [sortKey, setSortKey] = React.useState<string>('est_cost_month')
+  const [sortKey, setSortKey] = React.useState<string>('est_cost_period')
   const [sortDir, setSortDir] = React.useState<'asc' | 'desc'>('desc')
   const [expandedSkus, setExpandedSkus] = React.useState<Set<number>>(new Set())
 
@@ -780,15 +780,16 @@ export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; i
       case 'daily_sales': av = a.daily_sales ?? 0; bv = b.daily_sales ?? 0; break
       case 'days_to_sell': av = a.days_to_sell ?? 99999; bv = b.days_to_sell ?? 99999; break
       case 'has_active_ads': av = a.has_active_ads ? 1 : 0; bv = b.has_active_ads ? 1 : 0; break
+      case 'est_cost_period': av = (a as any).est_cost_period ?? a.est_cost_month; bv = (b as any).est_cost_period ?? b.est_cost_month; break
       case 'est_cost_month': av = a.est_cost_month; bv = b.est_cost_month; break
       case 'forecast_30d': av = a.forecast_30d ?? 0; bv = b.forecast_30d ?? 0; break
-      default: av = a.est_cost_month; bv = b.est_cost_month
+      default: av = (a as any).est_cost_period ?? a.est_cost_month; bv = (b as any).est_cost_period ?? b.est_cost_month
     }
     return sortDir === 'asc' ? av - bv : bv - av
   })
 
   // Totals (from filtered)
-  const totalCost = filtered.reduce((sum, s) => sum + s.est_cost_month, 0)
+  const totalCostPeriod = filtered.reduce((sum, s) => sum + ((s as any).est_cost_period ?? s.est_cost_month), 0)
   const totalStock = filtered.reduce((sum, s) => sum + s.total_stock, 0)
   const totalForecast = filtered.reduce((sum, s) => sum + (s.forecast_30d ?? 0), 0)
 
@@ -826,8 +827,8 @@ export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; i
           </div>
           <div className="text-right flex gap-6">
             <div>
-              <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">{isEstimate ? 'Расч. хранение/30д' : 'Хранение за 30д'}</div>
-              <div className={`text-lg font-bold ${isEstimate ? 'text-[hsl(var(--muted-foreground))]' : 'text-red-400'}`}>{fmtM(totalCost)}</div>
+              <div className="text-[11px] text-[hsl(var(--muted-foreground))] font-medium">{isEstimate ? `Расч. хранение/${periodDays}д` : `Хранение за ${periodDays}д`}</div>
+              <div className={`text-lg font-bold ${isEstimate ? 'text-[hsl(var(--muted-foreground))]' : 'text-red-400'}`}>{fmtM(totalCostPeriod)}</div>
               <div className="text-[10px] text-[hsl(var(--muted-foreground))]">{isEstimate ? 'оценка рисков' : 'при текущих остатках'}</div>
             </div>
             {hasForecast && (
@@ -880,8 +881,8 @@ export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; i
                 <th className={`${thCls} !text-center`} onClick={() => handleSort('has_active_ads')} title="Активная реклама за 3 дня">
                   Рекл.<SortIcon col="has_active_ads" />
                 </th>
-                <th className={thCls} onClick={() => handleSort('est_cost_month')}>
-                  Хранение/30д<SortIcon col="est_cost_month" />
+                <th className={thCls} onClick={() => handleSort('est_cost_period')}>
+                  Хранение/{periodDays}д<SortIcon col="est_cost_period" />
                 </th>
                 {hasForecast && (
                   <th className={thCls} onClick={() => handleSort('forecast_30d')} title="Прогноз расходов с учётом продаж (остатки убывают)">
@@ -937,9 +938,14 @@ export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; i
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-bold">
                         <div className="flex items-center justify-end gap-1.5">
-                          <span className={sku.est_cost_month > 500 ? 'text-red-400' : sku.est_cost_month > 100 ? 'text-amber-400' : ''}>
-                            {fmtM(sku.est_cost_month)}
-                          </span>
+                          {(() => {
+                            const costPeriod = (sku as any).est_cost_period ?? sku.est_cost_month
+                            return (
+                              <span className={costPeriod > 500 ? 'text-red-400' : costPeriod > 100 ? 'text-amber-400' : ''}>
+                                {fmtM(costPeriod)}
+                              </span>
+                            )
+                          })()}
                           {(sku as any).storage_source === 'actual' && (
                             <span className="inline-flex items-center rounded-full px-1.5 py-0.5 text-[9px] font-bold bg-emerald-500/15 text-emerald-400">факт</span>
                           )}
@@ -1039,7 +1045,7 @@ export function StorageSkusTable({ skus, isEstimate }: { skus: WBStorageSku[]; i
                 <td className="px-3 py-3"></td>
                 <td className="px-3 py-3"></td>
                 <td className="px-3 py-3"></td>
-                <td className="px-3 py-3 text-right tabular-nums font-bold text-red-400 text-[14px]">{fmtM(totalCost)}</td>
+                <td className="px-3 py-3 text-right tabular-nums font-bold text-red-400 text-[14px]">{fmtM(totalCostPeriod)}</td>
                 {hasForecast && (
                   <td className="px-3 py-3 text-right tabular-nums font-bold text-amber-400 text-[14px]">{fmtM(totalForecast)}</td>
                 )}
@@ -1806,7 +1812,7 @@ export default function WBWarehouseAnalyticsContent({ shopId }: { shopId: number
           <CostsSummary costs={data.costs} />
 
           {/* Storage SKUs */}
-          <StorageSkusTable skus={data.storage_skus} />
+          <StorageSkusTable skus={data.storage_skus} periodDays={period} />
 
           {/* Recommendations */}
           <RecommendationsPanel recommendations={data.recommendations} />
