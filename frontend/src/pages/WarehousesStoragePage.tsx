@@ -694,20 +694,24 @@ export default function WarehousesStoragePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {isWB && (
+          {hasData && (
             <button
               onClick={async () => {
                 if (!currentShop) return
                 setDownloading(true)
                 try {
-                  await downloadStorageExcel({ shop_id: currentShop.id, period })
+                  await downloadStorageExcel({
+                    shop_id: currentShop.id,
+                    period,
+                    marketplace: currentShop.marketplace as 'wildberries' | 'ozon',
+                  })
                 } catch {
                   // ignore
                 } finally {
                   setDownloading(false)
                 }
               }}
-              disabled={downloading || loading || !hasData}
+              disabled={downloading || loading}
               className="flex items-center gap-2 px-4 py-2 rounded-xl text-[13px] font-medium bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
             >
               <Download className={`h-4 w-4 ${downloading ? 'animate-bounce' : ''}`} />

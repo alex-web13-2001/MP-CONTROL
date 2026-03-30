@@ -769,15 +769,20 @@ export async function getWBWarehouseAnalytics(params: {
 export async function downloadStorageExcel(params: {
   shop_id: number
   period?: number
+  marketplace?: 'wildberries' | 'ozon'
 }): Promise<void> {
-  const response = await apiClient.get('/warehouses/wb/storage/export', {
-    params,
+  const endpoint = params.marketplace === 'ozon'
+    ? '/warehouses/ozon/storage/export'
+    : '/warehouses/wb/storage/export'
+  const response = await apiClient.get(endpoint, {
+    params: { shop_id: params.shop_id, period: params.period ?? 30 },
     responseType: 'blob',
   })
   const url = window.URL.createObjectURL(new Blob([response.data]))
   const link = document.createElement('a')
   link.href = url
-  link.setAttribute('download', `storage_${params.shop_id}_${params.period ?? 30}d.xlsx`)
+  const mp = params.marketplace === 'ozon' ? 'ozon' : 'wb'
+  link.setAttribute('download', `storage_${mp}_${params.shop_id}_${params.period ?? 30}d.xlsx`)
   document.body.appendChild(link)
   link.click()
   link.remove()
