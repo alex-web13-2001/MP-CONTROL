@@ -537,7 +537,6 @@ export function CampaignDetailModal({
     const adRevD = delta(cur?.ad_revenue, prev?.ad_revenue)
     const prodRevD = delta(cur?.product_revenue, prev?.product_revenue)
     const ordersD = delta(cur?.orders, prev?.orders)
-    const cartD = delta(cur?.cart, prev?.cart)
     const drrAdD = cur && prev ? (cur.drr_ad - prev.drr_ad) : null // absolute pp change
     const drrProdD = cur && prev ? (cur.drr_product - prev.drr_product) : null
     const cpoD = delta(cur?.cpo, prev?.cpo)
