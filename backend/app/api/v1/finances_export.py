@@ -2140,6 +2140,7 @@ async def export_wb_excel(
     _wb_section_header(ws1, row, "ИТОГИ"); row += 1
     _wb_kpi_row(ws1, row, "Всего удержано WB", total_mp_fees_cur, total_mp_fees_prev, is_total=True); row += 1
     _wb_kpi_row(ws1, row, "К перечислению", payout_cur, payout_prev); row += 1
+    _wb_kpi_row(ws1, row, "Итого к оплате (на р/с)", bank_cur, bank_prev); row += 1
     _wb_kpi_row(ws1, row, "Себестоимость (COGS)", cogs_cur, cogs_prev); row += 1
     _wb_kpi_row(ws1, row, "Всего расходов", total_expenses_cur, total_expenses_prev, is_total=True); row += 1
     _wb_kpi_row(ws1, row, "ЧИСТАЯ ПРИБЫЛЬ", profit_cur, profit_prev, is_profit=True); row += 1
