@@ -1,3 +1,21 @@
+## 2026-03-30 (v17.20.6)
+
+### feat(storage): Excel-экспорт хранения для Ozon
+
+**Задача**: На странице «Хранение» кнопка Excel работала только для WB, у Ozon выгрузки не было.
+
+**Решение**:
+- **Backend** (`warehouses.py`): новый endpoint `GET /ozon/storage/export` — генерирует Excel из 3 листов:
+  - «Хранение по SKU» — артикул, остаток, оборачиваемость, зона хранения, прогноз 30д
+  - «Детализация по складам» — разбивка по складам с остатком и резервом
+  - «ИИ-рекомендации» — если есть кеш ИИ-анализа
+- **Frontend** (`warehouses.ts`): `downloadStorageExcel()` теперь универсальная — принимает `marketplace` и маршрутизирует на правильный endpoint
+- **Frontend** (`WarehousesStoragePage.tsx`): кнопка Excel видна для обоих маркетплейсов
+
+**Файлы**: `warehouses.py`, `warehouses.ts`, `WarehousesStoragePage.tsx`.
+
+---
+
 ## 2026-03-30 (v17.20.5)
 
 ### fix(finances): Строка «Итого к оплате» в WB Excel-отчёте
