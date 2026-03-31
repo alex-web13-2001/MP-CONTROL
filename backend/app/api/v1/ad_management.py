@@ -588,15 +588,17 @@ async def get_campaigns_from_db(
     """, parameters={"shop_id": shop.id}).result_rows
 
     # 2. Latest bids from log_wb_bids (last snapshot per campaign+nm)
+    # Use argMaxIf to ignore zero-bid garbage rows from WB API storms
     bid_rows = ch.query("""
         SELECT
             advert_id,
             nm_id,
-            argMax(bid_search, timestamp) AS bid_search,
-            argMax(bid_recommendations, timestamp) AS bid_recommendations
+            argMaxIf(bid_search, timestamp, bid_search > 0 OR bid_recommendations > 0) AS bs,
+            argMaxIf(bid_recommendations, timestamp, bid_search > 0 OR bid_recommendations > 0) AS br
         FROM mms_analytics.log_wb_bids
         WHERE shop_id = {shop_id:UInt32}
         GROUP BY advert_id, nm_id
+        HAVING bs > 0 OR br > 0
     """, parameters={"shop_id": shop.id}).result_rows
 
     # Build bid map: advert_id → [{nm_id, bid_search, bid_recommendations}]

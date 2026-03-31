@@ -383,6 +383,13 @@ class EventDetector:
                     bid_search = int(bids.get("search") or 0)
                     bid_recommendations = int(bids.get("recommendations") or 0)
                     
+                    # DEBOUNCING: WB API periodically returns zero bids during
+                    # "API storms". Skip writing these garbage rows to avoid
+                    # corrupting the latest-bid lookup (argMax picks the latest
+                    # timestamp, which would be 0 if we write it).
+                    if bid_search == 0 and bid_recommendations == 0:
+                        continue
+                    
                     rows.append((
                         shop_id,
                         advert_id,
