@@ -152,6 +152,34 @@ export async function getEnrichedCampaigns(
   return res.data
 }
 
+/** Stats per campaign from ClickHouse — NO WB API calls. Use for period changes. */
+export interface CampaignStatsResponse {
+  stats: Record<number, {
+    spend: number; views: number; clicks: number; cart: number
+    orders: number; revenue: number; ctr: number; drr: number
+    cpc: number; cpm: number; cpa_cart: number; cpo: number
+  }>
+  kpi: KpiData
+  kpi_deltas: Record<string, number>
+  period: { start: string; end: string }
+}
+
+export async function getCampaignStats(
+  shopId: number,
+  period: string = '30d',
+  dateFrom?: string,
+  dateTo?: string,
+): Promise<CampaignStatsResponse> {
+  const params: Record<string, string | number> = { shop_id: shopId, period }
+  if (dateFrom) params.date_from = dateFrom
+  if (dateTo) params.date_to = dateTo
+  const res = await apiClient.get<CampaignStatsResponse>(
+    `${PREFIX}/campaigns/stats`,
+    { params },
+  )
+  return res.data
+}
+
 /**
  * Get all campaigns with current bids + balance.
  */

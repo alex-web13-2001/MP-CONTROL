@@ -824,3 +824,172 @@ async def deposit_budget(
         )
 
     return result
+
+
+# ══════════════════════════════════════════════════════════════════
+# Stats Only (ClickHouse only — NO WB API calls)
+# ══════════════════════════════════════════════════════════════════
+
+
+@router.get("/campaigns/stats")
+async def get_campaigns_stats(
+    shop_id: int = Query(...),
+    period: str = Query("30d", description="Period: today, 7d, 14d, 30d, 90d"),
+    date_from: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get ONLY ClickHouse statistics for campaigns — NO WB API calls.
+    
+    Use this endpoint when changing periods to avoid redundant WB API requests.
+    The frontend should merge these stats with cached WB campaign data.
+    
+    Returns: stats per advert_id + KPI + deltas for the requested period.
+    """
+    from datetime import date as date_type, timedelta
+    from app.core.clickhouse import get_clickhouse_client
+
+    shop = await _verify_wb_shop(shop_id, current_user, db)
+
+    # Parse period
+    PERIOD_DAYS = {"today": 1, "7d": 7, "14d": 14, "30d": 30, "90d": 90}
+    today = date_type.today()
+
+    if date_from and date_to:
+        try:
+            d_start = date_type.fromisoformat(date_from)
+            d_end = date_type.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+        days = (d_end - d_start).days + 1
+    else:
+        days = PERIOD_DAYS.get(period, 30)
+        if period == "today":
+            d_start = today
+            d_end = today
+        else:
+            d_end = today
+            d_start = today - timedelta(days=days - 1)
+
+    # Prev period for deltas
+    prev_end = d_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+
+    ch = get_clickhouse_client()
+
+    # Current period stats per campaign
+    stats_rows = ch.query("""
+        SELECT
+            advert_id AS cid,
+            sum(spend) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
+            sum(orders) AS t_orders,
+            sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {start:Date}
+          AND date <= {end:Date}
+        GROUP BY cid
+    """, parameters={
+        "shop_id": shop.id,
+        "start": d_start,
+        "end": d_end,
+    }).result_rows
+
+    stats_map: dict = {}
+    for row in stats_rows:
+        cid = int(row[0])
+        spend = float(row[1])
+        views = int(row[2])
+        clicks = int(row[3])
+        cart = int(row[4])
+        orders = int(row[5])
+        revenue = float(row[6])
+        stats_map[cid] = {
+            "spend": round(spend, 2),
+            "views": views,
+            "clicks": clicks,
+            "cart": cart,
+            "orders": orders,
+            "revenue": round(revenue, 2),
+            "ctr": round(clicks / views * 100, 2) if views > 0 else 0,
+            "drr": round(spend / revenue * 100, 1) if revenue > 0 else 0,
+            "cpc": round(spend / clicks, 2) if clicks > 0 else 0,
+            "cpm": round(spend / views * 1000, 2) if views > 0 else 0,
+            "cpa_cart": round(spend / cart, 2) if cart > 0 else 0,
+            "cpo": round(spend / orders, 2) if orders > 0 else 0,
+        }
+
+    # Prev period stats (aggregated for KPI deltas)
+    prev_rows = ch.query("""
+        SELECT
+            sum(spend) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
+            sum(orders) AS t_orders,
+            sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {start:Date}
+          AND date <= {end:Date}
+    """, parameters={
+        "shop_id": shop.id,
+        "start": prev_start,
+        "end": prev_end,
+    }).result_rows
+
+    prev = {}
+    if prev_rows and prev_rows[0]:
+        r = prev_rows[0]
+        prev = {
+            "spend": float(r[0]),
+            "views": int(r[1]),
+            "clicks": int(r[2]),
+            "cart": int(r[3]),
+            "orders": int(r[4]),
+            "revenue": float(r[5]),
+        }
+
+    # Aggregate KPI
+    kpi = {
+        "spend": sum(s["spend"] for s in stats_map.values()),
+        "views": sum(s["views"] for s in stats_map.values()),
+        "clicks": sum(s["clicks"] for s in stats_map.values()),
+        "cart": sum(s["cart"] for s in stats_map.values()),
+        "orders": sum(s["orders"] for s in stats_map.values()),
+        "revenue": sum(s["revenue"] for s in stats_map.values()),
+    }
+    kpi["ctr"] = round(kpi["clicks"] / kpi["views"] * 100, 2) if kpi["views"] > 0 else 0
+    kpi["drr"] = round(kpi["spend"] / kpi["revenue"] * 100, 1) if kpi["revenue"] > 0 else 0
+
+    # Deltas
+    def _delta(cur, prv):
+        if prv == 0:
+            return 100.0 if cur > 0 else 0.0
+        return round((cur - prv) / prv * 100, 1)
+
+    kpi_deltas = {
+        "spend": _delta(kpi["spend"], prev.get("spend", 0)),
+        "views": _delta(kpi["views"], prev.get("views", 0)),
+        "clicks": _delta(kpi["clicks"], prev.get("clicks", 0)),
+        "cart": _delta(kpi["cart"], prev.get("cart", 0)),
+        "orders": _delta(kpi["orders"], prev.get("orders", 0)),
+        "revenue": _delta(kpi["revenue"], prev.get("revenue", 0)),
+    }
+    prev_ctr = round(prev["clicks"] / prev["views"] * 100, 2) if prev.get("views", 0) > 0 else 0
+    kpi_deltas["ctr"] = _delta(kpi["ctr"], prev_ctr)
+    prev_drr = round(prev["spend"] / prev["revenue"] * 100, 1) if prev.get("revenue", 0) > 0 else 0
+    kpi_deltas["drr"] = _delta(kpi["drr"], prev_drr)
+
+    return {
+        "stats": stats_map,
+        "kpi": kpi,
+        "kpi_deltas": kpi_deltas,
+        "period": {"start": str(d_start), "end": str(d_end)},
+    }
+

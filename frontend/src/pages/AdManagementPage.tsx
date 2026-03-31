@@ -22,7 +22,7 @@ import {
 import { useAppStore } from '../stores/appStore'
 import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
 import {
-  getEnrichedCampaigns, startCampaign, pauseCampaign,
+  getEnrichedCampaigns, getCampaignStats, startCampaign, pauseCampaign,
   batchStatusChange, getBudgetsBatch, getCampaignBudget, depositBudget,
   kopecksToRubles, formatMoney, formatNum,
   type EnrichedCampaign, type EnrichedCampaignsResponse,
@@ -401,6 +401,9 @@ export default function AdManagementPage() {
   // Budgets — batch-loaded with Redis caching
   const [budgets, setBudgets] = useState<Record<number, { total: number; daily: number; loading: boolean }>>({})
 
+  // Track whether WB API data has been loaded for this shop (to avoid re-fetching on period change)
+  const wbDataLoadedForShop = useRef<number | null>(null)
+
   // Load budgets for all active campaigns via single batch endpoint
   const loadBudgets = useCallback(async (campaigns: EnrichedCampaign[]) => {
     if (!shopId || campaigns.length === 0) return
@@ -435,43 +438,109 @@ export default function AdManagementPage() {
     }
   }, [shopId])
 
-  // ── Load Data ──────────────────────────────────────────────────
+  // ── Helper: build period params ────────────────────────────────
 
-  const loadData = useCallback(async () => {
+  const getPeriodParams = useCallback(() => {
+    let dateFrom: string | undefined
+    let dateTo: string | undefined
+    let period = `${periodValue.period}d`
+
+    if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
+      const fmt = (d: Date) => d.toISOString().split('T')[0]
+      dateFrom = fmt(periodValue.dateRange.from)
+      dateTo = fmt(periodValue.dateRange.to || periodValue.dateRange.from)
+      period = 'custom'
+    }
+    return { period, dateFrom, dateTo }
+  }, [periodValue])
+
+  // ── Initial Load (WB API + ClickHouse) ────────────────────────
+
+  const loadFullData = useCallback(async () => {
     if (!shopId) return
     setLoading(true)
     try {
-      let dateFrom: string | undefined
-      let dateTo: string | undefined
-      let period = `${periodValue.period}d`
-
-      if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
-        const fmt = (d: Date) => d.toISOString().split('T')[0]
-        dateFrom = fmt(periodValue.dateRange.from)
-        dateTo = fmt(periodValue.dateRange.to || periodValue.dateRange.from)
-        period = 'custom'
-      }
-
+      const { period, dateFrom, dateTo } = getPeriodParams()
       const result = await getEnrichedCampaigns(shopId, period, dateFrom, dateTo)
       setData(result)
       setError('')
+      wbDataLoadedForShop.current = shopId
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
       setLoading(false)
     }
-  }, [shopId, periodValue])
+  }, [shopId, getPeriodParams])
 
-  useEffect(() => {
-    loadData()
-  }, [loadData])
+  // ── Period Refresh (ClickHouse only — instant, no WB API) ─────
 
-  // Fetch budgets after data loads
+  const refreshStats = useCallback(async () => {
+    if (!shopId || !data) return
+    setLoading(true)
+    try {
+      const { period, dateFrom, dateTo } = getPeriodParams()
+      const statsResult = await getCampaignStats(shopId, period, dateFrom, dateTo)
+
+      // Merge new stats into existing campaign data
+      const updatedCampaigns = data.campaigns.map(c => {
+        const st = statsResult.stats[c.advert_id] || {}
+        return {
+          ...c,
+          spend: st.spend ?? 0,
+          views: st.views ?? 0,
+          clicks: st.clicks ?? 0,
+          cart: st.cart ?? 0,
+          orders: st.orders ?? 0,
+          revenue: st.revenue ?? 0,
+          ctr: st.ctr ?? 0,
+          drr: st.drr ?? 0,
+          cpc: st.cpc ?? 0,
+          cpm: st.cpm ?? 0,
+          cpa_cart: st.cpa_cart ?? 0,
+          cpo: st.cpo ?? 0,
+        }
+      })
+
+      setData(prev => prev ? {
+        ...prev,
+        campaigns: updatedCampaigns,
+        kpi: statsResult.kpi,
+        kpi_deltas: statsResult.kpi_deltas,
+        period: statsResult.period,
+      } : prev)
+      setError('')
+    } catch (e: any) {
+      setError(e?.response?.data?.detail || 'Ошибка обновления статистики')
+    } finally {
+      setLoading(false)
+    }
+  }, [shopId, data, getPeriodParams])
+
+  // ── Effects ────────────────────────────────────────────────────
+
+  // Initial load when shop changes (or first load)
   useEffect(() => {
-    if (data?.campaigns) {
+    if (shopId && shopId !== wbDataLoadedForShop.current) {
+      loadFullData()
+    }
+  }, [shopId, loadFullData])
+
+  // Period change → only refresh stats (instant, no WB API calls)
+  useEffect(() => {
+    if (shopId && wbDataLoadedForShop.current === shopId && data) {
+      refreshStats()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [periodValue])
+
+  // Fetch budgets ONCE after initial data loads (not on period change)
+  useEffect(() => {
+    if (data?.campaigns && wbDataLoadedForShop.current === shopId) {
       loadBudgets(data.campaigns)
     }
-  }, [data?.campaigns, loadBudgets])
+    // Run only when campaigns list identity changes (initial load or shop change)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wbDataLoadedForShop.current, shopId])
 
   // ── Handlers ───────────────────────────────────────────────────
 
@@ -481,7 +550,7 @@ export default function AdManagementPage() {
     try {
       if (action === 'start') await startCampaign(shopId, advertId)
       else await pauseCampaign(shopId, advertId)
-      await loadData()
+      await loadFullData()
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Ошибка')
     } finally {
@@ -495,7 +564,7 @@ export default function AdManagementPage() {
     try {
       await batchStatusChange(shopId, Array.from(selected), action)
       setSelected(new Set())
-      await loadData()
+      await loadFullData()
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Ошибка')
     } finally {
@@ -513,7 +582,7 @@ export default function AdManagementPage() {
       }
       setBatchBudgetAmount(null)
       setSelected(new Set())
-      await loadData()
+      await loadFullData()
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Ошибка пополнения')
     } finally {
@@ -1074,7 +1143,7 @@ export default function AdManagementPage() {
             shopId={shopId}
             balance={accountBalance}
             onClose={() => setBudgetModal(null)}
-            onSuccess={() => { setBudgetModal(null); loadData(); }}
+            onSuccess={() => { setBudgetModal(null); loadFullData(); }}
           />
         )}
       </AnimatePresence>
