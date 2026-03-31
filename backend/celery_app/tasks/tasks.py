@@ -1197,7 +1197,7 @@ def sync_wb_budgets(self, shop_id: int, api_key: str):
 
     logger = logging.getLogger(__name__)
     settings = get_settings()
-    BUDGET_TTL = 1200  # 20 minutes
+    BUDGET_TTL = 3600  # 1 hour (sync runs every 15 min, but tasks can queue up)
 
     async def run_sync():
         engine = create_async_engine(settings.database_url)
