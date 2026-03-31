@@ -568,7 +568,15 @@ export default function AdManagementPage() {
     try {
       if (action === 'start') await startCampaign(shopId, advertId)
       else await pauseCampaign(shopId, advertId)
-      await loadFullData()
+
+      // Optimistically update status in local state (don't wait for Celery sync)
+      const newStatus = action === 'start' ? 9 : 11  // 9=Active, 11=Paused
+      setData(prev => prev ? {
+        ...prev,
+        campaigns: prev.campaigns.map(c =>
+          c.advert_id === advertId ? { ...c, status: newStatus } : c
+        ),
+      } : prev)
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Ошибка')
     } finally {
@@ -581,8 +589,14 @@ export default function AdManagementPage() {
     setActionLoading(`batch-${action}`)
     try {
       await batchStatusChange(shopId, Array.from(selected), action)
+      const newStatus = action === 'start' ? 9 : 11
+      setData(prev => prev ? {
+        ...prev,
+        campaigns: prev.campaigns.map(c =>
+          selected.has(c.advert_id) ? { ...c, status: newStatus } : c
+        ),
+      } : prev)
       setSelected(new Set())
-      await loadFullData()
     } catch (e: any) {
       alert(e?.response?.data?.detail || 'Ошибка')
     } finally {
