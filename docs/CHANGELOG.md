@@ -1,3 +1,37 @@
+## 2026-03-31 (v17.26.0)
+
+### feat(normquery): UWB Search Cluster Analytics — инфраструктура сбора и API
+
+**Новая аналитика для ручных рекламных кампаний WB (UWB)** — поисковые кластеры (normquery), ставки по кластерам, рекомендации.
+
+**ClickHouse** (`009_normquery_stats.sql`):
+- `fact_normquery_stats_daily` — ежедневная статистика по кластерам (views, clicks, orders, CTR, CPC, avg_pos)
+- `log_normquery_bids` — лог ставок по кластерам с рекомендованными ставками рынка
+
+**Backend — новый сервис** (`wb_normquery_service.py`):
+- WBNormqueryService — все READ/WRITE методы для normquery API WB:
+  - `get_normquery_stats()` / `get_normquery_daily_stats()` — статистика кластеров (агрегированная / дневная)
+  - `get_normquery_bids()` — текущие ставки по кластерам
+  - `get_normquery_list()` — списки активных/исключённых кластеров
+  - `get_normquery_minus()` — минус-фразы
+  - `get_bid_recommendations()` — рекомендованные ставки рынка
+  - `set_normquery_bids()` / `set_minus_phrases()` — WRITE операции (Phase 3)
+
+**Backend — новый endpoint** (`campaign_details.py`):
+- `GET /campaign-details/wb/{campaign_id}/normquery-analytics` — полная аналитика по кластерам:
+  - Параллельный запрос 4 WB API (stats + bids + minus + list) + bid recommendations
+  - Per-cluster: views, clicks, orders, CTR, CPC, avg_pos, CR → order/cart
+  - Текущая ставка (копейки + рубли) + рекомендованные ставки (reach max/med/min)
+  - Исключённые кластеры + минус-фразы
+  - Base bids (competitive + leaders)
+
+**Файлы:**
+- `docker/clickhouse/migrations/009_normquery_stats.sql` — 2 новые таблицы
+- `backend/app/services/wb_normquery_service.py` — сервис (~340 строк)
+- `backend/app/api/v1/campaign_details.py` — endpoint (+200 строк)
+
+---
+
 ## 2026-03-31 (v17.25.2)
 
 ### fix(bids): Ставки пропадали из-за нулевых записей WB API
