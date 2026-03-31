@@ -1113,3 +1113,204 @@ async def get_campaign_purchases(
     
     return result
 
+
+# ══════════════════════════════════════════════════════════════
+# Normquery (Search Cluster) Analytics — UWB campaigns only
+# ══════════════════════════════════════════════════════════════
+
+class NormqueryClusterStat(BaseModel):
+    norm_query: str
+    views: int = 0
+    clicks: int = 0
+    atbs: int = 0
+    orders: int = 0
+    avg_pos: float = 0
+    cpc_kopecks: int = 0
+    cpm_kopecks: int = 0
+    ctr: float = 0
+    # Bid info
+    current_bid_kopecks: int = 0
+    current_bid_rub: float = 0
+    # Recommended bids (kopecks)
+    reach_max_bid: int = 0
+    reach_med_bid: int = 0
+    reach_min_bid: int = 0
+    # Computed
+    cr_click_to_order: float = 0
+    cr_click_to_cart: float = 0
+    cpc_rub: float = 0
+
+class NormqueryAnalyticsResponse(BaseModel):
+    clusters: list[NormqueryClusterStat] = []
+    excluded_clusters: list[str] = []
+    minus_phrases: list[str] = []
+    base_bids: dict = {}
+    total_clusters: int = 0
+
+
+@router.get("/wb/{campaign_id}/normquery-analytics", response_model=NormqueryAnalyticsResponse)
+async def get_normquery_analytics(
+    campaign_id: int,
+    shop_id: int = Query(..., description="Shop ID"),
+    start_date: date = Query(..., description="Start Date"),
+    end_date: date = Query(..., description="End Date"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get search cluster (normquery) analytics for a UWB campaign.
+
+    Returns per-cluster performance + current bids + recommendations.
+    Only for WB campaigns with bid_type=manual & payment_type=cpm.
+
+    Combines:
+    1. Live normquery stats from WB API (/adv/v0/normquery/stats)
+    2. Current cluster bids from WB API (/adv/v0/normquery/get-bids)
+    3. Minus phrases from WB API (/adv/v0/normquery/get-minus)
+    4. Active/excluded clusters from WB API (/adv/v0/normquery/list)
+    5. Bid recommendations from WB API (/api/advert/v0/bids/recommendations)
+    """
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    # Verify shop access
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop or shop.marketplace != "wildberries":
+        raise HTTPException(status_code=404, detail="WB магазин не найден")
+
+    try:
+        api_key = decrypt_api_key(shop.api_key_encrypted)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Ошибка расшифровки API-ключа")
+
+    # Get nm_ids for this campaign from ClickHouse
+    ch = get_clickhouse_client()
+    nm_rows = ch.query(
+        "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL "
+        "WHERE advert_id = {cid:UInt64} AND (views > 0 OR clicks > 0 OR spend > 0)",
+        parameters={"cid": campaign_id}
+    ).result_rows
+
+    if not nm_rows:
+        return NormqueryAnalyticsResponse()
+
+    nm_ids = [int(r[0]) for r in nm_rows]
+    items = [{"advert_id": campaign_id, "nm_id": nm} for nm in nm_ids]
+
+    svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+
+    # Fetch data from WB API (parallel where possible)
+    import asyncio
+    stats_data, bids_data, minus_data, list_data = await asyncio.gather(
+        svc.get_normquery_stats(
+            items=items,
+            date_from=start_date.isoformat(),
+            date_to=end_date.isoformat(),
+        ),
+        svc.get_normquery_bids(items=items),
+        svc.get_normquery_minus(items=items),
+        svc.get_normquery_list(items=items),
+        return_exceptions=True,
+    )
+
+    # Handle exceptions gracefully
+    if isinstance(stats_data, Exception):
+        stats_data = {}
+    if isinstance(bids_data, Exception):
+        bids_data = {}
+    if isinstance(minus_data, Exception):
+        minus_data = {}
+    if isinstance(list_data, Exception):
+        list_data = {}
+
+    # Build bid map: norm_query → bid_kopecks
+    bid_map = {}
+    if isinstance(bids_data, dict):
+        for bid in bids_data.get("bids", []):
+            nq = bid.get("norm_query", "")
+            bid_map[nq] = int(bid.get("bid", 0))
+
+    # Build recommendations map (per first nm_id only for now)
+    rec_map = {}
+    base_bids = {}
+    if nm_ids:
+        try:
+            rec_data = await svc.get_bid_recommendations(campaign_id, nm_ids[0])
+            if isinstance(rec_data, dict):
+                base = rec_data.get("base", {})
+                base_bids = {
+                    "competitive_kopecks": base.get("competitiveBid", {}).get("bidKopecks", 0),
+                    "leaders_kopecks": base.get("leadersBid", {}).get("bidKopecks", 0),
+                    "competitive_rub": round(base.get("competitiveBid", {}).get("bidKopecks", 0) / 100, 2),
+                    "leaders_rub": round(base.get("leadersBid", {}).get("bidKopecks", 0) / 100, 2),
+                }
+                for nq_rec in rec_data.get("normQueries", []):
+                    nq_name = nq_rec.get("normQuery", "")
+                    rec_map[nq_name] = {
+                        "reach_max": nq_rec.get("reachMax", {}).get("bidKopecks", 0),
+                        "reach_med": nq_rec.get("reachMedium", {}).get("bidKopecks", 0),
+                        "reach_min": nq_rec.get("reachMin", {}).get("bidKopecks", 0),
+                    }
+        except Exception:
+            pass
+
+    # Parse clusters from stats
+    clusters = []
+    if isinstance(stats_data, dict):
+        for stat_item in stats_data.get("stats", []):
+            for s in stat_item.get("stats", []):
+                nq = s.get("norm_query", "")
+                views = int(s.get("views", 0))
+                clicks = int(s.get("clicks", 0))
+                orders = int(s.get("orders", 0))
+                atbs = int(s.get("atbs", 0))
+                bid_k = bid_map.get(nq, 0)
+                rec = rec_map.get(nq, {})
+
+                clusters.append(NormqueryClusterStat(
+                    norm_query=nq,
+                    views=views,
+                    clicks=clicks,
+                    atbs=atbs,
+                    orders=orders,
+                    avg_pos=float(s.get("avg_pos", 0)),
+                    cpc_kopecks=int(s.get("cpc", 0)),
+                    cpm_kopecks=int(s.get("cpm", 0)),
+                    ctr=float(s.get("ctr", 0)),
+                    current_bid_kopecks=bid_k,
+                    current_bid_rub=round(bid_k / 100, 2) if bid_k else 0,
+                    reach_max_bid=rec.get("reach_max", 0),
+                    reach_med_bid=rec.get("reach_med", 0),
+                    reach_min_bid=rec.get("reach_min", 0),
+                    cr_click_to_order=round(orders / clicks * 100, 2) if clicks > 0 else 0,
+                    cr_click_to_cart=round(atbs / clicks * 100, 2) if clicks > 0 else 0,
+                    cpc_rub=round(int(s.get("cpc", 0)) / 100, 2),
+                ))
+
+    # Sort by views desc (most important clusters first)
+    clusters.sort(key=lambda c: c.views, reverse=True)
+
+    # Parse excluded clusters + minus phrases
+    excluded = []
+    if isinstance(list_data, dict):
+        for item in list_data.get("items", []):
+            nq = item.get("normQueries", {})
+            excluded.extend(nq.get("excluded", []) or [])
+
+    minus = []
+    if isinstance(minus_data, dict):
+        for item in minus_data.get("items", []):
+            minus.extend(item.get("norm_queries", []) or [])
+
+    return NormqueryAnalyticsResponse(
+        clusters=clusters,
+        excluded_clusters=list(set(excluded)),
+        minus_phrases=list(set(minus)),
+        base_bids=base_bids,
+        total_clusters=len(clusters),
+    )
+
