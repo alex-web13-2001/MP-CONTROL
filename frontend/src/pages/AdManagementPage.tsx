@@ -1119,39 +1119,55 @@ export default function AdManagementPage() {
                                     Товары и ставки ({c.nm_settings.length})
                                   </div>
                                   <div className="flex flex-col gap-1.5">
-                                    {c.nm_settings.map((ns: any) => (
-                                      <div key={ns.nm_id} className="inline-flex items-center gap-2 py-1.5 px-3 rounded-md bg-[hsl(var(--secondary))]/60 hover:bg-[hsl(var(--secondary))] transition-colors flex-wrap">
-                                        {/* Product name */}
-                                        <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight">
-                                          {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
-                                        </span>
-                                        {/* Vendor code badge */}
-                                        {ns.vendor_code && (
-                                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))]">
-                                            {ns.vendor_code}
-                                          </span>
-                                        )}
-                                        {/* nm_id */}
-                                        <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]/50">
-                                          #{ns.nm_id}
-                                        </span>
-                                        {/* Divider before bids */}
-                                        {(ns.bid_search > 0 || ns.bid_recommendations > 0) && (
-                                          <span className="text-[hsl(var(--border))]">|</span>
-                                        )}
-                                        {/* Bids inline */}
-                                        {ns.bid_search > 0 && (
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                                            🔍 {kopecksToRubles(ns.bid_search)}
-                                          </span>
-                                        )}
-                                        {ns.bid_recommendations > 0 && (
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                                            📦 {kopecksToRubles(ns.bid_recommendations)}
-                                          </span>
-                                        )}
-                                      </div>
-                                    ))}
+                                    {c.nm_settings.map((ns: any) => {
+                                      const hasBids = ns.bid_search > 0 || ns.bid_recommendations > 0
+                                      const isUnified = c.bid_type === 'unified' || ns.bid_search === ns.bid_recommendations
+                                      return (
+                                        <div key={ns.nm_id} className="py-1.5 px-3 rounded-md bg-[hsl(var(--secondary))]/60 hover:bg-[hsl(var(--secondary))] transition-colors">
+                                          {/* Line 1: Product name + bid */}
+                                          <div className="flex items-center gap-2 justify-between">
+                                            <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight truncate">
+                                              {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
+                                            </span>
+                                            {hasBids && (
+                                              <div className="flex items-center gap-1.5 shrink-0">
+                                                {isUnified ? (
+                                                  /* Unified bid — single value */
+                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-violet-500/10 text-violet-600 dark:text-violet-400">
+                                                    {kopecksToRubles(ns.bid_search || ns.bid_recommendations)}
+                                                  </span>
+                                                ) : (
+                                                  /* Manual — separate search & recommendations */
+                                                  <>
+                                                    {ns.bid_search > 0 && (
+                                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                                        🔍 {kopecksToRubles(ns.bid_search)}
+                                                      </span>
+                                                    )}
+                                                    {ns.bid_recommendations > 0 && (
+                                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                                                        📦 {kopecksToRubles(ns.bid_recommendations)}
+                                                      </span>
+                                                    )}
+                                                  </>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                          {/* Line 2: Vendor code + nm_id */}
+                                          <div className="flex items-center gap-2 mt-0.5">
+                                            {ns.vendor_code && (
+                                              <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))]">
+                                                {ns.vendor_code}
+                                              </span>
+                                            )}
+                                            <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]/50">
+                                              #{ns.nm_id}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      )
+                                    })}
                                   </div>
                                 </div>
                               </motion.div>
