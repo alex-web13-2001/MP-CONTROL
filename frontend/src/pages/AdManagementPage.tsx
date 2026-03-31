@@ -377,12 +377,12 @@ export default function AdManagementPage() {
 
   // Period — uses PeriodSelector
   const [periodValue, setPeriodValue] = useState<PeriodValue>({
-    mode: 'quick', period: 30, dateRange: null,
+    mode: 'quick', period: 7, dateRange: null,
   })
 
   // Filters
   const [search, setSearch] = useState('')
-  const [statusFilter, setStatusFilter] = useState<number[]>([])
+  const [statusFilter, setStatusFilter] = useState<number[]>([9, 11, 4])
   const [typeFilter, setTypeFilter] = useState<string>('all')
 
   // Sort
