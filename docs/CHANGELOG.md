@@ -1,3 +1,23 @@
+## 2026-03-31 (v17.24.2)
+
+### fix(marketplace-client): Graceful degradation при падении Redis-соединения
+
+**Проблема**: Раздел «Управление рекламой» (WB) периодически показывал «Ошибка загрузки данных» вместо данных. Работало после 1-3 обновлений страницы.
+
+**Причина**: `MarketplaceClient.request()` вызывал `wait_for_rate_limit()` → Redis `ping()` → `RedisError: Buffer is closed.` / `ConnectionError: Connection closed by server`. Исключение не перехватывалось → 500 → фронтенд показывал ошибку.
+
+**Решение**: Graceful degradation в `MarketplaceClient`:
+- `__aenter__` (circuit breaker check): try/except → если Redis упал, пропускаем проверку
+- `request()` (rate limiter): try/except → если Redis упал, запрос идёт без лимита
+- `request()` (get_wait_time при 429): try/except → fallback на 2s ожидание  
+- `_make_request()` (report_429/report_success): try/except → метрики не пишутся, запрос не ломается
+
+**Логика**: лучше сделать запрос к API без rate limiting, чем вернуть 500 пользователю.
+
+**Файлы**: `marketplace_client.py` (строки 153-165, 285-330, 380-410).
+
+---
+
 ## 2026-03-31 (v17.24.1)
 
 ### fix(campaign-details): Ozon-попап игнорировал model-заказы и model-выручку

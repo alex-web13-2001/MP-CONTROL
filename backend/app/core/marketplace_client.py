@@ -12,6 +12,7 @@ CRITICAL RULES (enforced in code):
 """
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -36,6 +37,8 @@ from app.core.circuit_breaker import (
     report_shop_auth_error,
     report_shop_success,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Marketplace base URLs
@@ -149,12 +152,17 @@ class MarketplaceClient:
         self._rate_limiter = get_rate_limiter()
         self._circuit_breaker = get_circuit_breaker()
         
-        # Check circuit breaker FIRST
-        if not await self._circuit_breaker.can_request(self.shop_id):
-            raise ShopDisabledError(
-                f"Shop {self.shop_id} is disabled due to auth errors. "
-                "Please update the API key."
-            )
+        # Check circuit breaker FIRST (graceful if Redis is down)
+        try:
+            if not await self._circuit_breaker.can_request(self.shop_id):
+                raise ShopDisabledError(
+                    f"Shop {self.shop_id} is disabled due to auth errors. "
+                    "Please update the API key."
+                )
+        except ShopDisabledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[marketplace-client] Circuit breaker check failed (Redis?), proceeding: {e}")
         
         # Get sticky proxy for this session
         if self.use_proxy:
@@ -274,46 +282,49 @@ class MarketplaceClient:
                 response_bytes=response.content,  # preserve raw bytes
             )
             
-            # Handle rate limiting and proxy feedback
-            if result.is_rate_limited:
-                await report_429_error(self.shop_id, self.marketplace)
-                if self._current_proxy and self._proxy_provider:
-                    await self._proxy_provider.report_failure(
-                        self._current_proxy,
-                        status_code=429,
-                        error_message="Rate limited",
-                        shop_id=self.shop_id,
-                        endpoint=endpoint,
-                    )
-            elif result.is_banned:
-                # 403 = IP banned, quarantine proxy
-                if self._current_proxy and self._proxy_provider:
-                    await self._proxy_provider.report_failure(
-                        self._current_proxy,
-                        status_code=403,
-                        error_message="IP banned",
-                        shop_id=self.shop_id,
-                        endpoint=endpoint,
-                    )
-                    # Get new proxy for remaining requests
-                    self._current_proxy = await self._proxy_provider.get_proxy(
-                        shop_id=self.shop_id,
-                        sticky=True,
-                    )
-            elif result.is_auth_error:
-                # 401 = API key invalid, report to circuit breaker
-                proxy_id = self._current_proxy.id if self._current_proxy else None
-                await report_shop_auth_error(self.shop_id, proxy_id, self.db)
-            elif result.is_success:
-                await report_request_success(self.shop_id, self.marketplace)
-                await report_shop_success(self.shop_id, self.db)
-                if self._current_proxy and self._proxy_provider:
-                    await self._proxy_provider.report_success(
-                        self._current_proxy,
-                        response_time_ms=response_time_ms,
-                        shop_id=self.shop_id,
-                        endpoint=endpoint,
-                    )
+            # Handle rate limiting and proxy feedback (graceful if Redis is down)
+            try:
+                if result.is_rate_limited:
+                    await report_429_error(self.shop_id, self.marketplace)
+                    if self._current_proxy and self._proxy_provider:
+                        await self._proxy_provider.report_failure(
+                            self._current_proxy,
+                            status_code=429,
+                            error_message="Rate limited",
+                            shop_id=self.shop_id,
+                            endpoint=endpoint,
+                        )
+                elif result.is_banned:
+                    # 403 = IP banned, quarantine proxy
+                    if self._current_proxy and self._proxy_provider:
+                        await self._proxy_provider.report_failure(
+                            self._current_proxy,
+                            status_code=403,
+                            error_message="IP banned",
+                            shop_id=self.shop_id,
+                            endpoint=endpoint,
+                        )
+                        # Get new proxy for remaining requests
+                        self._current_proxy = await self._proxy_provider.get_proxy(
+                            shop_id=self.shop_id,
+                            sticky=True,
+                        )
+                elif result.is_auth_error:
+                    # 401 = API key invalid, report to circuit breaker
+                    proxy_id = self._current_proxy.id if self._current_proxy else None
+                    await report_shop_auth_error(self.shop_id, proxy_id, self.db)
+                elif result.is_success:
+                    await report_request_success(self.shop_id, self.marketplace)
+                    await report_shop_success(self.shop_id, self.db)
+                    if self._current_proxy and self._proxy_provider:
+                        await self._proxy_provider.report_success(
+                            self._current_proxy,
+                            response_time_ms=response_time_ms,
+                            shop_id=self.shop_id,
+                            endpoint=endpoint,
+                        )
+            except Exception as e:
+                logger.warning(f"[marketplace-client] Failed to report metrics (Redis?): {e}")
             
             # Log request
             await self._log_request(
@@ -377,14 +388,18 @@ class MarketplaceClient:
         
         for attempt in range(self.max_retries):
             # Wait for rate limit (blocks until allowed)
-            acquired = await wait_for_rate_limit(self.shop_id, self.marketplace)
-            if not acquired:
-                return MarketplaceResponse(
-                    status_code=0,
-                    data=None,
-                    response_time_ms=0,
-                    error="Rate limit timeout",
-                )
+            # Graceful degradation: if Redis is down, skip rate limiting
+            try:
+                acquired = await wait_for_rate_limit(self.shop_id, self.marketplace)
+                if not acquired:
+                    return MarketplaceResponse(
+                        status_code=0,
+                        data=None,
+                        response_time_ms=0,
+                        error="Rate limit timeout",
+                    )
+            except Exception as e:
+                logger.warning(f"[marketplace-client] Rate limiter unavailable (Redis?), proceeding without limit: {e}")
             
             # Make request
             response = await self._make_request(method, endpoint, **kwargs)
@@ -396,10 +411,13 @@ class MarketplaceClient:
             
             # Rate limited - already backed off in report_429_error
             if response.is_rate_limited:
-                wait_time = await self._rate_limiter.get_wait_time(
-                    self.shop_id, self.marketplace
-                )
-                await asyncio.sleep(wait_time)
+                try:
+                    wait_time = await self._rate_limiter.get_wait_time(
+                        self.shop_id, self.marketplace
+                    )
+                    await asyncio.sleep(wait_time)
+                except Exception:
+                    await asyncio.sleep(2.0)  # Fallback wait when Redis is down
                 continue
             
             # Banned - got new proxy, retry
