@@ -540,25 +540,38 @@ class WBAdManagementService:
         self, advert_ids: List[int]
     ) -> Dict[int, Dict[str, Any]]:
         """
-        Fetch budgets for multiple campaigns in parallel (batched).
+        Fetch budgets for multiple campaigns with rate limiting.
         Returns dict of advert_id -> budget data.
-        Rate-limited: max 5 concurrent.
+        Sequential with small delay to avoid WB API 429 errors.
         """
         import asyncio
 
         budgets: Dict[int, Dict[str, Any]] = {}
-        semaphore = asyncio.Semaphore(5)
 
-        async def fetch_one(aid: int):
-            async with semaphore:
-                result = await self.get_campaign_budget(aid)
-                if result.get("success"):
-                    budgets[aid] = result["data"]
+        for i, aid in enumerate(advert_ids):
+            for attempt in range(3):
+                try:
+                    result = await self.get_campaign_budget(aid)
+                    if result.get("success"):
+                        budgets[aid] = result["data"]
+                        break
+                    elif result.get("status_code") == 429:
+                        wait = 2 * (attempt + 1)
+                        logger.warning(
+                            f"[budgets] 429 for advert={aid}, retry {attempt+1}/3 in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+                    else:
+                        logger.debug(f"[budgets] Failed advert={aid}: {result.get('message')}")
+                        break
+                except Exception as e:
+                    logger.warning(f"[budgets] Error advert={aid}: {e}")
+                    break
 
-        await asyncio.gather(
-            *[fetch_one(aid) for aid in advert_ids],
-            return_exceptions=True,
-        )
+            # Small delay between requests to avoid rate limiting
+            if i < len(advert_ids) - 1:
+                await asyncio.sleep(0.3)
+
         return budgets
 
     # ══════════════════════════════════════════════════════════════
