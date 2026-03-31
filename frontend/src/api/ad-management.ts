@@ -13,6 +13,8 @@ export interface NmSetting {
   bid_search: number        // kopecks
   bid_recommendations: number // kopecks
   subject_name: string
+  product_name: string
+  vendor_code: string
 }
 
 export interface EnrichedCampaign {

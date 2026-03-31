@@ -1103,7 +1103,7 @@ export default function AdManagementPage() {
                         </td>
                       </tr>
 
-                      {/* Expanded row — bid details */}
+                      {/* Expanded row — compact product bids */}
                       <AnimatePresence>
                         {isExpanded && c.nm_settings && c.nm_settings.length > 0 && (
                           <tr>
@@ -1112,32 +1112,41 @@ export default function AdManagementPage() {
                                 initial={{ opacity: 0, height: 0 }}
                                 animate={{ opacity: 1, height: 'auto' }}
                                 exit={{ opacity: 0, height: 0 }}
-                                className="px-6 py-3 bg-[hsl(var(--muted))]/30 border-b border-[hsl(var(--border))]"
+                                className="px-6 py-3 bg-[hsl(var(--muted))]/15 border-b border-[hsl(var(--border))]"
                               >
-                                <div className="text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2">
-                                  Ставки по артикулам ({c.nm_settings.length} шт.)
+                                <div className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2">
+                                  Товары и ставки ({c.nm_settings.length})
                                 </div>
-                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                                  {c.nm_settings.map(ns => (
-                                    <div key={ns.nm_id} className="flex items-center gap-3 p-2 rounded-lg bg-[hsl(var(--secondary))]">
+                                <div className="flex flex-col gap-1.5">
+                                  {c.nm_settings.map((ns: any) => (
+                                    <div key={ns.nm_id} className="flex items-center gap-3 py-1.5 px-3 rounded-md bg-[hsl(var(--secondary))]/60 hover:bg-[hsl(var(--secondary))] transition-colors">
+                                      {/* Product info block — name, article, nm_id */}
                                       <div className="flex-1 min-w-0">
-                                        <div className="text-xs font-mono text-[hsl(var(--foreground))]/80">{ns.nm_id}</div>
-                                        {ns.subject_name && (
-                                          <div className="text-[10px] text-[hsl(var(--muted-foreground))] truncate">{ns.subject_name}</div>
-                                        )}
+                                        <div className="flex items-baseline gap-2 flex-wrap">
+                                          <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight truncate">
+                                            {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
+                                          </span>
+                                          {ns.vendor_code && (
+                                            <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))] shrink-0">
+                                              {ns.vendor_code}
+                                            </span>
+                                          )}
+                                          <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]/60 shrink-0">
+                                            #{ns.nm_id}
+                                          </span>
+                                        </div>
                                       </div>
-                                      <div className="text-right text-xs">
+                                      {/* Bids — compact badges */}
+                                      <div className="flex items-center gap-2 shrink-0">
                                         {ns.bid_search > 0 && (
-                                          <div>
-                                            <span className="text-[hsl(var(--muted-foreground))]">Поиск: </span>
-                                            <span className="text-[hsl(var(--foreground))] font-medium">{kopecksToRubles(ns.bid_search)}</span>
-                                          </div>
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                            🔍 {kopecksToRubles(ns.bid_search)}
+                                          </span>
                                         )}
                                         {ns.bid_recommendations > 0 && (
-                                          <div>
-                                            <span className="text-[hsl(var(--muted-foreground))]">Полки: </span>
-                                            <span className="text-[hsl(var(--foreground))] font-medium">{kopecksToRubles(ns.bid_recommendations)}</span>
-                                          </div>
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                                            📦 {kopecksToRubles(ns.bid_recommendations)}
+                                          </span>
                                         )}
                                       </div>
                                     </div>

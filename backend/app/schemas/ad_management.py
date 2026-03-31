@@ -13,6 +13,8 @@ class NmSettingResponse(BaseModel):
     bid_search: int = Field(0, description="Search bid in kopecks")
     bid_recommendations: int = Field(0, description="Recommendations bid in kopecks")
     subject_name: str = ""
+    product_name: str = ""
+    vendor_code: str = ""
 
 
 class CampaignWithBidsResponse(BaseModel):

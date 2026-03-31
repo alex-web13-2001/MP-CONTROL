@@ -601,16 +601,36 @@ async def get_campaigns_from_db(
 
     # Build bid map: advert_id → [{nm_id, bid_search, bid_recommendations}]
     bid_map: dict = {}
+    all_nm_ids: set = set()
     for row in bid_rows:
         aid = int(row[0])
+        nm_id = int(row[1])
         if aid not in bid_map:
             bid_map[aid] = []
         bid_map[aid].append({
-            "nm_id": int(row[1]),
+            "nm_id": nm_id,
             "bid_search": int(row[2]),
             "bid_recommendations": int(row[3]),
             "subject_name": "",
+            "product_name": "",
+            "vendor_code": "",
         })
+        all_nm_ids.add(nm_id)
+
+    # Enrich with product names from PostgreSQL dim_products
+    if all_nm_ids:
+        from sqlalchemy import text
+        product_rows = await db.execute(
+            text("SELECT nm_id, vendor_code, name FROM dim_products WHERE nm_id = ANY(:ids)"),
+            {"ids": list(all_nm_ids)},
+        )
+        product_map = {int(r[0]): {"vendor_code": r[1] or "", "name": r[2] or ""} for r in product_rows.fetchall()}
+
+        for entries in bid_map.values():
+            for entry in entries:
+                prod = product_map.get(entry["nm_id"], {})
+                entry["product_name"] = prod.get("name", "")
+                entry["vendor_code"] = prod.get("vendor_code", "")
 
     # 3. Stats from ClickHouse (same as /campaigns/stats)
     stats_rows = ch.query("""
