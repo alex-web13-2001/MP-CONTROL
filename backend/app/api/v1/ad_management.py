@@ -399,6 +399,9 @@ async def batch_status_change(
 
         if result["success"]:
             success_count += 1
+            # Persist status change to ClickHouse immediately
+            new_status = 9 if request.action == "start" else 11
+            await _update_campaign_status_in_ch(shop.id, advert_id, new_status)
         else:
             failed_count += 1
 
