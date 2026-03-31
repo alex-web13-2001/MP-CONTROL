@@ -377,8 +377,8 @@ class WBNormqueryService:
             response = await client.get(
                 "/api/advert/v0/bids/recommendations",
                 params={
-                    "advert_id": advert_id,
-                    "nm_id": nm_id,
+                    "advertId": advert_id,
+                    "nmId": nm_id,
                 },
             )
 
