@@ -91,6 +91,8 @@ celery_app.conf.task_routes = {
     "celery_app.tasks.tasks.sync_all_frequent": {"queue": "sync", "routing_key": "sync"},
     "celery_app.tasks.tasks.sync_all_ads": {"queue": "sync", "routing_key": "sync"},
     "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_wb_budgets": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.tasks.sync_all_budgets": {"queue": "sync", "routing_key": "sync"},
     "celery_app.tasks.tasks.sync_all_placement_cost": {"queue": "sync", "routing_key": "sync"},
 }
 
@@ -172,6 +174,13 @@ celery_app.conf.beat_schedule = {
     "sync-campaign-snapshots": {
         "task": "celery_app.tasks.tasks.sync_all_campaign_snapshots",
         "schedule": 1800.0,  # Every 30 minutes
+        "options": {"queue": "sync", "priority": 6},
+    },
+
+    # Budget sync (15 min): campaign budgets + account balance → Redis
+    "sync-all-budgets": {
+        "task": "celery_app.tasks.tasks.sync_all_budgets",
+        "schedule": 900.0,  # Every 15 minutes
         "options": {"queue": "sync", "priority": 6},
     },
 

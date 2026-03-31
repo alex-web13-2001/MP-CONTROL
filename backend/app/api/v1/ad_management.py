@@ -469,7 +469,310 @@ async def get_audit_log(
 
 
 # ══════════════════════════════════════════════════════════════════
-# Enriched Campaigns (management data + ClickHouse stats)
+# Campaigns from DB (0 WB API calls — all from ClickHouse + Redis)
+# ══════════════════════════════════════════════════════════════════
+
+WB_STATUS_LABELS = {
+    -1: "Удалена", 4: "Готова к запуску", 7: "Завершена",
+    8: "Отказ", 9: "Активна", 11: "На паузе",
+}
+
+
+@router.get("/campaigns/from-db")
+async def get_campaigns_from_db(
+    shop_id: int = Query(...),
+    period: str = Query("7d", description="Period: today, 7d, 14d, 30d, 90d"),
+    date_from: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get campaigns entirely from our database — 0 WB API calls.
+
+    Sources:
+    - dim_advert_campaigns (ClickHouse) → names, statuses, types, placements
+    - log_wb_bids (ClickHouse) → latest bids per nm_id
+    - fact_advert_stats_v3 (ClickHouse) → spend, views, clicks, etc.
+    - Redis → cached budgets + balance (synced every 15 min by Celery)
+    """
+    from datetime import date as date_type, timedelta
+    from app.core.clickhouse import get_clickhouse_client
+
+    shop = await _verify_wb_shop(shop_id, current_user, db)
+
+    # Parse period
+    PERIOD_DAYS = {"today": 1, "7d": 7, "14d": 14, "30d": 30, "90d": 90}
+    today = date_type.today()
+
+    if date_from and date_to:
+        try:
+            d_start = date_type.fromisoformat(date_from)
+            d_end = date_type.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format")
+        days = (d_end - d_start).days + 1
+    else:
+        days = PERIOD_DAYS.get(period, 7)
+        if period == "today":
+            d_start = today
+            d_end = today
+        else:
+            d_end = today
+            d_start = today - timedelta(days=days - 1)
+
+    prev_end = d_start - timedelta(days=1)
+    prev_start = prev_end - timedelta(days=days - 1)
+
+    ch = get_clickhouse_client()
+
+    # 1. Campaigns from dim_advert_campaigns
+    campaign_rows = ch.query("""
+        SELECT
+            advert_id,
+            argMax(name, updated_at) AS name,
+            argMax(type, updated_at) AS type,
+            argMax(status, updated_at) AS status,
+            argMax(payment_type, updated_at) AS payment_type,
+            argMax(bid_type, updated_at) AS bid_type,
+            argMax(search_enabled, updated_at) AS search_enabled,
+            argMax(recommendations_enabled, updated_at) AS recommendations_enabled
+        FROM mms_analytics.dim_advert_campaigns
+        WHERE shop_id = {shop_id:UInt32}
+        GROUP BY advert_id
+    """, parameters={"shop_id": shop.id}).result_rows
+
+    # 2. Latest bids from log_wb_bids (last snapshot per campaign+nm)
+    bid_rows = ch.query("""
+        SELECT
+            advert_id,
+            nm_id,
+            argMax(bid_search, timestamp) AS bid_search,
+            argMax(bid_recommendations, timestamp) AS bid_recommendations
+        FROM mms_analytics.log_wb_bids
+        WHERE shop_id = {shop_id:UInt32}
+        GROUP BY advert_id, nm_id
+    """, parameters={"shop_id": shop.id}).result_rows
+
+    # Build bid map: advert_id → [{nm_id, bid_search, bid_recommendations}]
+    bid_map: dict = {}
+    for row in bid_rows:
+        aid = int(row[0])
+        if aid not in bid_map:
+            bid_map[aid] = []
+        bid_map[aid].append({
+            "nm_id": int(row[1]),
+            "bid_search": int(row[2]),
+            "bid_recommendations": int(row[3]),
+            "subject_name": "",
+        })
+
+    # 3. Stats from ClickHouse (same as /campaigns/stats)
+    stats_rows = ch.query("""
+        SELECT
+            advert_id AS cid,
+            sum(spend) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
+            sum(orders) AS t_orders,
+            sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {start:Date}
+          AND date <= {end:Date}
+        GROUP BY cid
+    """, parameters={
+        "shop_id": shop.id,
+        "start": d_start,
+        "end": d_end,
+    }).result_rows
+
+    stats_map: dict = {}
+    for row in stats_rows:
+        cid = int(row[0])
+        spend = float(row[1])
+        views = int(row[2])
+        clicks = int(row[3])
+        cart = int(row[4])
+        orders = int(row[5])
+        revenue = float(row[6])
+        stats_map[cid] = {
+            "spend": round(spend, 2),
+            "views": views,
+            "clicks": clicks,
+            "cart": cart,
+            "orders": orders,
+            "revenue": round(revenue, 2),
+            "ctr": round(clicks / views * 100, 2) if views > 0 else 0,
+            "drr": round(spend / revenue * 100, 1) if revenue > 0 else 0,
+            "cpc": round(spend / clicks, 2) if clicks > 0 else 0,
+            "cpm": round(spend / views * 1000, 2) if views > 0 else 0,
+            "cpa_cart": round(spend / cart, 2) if cart > 0 else 0,
+            "cpo": round(spend / orders, 2) if orders > 0 else 0,
+        }
+
+    # 4. Prev period stats for KPI deltas
+    prev_rows = ch.query("""
+        SELECT
+            sum(spend) AS t_spend,
+            sum(views) AS t_views,
+            sum(clicks) AS t_clicks,
+            sum(atbs) AS t_cart,
+            sum(orders) AS t_orders,
+            sum(revenue) AS t_revenue
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {start:Date}
+          AND date <= {end:Date}
+    """, parameters={
+        "shop_id": shop.id,
+        "start": prev_start,
+        "end": prev_end,
+    }).result_rows
+
+    prev = {}
+    if prev_rows and prev_rows[0]:
+        r = prev_rows[0]
+        prev = {
+            "spend": float(r[0]),
+            "views": int(r[1]),
+            "clicks": int(r[2]),
+            "cart": int(r[3]),
+            "orders": int(r[4]),
+            "revenue": float(r[5]),
+        }
+
+    # 5. Budgets + Balance from Redis cache
+    budgets_cache: dict = {}
+    balance_data = None
+    try:
+        import redis.asyncio as aioredis
+        from app.config import get_settings
+        settings = get_settings()
+        redis_client = await aioredis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+
+        # Read all budget keys for this shop
+        # Use pipeline for batch read
+        active_ids = [int(row[0]) for row in campaign_rows]
+        if active_ids:
+            pipeline = redis_client.pipeline()
+            for aid in active_ids:
+                pipeline.get(f"budget:{shop.id}:{aid}")
+            results = await pipeline.execute()
+
+            for aid, cached in zip(active_ids, results):
+                if cached:
+                    budgets_cache[aid] = json.loads(cached)
+
+        # Read balance
+        balance_cached = await redis_client.get(f"balance:{shop.id}")
+        if balance_cached:
+            balance_data = json.loads(balance_cached)
+
+        await redis_client.aclose()
+    except Exception as e:
+        logger.warning(f"[from-db] Redis cache unavailable: {e}")
+
+    # 6. Build campaign list
+    campaigns = []
+    # Map ClickHouse Enum8 type names → WB type codes
+    CH_TYPE_MAP = {
+        "search": 1, "carousel": 2, "card": 4, "recommend": 5,
+        "auto": 7, "search_plus_catalog": 8, "recommend_plus_carousel": 9,
+    }
+
+    for row in campaign_rows:
+        cid = int(row[0])
+        st = stats_map.get(cid, {})
+        budget = budgets_cache.get(cid, {})
+
+        status_code = int(row[3])
+        raw_type = str(row[2])
+        type_code = CH_TYPE_MAP.get(raw_type, 9)  # default to 9 (unified)
+        try:
+            type_code = int(raw_type)
+        except (ValueError, TypeError):
+            pass  # keep mapped value
+
+        campaigns.append({
+            "advert_id": cid,
+            "name": str(row[1]),
+            "type": type_code,
+            "status": status_code,
+            "status_label": WB_STATUS_LABELS.get(status_code, "Неизвестно"),
+            "payment_type": str(row[4]),
+            "bid_type": str(row[5]),
+            "search_enabled": bool(int(row[6])),
+            "recommendations_enabled": bool(int(row[7])),
+            "change_time": None,
+            "nm_settings": bid_map.get(cid, []),
+            # Stats
+            "spend": st.get("spend", 0),
+            "views": st.get("views", 0),
+            "clicks": st.get("clicks", 0),
+            "cart": st.get("cart", 0),
+            "orders": st.get("orders", 0),
+            "revenue": st.get("revenue", 0),
+            "ctr": st.get("ctr", 0),
+            "drr": st.get("drr", 0),
+            "cpc": st.get("cpc", 0),
+            "cpm": st.get("cpm", 0),
+            "cpa_cart": st.get("cpa_cart", 0),
+            "cpo": st.get("cpo", 0),
+            # Budget from Redis cache
+            "budget_total": budget.get("total", 0),
+            "budget_daily": budget.get("daily", 0),
+        })
+
+    # KPI
+    kpi = {
+        "spend": sum(s["spend"] for s in stats_map.values()),
+        "views": sum(s["views"] for s in stats_map.values()),
+        "clicks": sum(s["clicks"] for s in stats_map.values()),
+        "cart": sum(s["cart"] for s in stats_map.values()),
+        "orders": sum(s["orders"] for s in stats_map.values()),
+        "revenue": sum(s["revenue"] for s in stats_map.values()),
+    }
+    kpi["ctr"] = round(kpi["clicks"] / kpi["views"] * 100, 2) if kpi["views"] > 0 else 0
+    kpi["drr"] = round(kpi["spend"] / kpi["revenue"] * 100, 1) if kpi["revenue"] > 0 else 0
+
+    def _delta(cur, prv):
+        if prv == 0:
+            return 100.0 if cur > 0 else 0.0
+        return round((cur - prv) / prv * 100, 1)
+
+    kpi_deltas = {
+        "spend": _delta(kpi["spend"], prev.get("spend", 0)),
+        "views": _delta(kpi["views"], prev.get("views", 0)),
+        "clicks": _delta(kpi["clicks"], prev.get("clicks", 0)),
+        "cart": _delta(kpi["cart"], prev.get("cart", 0)),
+        "orders": _delta(kpi["orders"], prev.get("orders", 0)),
+        "revenue": _delta(kpi["revenue"], prev.get("revenue", 0)),
+    }
+    prev_ctr = round(prev["clicks"] / prev["views"] * 100, 2) if prev.get("views", 0) > 0 else 0
+    kpi_deltas["ctr"] = _delta(kpi["ctr"], prev_ctr)
+    prev_drr = round(prev["spend"] / prev["revenue"] * 100, 1) if prev.get("revenue", 0) > 0 else 0
+    kpi_deltas["drr"] = _delta(kpi["drr"], prev_drr)
+
+    return {
+        "campaigns": campaigns,
+        "total": len(campaigns),
+        "balance": balance_data,
+        "kpi": kpi,
+        "kpi_deltas": kpi_deltas,
+        "period": {"start": str(d_start), "end": str(d_end)},
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# Enriched Campaigns (management data + ClickHouse stats) — LEGACY
 # ══════════════════════════════════════════════════════════════════
 
 

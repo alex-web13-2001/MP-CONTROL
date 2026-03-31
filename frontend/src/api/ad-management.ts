@@ -40,6 +40,9 @@ export interface EnrichedCampaign {
   cpm: number
   cpa_cart: number
   cpo: number
+  // Budget from Redis cache (synced every 15 min)
+  budget_total?: number
+  budget_daily?: number
 }
 
 export interface KpiData {
@@ -175,6 +178,26 @@ export async function getCampaignStats(
   if (dateTo) params.date_to = dateTo
   const res = await apiClient.get<CampaignStatsResponse>(
     `${PREFIX}/campaigns/stats`,
+    { params },
+  )
+  return res.data
+}
+
+/**
+ * Get campaigns from DB (0 WB API calls).
+ * All data from ClickHouse + Redis cache.
+ */
+export async function getCampaignsFromDB(
+  shopId: number,
+  period: string = '7d',
+  dateFrom?: string,
+  dateTo?: string,
+): Promise<EnrichedCampaignsResponse> {
+  const params: Record<string, string | number> = { shop_id: shopId, period }
+  if (dateFrom) params.date_from = dateFrom
+  if (dateTo) params.date_to = dateTo
+  const res = await apiClient.get<EnrichedCampaignsResponse>(
+    `${PREFIX}/campaigns/from-db`,
     { params },
   )
   return res.data

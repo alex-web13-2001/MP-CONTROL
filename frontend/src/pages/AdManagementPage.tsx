@@ -22,8 +22,8 @@ import {
 import { useAppStore } from '../stores/appStore'
 import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
 import {
-  getEnrichedCampaigns, getCampaignStats, startCampaign, pauseCampaign,
-  batchStatusChange, getBudgetsBatch, getCampaignBudget, depositBudget,
+  getCampaignsFromDB, getCampaignStats, startCampaign, pauseCampaign,
+  batchStatusChange, getCampaignBudget, depositBudget,
   kopecksToRubles, formatMoney, formatNum,
   type EnrichedCampaign, type EnrichedCampaignsResponse,
 } from '../api/ad-management'
@@ -398,45 +398,11 @@ export default function AdManagementPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchBudgetAmount, setBatchBudgetAmount] = useState<number | null>(null)
 
-  // Budgets — batch-loaded with Redis caching
+  // Budgets — from Redis cache (synced by Celery every 15 min)
   const [budgets, setBudgets] = useState<Record<number, { total: number; daily: number; loading: boolean }>>({})
 
-  // Track whether WB API data has been loaded for this shop (to avoid re-fetching on period change)
+  // Track whether data has been loaded for this shop (to avoid re-fetching on period change)
   const wbDataLoadedForShop = useRef<number | null>(null)
-
-  // Load budgets for all active campaigns via single batch endpoint
-  const loadBudgets = useCallback(async (campaigns: EnrichedCampaign[]) => {
-    if (!shopId || campaigns.length === 0) return
-    const activeIds = campaigns.filter(c => [9, 11, 4].includes(c.status)).map(c => c.advert_id)
-    if (activeIds.length === 0) return
-    
-    // Mark all as loading
-    const loadingState: Record<number, { total: number; daily: number; loading: boolean }> = {}
-    activeIds.forEach(id => { loadingState[id] = { total: 0, daily: 0, loading: true } })
-    setBudgets(prev => ({ ...prev, ...loadingState }))
-
-    
-    try {
-      const result = await getBudgetsBatch(shopId, activeIds)
-      setBudgets(prev => {
-        const next = { ...prev }
-        activeIds.forEach(id => {
-          const b = result[id]
-          next[id] = { total: b?.total || 0, daily: b?.daily || 0, loading: false }
-        })
-        return next
-      })
-    } catch {
-      // On error, just stop loading spinners
-      setBudgets(prev => {
-        const next = { ...prev }
-        activeIds.forEach(id => { next[id] = { total: 0, daily: 0, loading: false } })
-        return next
-      })
-    } finally {
-
-    }
-  }, [shopId])
 
   // ── Helper: build period params ────────────────────────────────
 
@@ -454,17 +420,30 @@ export default function AdManagementPage() {
     return { period, dateFrom, dateTo }
   }, [periodValue])
 
-  // ── Initial Load (WB API + ClickHouse) ────────────────────────
+  // ── Initial Load (all from DB — 0 WB API calls) ─────────────
 
   const loadFullData = useCallback(async () => {
     if (!shopId) return
     setLoading(true)
     try {
       const { period, dateFrom, dateTo } = getPeriodParams()
-      const result = await getEnrichedCampaigns(shopId, period, dateFrom, dateTo)
+      const result = await getCampaignsFromDB(shopId, period, dateFrom, dateTo)
       setData(result)
       setError('')
       wbDataLoadedForShop.current = shopId
+
+      // Extract budgets from response (cached by Celery in Redis)
+      const budgetState: Record<number, { total: number; daily: number; loading: boolean }> = {}
+      for (const c of result.campaigns) {
+        if (c.budget_total !== undefined || c.budget_daily !== undefined) {
+          budgetState[c.advert_id] = {
+            total: c.budget_total || 0,
+            daily: c.budget_daily || 0,
+            loading: false,
+          }
+        }
+      }
+      setBudgets(budgetState)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка загрузки данных')
     } finally {
@@ -533,14 +512,8 @@ export default function AdManagementPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [periodValue])
 
-  // Fetch budgets ONCE after initial data loads (not on period change)
-  useEffect(() => {
-    if (data?.campaigns && wbDataLoadedForShop.current === shopId) {
-      loadBudgets(data.campaigns)
-    }
-    // Run only when campaigns list identity changes (initial load or shop change)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wbDataLoadedForShop.current, shopId])
+  // Budgets are now included in the main response from /campaigns/from-db
+  // No separate fetch needed — Celery syncs budgets to Redis every 15 min
 
   // ── Handlers ───────────────────────────────────────────────────
 

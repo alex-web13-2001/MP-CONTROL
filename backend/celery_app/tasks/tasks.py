@@ -1164,6 +1164,145 @@ def sync_wb_finance_history(
 
 
 # =============================================
+# BUDGET SYNC (lightweight, every 15 min)
+# =============================================
+
+@celery_app.task(bind=True, time_limit=120, soft_time_limit=110)
+def sync_wb_budgets(self, shop_id: int, api_key: str):
+    """
+    Sync campaign budgets + account balance to Redis cache.
+
+    Fetches:
+      1. Active campaign IDs from dim_advert_campaigns (ClickHouse)
+      2. Budget for each active campaign from WB API (semaphore=5)
+      3. Account balance from WB API
+
+    Stores in Redis:
+      - budget:{shop_id}:{advert_id} → {total, daily} (TTL 20 min)
+      - balance:{shop_id} → {balance, net} (TTL 20 min)
+
+    Runs every 15 minutes via scheduler.
+    Queue: SYNC.
+    """
+    import asyncio
+    import os
+    import json
+    import logging
+    import redis as redis_lib
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from app.config import get_settings
+    from app.services.wb_ad_management_service import WBAdManagementService
+    from app.core.clickhouse import get_clickhouse_client
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+    BUDGET_TTL = 1200  # 20 minutes
+
+    async def run_sync():
+        engine = create_async_engine(settings.database_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        # Get active campaign IDs from ClickHouse
+        ch = get_clickhouse_client()
+        rows = ch.query("""
+            SELECT advert_id
+            FROM mms_analytics.dim_advert_campaigns FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND status IN (4, 9, 11)
+        """, parameters={"shop_id": shop_id}).result_rows
+
+        active_ids = [int(r[0]) for r in rows]
+        logger.info(f"[budget-sync] shop={shop_id}: {len(active_ids)} active campaigns")
+
+        if not active_ids:
+            await engine.dispose()
+            return {"status": "ok", "campaigns": 0}
+
+        # Fetch budgets + balance from WB API
+        async with async_session() as db:
+            service = WBAdManagementService(db=db, shop_id=shop_id, api_key=api_key)
+            budgets = await service.get_campaigns_budgets(active_ids)
+            balance_raw = await service.get_balance()
+
+        # Store in Redis
+        r = redis_lib.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"))
+        pipeline = r.pipeline()
+
+        budget_count = 0
+        for aid, data in budgets.items():
+            cache_key = f"budget:{shop_id}:{aid}"
+            pipeline.setex(cache_key, BUDGET_TTL, json.dumps(data))
+            budget_count += 1
+
+        if balance_raw.get("success"):
+            balance_key = f"balance:{shop_id}"
+            pipeline.setex(balance_key, BUDGET_TTL, json.dumps(balance_raw["data"]))
+
+        pipeline.execute()
+        r.close()
+
+        await engine.dispose()
+
+        logger.info(
+            f"[budget-sync] shop={shop_id}: cached {budget_count} budgets, "
+            f"balance={'ok' if balance_raw.get('success') else 'fail'}"
+        )
+        return {
+            "status": "completed",
+            "shop_id": shop_id,
+            "budgets_cached": budget_count,
+            "balance_cached": bool(balance_raw.get("success")),
+        }
+
+    return asyncio.run(run_sync())
+
+
+@celery_app.task(bind=True, time_limit=60, soft_time_limit=50)
+def sync_all_budgets(self):
+    """
+    Dispatcher: sync budgets for ALL active WB shops.
+    Called by scheduler every 15 minutes.
+    """
+    import asyncio
+    import logging
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy import select
+    from app.config import get_settings
+    from app.core.encryption import decrypt_api_key
+    from app.models.shop import Shop
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def _dispatch():
+        engine = create_async_engine(settings.database_url)
+        sf = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with sf() as db:
+            result = await db.execute(
+                select(Shop).where(Shop.status == "active", Shop.marketplace == "wildberries")
+            )
+            shops = result.scalars().all()
+        await engine.dispose()
+        return shops
+
+    shops = asyncio.run(_dispatch())
+    dispatched = 0
+
+    for shop in shops:
+        try:
+            api_key = decrypt_api_key(shop.api_key_encrypted)
+            sync_wb_budgets.delay(shop_id=shop.id, api_key=api_key)
+            dispatched += 1
+        except Exception as e:
+            logger.error(f"sync_all_budgets: shop {shop.id} decrypt failed: {e}")
+
+    logger.info(f"sync_all_budgets: dispatched {dispatched} tasks for {len(shops)} WB shops")
+    return {"dispatched": dispatched}
+
+
+# =============================================
 # CAMPAIGN SNAPSHOT (lightweight, every 30 min)
 # =============================================
 
