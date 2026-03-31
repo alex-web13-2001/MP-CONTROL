@@ -1,3 +1,26 @@
+## 2026-03-31 (v17.25.2)
+
+### fix(bids): Ставки пропадали из-за нулевых записей WB API
+
+**Проблема**: В раскрытых строках кампаний ставки показывались как 0 (бейджи не отображались), хотя в ClickHouse реальные ставки были записаны ранее.
+
+**Причина — WB API «storm garbage»:**
+- WB API периодически возвращает `bids_kopecks: {search: 0, recommendations: 0}` — мусорные данные
+- `extract_bid_snapshot_v2()` записывал эти нули в `log_wb_bids` без фильтрации
+- SQL-запрос `argMax(bid_search, timestamp)` брал последнюю по времени строку → 0
+
+**Решение — два уровня защиты:**
+1. **Запись (event_detector.py):** `extract_bid_snapshot_v2()` теперь пропускает строки с `bid_search=0 AND bid_recommendations=0`
+2. **Чтение (ad_management.py):** SQL-запрос использует `argMaxIf(..., bid_search > 0 OR bid_recommendations > 0)` + `HAVING` — игнорирует уже записанный мусор
+
+**Результат:** 95 из 96 кампаний теперь отображают ставки (было: 0).
+
+**Файлы:**
+- `backend/app/services/event_detector.py` — фильтр нулей при записи
+- `backend/app/api/v1/ad_management.py` — `argMaxIf` при чтении
+
+---
+
 ## 2026-03-31 (v17.25.1)
 
 ### feat(ad-management): Двухстрочная карточка товара + умное отображение ставок
