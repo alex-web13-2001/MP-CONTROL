@@ -1,6 +1,6 @@
-## 2026-03-31 (v17.26.0)
+## 2026-04-01 (v17.26.0)
 
-### feat(normquery): UWB Search Cluster Analytics — инфраструктура сбора и API
+### feat(normquery): UWB Search Cluster Analytics — полный backend pipeline
 
 **Новая аналитика для ручных рекламных кампаний WB (UWB)** — поисковые кластеры (normquery), ставки по кластерам, рекомендации.
 
@@ -14,7 +14,7 @@
   - `get_normquery_bids()` — текущие ставки по кластерам
   - `get_normquery_list()` — списки активных/исключённых кластеров
   - `get_normquery_minus()` — минус-фразы
-  - `get_bid_recommendations()` — рекомендованные ставки рынка
+  - `get_bid_recommendations()` — рекомендованные ставки рынка (fix: camelCase params `advertId`/`nmId`)
   - `set_normquery_bids()` / `set_minus_phrases()` — WRITE операции (Phase 3)
 
 **Backend — новый endpoint** (`campaign_details.py`):
@@ -25,10 +25,24 @@
   - Исключённые кластеры + минус-фразы
   - Base bids (competitive + leaders)
 
+**Celery** (`tasks.py`):
+- `sync_normquery_data` — фоновый сбор normquery данных в ClickHouse:
+  - Автоматически находит UWB кампании (bid_type=manual, payment_type=cpm, status IN 9,11)
+  - Собирает daily stats за 3 дня + текущие ставки + рекомендации
+  - Записывает в `fact_normquery_stats_daily` + `log_normquery_bids`
+  - Интегрирован в `sync_all_frequent` с 6h TTL dedup
+  - 2с пауза между кампаниями для rate limiting
+
+**Верификация на живых данных:**
+- Campaign 35063966: 9 кластеров, 3 excluded, base competitive=1500₽, leaders=3022₽
+- Campaign 34609330: 17 кластеров, 20 excluded, 20 минус-фраз
+- Время ответа: ~5.7с (4 параллельных WB API)
+
 **Файлы:**
 - `docker/clickhouse/migrations/009_normquery_stats.sql` — 2 новые таблицы
-- `backend/app/services/wb_normquery_service.py` — сервис (~340 строк)
+- `backend/app/services/wb_normquery_service.py` — сервис (~500 строк)
 - `backend/app/api/v1/campaign_details.py` — endpoint (+200 строк)
+- `backend/celery_app/tasks/tasks.py` — sync task + coordinator integration (+250 строк)
 
 ---
 
