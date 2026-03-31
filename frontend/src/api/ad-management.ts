@@ -377,8 +377,7 @@ export function rublesToKopecks(rubles: number): number {
 /** Format money value */
 export function formatMoney(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M ₽`
-  if (value >= 1_000) return `${Math.round(value).toLocaleString('ru-RU')} ₽`
-  return `${value.toFixed(2)} ₽`
+  return `${Math.round(value).toLocaleString('ru-RU')} ₽`
 }
 
 /** Format number with locale */
