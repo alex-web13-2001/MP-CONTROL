@@ -1126,6 +1126,26 @@ async def deposit_budget(
             detail=result["message"],
         )
 
+    # After successful deposit — refresh Redis cache for this campaign's budget
+    try:
+        import redis.asyncio as aioredis
+        from app.config import get_settings
+        settings = get_settings()
+
+        # Fetch fresh budget from WB API
+        budget_result = await service.get_campaign_budget(request.advert_id)
+        if budget_result.get("success"):
+            redis_client = await aioredis.from_url(
+                settings.redis_url, encoding="utf-8", decode_responses=True,
+                socket_connect_timeout=2, socket_timeout=2,
+            )
+            cache_key = f"budget:{shop.id}:{request.advert_id}"
+            await redis_client.set(cache_key, json.dumps(budget_result["data"]), ex=1200)
+            await redis_client.aclose()
+            logger.info(f"[deposit] Refreshed Redis cache for budget:{shop.id}:{request.advert_id}")
+    except Exception as e:
+        logger.warning(f"[deposit] Failed to refresh Redis budget cache: {e}")
+
     return result
 
 
