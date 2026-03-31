@@ -191,6 +191,42 @@ async def get_campaigns(
 # ══════════════════════════════════════════════════════════════════
 
 
+async def _update_campaign_status_in_ch(shop_id: int, advert_id: int, new_status: int):
+    """Update campaign status in ClickHouse immediately after WB API confirms change."""
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        from datetime import datetime
+        ch = get_clickhouse_client()
+        # Insert new row with updated status — ReplacingMergeTree(updated_at) will
+        # keep only the latest row per (shop_id, advert_id) on FINAL reads
+        ch.command("""
+            INSERT INTO mms_analytics.dim_advert_campaigns
+                (shop_id, advert_id, name, type, status, updated_at,
+                 payment_type, bid_type, search_enabled, recommendations_enabled)
+            SELECT
+                shop_id, advert_id, 
+                argMax(name, updated_at),
+                argMax(type, updated_at),
+                {new_status:Int8},
+                {now:DateTime},
+                argMax(payment_type, updated_at),
+                argMax(bid_type, updated_at),
+                argMax(search_enabled, updated_at),
+                argMax(recommendations_enabled, updated_at)
+            FROM mms_analytics.dim_advert_campaigns
+            WHERE shop_id = {shop_id:UInt32} AND advert_id = {advert_id:UInt64}
+            GROUP BY shop_id, advert_id
+        """, parameters={
+            "shop_id": shop_id,
+            "advert_id": advert_id,
+            "new_status": new_status,
+            "now": datetime.utcnow(),
+        })
+        logger.info(f"[ad-mgmt] Updated CH status: advert={advert_id} → {new_status}")
+    except Exception as e:
+        logger.warning(f"[ad-mgmt] Failed to update CH status: {e}")
+
+
 @router.post("/campaigns/start", response_model=StatusChangeResponse)
 async def start_campaign(
     request: StatusChangeRequest,
@@ -212,6 +248,9 @@ async def start_campaign(
         success=result["success"],
         error_message=result.get("message") if not result["success"] else None,
     )
+
+    if result["success"]:
+        await _update_campaign_status_in_ch(shop.id, request.advert_id, 9)  # 9 = Active
 
     return StatusChangeResponse(**result)
 
@@ -237,6 +276,9 @@ async def pause_campaign(
         success=result["success"],
         error_message=result.get("message") if not result["success"] else None,
     )
+
+    if result["success"]:
+        await _update_campaign_status_in_ch(shop.id, request.advert_id, 11)  # 11 = Paused
 
     return StatusChangeResponse(**result)
 
