@@ -1089,7 +1089,7 @@ class DepositBudgetRequest(BaseModel):
     shop_id: int
     advert_id: int
     amount: int = PField(..., gt=0, description="Amount in rubles")
-    budget_type: str = PField("sum", description="'sum' for total, 'dly' for daily limit")
+    budget_type: int = PField(1, description="Fund source: 0=Account, 1=Balance, 3=Bonuses")
 
 
 @router.post("/budget/deposit")

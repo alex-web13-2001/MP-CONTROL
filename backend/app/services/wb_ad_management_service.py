@@ -484,21 +484,22 @@ class WBAdManagementService:
             }
 
     async def deposit_budget(
-        self, advert_id: int, amount: int, budget_type: str = "sum"
+        self, advert_id: int, amount: int, budget_type: int = 1
     ) -> Dict[str, Any]:
         """
         Deposit (top-up) budget for a campaign.
 
-        WB API: POST /adv/v1/budget/deposit
-        Args:
-            advert_id: Campaign ID
-            amount: Amount in RUBLES (integer)
-            budget_type: 'sum' for total budget, 'dly' for daily limit
+        WB API: POST /adv/v1/budget/deposit?id={advertId}
+        
+        Body:
+            sum: Amount in RUBLES (integer)
+            type: Fund source — 0=Account, 1=Balance, 3=Bonuses
+            return: If true, returns updated budget in response
         """
         payload = {
-            "advertId": advert_id,
-            "type": budget_type,
             "sum": amount,
+            "type": budget_type,
+            "return": True,
         }
 
         async with MarketplaceClient(
@@ -509,6 +510,7 @@ class WBAdManagementService:
         ) as client:
             response = await client.post(
                 "/adv/v1/budget/deposit",
+                params={"id": advert_id},
                 json=payload,
             )
 
