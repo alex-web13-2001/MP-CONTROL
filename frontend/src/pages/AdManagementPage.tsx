@@ -989,16 +989,16 @@ export default function AdManagementPage() {
                           {c.drr > 0 ? `${c.drr.toFixed(1)}%` : <span className="text-[hsl(var(--muted-foreground))]">0%</span>}
                         </td>
                         <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpc > 0 ? `${c.cpc.toFixed(2)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                          {c.cpc > 0 ? `${Math.round(c.cpc)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                         </td>
                         <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpm > 0 ? `${c.cpm.toFixed(2)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                          {c.cpm > 0 ? `${Math.round(c.cpm)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                         </td>
                         <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpa_cart > 0 ? `${c.cpa_cart.toFixed(2)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                          {c.cpa_cart > 0 ? `${Math.round(c.cpa_cart)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                         </td>
                         <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpo > 0 ? `${c.cpo.toFixed(2)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                          {c.cpo > 0 ? `${Math.round(c.cpo)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
                         </td>
                       </tr>
 
