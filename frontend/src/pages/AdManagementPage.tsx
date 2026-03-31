@@ -218,11 +218,12 @@ function BudgetDepositModal({
 }: {
   campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: () => void
 }) {
-  const [amount, setAmount] = useState(1000)
+  const [amount, setAmount] = useState<string>('3000')
   const [loading, setLoading] = useState(false)
   const [budgetData, setBudgetData] = useState<any>(null)
   const [loadingBudget, setLoadingBudget] = useState(true)
   const [error, setError] = useState('')
+  const [success, setSuccess] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -234,16 +235,21 @@ function BudgetDepositModal({
     return () => { cancelled = true }
   }, [shopId, campaign.advert_id])
 
+  const numAmount = Number(amount) || 0
+
   const handleDeposit = async () => {
-    if (amount < 100) {
-      setError('Минимальная сумма пополнения — 100 ₽')
+    if (numAmount < 100) {
+      setError('Минимальная сумма — 100 ₽')
       return
     }
     setLoading(true)
     setError('')
     try {
-      await depositBudget(shopId, campaign.advert_id, amount)
-      onSuccess()
+      await depositBudget(shopId, campaign.advert_id, numAmount)
+      setSuccess(true)
+      setTimeout(() => {
+        onSuccess()
+      }, 1500)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка пополнения')
     } finally {
@@ -251,86 +257,125 @@ function BudgetDepositModal({
     }
   }
 
-  const ptLabel = PAYMENT_TYPE_LABELS[campaign.payment_type] || campaign.payment_type?.toUpperCase() || '—'
+  const ptLabel = PAYMENT_TYPE_LABELS[campaign.payment_type] || campaign.payment_type?.toUpperCase() || ''
+  const currentBudget = budgetData?.total || campaign.budget_total || 0
 
   return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={onClose}
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 0, scale: 0.95, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 10 }}
         onClick={e => e.stopPropagation()}
-        className="relative bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl w-full max-w-md p-6"
+        className="relative bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
       >
-        <button onClick={onClose} className="absolute top-4 right-4 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors">
-          <X className="w-5 h-5" />
-        </button>
-
-        <h3 className="text-lg font-bold text-[hsl(var(--foreground))] mb-1">Пополнение бюджета</h3>
-        <p className="text-sm text-[hsl(var(--muted-foreground))] mb-5">
-          {campaign.name || '—'} · {campaign.advert_id} · {ptLabel}
-        </p>
-
-        <label className="block text-sm text-[hsl(var(--muted-foreground))] mb-1.5">Сумма пополнения (₽)</label>
-        <input
-          type="number"
-          min={100}
-          value={amount}
-          onChange={e => setAmount(Number(e.target.value))}
-          className="w-full px-4 py-2.5 rounded-lg bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500/50 mb-2"
-        />
-        <p className="text-xs text-[hsl(var(--muted-foreground))] mb-4">Минимальный бюджет — 100 ₽</p>
-
-        <div className="flex items-center justify-between text-sm text-[hsl(var(--muted-foreground))] mb-1">
-          <span>Единый счёт</span>
-        </div>
-        <div className="text-right text-lg font-bold text-[hsl(var(--foreground))] mb-5">
-          {balance.toLocaleString('ru-RU')} ₽
-        </div>
-
-        {budgetData && (
-          <div className="bg-[hsl(var(--secondary))] rounded-lg p-3 mb-4 grid grid-cols-2 gap-2 text-sm">
-            <div>
-              <span className="text-[hsl(var(--muted-foreground))]">Текущий бюджет:</span>
-              <span className="ml-1 text-[hsl(var(--foreground))] font-medium">{(budgetData.total || 0).toLocaleString('ru-RU')} ₽</span>
+        {/* Success state */}
+        {success ? (
+          <div className="p-8 flex flex-col items-center gap-4">
+            <div className="w-14 h-14 rounded-full bg-emerald-500/15 flex items-center justify-center">
+              <Check className="w-7 h-7 text-emerald-500" />
             </div>
-            {budgetData.daily > 0 && (
-              <div>
-                <span className="text-[hsl(var(--muted-foreground))]">Дневной лимит:</span>
-                <span className="ml-1 text-[hsl(var(--foreground))] font-medium">{budgetData.daily.toLocaleString('ru-RU')} ₽</span>
+            <div className="text-center">
+              <p className="text-lg font-semibold text-[hsl(var(--foreground))]">Бюджет пополнен</p>
+              <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
+                +{numAmount.toLocaleString('ru-RU')} ₽ на кампанию {campaign.advert_id}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Header */}
+            <div className="px-6 pt-6 pb-4">
+              <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-lg font-bold text-[hsl(var(--foreground))]">Пополнение бюджета кампании</h3>
+                  <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1 truncate">
+                    {campaign.name || '—'} · ID {campaign.advert_id}
+                    {ptLabel && ` · ${ptLabel}`}
+                  </p>
+                </div>
+                <button onClick={onClose} className="ml-3 p-1 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
               </div>
-            )}
-          </div>
-        )}
-        {loadingBudget && (
-          <div className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))] mb-4">
-            <Loader2 className="w-4 h-4 animate-spin" /> Загрузка бюджета...
-          </div>
-        )}
+            </div>
 
-        {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+            {/* Body */}
+            <div className="px-6 pb-6 space-y-5">
+              {/* Amount input */}
+              <div>
+                <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-2">Сумма пополнения (₽)</label>
+                <input
+                  type="number"
+                  min={100}
+                  step={100}
+                  placeholder="3000"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-lg font-semibold focus:outline-none focus:ring-2 focus:ring-violet-500/50 transition-all"
+                />
+                <p className="text-xs text-[hsl(var(--muted-foreground))] mt-1.5">Минимальный бюджет — 1 000 ₽</p>
+              </div>
 
-        <div className="flex justify-end gap-2">
-          <button
-            onClick={handleDeposit}
-            disabled={loading || amount < 100}
-            className="px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors disabled:opacity-50"
-          >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : `Пополнить на ${amount.toLocaleString('ru-RU')} ₽`}
-          </button>
-          <button
-            onClick={onClose}
-            className="px-4 py-2.5 rounded-lg border border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] text-sm transition-colors"
-          >
-            Отменить
-          </button>
-        </div>
+              {/* Source — Единый счёт */}
+              <div>
+                <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-2">Источники списания</label>
+                <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-[hsl(var(--secondary))] border border-[hsl(var(--border))]">
+                  <span className="text-sm text-[hsl(var(--foreground))]">Единый счёт:</span>
+                  <span className="text-sm font-bold text-[hsl(var(--foreground))]">
+                    {balance.toLocaleString('ru-RU')} ₽
+                  </span>
+                </div>
+              </div>
+
+              {/* Current budget */}
+              <div className="flex items-center justify-between px-4 py-3 rounded-xl bg-[hsl(var(--secondary))] border border-[hsl(var(--border))]">
+                <span className="text-sm text-[hsl(var(--muted-foreground))]">Текущий бюджет:</span>
+                {loadingBudget ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-[hsl(var(--muted-foreground))]" />
+                ) : (
+                  <span className="text-sm font-bold text-[hsl(var(--foreground))]">{currentBudget.toLocaleString('ru-RU')} ₽</span>
+                )}
+              </div>
+
+              {/* Error */}
+              {error && (
+                <div className="flex items-center gap-2 text-sm text-red-500 bg-red-500/10 px-3 py-2 rounded-lg">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" /> {error}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center gap-3 pt-1">
+                <button
+                  onClick={handleDeposit}
+                  disabled={loading || numAmount < 100}
+                  className="flex-1 px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Пополняю...
+                    </span>
+                  ) : (
+                    `Пополнить`
+                  )}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="px-5 py-3 rounded-xl border border-[hsl(var(--border))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] text-sm font-medium transition-colors"
+                >
+                  Отменить
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </motion.div>
     </motion.div>
   )
@@ -653,7 +698,7 @@ export default function AdManagementPage() {
   const kpi = data?.kpi
   const deltas = data?.kpi_deltas || {}
   const balance = data?.balance
-  const accountBalance = (balance as any)?.balance || 0
+  const accountBalance = (balance as any)?.net || (balance as any)?.balance || 0
 
   return (
     <div className="space-y-5 pb-10">
