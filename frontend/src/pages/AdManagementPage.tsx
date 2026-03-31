@@ -58,7 +58,7 @@ const STATUS_COLORS: Record<number, { bg: string; text: string; dot: string }> =
 }
 
 const PAYMENT_TYPE_LABELS: Record<string, string> = {
-  cpm: 'CPM', cpc: 'CPC', cpa: 'CPA',
+  cpm: 'CPM', cpc: 'CPC',
 }
 
 // ── KPI Card ─────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ function TypeFilterDropdown({
     { key: 'all', label: 'Все типы' },
     { key: 'cpm', label: 'CPM' },
     { key: 'cpc', label: 'CPC' },
-    { key: 'cpa', label: 'CPA' },
+
   ]
   const current = types.find(t => t.key === value) || types[0]
 
