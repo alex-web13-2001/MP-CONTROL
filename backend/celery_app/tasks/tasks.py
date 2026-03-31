@@ -5380,22 +5380,56 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                     nm_ids = [int(r[0]) for r in nm_rows]
                     items = [{"advert_id": cid, "nm_id": nm} for nm in nm_ids]
 
-                    # 3. Fetch daily stats (v1 API — daily breakdown)
-                    stats_data = await svc.get_normquery_daily_stats(
-                        items=items,
-                        date_from=date_from,
-                        date_to=date_to,
-                    )
+                    # 3. Fetch stats per-day using v0 API (v1 API format is unreliable)
+                    # v0 returns aggregated stats for a period — call it per-day for daily granularity
+                    stats_rows = []
+                    for day_offset in range(3):
+                        day_dt = end_dt - timedelta(days=day_offset)
+                        day_str = day_dt.isoformat()
+                        try:
+                            day_stats = await svc.get_normquery_stats(
+                                items=items,
+                                date_from=day_str,
+                                date_to=day_str,
+                            )
+                            if isinstance(day_stats, dict):
+                                for stat_item in day_stats.get("stats", []):
+                                    nm_id_val = stat_item.get("nm_id", 0)
+                                    for s in stat_item.get("stats", []):
+                                        nq = s.get("norm_query", "")
+                                        stats_rows.append({
+                                            "dt": day_dt,  # datetime.date object for CH Date column
+                                            "shop_id": shop_id,
+                                            "advert_id": cid,
+                                            "nm_id": nm_id_val,
+                                            "norm_query": nq,
+                                            "views": int(s.get("views", 0)),
+                                            "clicks": int(s.get("clicks", 0)),
+                                            "atbs": int(s.get("atbs", 0)),
+                                            "orders": int(s.get("orders", 0)),
+                                            "avg_pos": float(s.get("avg_pos", 0)),
+                                            "cpc": int(float(s.get("cpc", 0))),
+                                            "cpm": int(float(s.get("cpm", 0))),
+                                            "ctr": float(s.get("ctr", 0)),
+                                            "bid_kopecks": 0,  # will be enriched with bids below
+                                        })
+                            await asyncio.sleep(0.5)  # rate limit between daily calls
+                        except Exception as e:
+                            logger.warning(f"[normquery-sync] day stats failed for {cid} {day_str}: {e}")
 
                     # 4. Fetch current bids
                     bids_data = await svc.get_normquery_bids(items=items)
 
-                    # Build bid map for enriching stats rows
+                    # Build bid map and enrich stats rows
                     bid_map = {}
                     if isinstance(bids_data, dict):
                         for bid in bids_data.get("bids", []):
                             nq = bid.get("norm_query", "")
                             bid_map[nq] = int(bid.get("bid", 0))
+
+                    # Enrich stats rows with current bids
+                    for row in stats_rows:
+                        row["bid_kopecks"] = bid_map.get(row["norm_query"], 0)
 
                     # 5. Fetch bid recommendations (for first nm_id)
                     rec_map = {}
@@ -5417,35 +5451,7 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                     except Exception:
                         pass  # recommendations are optional
 
-                    # 6. Parse stats and insert into ClickHouse
-                    stats_rows = []
-                    if isinstance(stats_data, dict):
-                        for stat_item in stats_data.get("stats", []):
-                            nm_id_val = stat_item.get("nm_id", 0)
-                            for day_data in stat_item.get("days", []):
-                                dt_str = day_data.get("date", "")
-                                if not dt_str:
-                                    continue
-                                for s in day_data.get("stats", []):
-                                    nq = s.get("norm_query", "")
-                                    bid_k = bid_map.get(nq, 0)
-                                    stats_rows.append({
-                                        "dt": dt_str[:10],  # YYYY-MM-DD
-                                        "shop_id": shop_id,
-                                        "advert_id": cid,
-                                        "nm_id": nm_id_val,
-                                        "norm_query": nq,
-                                        "views": int(s.get("views", 0)),
-                                        "clicks": int(s.get("clicks", 0)),
-                                        "atbs": int(s.get("atbs", 0)),
-                                        "orders": int(s.get("orders", 0)),
-                                        "avg_pos": float(s.get("avg_pos", 0)),
-                                        "cpc": int(s.get("cpc", 0)),
-                                        "cpm": int(s.get("cpm", 0)),
-                                        "ctr": float(s.get("ctr", 0)),
-                                        "bid_kopecks": bid_k,
-                                    })
-
+                    # 6. Insert stats into ClickHouse
                     if stats_rows:
                         ch.insert(
                             "mms_analytics.fact_normquery_stats_daily",
