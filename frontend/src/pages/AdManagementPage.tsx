@@ -68,10 +68,12 @@ function KpiCard({
 }: {
   label: string; value: string; delta: number; icon: React.ReactNode; color: string; invert?: boolean
 }) {
-  const isPositive = invert ? delta < 0 : delta > 0
-  const isNegative = invert ? delta > 0 : delta < 0
-  const deltaColor = isPositive ? 'text-emerald-500' : isNegative ? 'text-red-500' : 'text-[hsl(var(--muted-foreground))]'
-  const DeltaIcon = isPositive ? ArrowUpRight : isNegative ? ArrowDownRight : Minus
+  // Color: green = good, red = bad (invert flips for DRR/spend where lower is better)
+  const isGood = invert ? delta < 0 : delta > 0
+  const isBad = invert ? delta > 0 : delta < 0
+  const deltaColor = isGood ? 'text-emerald-500' : isBad ? 'text-red-500' : 'text-[hsl(var(--muted-foreground))]'
+  // Arrow: always follows actual direction of change
+  const DeltaIcon = delta > 0 ? ArrowUpRight : delta < 0 ? ArrowDownRight : Minus
 
   return (
     <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 flex flex-col gap-1 min-w-0">
