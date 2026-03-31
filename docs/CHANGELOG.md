@@ -1,3 +1,45 @@
+## 2026-03-31 (v17.25.0)
+
+### perf(ad-management): 0 WB API запросов при загрузке страницы — полный переход на БД
+
+**Проблема**: Страница «Управление рекламой» при каждом открытии дёргала 4-6 WB API запросов (campaigns, bids, balance, budgets×N), из-за чего:
+- Загрузка занимала **15-20 секунд**
+- WB API возвращал 429 Rate Limit → бюджеты = 0
+- При переключении магазина — ещё 15с ожидания
+
+**Решение — полный переход на данные из БД:**
+
+| Данные | Было | Стало |
+|--------|------|-------|
+| Имена/статусы/типы | WB API (2+ запроса) | `dim_advert_campaigns` (ClickHouse) |
+| Ставки (bids) | WB API | `log_wb_bids` (ClickHouse) |
+| Статистика | ClickHouse ✅ | Без изменений |
+| Бюджеты | WB API (N запросов) | Redis кеш (Celery каждые 15 мин) |
+| Баланс | WB API | Redis кеш (Celery каждые 15 мин) |
+
+**Backend**:
+- Новый endpoint `GET /campaigns/from-db` — **0 WB API запросов**, всё из ClickHouse + Redis
+- Celery-задача `sync_wb_budgets` — синхронизирует бюджеты + баланс в Redis (TTL 20 мин)
+- Celery-задача `sync_all_budgets` — диспатчер для всех WB-магазинов
+- Beat schedule: каждые 15 минут
+- Fix: корректная обработка ClickHouse Enum8 типов кампаний (строка → int mapping)
+
+**Frontend**:
+- `getCampaignsFromDB()` заменяет `getEnrichedCampaigns()` — один endpoint с полными данными
+- Удалён `loadBudgets()` — бюджеты приходят в основном ответе из Redis-кеша
+- Попап пополнения бюджета по-прежнему дёргает WB API напрямую (актуальные данные)
+
+**Результат**: Страница грузится за **< 1 секунду** вместо 15-20с. **100% WB API запросов** убрано из загрузки.
+
+**Файлы**:
+- `backend/app/api/v1/ad_management.py` — новый endpoint `/from-db`
+- `backend/celery_app/tasks/tasks.py` — `sync_wb_budgets`, `sync_all_budgets`
+- `backend/celery_app/celery.py` — routing + schedule
+- `frontend/src/api/ad-management.ts` — `getCampaignsFromDB()`
+- `frontend/src/pages/AdManagementPage.tsx` — рефакторинг загрузки
+
+---
+
 ## 2026-03-31 (v17.24.3)
 
 ### perf(ad-management): Мгновенное переключение периодов — разделение WB API и ClickHouse
