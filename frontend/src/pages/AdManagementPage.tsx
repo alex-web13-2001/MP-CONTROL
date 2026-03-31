@@ -1124,20 +1124,18 @@ export default function AdManagementPage() {
                                       const isUnified = c.bid_type === 'unified' || ns.bid_search === ns.bid_recommendations
                                       return (
                                         <div key={ns.nm_id} className="py-1.5 px-3 rounded-md bg-[hsl(var(--secondary))]/60 hover:bg-[hsl(var(--secondary))] transition-colors">
-                                          {/* Line 1: Product name + bid */}
-                                          <div className="flex items-center gap-2 justify-between">
-                                            <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight truncate">
+                                          {/* Line 1: Product name + bid (inline, not spread) */}
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight">
                                               {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
                                             </span>
                                             {hasBids && (
                                               <div className="flex items-center gap-1.5 shrink-0">
                                                 {isUnified ? (
-                                                  /* Unified bid — single value */
                                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-violet-500/10 text-violet-600 dark:text-violet-400">
                                                     {kopecksToRubles(ns.bid_search || ns.bid_recommendations)}
                                                   </span>
                                                 ) : (
-                                                  /* Manual — separate search & recommendations */
                                                   <>
                                                     {ns.bid_search > 0 && (
                                                       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
