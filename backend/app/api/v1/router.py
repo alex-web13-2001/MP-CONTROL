@@ -22,6 +22,7 @@ from app.api.v1.finances_export import router as finances_export_router
 from app.api.v1.advertising_analytics import router as advertising_analytics_router
 from app.api.v1.campaign_details import router as campaign_details_router
 from app.api.v1.campaign_ai_analysis import router as campaign_ai_router
+from app.api.v1.ad_management import router as ad_management_router
 
 api_router = APIRouter()
 
@@ -48,6 +49,7 @@ api_router.include_router(wb_ltv_router)
 api_router.include_router(events_router)
 api_router.include_router(events_graph_router)
 api_router.include_router(events_analysis_router)
+api_router.include_router(ad_management_router)
 
 
 @api_router.get("/")

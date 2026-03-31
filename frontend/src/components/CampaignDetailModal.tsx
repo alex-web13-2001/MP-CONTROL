@@ -547,8 +547,11 @@ export function CampaignDetailModal({
       <div className="space-y-4">
         {/* ═══ БЛОК 1: Вся кампания ═══ */}
         {cur && (() => {
-          const totalOrders = cur.direct_orders + cur.model_orders + cur.associated_orders
-          const totalRevenue = cur.direct_revenue + cur.model_revenue + cur.associated_revenue
+          // Use breakdown if available (WB), fallback to cur.orders/ad_revenue (Ozon where breakdown is not computed)
+          const breakdownOrders = cur.direct_orders + cur.model_orders + cur.associated_orders
+          const breakdownRevenue = cur.direct_revenue + cur.model_revenue + cur.associated_revenue
+          const totalOrders = breakdownOrders > 0 ? breakdownOrders : cur.orders
+          const totalRevenue = breakdownRevenue > 0 ? breakdownRevenue : cur.ad_revenue
           const spend = cur.spend
           const views = cur.views
           const clicks = cur.clicks

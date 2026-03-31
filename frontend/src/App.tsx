@@ -24,6 +24,7 @@ import WarehousesGeographyPage from '@/pages/WarehousesGeographyPage'
 import AdvertisingAnalyticsPage from '@/pages/AdvertisingAnalyticsPage'
 import AdvertisingCampaignsPage from '@/pages/AdvertisingCampaignsPage'
 import AdvertisingAutobidderPage from '@/pages/AdvertisingAutobidderPage'
+import AdManagementPage from '@/pages/AdManagementPage'
 
 export default function App() {
   return (
@@ -73,6 +74,7 @@ export default function App() {
           {/* Advertising */}
           <Route path="/advertising/analytics" element={<AdvertisingAnalyticsPage />} />
           <Route path="/advertising/campaigns" element={<AdvertisingCampaignsPage />} />
+          <Route path="/advertising/management" element={<AdManagementPage />} />
           <Route path="/advertising/autobidder" element={<AdvertisingAutobidderPage />} />
         </Route>
       </Routes>

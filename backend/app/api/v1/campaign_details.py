@@ -214,7 +214,10 @@ async def get_campaign_kpi(
             if sku: params["sku"] = sku
             q = f"""
                 SELECT
-                    sum(money_spent), sum(revenue), sum(orders), sum(add_to_cart),
+                    sum(money_spent),
+                    sum(revenue) + sum(model_revenue),
+                    sum(orders) + sum(model_orders),
+                    sum(add_to_cart),
                     sum(clicks), sum(views)
                 FROM mms_analytics.fact_ozon_ad_daily FINAL
                 WHERE campaign_id = {{campaign_id:UInt64}}
@@ -431,12 +434,12 @@ async def get_campaign_stats(
                 dt,
                 sum(views) as t_views,
                 sum(clicks) as t_clicks,
-                sum(orders) as t_orders,
+                sum(orders) + sum(model_orders) as t_orders,
                 sum(add_to_cart) as t_cart,
-                sum(revenue) as t_revenue,
+                sum(revenue) + sum(model_revenue) as t_revenue,
                 sum(money_spent) as t_spend,
                 if(sum(views)>0, round(sum(clicks)/sum(views)*100, 2), 0) as t_ctr,
-                if(sum(revenue)>0, round(sum(money_spent)/sum(revenue)*100, 2), 0) as t_drr
+                if((sum(revenue)+sum(model_revenue))>0, round(sum(money_spent)/(sum(revenue)+sum(model_revenue))*100, 2), 0) as t_drr
             FROM mms_analytics.fact_ozon_ad_daily FINAL
             WHERE campaign_id = {{campaign_id:UInt64}}
               AND dt BETWEEN {{start_date:Date}} AND {{end_date:Date}}

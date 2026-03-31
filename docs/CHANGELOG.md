@@ -1,4 +1,201 @@
-## 2026-03-30 (v17.20.6)
+## 2026-03-31 (v17.24.1)
+
+### fix(campaign-details): Ozon-попап игнорировал model-заказы и model-выручку
+
+**Проблема**: В модальном попапе кампании (клик по кампании → блок «Вся кампания») для Ozon показывались **заниженные** метрики:
+- Заказы: **5** вместо **9** (не учитывались `model_orders`)
+- Выручка: **32 900 ₽** вместо **54 715 ₽** (не учитывалась `model_revenue`)
+- ДРР: **67.6%** вместо **40.6%** (считался от прямой выручки)
+
+При этом в таблице кампаний и в Ozon Seller данные были корректными.
+
+**Причина (2 уровня)**:
+1. **Backend** (`campaign_details.py`): SQL-запросы KPI и stats для Ozon использовали `sum(orders)` и `sum(revenue)` — только прямые продажи. Колонки `model_orders` и `model_revenue` из `fact_ozon_ad_daily` игнорировались.
+2. **Frontend** (`CampaignDetailModal.tsx`): блок «Вся кампания» брал `direct_orders + model_orders + associated_orders` из breakdown, который для Ozon не вычисляется (всегда 0).
+
+**Решение**:
+- **Backend**: KPI-запрос (`build_ad_query`) и stats-запрос — `sum(orders) + sum(model_orders)`, `sum(revenue) + sum(model_revenue)`. ДРР считается от суммарной выручки.
+- **Frontend**: fallback на `cur.orders` / `cur.ad_revenue` когда breakdown-поля = 0 (Ozon без breakdown).
+
+**Верификация** (campaign 19641608, 25-31.03):
+| Метрика | Ozon Seller | Наша таблица | Попап (после fix) |
+|---------|------------|-------------|-------------------|
+| Заказы  | —          | 9           | **9** ✅           |
+| Выручка | 54 715 ₽   | 54 715 ₽    | **54 715 ₽** ✅    |
+| ДРР     | 42,5%      | 40,0%       | **40,6%** ✅       |
+| Расход  | 23 274 ₽   | 22 237 ₽    | **22 237 ₽**      |
+
+> Расхождения Ozon Seller vs наша система (1 037 ₽ расход, 539 показов) — задержка синхронизации данных за 31.03.
+
+**Файлы**: `campaign_details.py` (строки 215-222, 429-446), `CampaignDetailModal.tsx` (строки 550-553).
+
+
+---
+
+## 2026-03-31 (v17.24.0)
+
+### feat(ad-management): Sticky колонки + batch-бюджеты + Redis resilience
+
+**Sticky Header + Columns (горизонтальный/вертикальный скролл):**
+- **Шапка таблицы** закреплена сверху при вертикальном скролле (`position: sticky; top: 0; z-index: 20`)
+- **3 первых столбца** закреплены слева при горизонтальном скролле:
+  - Чекбокс (`left: 0`) → Кнопка действия (`left: 40px`) → Название кампании (`left: 80px`)
+- Непрозрачный фон `bg-[hsl(var(--card))]` + `group-hover` для корректного hover-эффекта
+- Тень-разделитель `boxShadow: 2px 0 8px -2px rgba(0,0,0,0.15)` на последнем sticky-столбце
+- z-index иерархия: обычные sticky (10) → header sticky (20) → угловые sticky (30)
+
+**Batch-загрузка бюджетов:**
+- Новый эндпоинт `POST /ad-management/wb/budgets/batch` — один запрос для всех кампаний
+- Redis-кеш 60s TTL для предотвращения Thundering Herd
+- `asyncio.Semaphore(5)` для rate-limiting запросов к WB API
+- Frontend: `getBudgetsBatch()` → единый вызов вместо N отдельных запросов
+
+**Redis Resilience (graceful degradation):**
+- Batch endpoint: `ping()` перед использованием, `socket_connect_timeout=3`, `retry_on_timeout=True`
+- **Graceful degradation**: если Redis недоступен → все данные загружаются с WB API напрямую
+- `aclose()` вместо `close()` для корректного закрытия async-клиента
+- Ошибки кеширования не блокируют ответ — пользователь всегда получает данные
+
+**Файлы:**
+- `frontend/src/pages/AdManagementPage.tsx` — sticky columns/header, batch budgets UI
+- `frontend/src/api/ad-management.ts` — `getBudgetsBatch()` функция
+- `backend/app/api/v1/ad_management.py` — batch endpoint с Redis resilience
+- `backend/app/core/rate_limiter.py` — `ping()` health check
+
+---
+
+
+
+
+
+### feat(ad-management): Полная переработка интерфейса управления рекламой WB (v3)
+
+**Перенос и логика действий:**
+- **Play/Pause перенесены в первый столбец** (после чекбокса) — сразу доступны
+- **Одна кнопка**: Активна → ⏸ Пауза, На паузе / Готова к запуску → ▶ Play. Кнопка ⏹ Stop убрана из строк
+
+**Устранение дублирования типа:**
+- Тип кампании показывается **только бейджем** (CPM/CPC/CPA) рядом с названием
+- Удалён текст "CPM ручная" из подстроки — было двойное отображение
+
+**Расширение названия кампании:**
+- Убрана колонка бюджета (всегда 0, бесполезна без batch-fetch) → место для названия
+- Название теперь **не обрезается**, показывается полностью
+- Подстрока: ID · 🔍 Поиск · 📦 Полки
+
+**PeriodSelector (стандартный компонент):**
+- Заменены 5 кнопок периодов (Сегодня/7/14/30/90) на стандартный `PeriodSelector` с `7д | 30д | 📅 Даты`
+- Добавлен **календарь произвольных дат** с поддержкой custom date range
+
+**Стилизация фильтров:**
+- Фильтр типов (CPM/CPC/CPA) — кастомный styled dropdown вместо нативного `<select>`
+- Фильтр статусов — с цветовыми точками и количеством кампаний
+
+**Затраты и данные:**
+- Колонка "Затраты" теперь корректно показывает данные: 650K, 172K, 139K ₽ etc
+- Все столбцы сортируются по клику на заголовок
+
+**Файл:** `frontend/src/pages/AdManagementPage.tsx` (полная перезапись ~560 строк)
+
+---
+
+
+
+### fix(ad-management): Светлая тема, названия кампаний, массовое пополнение бюджета
+
+**Исправления UX/UI:**
+- **Светлая тема** — все элементы страницы (KPI карточки, таблица, фильтры, модалы, expanded rows) теперь используют CSS-переменные (`--card`, `--border`, `--foreground`, `--muted-foreground`) вместо жёстких zinc-цветов
+- **Названия кампаний** — первая строка: НАЗВАНИЕ, вторая строка: ID · тип (вместо "ID — CPM авто" было)
+- **Массовое пополнение бюджета** — при выборе нескольких кампаний в batch actions bar добавлена кнопка «Пополнить бюджет» → инлайн-модал с полем суммы
+- **"Ошибка загрузки"** — ошибка теперь показывается ТОЛЬКО если данные не загрузились (`error && !data`), а не после временного сбоя при наличии данных; ошибка сбрасывается при успешной загрузке
+
+---
+
+
+
+### feat(ad-management): Редизайн управления рекламой WB — Итерация 2
+
+**Полное обновление интерфейса управления рекламными кампаниями Wildberries** — данные управления объединены со статистикой из ClickHouse.
+
+**Backend**:
+- **Новый endpoint** `GET /ad-management/wb/campaigns/enriched`:
+  - Объединяет данные WB API (статус, ставки) с ClickHouse (`fact_advert_stats_v3`)
+  - Агрегированные KPI за выбранный период: показы, клики, CTR, расход, продажи, ДРР
+  - KPI дельты — сравнение с предыдущим аналогичным периодом
+  - Расчёт: CPC, CPM, CPA (корзина), CPO на уровне кампании
+  - Поддержка периодов: today, 7d, 14d, 30d, 90d + custom date_from/date_to
+- **Новый endpoint** `GET /ad-management/wb/budget` — бюджет конкретной кампании (WB API `/adv/v1/budget`)
+- **Новый endpoint** `POST /ad-management/wb/budget/deposit` — пополнение бюджета кампании (WB API `/adv/v1/budget/deposit`)
+- `WBAdManagementService` расширен:
+  - `get_campaign_budget()` — получение бюджета
+  - `deposit_budget()` — пополнение с аудитом
+  - `get_campaigns_budgets()` — пакетное получение (семафор: max 5)
+
+**Frontend** (`AdManagementPage.tsx` — полный редизайн):
+- **6 KPI карточек**: Показы, Клики, CTR, Расход, Продажи, ДРР — с дельтами (%, ↗/↘)
+- **Панель фильтров**: поиск (ID/название/артикул), выбор периода, мультиселект статусов, фильтр типа (CPM/CPC/CPA)
+- **Сортируемая таблица**: 16 колонок — Кампания, Статус, Бюджет, Затраты, Продажи, Показы, Клики, CTR, Корзины, Заказы, ДРР, CPC, CPM, CPA Корзина, CPO, Действия
+- **Бейджи**: CPM авто/ручн., CPC ручн., 🔍 Поиск, 📦 Полки
+- **Попап пополнения бюджета**: клик по «+ 0 ₽» → модал с текущим бюджетом, единым счётом, полем суммы, кнопка "Пополнить"
+- **Batch actions**: выбор нескольких кампаний → массовый запуск/пауза
+- **ДРР цветовая индикация**: зелёный (<10%), жёлтый (10-20%), красный (>20%)
+- **Раскрытие строки**: ставки по артикулам (nm_id → Поиск/Полки в ₽)
+
+**API клиент** (`ad-management.ts`):
+- `getEnrichedCampaigns()` — enriched endpoint
+- `getCampaignBudget()` / `depositBudget()` — работа с бюджетом
+- `formatMoney()` / `formatNum()` — хелперы форматирования
+
+**Файлы изменены**:
+- `backend/app/services/wb_ad_management_service.py` — +3 метода (budget)
+- `backend/app/api/v1/ad_management.py` — +3 endpoint (enriched, budget, deposit)
+- `frontend/src/pages/AdManagementPage.tsx` — полный редизайн (~940 строк)
+- `frontend/src/api/ad-management.ts` — расширен (enriched, budget, helpers)
+
+---
+
+
+
+### feat(ad-management): Управление рекламными кампаниями WB — Итерация 1
+
+**Новый раздел «Управление рекламой»** — полноценный CRUD для рекламных кампаний Wildberries.
+
+**Backend (уже существовал, подключён)**:
+- `WBAdManagementService` (`wb_ad_management_service.py`) — обёртка WB API через MarketplaceClient:
+  - Start/Pause/Stop кампаний (`/adv/v0/start|pause|stop`)
+  - Change bids per nm_id (`PATCH /api/advert/v1/bids`) — ставки в копейках
+  - Get campaigns with bids (count + v2/adverts)
+  - Get balance (`/adv/v1/balance`)
+- `ad_management.py` роутер — 9 endpoints:
+  - `GET /ad-management/wb/campaigns` — список кампаний с текущими ставками
+  - `POST /campaigns/start|pause|stop` — управление статусом
+  - `POST /bids/change` — изменение ставок
+  - `POST /status/batch` — массовые old/pause (до 50, с 2с задержкой)
+  - `GET /balance` — баланс рекламного кабинета
+  - `GET /audit-log` — журнал действий
+- `AdAuditLog` — SQLAlchemy модель + миграция Alembic
+- **FIX: роутер зарегистрирован в `router.py`** (ранее код существовал, но endpoints были 404)
+
+**Frontend**:
+- `AdManagementPage.tsx` — полная страница управления:
+  - Balance strip: Счёт, Баланс (нетт.), кол-во активных кампаний
+  - Фильтры статуса: Все / Активные / На паузе / Готовы / Завершённые
+  - Поиск по названию, ID или артикулу
+  - Таблица кампаний: название, статус (бейджи), тип (Ручная/Единая + CPM/CPC), размещение (🔍Поиск / 📦Полки), товары, ставки
+  - Раскрытие строки → детальные ставки по nm_id с категориями
+  - Кнопки действий: ▶️ Старт, ⏸ Пауза, ⏹ Стоп (с confirm)
+  - Чекбоксы + массовые действия (batch start/pause)
+  - Error/Loading/Empty states
+  - Non-WB shop warning
+- `ad-management.ts` — API клиент (уже существовал)
+- Route: `/advertising/management` в `App.tsx`
+- Sidebar: «Управление → Реклама → Управление» → `/advertising/management`
+
+**Файлы**: `router.py`, `AdManagementPage.tsx`, `App.tsx`, `Sidebar.tsx`.
+
+---
+
+
 
 ### feat(storage): Excel-экспорт хранения для Ozon
 

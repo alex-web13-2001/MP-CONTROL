@@ -97,7 +97,7 @@ const navSections: NavSection[] = [
         label: 'Реклама',
         icon: Megaphone,
         children: [
-          { path: '/advertising/campaigns', label: 'Управление', icon: Settings2 },
+          { path: '/advertising/management', label: 'Управление', icon: Settings2 },
           { path: '/advertising/autobidder', label: 'Автобиддер', icon: Bot },
         ],
       },

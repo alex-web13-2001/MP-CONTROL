@@ -101,7 +101,7 @@ class RedisRateLimiter:
         self._key_prefix = "mms:ratelimit"
     
     async def _get_redis(self) -> aioredis.Redis:
-        """Get or create Redis connection, recreating if loop changed."""
+        """Get or create Redis connection, recreating if loop changed or connection broken."""
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -110,17 +110,21 @@ class RedisRateLimiter:
         # Check if existing connection belongs to a different (or closed) loop
         if self._redis:
             try:
-                # redis-py 4.2+ stores loop in connection_pool.connection_kwargs,
-                # but older aioredis might trigger error on usage if loop is closed.
-                # A simple check is to verify if the loop is running and matches.
-                # For safety in Celery with asyncio.run, we recreate if loop mismatch.
-                # Note: aioredis/redis-py usually auto-detects loop for new connections,
-                # but existing clients are bound to the creation loop.
                 if self._redis.connection_pool.connection_kwargs.get("loop") != current_loop:
                     await self._redis.close()
                     self._redis = None
             except Exception:
-                # If checking fails, assume invalid
+                self._redis = None
+
+        # Verify existing connection is alive (handles "Buffer is closed" errors)
+        if self._redis:
+            try:
+                await self._redis.ping()
+            except Exception:
+                try:
+                    await self._redis.close()
+                except Exception:
+                    pass
                 self._redis = None
         
         if self._redis is None:
@@ -128,6 +132,8 @@ class RedisRateLimiter:
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=True,
+                health_check_interval=30,
+                retry_on_timeout=True,
             )
         return self._redis
     
