@@ -15,9 +15,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, Play, Pause, ChevronDown, ChevronUp, AlertTriangle,
-  Plus, ArrowUpRight, ArrowDownRight, Minus, X, Loader2,
-  Check, Eye, MousePointer, ShoppingCart,
-  TrendingUp, DollarSign, BarChart3, ChevronsUpDown,
+  Plus, X, Loader2, Check, ChevronsUpDown, DollarSign,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
@@ -61,38 +59,7 @@ const PAYMENT_TYPE_LABELS: Record<string, string> = {
   cpm: 'CPM', cpc: 'CPC',
 }
 
-// ── KPI Card ─────────────────────────────────────────────────────
 
-function KpiCard({
-  label, value, delta, icon, color, invert = false,
-}: {
-  label: string; value: string; delta: number; icon: React.ReactNode; color: string; invert?: boolean
-}) {
-  // Color: green = good, red = bad (invert flips for DRR/spend where lower is better)
-  const isGood = invert ? delta < 0 : delta > 0
-  const isBad = invert ? delta > 0 : delta < 0
-  const deltaColor = isGood ? 'text-emerald-500' : isBad ? 'text-red-500' : 'text-[hsl(var(--muted-foreground))]'
-  // Arrow: always follows actual direction of change
-  const DeltaIcon = delta > 0 ? ArrowUpRight : delta < 0 ? ArrowDownRight : Minus
-
-  return (
-    <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-3 flex flex-col gap-1 min-w-0">
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-[hsl(var(--muted-foreground))] font-medium truncate">{label}</span>
-        <div className={`w-7 h-7 rounded-lg ${color} flex items-center justify-center flex-shrink-0`}>
-          {icon}
-        </div>
-      </div>
-      <div className="text-lg font-bold text-[hsl(var(--foreground))] leading-tight tracking-tight">{value}</div>
-      {delta !== 0 && (
-        <div className={`flex items-center gap-0.5 text-xs font-medium ${deltaColor}`}>
-          <DeltaIcon className="w-3 h-3" />
-          <span>{Math.abs(delta).toFixed(1)}%</span>
-        </div>
-      )}
-    </div>
-  )
-}
 
 // ── Status Multi-Select Dropdown ─────────────────────────────────
 
@@ -712,7 +679,7 @@ export default function AdManagementPage() {
   // ── KPI ────────────────────────────────────────────────────────
 
   const kpi = data?.kpi
-  const deltas = data?.kpi_deltas || {}
+
   const balance = data?.balance
   const accountBalance = (balance as any)?.net || (balance as any)?.balance || 0
 
@@ -740,17 +707,6 @@ export default function AdManagementPage() {
         </div>
       </div>
 
-      {/* ── KPI Cards ──────────────────────────────────────────── */}
-      {kpi && (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <KpiCard label="Показы" value={formatNum(kpi.views)} delta={deltas.views || 0} icon={<Eye className="w-4 h-4 text-white" />} color="bg-indigo-500" />
-          <KpiCard label="Клики" value={formatNum(kpi.clicks)} delta={deltas.clicks || 0} icon={<MousePointer className="w-4 h-4 text-white" />} color="bg-sky-500" />
-          <KpiCard label="CTR" value={`${kpi.ctr.toFixed(2)}%`} delta={deltas.ctr || 0} icon={<TrendingUp className="w-4 h-4 text-white" />} color="bg-teal-500" />
-          <KpiCard label="Расход" value={formatMoney(kpi.spend)} delta={deltas.spend || 0} icon={<DollarSign className="w-4 h-4 text-white" />} color="bg-rose-500" invert />
-          <KpiCard label="Продажи" value={formatMoney(kpi.revenue)} delta={deltas.revenue || 0} icon={<ShoppingCart className="w-4 h-4 text-white" />} color="bg-violet-500" />
-          <KpiCard label="ДРР" value={`${kpi.drr.toFixed(1)}%`} delta={deltas.drr || 0} icon={<BarChart3 className="w-4 h-4 text-white" />} color="bg-amber-500" invert />
-        </div>
-      )}
 
       {/* ── Filters ────────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
