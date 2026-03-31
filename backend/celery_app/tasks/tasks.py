@@ -1167,7 +1167,7 @@ def sync_wb_finance_history(
 # BUDGET SYNC (lightweight, every 15 min)
 # =============================================
 
-@celery_app.task(bind=True, time_limit=120, soft_time_limit=110)
+@celery_app.task(bind=True, time_limit=300, soft_time_limit=280)
 def sync_wb_budgets(self, shop_id: int, api_key: str):
     """
     Sync campaign budgets + account balance to Redis cache.
