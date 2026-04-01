@@ -5281,7 +5281,7 @@ def backfill_ozon_placement_cost(
 # Collects daily normquery stats + bid snapshots for UWB campaigns
 # ===================
 
-@celery_app.task(bind=True, time_limit=600, soft_time_limit=580)
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1750)
 def sync_normquery_data(self, shop_id: int, api_key: str):
     """
     Sync normquery (search cluster) stats and bid snapshots for UWB campaigns.
@@ -5323,7 +5323,7 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
 
         ch = get_clickhouse_client()
 
-        # 1. Get active UWB campaigns (manual + cpm)
+        # 1. Get active CPM campaigns (manual + unified)
         try:
             campaign_rows = ch.query(
                 """
@@ -5332,7 +5332,7 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                 FROM mms_analytics.dim_advert_campaigns
                 WHERE shop_id = {sid:UInt32}
                 GROUP BY advert_id
-                HAVING argMax(bid_type, updated_at) = 'manual'
+                HAVING argMax(bid_type, updated_at) IN ('manual', 'unified')
                    AND argMax(payment_type, updated_at) = 'cpm'
                    AND status IN (9, 11)
                 """,
@@ -5393,16 +5393,56 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                                 date_to=day_str,
                             )
                             if isinstance(day_stats, dict):
-                                for stat_item in day_stats.get("stats", []):
-                                    nm_id_val = stat_item.get("nm_id", 0)
-                                    for s in stat_item.get("stats", []):
-                                        nq = s.get("norm_query", "")
+                                raw_stats = day_stats.get("stats", [])
+                                # Format 1: [{nm_id, stats: [{norm_query, ...}]}]
+                                # Format 2: [{norm_query, views, clicks, ...}] (flat)
+                                flat_items = []
+                                for stat_item in raw_stats:
+                                    if not isinstance(stat_item, dict):
+                                        continue
+                                    if "norm_query" in stat_item:
+                                        # Flat format — stat_item IS the cluster stats
+                                        flat_items.append((nm_ids[0] if nm_ids else 0, stat_item))
+                                    elif "stats" in stat_item:
+                                        # Nested format — stat_item wraps nm_id + stats
+                                        nm_val = stat_item.get("nm_id", nm_ids[0] if nm_ids else 0)
+                                        for s in stat_item.get("stats", []):
+                                            flat_items.append((nm_val, s))
+
+                                for nm_id_val, s in flat_items:
+                                    nq = s.get("norm_query", "")
+                                    if not nq:
+                                        continue
+                                    stats_rows.append({
+                                        "dt": day_dt,
+                                        "shop_id": shop_id,
+                                        "advert_id": cid,
+                                        "nm_id": nm_id_val,
+                                        "norm_query": nq,
+                                        "views": int(s.get("views", 0)),
+                                        "clicks": int(s.get("clicks", 0)),
+                                        "atbs": int(s.get("atbs", 0)),
+                                        "orders": int(s.get("orders", 0)),
+                                        "avg_pos": float(s.get("avg_pos", 0)),
+                                        "cpc": int(float(s.get("cpc", 0))),
+                                        "cpm": int(float(s.get("cpm", 0))),
+                                        "ctr": float(s.get("ctr", 0)),
+                                        "bid_kopecks": 0,
+                                        "spend": float(s.get("spend", 0)),
+                                        "shks": int(s.get("shks", 0)),
+                                        "cpc_rub": float(s.get("cpc", 0)),
+                                        "cpm_rub": float(s.get("cpm", 0)),
+                                    })
+                            elif isinstance(day_stats, list):
+                                # Direct list of stats
+                                for s in day_stats:
+                                    if isinstance(s, dict) and s.get("norm_query"):
                                         stats_rows.append({
-                                            "dt": day_dt,  # datetime.date object for CH Date column
+                                            "dt": day_dt,
                                             "shop_id": shop_id,
                                             "advert_id": cid,
-                                            "nm_id": nm_id_val,
-                                            "norm_query": nq,
+                                            "nm_id": nm_ids[0] if nm_ids else 0,
+                                            "norm_query": s["norm_query"],
                                             "views": int(s.get("views", 0)),
                                             "clicks": int(s.get("clicks", 0)),
                                             "atbs": int(s.get("atbs", 0)),
@@ -5411,7 +5451,11 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                                             "cpc": int(float(s.get("cpc", 0))),
                                             "cpm": int(float(s.get("cpm", 0))),
                                             "ctr": float(s.get("ctr", 0)),
-                                            "bid_kopecks": 0,  # will be enriched with bids below
+                                            "bid_kopecks": 0,
+                                            "spend": float(s.get("spend", 0)),
+                                            "shks": int(s.get("shks", 0)),
+                                            "cpc_rub": float(s.get("cpc", 0)),
+                                            "cpm_rub": float(s.get("cpm", 0)),
                                         })
                             await asyncio.sleep(0.5)  # rate limit between daily calls
                         except Exception as e:
@@ -5462,20 +5506,44 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
 
                     # 7. Insert bid snapshots into log_normquery_bids
                     bid_rows = []
-                    for nq, bid_k in bid_map.items():
-                        rec = rec_map.get(nq, {})
-                        bid_rows.append({
-                            "shop_id": shop_id,
-                            "advert_id": cid,
-                            "nm_id": nm_ids[0],  # primary nm_id
-                            "norm_query": nq,
-                            "bid_kopecks": bid_k,
-                            "reach_max_bid": rec.get("reach_max", 0),
-                            "reach_med_bid": rec.get("reach_med", 0),
-                            "reach_min_bid": rec.get("reach_min", 0),
-                            "competitive_bid": base_competitive,
-                            "leaders_bid": base_leaders,
-                        })
+                    if bid_map:
+                        # Manual campaigns: build from per-cluster bids
+                        for nq, bid_k in bid_map.items():
+                            rec = rec_map.get(nq, {})
+                            bid_rows.append({
+                                "shop_id": shop_id,
+                                "advert_id": cid,
+                                "nm_id": nm_ids[0],
+                                "norm_query": nq,
+                                "bid_kopecks": bid_k,
+                                "reach_max_bid": rec.get("reach_max", 0),
+                                "reach_med_bid": rec.get("reach_med", 0),
+                                "reach_min_bid": rec.get("reach_min", 0),
+                                "competitive_bid": base_competitive,
+                                "leaders_bid": base_leaders,
+                            })
+                    elif stats_rows and (base_competitive or base_leaders or rec_map):
+                        # Unified campaigns: no per-cluster bids, but we have
+                        # recommendations — build from stats clusters
+                        seen_nq = set()
+                        for sr in stats_rows:
+                            nq = sr["norm_query"]
+                            if nq in seen_nq:
+                                continue
+                            seen_nq.add(nq)
+                            rec = rec_map.get(nq, {})
+                            bid_rows.append({
+                                "shop_id": shop_id,
+                                "advert_id": cid,
+                                "nm_id": nm_ids[0],
+                                "norm_query": nq,
+                                "bid_kopecks": 0,  # unified — no per-cluster bid
+                                "reach_max_bid": rec.get("reach_max", 0),
+                                "reach_med_bid": rec.get("reach_med", 0),
+                                "reach_min_bid": rec.get("reach_min", 0),
+                                "competitive_bid": base_competitive,
+                                "leaders_bid": base_leaders,
+                            })
 
                     if bid_rows:
                         ch.insert(

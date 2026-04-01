@@ -36,6 +36,10 @@ export interface CampaignPhraseRow {
   spend: number
   orders: number
   revenue: number
+  // WB normquery extras
+  atbs?: number       // корзины
+  avg_pos?: number    // средняя позиция
+  cpc?: number        // стоимость клика (руб)
 }
 
 export interface CampaignHeatmapRow {

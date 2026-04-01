@@ -1147,6 +1147,9 @@ export function CampaignDetailModal({
     if (loading && phrases.length === 0) return <Spinner text="Загрузка поисковых фраз..." />
     if (phrases.length === 0) return <Empty text="Нет данных по фразам. Данные выгружаются автоматически — возможно первая выгрузка ещё не произошла." />
 
+    // Check if WB normquery extras are present
+    const hasExtras = phrases.some(p => (p.atbs ?? 0) > 0 || (p.avg_pos ?? 0) > 0 || (p.orders ?? 0) > 0)
+
     const sorted = [...phrases].sort((a, b) => {
       const av = (a as any)[phraseSort.key]
       const bv = (b as any)[phraseSort.key]
@@ -1175,6 +1178,11 @@ export function CampaignDetailModal({
               {thSort('views', 'Показы')}
               {thSort('clicks', 'Клики')}
               {thSort('ctr', 'CTR')}
+              {hasExtras && thSort('atbs', 'Корзины')}
+              {hasExtras && thSort('orders', 'Заказы')}
+              {hasExtras && thSort('spend', 'Расход')}
+              {hasExtras && thSort('avg_pos', 'Позиция')}
+              {hasExtras && thSort('cpc', 'CPC')}
             </tr>
           </thead>
           <tbody>
@@ -1184,6 +1192,31 @@ export function CampaignDetailModal({
                 <td className="px-4 py-2.5 text-[13px] text-right">{formatNumber(p.views)}</td>
                 <td className="px-4 py-2.5 text-[13px] text-right">{formatNumber(p.clicks)}</td>
                 <td className="px-4 py-2.5 text-[13px] text-right">{p.ctr.toFixed(2)}%</td>
+                {hasExtras && <td className="px-4 py-2.5 text-[13px] text-right">{formatNumber(p.atbs ?? 0)}</td>}
+                {hasExtras && (
+                  <td className="px-4 py-2.5 text-[13px] text-right">
+                    <span className={(p.orders ?? 0) > 0 ? 'font-semibold text-emerald-400' : ''}>
+                      {formatNumber(p.orders ?? 0)}
+                    </span>
+                  </td>
+                )}
+                {hasExtras && (
+                  <td className="px-4 py-2.5 text-[13px] text-right font-medium">
+                    {p.spend > 0 ? `${Math.round(p.spend)} ₽` : '—'}
+                  </td>
+                )}
+                {hasExtras && (
+                  <td className="px-4 py-2.5 text-[13px] text-right">
+                    <span className={(p.avg_pos ?? 0) > 100 ? 'text-red-400' : (p.avg_pos ?? 0) > 50 ? 'text-amber-400' : ''}>
+                      {(p.avg_pos ?? 0) > 0 ? (p.avg_pos ?? 0).toFixed(0) : '—'}
+                    </span>
+                  </td>
+                )}
+                {hasExtras && (
+                  <td className="px-4 py-2.5 text-[13px] text-right">
+                    {(p.cpc ?? 0) > 0 ? `${(p.cpc ?? 0).toFixed(2)} ₽` : '—'}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

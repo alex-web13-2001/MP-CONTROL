@@ -406,4 +406,182 @@ export const ACTION_LABELS: Record<string, string> = {
   batch_status: '📋 Массовое изменение статуса',
   batch_bid_change: '📋 Массовое изменение ставок',
   budget_deposit: '💳 Пополнение бюджета',
+  normquery_bid_change: '🎯 Изменение ставок кластеров',
+  normquery_minus_phrases: '🚫 Изменение минус-фраз',
+  normquery_toggle_exclude: '🔄 Переключение кластера',
+  campaign_nms_manage: '📦 Управление товарами',
 }
+
+// ── Normquery (Search Cluster) Types ──────────────────────────────
+
+export interface NormqueryClusterStat {
+  norm_query: string
+  status: 'active' | 'excluded'
+  views: number
+  clicks: number
+  atbs: number
+  orders: number
+  avg_pos: number
+  spend_rub: number
+  cpc_kopecks: number
+  cpm_kopecks: number
+  cpm_rub: number
+  ctr: number
+  current_bid_kopecks: number
+  current_bid_rub: number
+  reach_max_bid: number
+  reach_med_bid: number
+  reach_min_bid: number
+  cr_click_to_order: number
+  cr_click_to_cart: number
+  cpc_rub: number
+}
+
+export interface ClusterListResponse {
+  clusters: NormqueryClusterStat[]
+  total_active: number
+  total_excluded: number
+  total_clusters: number
+  base_bids: {
+    competitive_kopecks?: number
+    leaders_kopecks?: number
+    competitive_rub?: number
+    leaders_rub?: number
+  }
+}
+
+export interface NormqueryAnalyticsResponse {
+  clusters: NormqueryClusterStat[]
+  excluded_clusters: string[]
+  minus_phrases: string[]
+  base_bids: {
+    competitive_kopecks?: number
+    leaders_kopecks?: number
+    competitive_rub?: number
+    leaders_rub?: number
+  }
+  total_clusters: number
+}
+
+// ── Normquery API Functions ──────────────────────────────────────
+
+/**
+ * Get normquery (search cluster) analytics for a UWB campaign.
+ * Combines stats + bids + minus phrases + recommendations from WB API.
+ */
+export async function getNormqueryAnalytics(
+  shopId: number,
+  campaignId: number,
+  startDate: string,
+  endDate: string,
+): Promise<NormqueryAnalyticsResponse> {
+  const res = await apiClient.get<NormqueryAnalyticsResponse>(
+    `/campaign-details/wb/${campaignId}/normquery-analytics`,
+    { params: { shop_id: shopId, start_date: startDate, end_date: endDate } },
+  )
+  return res.data
+}
+
+/**
+ * Get unified cluster list (active + excluded) with stats, bids, recommendations.
+ * LIVE version — calls WB API directly. Use getClusterListCached for fast reads.
+ */
+export async function getClusterList(
+  shopId: number,
+  advertId: number,
+  nmId: number,
+  startDate: string,
+  endDate: string,
+): Promise<ClusterListResponse> {
+  const res = await apiClient.post<ClusterListResponse>(
+    `${PREFIX}/normquery/cluster-list`,
+    { shop_id: shopId, advert_id: advertId, nm_id: nmId, start_date: startDate, end_date: endDate },
+  )
+  return res.data
+}
+
+/**
+ * Get unified cluster list from ClickHouse (pre-collected by background sync).
+ * FAST — no WB API calls. Falls back to live API if no cached data.
+ */
+export async function getClusterListCached(
+  shopId: number,
+  advertId: number,
+  nmId: number,
+  startDate: string,
+  endDate: string,
+): Promise<ClusterListResponse & { source?: string }> {
+  const res = await apiClient.post<ClusterListResponse & { source?: string }>(
+    `${PREFIX}/normquery/cluster-list-cached`,
+    { shop_id: shopId, advert_id: advertId, nm_id: nmId, start_date: startDate, end_date: endDate },
+  )
+  return res.data
+}
+
+/**
+ * Toggle a cluster's exclusion status (exclude ↔ include).
+ * Atomic: get-minus → modify → set-minus.
+ */
+export async function toggleClusterExclusion(
+  shopId: number,
+  advertId: number,
+  nmId: number,
+  normQuery: string,
+  action: 'exclude' | 'include',
+): Promise<{ success: boolean; message: string; phrases?: string[] }> {
+  const res = await apiClient.post(
+    `${PREFIX}/normquery/toggle-exclude`,
+    { shop_id: shopId, advert_id: advertId, nm_id: nmId, norm_query: normQuery, action },
+  )
+  return res.data
+}
+
+/**
+ * Set bids per search cluster (normquery) for a UWB campaign.
+ * Bids are in KOPECKS.
+ */
+export async function setNormqueryBids(
+  shopId: number,
+  advertId: number,
+  nmId: number,
+  bids: { norm_query: string; bid: number }[],
+): Promise<{ success: boolean; message: string }> {
+  const res = await apiClient.post(
+    `${PREFIX}/normquery/set-bids`,
+    { shop_id: shopId, advert_id: advertId, nm_id: nmId, bids },
+  )
+  return res.data
+}
+
+/**
+ * Set minus phrases for a campaign (replaces the full list).
+ */
+export async function setMinusPhrases(
+  shopId: number,
+  advertId: number,
+  nmId: number,
+  normQueries: string[],
+): Promise<{ success: boolean; message: string }> {
+  const res = await apiClient.post(
+    `${PREFIX}/normquery/set-minus`,
+    { shop_id: shopId, advert_id: advertId, nm_id: nmId, norm_queries: normQueries },
+  )
+  return res.data
+}
+
+/**
+ * Add/remove products (nm_ids) from a campaign.
+ */
+export async function manageCampaignNms(
+  shopId: number,
+  advertId: number,
+  add: number[],
+  remove: number[],
+): Promise<{ success: boolean; message: string }> {
+  const res = await apiClient.patch(
+    `${PREFIX}/campaigns/nms`,
+    { shop_id: shopId, advert_id: advertId, add, delete: remove },
+  )
+  return res.data
+}
+

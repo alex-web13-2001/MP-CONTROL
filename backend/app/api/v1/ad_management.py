@@ -1152,6 +1152,133 @@ async def get_campaigns_budgets_batch(
 from pydantic import BaseModel, Field as PField
 
 
+# ══════════════════════════════════════════════════════════════════
+# Normquery Write Operations (UWB campaigns — bid_type=manual, payment_type=cpm)
+# ══════════════════════════════════════════════════════════════════
+
+
+class NormqueryBidItem(BaseModel):
+    norm_query: str
+    bid: int = PField(..., gt=0, description="Bid in kopecks")
+
+
+class SetNormqueryBidsRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    nm_id: int
+    bids: list[NormqueryBidItem] = PField(..., min_length=1, max_length=200)
+
+
+class SetMinusPhrasesRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    nm_id: int
+    norm_queries: list[str] = PField(..., description="Full list of minus phrases to set")
+
+
+@router.post("/normquery/set-bids")
+async def set_normquery_bids(
+    request: SetNormqueryBidsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Set bids per search cluster (normquery) for a UWB campaign.
+
+    Only for campaigns with bid_type=manual & payment_type=cpm.
+    Bids are in KOPECKS (e.g. 30000 = 300₽).
+    """
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+
+    bids_payload = [
+        {
+            "advert_id": request.advert_id,
+            "nm_id": request.nm_id,
+            "norm_query": b.norm_query,
+            "bid": b.bid,
+        }
+        for b in request.bids
+    ]
+
+    result = await svc.set_normquery_bids(bids_payload)
+
+    await _log_audit(
+        db, current_user, shop.id,
+        action="normquery_bid_change",
+        advert_id=request.advert_id,
+        details={
+            "nm_id": request.nm_id,
+            "bids_count": len(request.bids),
+            "bids": [
+                {"norm_query": b.norm_query, "bid_kopecks": b.bid, "bid_rub": b.bid / 100}
+                for b in request.bids
+            ],
+        },
+        success=result.get("success", False),
+        error_message=result.get("message") if not result.get("success") else None,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("message", "Ошибка установки ставок кластеров"),
+        )
+
+    return result
+
+
+@router.post("/normquery/set-minus")
+async def set_normquery_minus_phrases(
+    request: SetMinusPhrasesRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Set minus phrases for a campaign (replaces the full list).
+
+    Works for both manual and unified bid campaigns.
+    Pass an empty array to clear all minus phrases.
+    """
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+
+    result = await svc.set_minus_phrases(
+        advert_id=request.advert_id,
+        nm_id=request.nm_id,
+        norm_queries=request.norm_queries,
+    )
+
+    await _log_audit(
+        db, current_user, shop.id,
+        action="normquery_minus_phrases",
+        advert_id=request.advert_id,
+        details={
+            "nm_id": request.nm_id,
+            "phrases_count": len(request.norm_queries),
+            "phrases": request.norm_queries[:20],  # Log first 20 to avoid huge entries
+        },
+        success=result.get("success", False),
+        error_message=result.get("message") if not result.get("success") else None,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("message", "Ошибка установки минус-фраз"),
+        )
+
+    return result
+
+
 class DepositBudgetRequest(BaseModel):
     shop_id: int
     advert_id: int
@@ -1383,3 +1510,504 @@ async def get_campaigns_stats(
         "period": {"start": str(d_start), "end": str(d_end)},
     }
 
+
+# ══════════════════════════════════════════════════════════════════
+# Normquery — Unified Cluster List (combined list + stats + bids)
+# ══════════════════════════════════════════════════════════════════
+
+
+class ClusterListRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    nm_id: int
+    start_date: str = PField(..., description="YYYY-MM-DD")
+    end_date: str = PField(..., description="YYYY-MM-DD")
+
+
+@router.post("/normquery/cluster-list")
+async def get_cluster_list(
+    request: ClusterListRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get unified cluster list with status, bids, and stats.
+
+    Combines 4 WB API calls in parallel:
+    1. POST /adv/v0/normquery/list → active/excluded clusters
+    2. POST /adv/v0/normquery/get-bids → current bids per cluster
+    3. POST /adv/v0/normquery/stats → performance stats
+    4. GET /api/advert/v0/bids/recommendations → recommended bids
+
+    Returns unified array where each cluster has: status, bid, stats, recommendations.
+    """
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+
+    items = [{"advert_id": request.advert_id, "nm_id": request.nm_id}]
+
+    # Parallel fetch: cluster lists, bids, stats, recommendations
+    list_result, bids_result, stats_result, recommendations = await asyncio.gather(
+        svc.get_normquery_list(items),
+        svc.get_normquery_bids(items),
+        svc.get_normquery_stats(items, request.start_date, request.end_date),
+        svc.get_bid_recommendations(request.advert_id, request.nm_id),
+        return_exceptions=True,
+    )
+
+    # Parse cluster list (active/excluded)
+    active_clusters: list = []
+    excluded_clusters: list = []
+    if isinstance(list_result, dict):
+        list_items = list_result.get("items", [])
+        if isinstance(list_result, list):
+            list_items = list_result
+        for item in list_items:
+            if isinstance(item, dict):
+                nq = item.get("normQueries", {}) or {}
+                active_clusters = nq.get("active", []) or []
+                excluded_clusters = nq.get("excluded", []) or []
+                break
+
+    # Parse bids: norm_query → bid_kopecks
+    bid_map: dict = {}
+    if isinstance(bids_result, dict):
+        bids_list = bids_result.get("bids", [])
+        if isinstance(bids_result, list):
+            bids_list = bids_result
+        for b in bids_list:
+            if isinstance(b, dict):
+                bid_map[b.get("norm_query", "")] = b.get("bid", 0)
+
+    # Parse stats: norm_query → stats dict
+    cluster_stats_map: dict = {}
+
+
+    # WB API can return dict {"stats": [...]} or list [{...}]
+    stats_items = []
+    if isinstance(stats_result, dict):
+        stats_items = stats_result.get("stats", [])
+    elif isinstance(stats_result, list):
+        stats_items = stats_result
+
+    for si in stats_items:
+        if isinstance(si, dict):
+            for stat in si.get("stats", []):
+                if isinstance(stat, dict):
+                    nq = stat.get("norm_query", "")
+                    cluster_stats_map[nq] = stat
+
+    # Parse recommendations: norm_query → reach bids
+    reach_map: dict = {}
+    base_bids = {}
+    if isinstance(recommendations, dict):
+        base = recommendations.get("base", {})
+        if base:
+            competitive = base.get("competitiveBid", {}).get("bidKopecks", 0)
+            leaders = base.get("leadersBid", {}).get("bidKopecks", 0)
+            base_bids = {
+                "competitive_kopecks": competitive,
+                "leaders_kopecks": leaders,
+                "competitive_rub": round(competitive / 100, 2) if competitive else 0,
+                "leaders_rub": round(leaders / 100, 2) if leaders else 0,
+            }
+        for nq_rec in recommendations.get("normQueries", []):
+            if isinstance(nq_rec, dict):
+                nq_name = nq_rec.get("normQuery", "")
+                reach_map[nq_name] = {
+                    "max": nq_rec.get("reachMax", {}).get("bidKopecks", 0),
+                    "med": nq_rec.get("reachMedium", {}).get("bidKopecks", 0),
+                    "min": nq_rec.get("reachMin", {}).get("bidKopecks", 0),
+                }
+
+    # Build unified cluster list
+    all_clusters = []
+    seen = set()
+
+    def _build_cluster(nq: str, status: str):
+        if nq in seen or not nq:
+            return None
+        seen.add(nq)
+        stat = cluster_stats_map.get(nq, {})
+        bid_kopecks = bid_map.get(nq, 0)
+        reach = reach_map.get(nq, {})
+
+        views = stat.get("views", 0)
+        clicks = stat.get("clicks", 0)
+        atbs = stat.get("atbs", 0)
+        orders = stat.get("orders", 0)
+        shks = stat.get("shks", 0)  # ordered items (from API)
+        cpc = stat.get("cpc", 0)  # RUBLES (currency: RUB)
+        cpm = stat.get("cpm", 0)  # RUBLES (currency: RUB)
+        ctr = stat.get("ctr", 0)
+        avg_pos = stat.get("avg_pos", 0)
+        spend = stat.get("spend", 0)  # RUBLES (currency: RUB)
+
+        # ALL monetary values from normquery/stats are already in RUBLES
+        spend_rub = round(spend, 2) if spend else 0
+        cpc_rub = round(cpc, 2) if cpc else 0
+        cpm_rub = round(cpm, 2) if cpm else 0
+
+        return {
+            "norm_query": nq,
+            "status": status,
+            "views": views,
+            "clicks": clicks,
+            "atbs": atbs,
+            "orders": orders,
+            "shks": shks,
+            "ctr": round(ctr, 2) if isinstance(ctr, float) else ctr,
+            "avg_pos": round(avg_pos, 1) if isinstance(avg_pos, float) else avg_pos,
+            "spend_rub": spend_rub,
+            "cpc_kopecks": cpc,
+            "cpc_rub": cpc_rub,
+            "cpm_kopecks": cpm,
+            "cpm_rub": cpm_rub,
+            "current_bid_kopecks": bid_kopecks,
+            "current_bid_rub": round(bid_kopecks / 100, 2) if bid_kopecks else 0,
+            "reach_max_bid": reach.get("max", 0),
+            "reach_med_bid": reach.get("med", 0),
+            "reach_min_bid": reach.get("min", 0),
+            "cr_click_to_cart": round(atbs / clicks * 100, 1) if clicks > 0 else 0,
+            "cr_click_to_order": round(orders / clicks * 100, 1) if clicks > 0 else 0,
+        }
+
+    for nq in active_clusters:
+        c = _build_cluster(nq, "active")
+        if c:
+            all_clusters.append(c)
+
+    for nq in excluded_clusters:
+        c = _build_cluster(nq, "excluded")
+        if c:
+            all_clusters.append(c)
+
+    # Also add clusters that appear in stats but not in active/excluded lists
+    for nq in cluster_stats_map:
+        c = _build_cluster(nq, "active")
+        if c:
+            all_clusters.append(c)
+
+    return {
+        "clusters": all_clusters,
+        "total_active": len([c for c in all_clusters if c["status"] == "active"]),
+        "total_excluded": len([c for c in all_clusters if c["status"] == "excluded"]),
+        "total_clusters": len(all_clusters),
+        "base_bids": base_bids,
+    }
+
+
+# ══════════════════════════════════════════════════════════════════
+# Normquery — Toggle Cluster Exclusion (atomic)
+# ══════════════════════════════════════════════════════════════════
+
+
+class ToggleClusterRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    nm_id: int
+    norm_query: str
+    action: str = PField(..., description="'exclude' or 'include'")
+
+
+@router.post("/normquery/toggle-exclude")
+async def toggle_cluster_exclusion(
+    request: ToggleClusterRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Toggle a cluster's exclusion status (exclude ↔ include).
+
+    Atomically: get-minus → modify list → set-minus.
+    """
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    if request.action not in ("exclude", "include"):
+        raise HTTPException(
+            status_code=400,
+            detail="action must be 'exclude' or 'include'",
+        )
+
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+    result = await svc.toggle_cluster_exclusion(
+        advert_id=request.advert_id,
+        nm_id=request.nm_id,
+        norm_query=request.norm_query,
+        action=request.action,
+    )
+
+    await _log_audit(
+        db, current_user, shop.id,
+        action="normquery_toggle_exclude",
+        advert_id=request.advert_id,
+        details={
+            "nm_id": request.nm_id,
+            "norm_query": request.norm_query,
+            "action": request.action,
+        },
+        success=result.get("success", False),
+        error_message=result.get("message") if not result.get("success") else None,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("message", "Ошибка переключения кластера"),
+        )
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════
+# Campaign Product (NM) Management
+# ══════════════════════════════════════════════════════════════════
+
+
+class ManageNmsRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    add: list[int] = PField(default_factory=list, description="NM IDs to add")
+    delete: list[int] = PField(default_factory=list, description="NM IDs to remove")
+
+
+@router.patch("/campaigns/nms")
+async def manage_campaign_nms(
+    request: ManageNmsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Add/remove products (nm_ids) from a campaign.
+
+    WB API: PATCH /adv/v0/auction/nms
+    """
+    if not request.add and not request.delete:
+        raise HTTPException(status_code=400, detail="Укажите add или delete")
+
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    service = WBAdManagementService(db=db, shop_id=shop.id, api_key=api_key)
+    result = await service.manage_campaign_nms(
+        advert_id=request.advert_id,
+        add=request.add,
+        delete=request.delete,
+    )
+
+    await _log_audit(
+        db, current_user, shop.id,
+        action="campaign_nms_manage",
+        advert_id=request.advert_id,
+        details={
+            "add": request.add,
+            "delete": request.delete,
+        },
+        success=result["success"],
+        error_message=result.get("message") if not result["success"] else None,
+    )
+
+    if not result["success"]:
+        raise HTTPException(
+            status_code=result.get("status_code", 502),
+            detail=result["message"],
+        )
+
+    return result
+
+
+# ══════════════════════════════════════════════════════════════════
+# Normquery — Cached Cluster List (from ClickHouse — instant!)
+# ══════════════════════════════════════════════════════════════════
+
+
+@router.post("/normquery/cluster-list-cached")
+async def get_cluster_list_cached(
+    request: ClusterListRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get cluster list from ClickHouse (pre-collected by sync_normquery_data).
+
+    ZERO WB API calls — data comes from:
+    1. fact_normquery_stats_daily → aggregated stats for the period
+    2. log_normquery_bids → latest bid snapshot + recommendations
+
+    Falls back to live API if no cached data exists.
+    """
+    from app.core.clickhouse import get_clickhouse_client
+
+    ch = get_clickhouse_client()
+
+    # 1. Get aggregated stats from ClickHouse for the period
+    stats_rows = ch.query(
+        """
+        SELECT
+            norm_query,
+            sum(views) AS total_views,
+            sum(clicks) AS total_clicks,
+            sum(atbs) AS total_atbs,
+            sum(orders) AS total_orders,
+            sum(shks) AS total_shks,
+            sum(spend) AS total_spend,
+            -- Weighted avg position (by views)
+            if(sum(views) > 0,
+               sum(toFloat64(avg_pos) * views) / sum(views),
+               0) AS w_avg_pos,
+            -- Weighted CPC (spend / clicks)
+            if(sum(clicks) > 0,
+               sum(spend) / sum(clicks),
+               0) AS w_cpc_rub,
+            -- Weighted CPM (spend / views * 1000)
+            if(sum(views) > 0,
+               sum(spend) / sum(views) * 1000,
+               0) AS w_cpm_rub,
+            -- Weighted CTR
+            if(sum(views) > 0,
+               sum(clicks) / sum(views) * 100,
+               0) AS w_ctr
+        FROM mms_analytics.fact_normquery_stats_daily FINAL
+        WHERE shop_id = {sid:UInt32}
+          AND advert_id = {cid:UInt64}
+          AND dt >= {dt_from:String}
+          AND dt <= {dt_to:String}
+        GROUP BY norm_query
+        HAVING total_views > 0 OR total_clicks > 0 OR total_spend > 0
+        ORDER BY total_views DESC
+        """,
+        parameters={
+            "sid": request.shop_id,
+            "cid": request.advert_id,
+            "dt_from": request.start_date,
+            "dt_to": request.end_date,
+        },
+    ).result_rows
+
+    # If no cached data — fall back to live API
+    if not stats_rows:
+        logger.info(f"[normquery-cached] No CH data for shop={request.shop_id} "
+                     f"campaign={request.advert_id}, falling back to live API")
+        return await get_cluster_list(request, current_user, db)
+
+    # 2. Get latest bid snapshot from log_normquery_bids
+    bid_rows = ch.query(
+        """
+        SELECT
+            norm_query,
+            argMax(bid_kopecks, timestamp) AS bid_kopecks,
+            argMax(reach_max_bid, timestamp) AS reach_max,
+            argMax(reach_med_bid, timestamp) AS reach_med,
+            argMax(reach_min_bid, timestamp) AS reach_min,
+            argMax(competitive_bid, timestamp) AS competitive,
+            argMax(leaders_bid, timestamp) AS leaders
+        FROM mms_analytics.log_normquery_bids
+        WHERE shop_id = {sid:UInt32}
+          AND advert_id = {cid:UInt64}
+        GROUP BY norm_query
+        """,
+        parameters={
+            "sid": request.shop_id,
+            "cid": request.advert_id,
+        },
+    ).result_rows
+
+    bid_map = {}
+    competitive_kopecks = 0
+    leaders_kopecks = 0
+    for row in bid_rows:
+        nq, bid_k, r_max, r_med, r_min, comp, lead = row
+        bid_map[nq] = {
+            "bid_kopecks": int(bid_k),
+            "reach_max": int(r_max),
+            "reach_med": int(r_med),
+            "reach_min": int(r_min),
+        }
+        if int(comp) > competitive_kopecks:
+            competitive_kopecks = int(comp)
+        if int(lead) > leaders_kopecks:
+            leaders_kopecks = int(lead)
+
+    # 3. Get active/excluded status from live API (lightweight call)
+    excluded_set = set()
+    try:
+        from app.services.wb_normquery_service import WBNormqueryService
+        shop = await _verify_wb_shop(request.shop_id, current_user, db)
+        api_key = await _get_api_key(shop)
+        svc = WBNormqueryService(db=db, shop_id=shop.id, api_key=api_key)
+        items = [{"advert_id": request.advert_id, "nm_id": request.nm_id}]
+        list_result = await svc.get_normquery_list(items)
+        if isinstance(list_result, dict):
+            for item in list_result.get("items", []):
+                if isinstance(item, dict):
+                    nq_data = item.get("normQueries", {}) or {}
+                    excluded_set = set(nq_data.get("excluded", []) or [])
+                    break
+    except Exception as e:
+        logger.warning(f"[normquery-cached] Could not get cluster status: {e}")
+
+    # 4. Build response (same format as live endpoint)
+    clusters = []
+    for row in stats_rows:
+        nq, views, clicks, atbs, orders, shks, spend, avg_pos, cpc_rub, cpm_rub, ctr = row
+        views = int(views)
+        clicks = int(clicks)
+        atbs = int(atbs)
+        orders = int(orders)
+        shks = int(shks)
+        spend = float(spend)
+        avg_pos = float(avg_pos)
+        cpc_rub = float(cpc_rub)
+        cpm_rub = float(cpm_rub)
+        ctr = float(ctr)
+
+        status = "excluded" if nq in excluded_set else "active"
+        bid_info = bid_map.get(nq, {})
+        bid_kopecks = bid_info.get("bid_kopecks", 0)
+
+        clusters.append({
+            "norm_query": nq,
+            "status": status,
+            "views": views,
+            "clicks": clicks,
+            "atbs": atbs,
+            "orders": orders,
+            "shks": shks,
+            "ctr": round(ctr, 2),
+            "avg_pos": round(avg_pos, 1),
+            "spend_rub": round(spend, 2),
+            "cpc_kopecks": int(cpc_rub * 100),  # backward compat
+            "cpc_rub": round(cpc_rub, 2),
+            "cpm_kopecks": int(cpm_rub * 100),  # backward compat
+            "cpm_rub": round(cpm_rub, 2),
+            "current_bid_kopecks": bid_kopecks,
+            "current_bid_rub": round(bid_kopecks / 100, 2) if bid_kopecks else 0,
+            "reach_max_bid": bid_info.get("reach_max", 0),
+            "reach_med_bid": bid_info.get("reach_med", 0),
+            "reach_min_bid": bid_info.get("reach_min", 0),
+            "cr_click_to_cart": round(atbs / clicks * 100, 1) if clicks > 0 else 0,
+            "cr_click_to_order": round(orders / clicks * 100, 1) if clicks > 0 else 0,
+        })
+
+    base_bids = {
+        "competitive_kopecks": competitive_kopecks,
+        "leaders_kopecks": leaders_kopecks,
+        "competitive_rub": round(competitive_kopecks / 100, 2) if competitive_kopecks else 0,
+        "leaders_rub": round(leaders_kopecks / 100, 2) if leaders_kopecks else 0,
+    }
+
+    return {
+        "clusters": clusters,
+        "total_active": len([c for c in clusters if c["status"] == "active"]),
+        "total_excluded": len([c for c in clusters if c["status"] == "excluded"]),
+        "total_clusters": len(clusters),
+        "base_bids": base_bids,
+        "source": "clickhouse",  # indicator for frontend
+    }

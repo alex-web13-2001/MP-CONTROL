@@ -69,6 +69,10 @@ class CampaignPhraseRow(BaseModel):
     spend: float
     orders: int
     revenue: float
+    # WB normquery extras (optional — filled for WB UWB campaigns)
+    atbs: int = 0          # add-to-basket (корзины)
+    avg_pos: float = 0     # средняя позиция показа
+    cpc: float = 0         # стоимость клика (руб)
 
 class CampaignHeatmapRow(BaseModel):
     day_of_week: int
@@ -780,7 +784,9 @@ async def get_campaign_phrases(
 ):
     """
     Get aggregated search phrases statistics for a campaign within date range.
-    Uses the new fact_advert_phrases_daily ClickHouse table.
+    For Ozon: uses fact_advert_phrases_daily.
+    For WB: tries fact_advert_phrases_daily first, then falls back to
+            fact_normquery_stats_daily (normquery clusters from UWB sync).
     """
     marketplace = _normalize_mp(marketplace)
     ch = get_clickhouse_client()
@@ -811,6 +817,50 @@ async def get_campaign_phrases(
     }
     
     rows = ch.query(query, parameters=params).result_rows
+    
+    # WB fallback: if no data in fact_advert_phrases_daily, try normquery clusters
+    if not rows and marketplace.lower() == "wb":
+        # Determine shop_id from campaign data
+        shop_row = ch.query(
+            "SELECT DISTINCT shop_id FROM mms_analytics.fact_advert_stats_v3 FINAL "
+            "WHERE advert_id = {cid:UInt64} LIMIT 1",
+            parameters={"cid": campaign_id}
+        ).result_rows
+        
+        if shop_row:
+            shop_id = int(shop_row[0][0])
+            nq_query = """
+                SELECT
+                    norm_query,
+                    sum(views) as t_views,
+                    sum(clicks) as t_clicks,
+                    if(sum(views)>0, round(sum(clicks)/sum(views)*100, 2), 0) as t_ctr,
+                    round(sum(cpc * clicks) / 100, 2) as t_spend,
+                    sum(orders) as t_orders,
+                    0 as t_revenue,
+                    sum(atbs) as t_atbs,
+                    if(sum(views)>0, round(sum(avg_pos * views) / sum(views), 1), 0) as t_avg_pos,
+                    if(sum(clicks)>0, round(sum(cpc * clicks) / sum(clicks) / 100, 2), 0) as t_cpc
+                FROM mms_analytics.fact_normquery_stats_daily
+                WHERE shop_id = {sid:UInt32}
+                  AND advert_id = {cid:UInt64}
+                  AND dt BETWEEN {sd:Date} AND {ed:Date}
+                GROUP BY norm_query
+                ORDER BY t_views DESC
+                LIMIT 500
+            """
+            nq_rows = ch.query(nq_query, parameters={
+                "sid": shop_id, "cid": campaign_id,
+                "sd": start_date, "ed": end_date,
+            }).result_rows
+            
+            return [
+                CampaignPhraseRow(
+                    phrase=r[0], views=int(r[1]), clicks=int(r[2]), ctr=float(r[3]),
+                    spend=float(r[4]), orders=int(r[5]), revenue=float(r[6]),
+                    atbs=int(r[7]), avg_pos=float(r[8]), cpc=float(r[9]),
+                ) for r in nq_rows
+            ]
     
     return [
         CampaignPhraseRow(

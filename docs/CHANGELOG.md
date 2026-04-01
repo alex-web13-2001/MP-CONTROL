@@ -1,3 +1,164 @@
+## 2026-04-01 (v17.29.0)
+
+### perf(normquery): Кластеры из ClickHouse — мгновенная загрузка модала
+
+**Проблема**: Открытие модала управления кампанией дёргало 4 WB API параллельно (normquery list + bids + stats + recommendations), что занимало 3-5 секунд.
+
+**Решение — ClickHouse кеш:**
+- Новый endpoint `POST /normquery/cluster-list-cached` — чтение из `fact_normquery_stats_daily` + `log_normquery_bids`
+- **0 WB API вызовов** при наличии кеша → ответ за ~50ms вместо 3-5с
+- Fallback на live API если данные в CH отсутствуют
+- Бейдж «кеш» / «live» в модале — видно откуда данные
+
+**ClickHouse миграция** (`010_normquery_spend.sql`):
+- `spend Decimal(18,2)` — затраты в рублях (WB API currency: RUB)
+- `shks UInt32` — выкупленные товары
+- `cpc_rub / cpm_rub Decimal(18,2)` — корректные значения CPC/CPM в рублях
+
+**Celery задача `sync_normquery_data`:**
+- Фикс парсинга: поддержка обоих форматов ответа WB API (nested и flat)
+- Сохранение spend/shks/cpc_rub/cpm_rub при каждом sync (каждые 6 часов)
+- **Fix: bid_type IN ('manual', 'unified')** — ранее собирались только manual кампании, unified (большинство активных) игнорировались
+- **time_limit увеличен** 600→1800 сек — 50+ кампаний с rate limiting не укладывались в 10 мин
+
+**Удалены debug print** из `ad_management.py` (отладка валюты CPC/CPM завершена).
+
+**Файлы:**
+- `docker/clickhouse/migrations/010_normquery_spend.sql` — 4 новые колонки
+- `backend/app/api/v1/ad_management.py` — +1 cached endpoint, удалены debug
+- `backend/celery_app/tasks/tasks.py` — фикс парсинга stats + unified кампании + time limit
+- `frontend/src/api/ad-management.ts` — +`getClusterListCached()`
+- `frontend/src/components/CampaignManagementModal.tsx` — cached по умолчанию, бейдж кеш/live
+
+---
+
+## 2026-04-01 (v17.28.0)
+
+### feat(ad-management): Редизайн UWB-модала — кластерный toggle + управление товарами
+
+**Полная переделка CampaignManagementModal** под реальную механику Wildberries:
+
+**Ключевое изменение — Unified Cluster View:**
+- Объединены табы «Кластеры» + «Минус-фразы» → единый вид
+- Каждый кластер имеет **toggle Вкл/Выкл** (зелёный/красный) — прямое переключение active↔excluded
+- «Выключить кластер» = атомарно добавить в минус-фразы WB API
+- «Включить обратно» = убрать из минус-фраз
+- Текст зачёркнут для исключённых, ставка скрыта
+- Фильтры: Все / Активные / Исключённые
+
+**Кластерная статистика (единый endpoint):**
+- Параллельный запрос 4 WB API: list + bids + stats + recommendations
+- Показы, клики, CTR, корзины, заказы, CR→🛒, позиция, CPC
+- Текущая ставка + рекомендации (↑ макс / ● средн / ↓ мин)
+- Ориентиры рынка: Конкурентная и Лидерская ставки
+- Цветовая индикация ставок: зелёный ≥ медианы, красный < мин
+
+**Управление товарами (вкладка Товары):**
+- Добавление товаров (nm_id) в кампанию → `PATCH /adv/v0/auction/nms`
+- Удаление товаров с подтверждением
+- Inline-edit ставок → `PATCH /api/advert/v1/bids`
+
+**Backend — 3 новых endpoint:**
+- `POST /normquery/cluster-list` — unified cluster data (4 WB API параллельно)
+- `POST /normquery/toggle-exclude` — атомарный toggle (get-minus → modify → set-minus)
+- `PATCH /campaigns/nms` — добавление/удаление товаров из кампании
+
+**Backend — 2 новых сервисных метода:**
+- `WBNormqueryService.toggle_cluster_exclusion()` — атомарная операция
+- `WBNormqueryService.delete_normquery_bids()` — сброс ставки к базовой
+- `WBAdManagementService.manage_campaign_nms()` — CRUD товаров
+
+**Frontend:**
+- `CampaignManagementModal.tsx` — полная перезапись (~1100 строк)
+- `ad-management.ts` — +4 API функции, новые типы `ClusterListResponse`
+- Optimistic updates для toggle и add/remove товаров
+- Framer Motion анимации для toast и модала
+
+**Файлы:**
+- `backend/app/services/wb_normquery_service.py` — +2 метода
+- `backend/app/services/wb_ad_management_service.py` — +1 метод
+- `backend/app/api/v1/ad_management.py` — +3 endpoints
+- `frontend/src/components/CampaignManagementModal.tsx` — полная перезапись
+- `frontend/src/api/ad-management.ts` — расширен
+
+---
+
+
+### feat(ad-management): Модальное окно управления кампанией — полиморфный интерфейс
+
+**Заменяет**: раскрытие строки (expand-row) в таблице кампаний.
+
+**CampaignManagementModal** — полноэкранный модал, открывающийся по клику на кампанию с адаптивным интерфейсом по `bid_type`:
+
+**Шапка модала:**
+- Название кампании + статус (бейдж с цветом) + тип (CPM Ручная / CPM Единая / CPC)
+- Метаданные: ID, 🔍 Поиск, 📦 Полки
+- Кнопки управления: ▶ Запустить / ⏸ Пауза (по статусу)
+- Ориентиры рынка (UWB): Конкурентная ставка, Лидерская ставка, кол-во кластеров
+
+**Вкладка «Кластеры» (только UWB — bid_type=manual + payment_type=cpm):**
+- Таблица: Кластер, Показы, Клики, CTR, Корзины, Заказы, CR→🛒, Позиция, CPC, Ставка, Рекоменд.
+- Inline-edit ставок: клик → input → Enter/Esc → batch-сохранение
+- Рекомендации WB: ↑ макс / ● средний / ↓ мин (цветовая раскраска)
+- Цвет ставки: зелёный (≥ медианы), красный (< мин), янтарный (> макс)
+- Кнопка «Исключить» → добавление кластера в минус-фразы
+- Batch-save: «Сохранить N ставок» через `POST /normquery/set-bids`
+
+**Вкладка «Минус-фразы»:**
+- Текущие фразы в виде чипов с кнопками удаления
+- Поле поиска + кнопка «Добавить»
+- Подсказки из исключённых WB кластеров
+- Batch-save через `POST /normquery/set-minus`
+
+**Вкладка «Товары» (все типы):**
+- Таблица: Товар, Артикул, Ставка поиска, Ставка полок
+- Умное отображение: unified → одна ставка, manual → две раздельные
+- Inline-edit → `PATCH /bids/change`
+
+**Backend:**
+- `POST /ad-management/wb/normquery/set-bids` — обновление ставок по кластерам
+- `POST /ad-management/wb/normquery/set-minus` — управление минус-фразами
+- Аудит-лог всех write-операций
+
+**Frontend:**
+- `CampaignManagementModal.tsx` — модальный компонент (~970 строк)
+- `AdManagementPage.tsx` — замена expand-row на открытие модала
+- `ad-management.ts` — типы + API-функции (getNormqueryAnalytics, setNormqueryBids, setMinusPhrases)
+
+---
+
+## 2026-04-01 (v17.26.1)
+
+### feat(phrases): Вкладка «Фразы» для WB — normquery кластеры
+
+**Проблема**: Вкладка «Фразы» в попапе кампании (`CampaignDetailModal`) для WB была пустой — таблица `fact_advert_phrases_daily` не содержит данных для WB.
+
+**Решение**: Backend endpoint `GET /{marketplace}/{campaign_id}/phrases` теперь делает fallback на `fact_normquery_stats_daily` (заполняется Celery-таском `sync_normquery_data`), если основная таблица пуста для WB.
+
+**Новые колонки в таблице фраз (WB)**:
+- **Корзины** (atbs) — добавления в корзину по кластеру
+- **Заказы** (orders) — с зелёной подсветкой для конвертящих кластеров
+- **Позиция** (avg_pos) — средняя позиция показа (красная >100, жёлтая >50)
+- **CPC** — стоимость клика в рублях
+
+Колонки появляются автоматически только при наличии normquery данных (для Ozon остаётся прежний вид).
+
+**Формулы**:
+- `spend = Σ(cpc × clicks) / 100` (cpc хранится в копейках)
+- `avg_pos = Σ(avg_pos × views) / Σ(views)` (взвешенное среднее по показам)
+- `cpc = Σ(cpc × clicks) / Σ(clicks) / 100` (взвешенный средний CPC)
+
+**Файлы:**
+- `backend/app/api/v1/campaign_details.py` — CampaignPhraseRow +3 поля, fallback на normquery
+- `frontend/src/api/campaignDetails.ts` — CampaignPhraseRow +3 поля
+- `frontend/src/components/CampaignDetailModal.tsx` — renderPhrases расширен
+
+**Документация обновлена:**
+- `docs/architecture/04_BACKEND_API.md` — секция campaign-details: CampaignPhraseRow расширен, phrases логика дополнена (normquery fallback + формулы)
+- `docs/architecture/06_FRONTEND.md` — changelog 2026-04-01: WB phrases tab UI изменения
+
+---
+
 ## 2026-04-01 (v17.26.0)
 
 ### feat(normquery): UWB Search Cluster Analytics — полный backend pipeline

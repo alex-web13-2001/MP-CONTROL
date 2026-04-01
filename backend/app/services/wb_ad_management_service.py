@@ -575,8 +575,76 @@ class WBAdManagementService:
         return budgets
 
     # ══════════════════════════════════════════════════════════════
+    # Campaign Product (NM) Management
+    # ══════════════════════════════════════════════════════════════
+
+    async def manage_campaign_nms(
+        self,
+        advert_id: int,
+        add: List[int],
+        delete: List[int],
+    ) -> Dict[str, Any]:
+        """
+        Add/remove products (nm_ids) from a campaign.
+
+        WB API: PATCH /adv/v0/auction/nms
+        Only works for active campaigns (status=9).
+
+        Args:
+            advert_id: Campaign ID
+            add: List of nm_ids to add
+            delete: List of nm_ids to remove
+        """
+        payload: Dict[str, Any] = {"id": advert_id}
+        if add:
+            payload["add"] = add
+        if delete:
+            payload["delete"] = delete
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.request(
+                "PATCH",
+                "/adv/v0/auction/nms",
+                json=payload,
+            )
+
+            if response.is_success:
+                actions = []
+                if add:
+                    actions.append(f"добавлено {len(add)}")
+                if delete:
+                    actions.append(f"удалено {len(delete)}")
+                summary = ", ".join(actions)
+                logger.info(
+                    f"[ad-mgmt] Campaign NMs updated: advert={advert_id} "
+                    f"{summary} (shop={self.shop_id})"
+                )
+                return {
+                    "success": True,
+                    "message": f"Товары обновлены: {summary}",
+                    "status_code": response.status_code,
+                }
+
+            error_msg = self._parse_error(response)
+            logger.warning(
+                f"[ad-mgmt] Failed to manage NMs: advert={advert_id} "
+                f"status={response.status_code}, error={error_msg}"
+            )
+            return {
+                "success": False,
+                "message": error_msg,
+                "status_code": response.status_code,
+            }
+
+    # ══════════════════════════════════════════════════════════════
     # Helpers
     # ══════════════════════════════════════════════════════════════
+
 
     def _parse_error(self, response) -> str:
         """Extract user-friendly error message from WB API response."""

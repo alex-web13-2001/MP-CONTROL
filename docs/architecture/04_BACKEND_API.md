@@ -416,7 +416,7 @@ date_to: date (optional) — конец кастомного диапазона
 
 ## Детали кампаний — `/api/v1/campaign-details`
 
-> **Файл:** `backend/app/api/v1/campaign_details.py` (758 строк)  
+> **Файл:** `backend/app/api/v1/campaign_details.py` (~850 строк)  
 > **Универсальный:** работает и для Ozon (`marketplace=ozon`), и для WB (`marketplace=wb`)
 
 ### Endpoints
@@ -426,7 +426,7 @@ date_to: date (optional) — конец кастомного диапазона
 | `GET` | `/campaign-details/{mp}/{campaign_id}/kpi`      | KPI agрегаты (текущий + предыдущий период, дельты) | JWT  |
 | `GET` | `/campaign-details/{mp}/{campaign_id}/stats`    | Time-series (views, clicks, orders, spend, DRR)    | JWT  |
 | `GET` | `/campaign-details/{mp}/{campaign_id}/events`   | История событий (ставки, статус, контент)           | JWT  |
-| `GET` | `/campaign-details/{mp}/{campaign_id}/phrases`  | Поисковые фразы (из `fact_advert_phrases_daily`)   | JWT  |
+| `GET` | `/campaign-details/{mp}/{campaign_id}/phrases`  | Поисковые фразы + normquery fallback для WB        | JWT  |
 | `GET` | `/campaign-details/{mp}/{campaign_id}/heatmap`  | Heatmap заказов (час × день недели)                 | JWT  |
 | `GET` | `/campaign-details/{mp}/{campaign_id}/purchases`| SKU, купленные через кампанию                       | JWT  |
 
@@ -443,9 +443,21 @@ date_to: date (optional) — конец кастомного диапазона
 - **KPI:** ad stats + product revenue (из `fact_ozon_orders` / `fact_orders_raw`), вычисление дельт с предыдущим периодом той же длины
 - **Stats:** merge рекламных данных (`fact_ozon_ad_daily` / `fact_advert_stats_v3`) с product revenue per day
 - **Events:** конвертация Ozon SKU → product_id для поиска в `event_log` (sku и product_id — разные!), enrichment с названиями из `dim_ozon_products`; фильтрация `STATUS_CHANGE` событий
-- **Phrases:** агрегация из `fact_advert_phrases_daily` (marketplace Enum8: 1=WB, 2=Ozon)
+- **Phrases:** двухуровневый источник данных:
+  1. Основной: `fact_advert_phrases_daily` (marketplace Enum8: 1=WB, 2=Ozon)
+  2. **Fallback (WB):** если основная таблица пуста — `fact_normquery_stats_daily` (кластеры поисковых запросов). Обогащает ответ полями `atbs`, `avg_pos`, `cpc` для CPM-кампаний
 - **Heatmap:** группировка заказов по `toDayOfWeek()` × `toHour()` из таблиц заказов
 - **Purchases:** фактические покупки по SKU кампании с enrichment названий из PostgreSQL
+
+#### Phrases — формулы normquery (WB fallback)
+
+| Метрика | Формула | Единицы |
+| ------- | ------- | ------- |
+| `spend` | `Σ(cpc × clicks) / 100` | Рубли (cpc хранится в копейках) |
+| `avg_pos` | `Σ(avg_pos × views) / Σ(views)` | Позиция (взвешенное по показам) |
+| `cpc` | `Σ(cpc × clicks) / Σ(clicks) / 100` | Рубли (взвешенный средний) |
+
+> **Важно:** CPC для CPM-кампаний WB — производная метрика (0.09–1.34₽), т.к. оплата за показы, не за клики. Расхождение normquery vs основная статистика < 2% (мелкие кластеры < 100 показов отсекаются WB API).
 
 ### Response Schemas
 
@@ -454,7 +466,7 @@ date_to: date (optional) — конец кастомного диапазона
 | `CampaignKpiResponse` | `current`/`previous` KpiPeriod + `first_date` (дата запуска)            |
 | `CampaignStatsRow`    | dt, views, clicks, orders, cart, revenue, spend, ctr, drr, product_revenue |
 | `CampaignEventRow`    | id, timestamp, event_type, product_id, product_name, old/new_value        |
-| `CampaignPhraseRow`   | phrase, views, clicks, ctr, spend, orders, revenue                        |
+| `CampaignPhraseRow`   | phrase, views, clicks, ctr, spend, orders, revenue, **atbs?**, **avg_pos?**, **cpc?** |
 | `CampaignHeatmapRow`  | day_of_week, hour, orders                                                 |
 | `CampaignPurchaseRow` | sku, product_name, offer_id, quantity, revenue, avg_price                  |
 
@@ -1137,3 +1149,11 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 - **Retry логика Gemini API** (`campaign_ai_analysis.py`): до 2 retries с exponential backoff (2с→4с) на 429/503/ReadTimeout/ConnectTimeout; timeout разделён на connect=15s и read=170s
 - **Ставки WB в events-detail** (`advertising_analytics.py`): `BID_CHANGE` old/new_value конвертируются из копеек в рубли (÷100); `OZON_BID_CHANGE` оставлен как есть (рубли)
 
+
+### 2026-04-01
+
+- **`campaign_details.py`** — WB normquery phrases fallback:
+  - `CampaignPhraseRow` расширен: `+atbs` (корзины), `+avg_pos` (позиция), `+cpc` (CPC в ₽)
+  - Phrases endpoint: если `fact_advert_phrases_daily` пуста для WB → fallback на `fact_normquery_stats_daily`
+  - Формулы: `spend = Σ(cpc×clicks)/100`, `cpc = Σ(cpc×clicks)/Σ(clicks)/100`, `avg_pos` взвешенный по показам
+  - Валидация данных: CPC в копейках из WB API (подтверждено), расхождение с основной статистикой < 2%

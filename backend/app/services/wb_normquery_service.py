@@ -74,10 +74,14 @@ class WBNormqueryService:
                 "stats": [{
                   "norm_query": "...",
                   "views": N, "clicks": N, "atbs": N, "orders": N,
+                  "shks": N,  // ordered items count
+                  "spend": N, // spend in KOPECKS
                   "avg_pos": F, "cpc": N, "cpm": N, "ctr": F
                 }]
               }]
             }
+
+        Note: All monetary values (spend, cpc, cpm) are in KOPECKS (÷100 for rubles).
         """
         payload = {
             "from": date_from,
@@ -491,6 +495,125 @@ class WBNormqueryService:
             error_msg = response.error or "Unknown error"
             logger.warning(
                 f"[normquery] Failed to set minus phrases: "
+                f"status={response.status_code}, error={error_msg}"
+            )
+            return {"success": False, "message": error_msg}
+
+    async def toggle_cluster_exclusion(
+        self,
+        advert_id: int,
+        nm_id: int,
+        norm_query: str,
+        action: str,  # "exclude" or "include"
+    ) -> Dict[str, Any]:
+        """
+        Atomically toggle a cluster's exclusion status.
+
+        Steps:
+        1. GET current minus-phrases via POST /adv/v0/normquery/get-minus
+        2. Add or remove the norm_query from the list
+        3. SET updated list via POST /adv/v0/normquery/set-minus
+
+        Args:
+            advert_id: Campaign ID
+            nm_id: Product nm_id
+            norm_query: The cluster name to toggle
+            action: "exclude" (add to minus) or "include" (remove from minus)
+        """
+        # Step 1: Get current minus phrases
+        current = await self.get_normquery_minus(
+            [{"advert_id": advert_id, "nm_id": nm_id}]
+        )
+
+        # Parse current minus phrases
+        current_phrases: list = []
+        items = current.get("items", [])
+        if isinstance(current, list):
+            items = current
+        for item in items:
+            if isinstance(item, dict):
+                current_phrases = item.get("norm_queries", []) or []
+                break
+
+        # Step 2: Modify list
+        if action == "exclude":
+            if norm_query not in current_phrases:
+                current_phrases.append(norm_query)
+            else:
+                return {
+                    "success": True,
+                    "message": f"Кластер «{norm_query}» уже исключён",
+                    "phrases": current_phrases,
+                }
+        elif action == "include":
+            if norm_query in current_phrases:
+                current_phrases.remove(norm_query)
+            else:
+                return {
+                    "success": True,
+                    "message": f"Кластер «{norm_query}» уже активен",
+                    "phrases": current_phrases,
+                }
+        else:
+            return {"success": False, "message": f"Unknown action: {action}"}
+
+        # Step 3: Set updated list
+        result = await self.set_minus_phrases(advert_id, nm_id, current_phrases)
+
+        if result.get("success"):
+            action_label = "исключён" if action == "exclude" else "включён"
+            return {
+                "success": True,
+                "message": f"Кластер «{norm_query}» {action_label}",
+                "phrases": current_phrases,
+            }
+
+        return result
+
+    async def delete_normquery_bids(
+        self,
+        bids: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Delete (reset) bids for search clusters back to campaign base bid.
+        Only for manual bid campaigns with payment_type=cpm.
+
+        WB API: DELETE /adv/v0/normquery/bids
+
+        Args:
+            bids: List of {
+                "advert_id": int,
+                "nm_id": int,
+                "norm_query": str,
+            }
+        """
+        payload = {"bids": bids}
+
+        async with MarketplaceClient(
+            db=self.db,
+            shop_id=self.shop_id,
+            marketplace="wildberries_adv",
+            api_key=self.api_key,
+        ) as client:
+            response = await client.request(
+                "DELETE",
+                "/adv/v0/normquery/bids",
+                json=payload,
+            )
+
+            if response.is_success:
+                logger.info(
+                    f"[normquery] Deleted {len(bids)} cluster bids, "
+                    f"shop={self.shop_id}"
+                )
+                return {
+                    "success": True,
+                    "message": f"Сброшено {len(bids)} ставок к базовой",
+                }
+
+            error_msg = response.error or "Unknown error"
+            logger.warning(
+                f"[normquery] Failed to delete bids: "
                 f"status={response.status_code}, error={error_msg}"
             )
             return {"success": False, "message": error_msg}

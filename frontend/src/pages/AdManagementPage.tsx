@@ -22,9 +22,10 @@ import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
 import {
   getCampaignsFromDB, getCampaignStats, startCampaign, pauseCampaign,
   batchStatusChange, getCampaignBudget, depositBudget,
-  kopecksToRubles, formatMoney, formatNum,
+  formatMoney, formatNum,
   type EnrichedCampaign, type EnrichedCampaignsResponse,
 } from '../api/ad-management'
+import CampaignManagementModal from '../components/CampaignManagementModal'
 
 // ── Sticky cell styles (matching ProductFinanceTable pattern) ─────
 const stickyCol: React.CSSProperties = {
@@ -407,7 +408,7 @@ export default function AdManagementPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
   // UI
-  const [expandedRow, setExpandedRow] = useState<number | null>(null)
+  const [managementModal, setManagementModal] = useState<EnrichedCampaign | null>(null)
   const [budgetModal, setBudgetModal] = useState<EnrichedCampaign | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchBudgetAmount, setBatchBudgetAmount] = useState<number | null>(null)
@@ -890,7 +891,6 @@ export default function AdManagementPage() {
                 )}
                 {filtered.map(c => {
                   const sc = STATUS_COLORS[c.status] || STATUS_COLORS[8]
-                  const isExpanded = expandedRow === c.advert_id
                   const ptLabel = PAYMENT_TYPE_LABELS[c.payment_type] || c.payment_type?.toUpperCase() || '—'
                   const drrColor = c.drr > 20 ? 'text-red-500' : c.drr > 10 ? 'text-amber-500' : 'text-emerald-500'
 
@@ -948,7 +948,7 @@ export default function AdManagementPage() {
                           style={{ ...stickyCol3 }}
                         >
                           <button
-                            onClick={() => setExpandedRow(isExpanded ? null : c.advert_id)}
+                            onClick={() => setManagementModal(c)}
                             className="text-left w-full"
                           >
                             <div className="flex items-center gap-2">
@@ -1061,76 +1061,7 @@ export default function AdManagementPage() {
                         </td>
                       </tr>
 
-                      {/* Expanded row — compact product bids */}
-                      <AnimatePresence>
-                        {isExpanded && c.nm_settings && c.nm_settings.length > 0 && (
-                          <tr>
-                            <td colSpan={17}>
-                              <motion.div
-                                initial={{ opacity: 0, height: 0 }}
-                                animate={{ opacity: 1, height: 'auto' }}
-                                exit={{ opacity: 0, height: 0 }}
-                                className="px-6 py-3 bg-[hsl(var(--muted))]/15 border-b border-[hsl(var(--border))]"
-                              >
-                                <div className="max-w-[800px]">
-                                  <div className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider mb-2">
-                                    Товары и ставки ({c.nm_settings.length})
-                                  </div>
-                                  <div className="flex flex-col gap-1.5">
-                                    {c.nm_settings.map((ns: any) => {
-                                      const hasBids = ns.bid_search > 0 || ns.bid_recommendations > 0
-                                      const isUnified = c.bid_type === 'unified' || ns.bid_search === ns.bid_recommendations
-                                      return (
-                                        <div key={ns.nm_id} className="py-1.5 px-3 rounded-md bg-[hsl(var(--secondary))]/60 hover:bg-[hsl(var(--secondary))] transition-colors">
-                                          {/* Line 1: Product name + bid (inline, not spread) */}
-                                          <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="text-[12px] font-medium text-[hsl(var(--foreground))] leading-tight">
-                                              {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
-                                            </span>
-                                            {hasBids && (
-                                              <div className="flex items-center gap-1.5 shrink-0">
-                                                {isUnified ? (
-                                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-violet-500/10 text-violet-600 dark:text-violet-400">
-                                                    {kopecksToRubles(ns.bid_search || ns.bid_recommendations)}
-                                                  </span>
-                                                ) : (
-                                                  <>
-                                                    {ns.bid_search > 0 && (
-                                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                                                        🔍 {kopecksToRubles(ns.bid_search)}
-                                                      </span>
-                                                    )}
-                                                    {ns.bid_recommendations > 0 && (
-                                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                                                        📦 {kopecksToRubles(ns.bid_recommendations)}
-                                                      </span>
-                                                    )}
-                                                  </>
-                                                )}
-                                              </div>
-                                            )}
-                                          </div>
-                                          {/* Line 2: Vendor code + nm_id */}
-                                          <div className="flex items-center gap-2 mt-0.5">
-                                            {ns.vendor_code && (
-                                              <span className="text-[10px] font-mono px-1 py-0.5 rounded bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))]">
-                                                {ns.vendor_code}
-                                              </span>
-                                            )}
-                                            <span className="text-[10px] font-mono text-[hsl(var(--muted-foreground))]/50">
-                                              #{ns.nm_id}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      )
-                                    })}
-                                  </div>
-                                </div>
-                              </motion.div>
-                            </td>
-                          </tr>
-                        )}
-                      </AnimatePresence>
+                      {/* Expanded row removed — replaced by management modal */}
                     </React.Fragment>
                   )
                 })}
@@ -1159,6 +1090,26 @@ export default function AdManagementPage() {
             balance={accountBalance}
             onClose={() => setBudgetModal(null)}
             onSuccess={() => { setBudgetModal(null); loadFullData(); }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Campaign Management Modal ───────────────────────────── */}
+      <AnimatePresence>
+        {managementModal && (
+          <CampaignManagementModal
+            campaign={managementModal}
+            shopId={shopId}
+            onClose={() => setManagementModal(null)}
+            onCampaignUpdate={(updated) => {
+              setData(prev => prev ? {
+                ...prev,
+                campaigns: prev.campaigns.map(c =>
+                  c.advert_id === updated.advert_id ? { ...c, ...updated } : c
+                ),
+              } : prev)
+              setManagementModal(updated)
+            }}
           />
         )}
       </AnimatePresence>
