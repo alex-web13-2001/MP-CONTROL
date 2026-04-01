@@ -1,4 +1,29 @@
-## 2026-04-01 (v17.29.0)
+## 2026-04-01 (v17.29.1)
+
+### fix(budget): Оптимистичный апдейт бюджета после пополнения
+
+**Проблема**: После пополнения бюджета кампании колонка «БЮДЖЕТ» продолжала показывать «+ Пополнить» вместо новой суммы. Причина — WB API eventual consistency: запрос бюджета сразу после deposit возвращал старое значение.
+
+**Решение — двухуровневый фикс:**
+
+**Frontend (оптимистичный апдейт):**
+- `BudgetDepositModal` теперь передаёт сумму пополнения в `onSuccess(depositedAmount)`
+- `onSuccess` немедленно обновляет `budgets` state: `oldTotal + depositedAmount`
+- Через 3 секунды — `loadFullData()` для синхронизации с Redis
+
+**Backend (надёжный Redis):**
+- 1 сек задержка перед запросом бюджета из WB API (eventual consistency)
+- Читает старый Redis кеш перед обновлением для optimistic fallback
+- Если WB API вернул стаблый/меньший total → `old_total + request.amount`
+- Если WB API недоступен → optimistic Redis update всё равно выполняется
+
+**Файлы:**
+- `frontend/src/pages/AdManagementPage.tsx` — optimistic budget update
+- `backend/app/api/v1/ad_management.py` — deposit Redis refresh с fallback
+
+---
+
+
 
 ### perf(normquery): Кластеры из ClickHouse — мгновенная загрузка модала
 
