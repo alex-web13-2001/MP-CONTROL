@@ -186,7 +186,7 @@ function TypeFilterDropdown({
 function BudgetDepositModal({
   campaign, shopId, balance, onClose, onSuccess,
 }: {
-  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: () => void
+  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: (depositedAmount: number) => void
 }) {
   const [amount, setAmount] = useState<string>('3000')
   const [loading, setLoading] = useState(false)
@@ -218,7 +218,7 @@ function BudgetDepositModal({
       await depositBudget(shopId, campaign.advert_id, numAmount)
       setSuccess(true)
       setTimeout(() => {
-        onSuccess()
+        onSuccess(numAmount)
       }, 1500)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка пополнения')
@@ -1089,7 +1089,21 @@ export default function AdManagementPage() {
             shopId={shopId}
             balance={accountBalance}
             onClose={() => setBudgetModal(null)}
-            onSuccess={() => { setBudgetModal(null); loadFullData(); }}
+            onSuccess={(depositedAmount) => {
+              const cid = budgetModal.advert_id
+              // Optimistic update: immediately add deposited amount to budget
+              setBudgets(prev => ({
+                ...prev,
+                [cid]: {
+                  total: (prev[cid]?.total || budgetModal.budget_total || 0) + depositedAmount,
+                  daily: prev[cid]?.daily || 0,
+                  loading: false,
+                },
+              }))
+              setBudgetModal(null)
+              // Delayed reload to sync with Redis (WB API eventual consistency)
+              setTimeout(() => loadFullData(), 3000)
+            }}
           />
         )}
       </AnimatePresence>

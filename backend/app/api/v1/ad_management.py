@@ -1322,21 +1322,58 @@ async def deposit_budget(
 
     # After successful deposit — refresh Redis cache for this campaign's budget
     try:
+        import asyncio
         import redis.asyncio as aioredis
         from app.config import get_settings
         settings = get_settings()
 
+        redis_client = await aioredis.from_url(
+            settings.redis_url, encoding="utf-8", decode_responses=True,
+            socket_connect_timeout=2, socket_timeout=2,
+        )
+        cache_key = f"budget:{shop.id}:{request.advert_id}"
+
+        # Read old cached budget first (for optimistic fallback)
+        old_cached = await redis_client.get(cache_key)
+        old_total = 0
+        if old_cached:
+            old_data = json.loads(old_cached)
+            old_total = old_data.get("total", 0)
+
+        # Wait for WB API eventual consistency
+        await asyncio.sleep(1.0)
+
         # Fetch fresh budget from WB API
         budget_result = await service.get_campaign_budget(request.advert_id)
+
         if budget_result.get("success"):
-            redis_client = await aioredis.from_url(
-                settings.redis_url, encoding="utf-8", decode_responses=True,
-                socket_connect_timeout=2, socket_timeout=2,
+            new_data = budget_result["data"]
+            api_total = new_data.get("total", 0)
+
+            # If WB API still returns stale data (total didn't increase),
+            # use optimistic calculation: old_total + deposited amount
+            if api_total <= old_total and old_total > 0:
+                new_data["total"] = old_total + request.amount
+                logger.info(
+                    f"[deposit] WB API stale ({api_total}), using optimistic: "
+                    f"{old_total} + {request.amount} = {new_data['total']}"
+                )
+
+            await redis_client.set(cache_key, json.dumps(new_data), ex=1200)
+            logger.info(
+                f"[deposit] Refreshed Redis cache for budget:{shop.id}:{request.advert_id} "
+                f"total={new_data.get('total')}"
             )
-            cache_key = f"budget:{shop.id}:{request.advert_id}"
-            await redis_client.set(cache_key, json.dumps(budget_result["data"]), ex=1200)
-            await redis_client.aclose()
-            logger.info(f"[deposit] Refreshed Redis cache for budget:{shop.id}:{request.advert_id}")
+        else:
+            # WB API failed — do optimistic update in Redis anyway
+            optimistic_data = {"total": old_total + request.amount, "daily": 0, "currency": "RUB"}
+            await redis_client.set(cache_key, json.dumps(optimistic_data), ex=1200)
+            logger.info(
+                f"[deposit] WB budget API failed, optimistic Redis update: "
+                f"budget:{shop.id}:{request.advert_id} total={optimistic_data['total']}"
+            )
+
+        await redis_client.aclose()
     except Exception as e:
         logger.warning(f"[deposit] Failed to refresh Redis budget cache: {e}")
 
