@@ -5351,9 +5351,9 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
         campaign_ids = [int(r[0]) for r in campaign_rows]
         logger.info(f"[normquery-sync] shop={shop_id} found {len(campaign_ids)} UWB campaigns")
 
-        # Date range: last 3 days (for daily breakdown)
+        # Date range: last 7 days (for daily breakdown, supports 7d period filter)
         end_dt = date.today()
-        start_dt = end_dt - timedelta(days=3)
+        start_dt = end_dt - timedelta(days=7)
         date_from = start_dt.isoformat()
         date_to = end_dt.isoformat()
 
@@ -5383,7 +5383,7 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                     # 3. Fetch stats per-day using v0 API (v1 API format is unreliable)
                     # v0 returns aggregated stats for a period — call it per-day for daily granularity
                     stats_rows = []
-                    for day_offset in range(3):
+                    for day_offset in range(7):
                         day_dt = end_dt - timedelta(days=day_offset)
                         day_str = day_dt.isoformat()
                         try:
