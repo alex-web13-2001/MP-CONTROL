@@ -256,16 +256,15 @@ async def get_campaign_kpi(
             return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
         else:
             # WB: total product revenue from fact_orders_raw (organic + ad sales)
-            # This is INTENTIONALLY different from ad_revenue!
-            # ad_revenue = campaign-attributed (fact_advert_stats_v3)
-            # product_revenue = ALL sales of these SKUs (fact_orders_raw)
+            # Uses price_with_disc (order price) for ALL incoming orders,
+            # NOT finished_price with is_cancel=0 (only fulfilled).
+            # This matches WB ad attribution which counts all placed orders.
             q = """
-                SELECT sum(finished_price) 
+                SELECT sum(price_with_disc) 
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND nm_id IN {skus:Array(UInt64)}
                   AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND is_cancel = 0
             """
             return q, {"shop_id": shop_id, "skus": skus, "start_date": sd, "end_date": ed}
     
@@ -520,12 +519,11 @@ async def get_campaign_stats(
         if skus_for_rev and shop_id_for_rev:
             pr_rows = ch.query(
                 """
-                SELECT toDate(date) as d, sum(finished_price)
+                SELECT toDate(date) as d, sum(price_with_disc)
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND nm_id IN {skus:Array(UInt64)}
                   AND toDate(date) BETWEEN {start_date:Date} AND {end_date:Date}
-                  AND is_cancel = 0
                 GROUP BY d
                 """,
                 parameters={"shop_id": shop_id_for_rev, "skus": skus_for_rev, "start_date": start_date, "end_date": end_date}
