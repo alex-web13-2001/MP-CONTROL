@@ -138,17 +138,35 @@ class EventDetector:
                     })
                     logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
-                for nm_id in removed_items:
-                    events.append({
-                        "shop_id": shop_id,
-                        "advert_id": advert_id,
-                        "nm_id": nm_id,
-                        "event_type": "ITEM_REMOVE",
-                        "old_value": str(nm_id),
-                        "new_value": None,
-                        "event_metadata": None
-                    })
-                    logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
+                # DEBOUNCING: WB API periodically returns empty nm_settings
+                # during "API storms" — all items appear as removed.
+                # Skip ITEM_REMOVE if current list is empty or >50% items vanished.
+                skip_remove = False
+                if len(old_items) > 0 and len(current_items_set) == 0:
+                    logger.warning(
+                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
+                        f"API returned 0 items (was {len(old_items)}), likely API glitch"
+                    )
+                    skip_remove = True
+                elif len(old_items) > 2 and len(removed_items) > len(old_items) * 0.5:
+                    logger.warning(
+                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
+                        f"{len(removed_items)}/{len(old_items)} items vanished, likely API glitch"
+                    )
+                    skip_remove = True
+                
+                if not skip_remove:
+                    for nm_id in removed_items:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "ITEM_REMOVE",
+                            "old_value": str(nm_id),
+                            "new_value": None,
+                            "event_metadata": None
+                        })
+                        logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
                 
                 # ===== Update Redis state (only with valid values) =====
                 self.state_manager.set_state(
@@ -588,17 +606,37 @@ class EventDetector:
                         })
                         logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
-                for nm_id in old_items - current_items_set:
-                    events.append({
-                        "shop_id": shop_id,
-                        "advert_id": advert_id,
-                        "nm_id": nm_id,
-                        "event_type": "ITEM_REMOVE",
-                        "old_value": str(nm_id),
-                        "new_value": None,
-                        "event_metadata": None
-                    })
-                    logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
+                removed_items = old_items - current_items_set
+                
+                # DEBOUNCING: WB API periodically returns empty nm_settings
+                # during "API storms" — all items appear as removed.
+                # Skip ITEM_REMOVE if current list is empty or >50% items vanished.
+                skip_remove = False
+                if len(old_items) > 0 and len(current_items_set) == 0:
+                    logger.warning(
+                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
+                        f"API returned 0 items (was {len(old_items)}), likely API glitch"
+                    )
+                    skip_remove = True
+                elif len(old_items) > 2 and len(removed_items) > len(old_items) * 0.5:
+                    logger.warning(
+                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
+                        f"{len(removed_items)}/{len(old_items)} items vanished, likely API glitch"
+                    )
+                    skip_remove = True
+                
+                if not skip_remove:
+                    for nm_id in removed_items:
+                        events.append({
+                            "shop_id": shop_id,
+                            "advert_id": advert_id,
+                            "nm_id": nm_id,
+                            "event_type": "ITEM_REMOVE",
+                            "old_value": str(nm_id),
+                            "new_value": None,
+                            "event_metadata": None
+                        })
+                        logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
                 
                 # ===== Update Redis state =====
                 # Use max bid as CPM equivalent for backward compat
