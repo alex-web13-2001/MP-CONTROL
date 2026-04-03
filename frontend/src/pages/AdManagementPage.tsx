@@ -187,7 +187,7 @@ function TypeFilterDropdown({
 function BudgetDepositModal({
   campaign, shopId, balance, onClose, onSuccess,
 }: {
-  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: (depositedAmount: number, newBudgetTotal: number | null) => void
+  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: (depositedAmount: number, newBudgetTotal: number | null, campaignStarted: boolean) => void
 }) {
   const [amount, setAmount] = useState<string>('3000')
   const [loading, setLoading] = useState(false)
@@ -222,10 +222,12 @@ function BudgetDepositModal({
       const response = await depositBudget(shopId, campaign.advert_id, numAmount)
       
       // Auto-start campaign after deposit if checkbox is checked
+      let didStart = false
       if (showAutoStart && autoStart) {
         try {
           const startRes = await startCampaign(shopId, campaign.advert_id)
           setStartResult({ tried: true, ok: startRes.success, msg: startRes.message })
+          didStart = startRes.success
         } catch (e: any) {
           setStartResult({ tried: true, ok: false, msg: e?.response?.data?.detail || 'Ошибка запуска' })
         }
@@ -233,7 +235,7 @@ function BudgetDepositModal({
       
       setSuccess(true)
       setTimeout(() => {
-        onSuccess(numAmount, response.new_budget_total ?? null)
+        onSuccess(numAmount, response.new_budget_total ?? null, didStart)
       }, 2000)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка пополнения')
@@ -1177,7 +1179,7 @@ export default function AdManagementPage() {
             shopId={shopId}
             balance={accountBalance}
             onClose={() => setBudgetModal(null)}
-            onSuccess={(depositedAmount, newBudgetTotal) => {
+            onSuccess={(depositedAmount, newBudgetTotal, campaignStarted) => {
               const cid = budgetModal.advert_id
               // Use real budget total from WB API (returned by backend after deposit)
               // Fallback to optimistic calculation only if backend couldn't fetch it
@@ -1195,6 +1197,15 @@ export default function AdManagementPage() {
                   loading: false,
                 },
               }))
+              // If campaign was auto-started, optimistically update status to Active (9)
+              if (campaignStarted) {
+                setData(prev => prev ? {
+                  ...prev,
+                  campaigns: prev.campaigns.map(c =>
+                    c.advert_id === cid ? { ...c, status: 9, status_label: 'Активна' } : c
+                  ),
+                } : prev)
+              }
               setBudgetModal(null)
               // No loadFullData() here — it would overwrite with stale Redis.
               // Budget will sync naturally on next Celery cycle (every 15 min).
