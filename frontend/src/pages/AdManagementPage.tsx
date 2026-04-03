@@ -195,6 +195,8 @@ function BudgetDepositModal({
   const [loadingBudget, setLoadingBudget] = useState(true)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const [autoStart, setAutoStart] = useState(true)
+  const [startResult, setStartResult] = useState<{ tried: boolean; ok: boolean; msg: string } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -208,6 +210,7 @@ function BudgetDepositModal({
 
   const numAmount = Number(amount) || 0
 
+
   const handleDeposit = async () => {
     if (numAmount < 100) {
       setError('Минимальная сумма — 100 ₽')
@@ -217,10 +220,21 @@ function BudgetDepositModal({
     setError('')
     try {
       const response = await depositBudget(shopId, campaign.advert_id, numAmount)
+      
+      // Auto-start campaign after deposit if checkbox is checked
+      if (showAutoStart && autoStart) {
+        try {
+          const startRes = await startCampaign(shopId, campaign.advert_id)
+          setStartResult({ tried: true, ok: startRes.success, msg: startRes.message })
+        } catch (e: any) {
+          setStartResult({ tried: true, ok: false, msg: e?.response?.data?.detail || 'Ошибка запуска' })
+        }
+      }
+      
       setSuccess(true)
       setTimeout(() => {
         onSuccess(numAmount, response.new_budget_total ?? null)
-      }, 1500)
+      }, 2000)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка пополнения')
     } finally {
@@ -230,6 +244,9 @@ function BudgetDepositModal({
 
   const ptLabel = PAYMENT_TYPE_LABELS[campaign.payment_type] || campaign.payment_type?.toUpperCase() || ''
   const currentBudget = budgetData?.total || campaign.budget_total || 0
+
+  // Show auto-start checkbox only when campaign is NOT active (9) and has zero budget
+  const showAutoStart = campaign.status !== 9 && currentBudget === 0
 
   return (
     <motion.div
@@ -257,6 +274,11 @@ function BudgetDepositModal({
               <p className="text-sm text-[hsl(var(--muted-foreground))] mt-1">
                 +{numAmount.toLocaleString('ru-RU')} ₽ на кампанию {campaign.advert_id}
               </p>
+              {startResult?.tried && (
+                <p className={`text-sm mt-2 font-medium ${startResult.ok ? 'text-emerald-500' : 'text-amber-500'}`}>
+                  {startResult.ok ? '▶ Кампания запущена' : `⚠ ${startResult.msg}`}
+                </p>
+              )}
             </div>
           </div>
         ) : (
@@ -322,6 +344,27 @@ function BudgetDepositModal({
                 </div>
               )}
 
+              {/* Auto-start checkbox */}
+              {showAutoStart && (
+                <label className="flex items-center gap-2.5 cursor-pointer select-none group">
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={autoStart}
+                      onChange={e => setAutoStart(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-5 h-5 rounded-md border-2 border-[hsl(var(--border))] bg-[hsl(var(--secondary))] peer-checked:bg-violet-600 peer-checked:border-violet-600 transition-all flex items-center justify-center">
+                      {autoStart && <Check className="w-3.5 h-3.5 text-white" />}
+                    </div>
+                  </div>
+                  <span className="text-sm text-[hsl(var(--muted-foreground))] group-hover:text-[hsl(var(--foreground))] transition-colors">
+                    <Play className="w-3.5 h-3.5 inline-block mr-1 text-emerald-500" />
+                    Запустить кампанию после пополнения
+                  </span>
+                </label>
+              )}
+
               {/* Actions */}
               <div className="flex items-center gap-3 pt-1">
                 <button
@@ -331,10 +374,10 @@ function BudgetDepositModal({
                 >
                   {loading ? (
                     <span className="flex items-center justify-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" /> Пополняю...
+                      <Loader2 className="w-4 h-4 animate-spin" /> {showAutoStart && autoStart ? 'Пополняю и запускаю...' : 'Пополняю...'}
                     </span>
                   ) : (
-                    `Пополнить`
+                    showAutoStart && autoStart ? 'Пополнить и запустить' : 'Пополнить'
                   )}
                 </button>
                 <button
