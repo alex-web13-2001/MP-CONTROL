@@ -865,9 +865,35 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
     if (isNaN(rubles) || rubles <= 0) return
     setSaving(true)
     try {
-      await changeBids(shopId, campaign.advert_id, placement, [{ nm_id: nmId, bid: rubles * 100 }])
-      onToast({ type: 'success', message: `Ставка ${placement === 'search' ? 'поиска' : 'полок'} обновлена: ${rubles} ₽` })
-      setEditingProduct(null)
+      const result = await changeBids(
+        shopId,
+        campaign.advert_id,
+        placement,
+        [{ nm_id: nmId, bid: rubles * 100 }],
+        campaign.bid_type || 'manual',
+      )
+      if (result.success) {
+        onToast({ type: 'success', message: `Ставка ${placement === 'search' ? 'поиска' : 'полок'} обновлена: ${rubles} ₽` })
+        setEditingProduct(null)
+        // Optimistic update: update bid in campaign nm_settings
+        if (onCampaignUpdate && campaign.nm_settings) {
+          const newBidKopecks = rubles * 100
+          onCampaignUpdate({
+            ...campaign,
+            nm_settings: campaign.nm_settings.map(ns =>
+              ns.nm_id === nmId
+                ? {
+                    ...ns,
+                    bid_search: (placement === 'search' || isUnifiedBidType) ? newBidKopecks : ns.bid_search,
+                    bid_recommendations: placement === 'recommendations' ? newBidKopecks : ns.bid_recommendations,
+                  }
+                : ns
+            ),
+          })
+        }
+      } else {
+        onToast({ type: 'error', message: result.message || 'Ошибка изменения ставки' })
+      }
     } catch (e: any) {
       onToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка изменения ставки' })
     } finally {

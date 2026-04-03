@@ -66,8 +66,9 @@ class ChangeBidsRequest(BaseModel):
     """Request to change bids in a campaign."""
     shop_id: int
     advert_id: int
-    placement: Literal["search", "recommendations"]
+    placement: Literal["search", "recommendations", "combined"]
     bids: List[BidItem] = Field(..., min_length=1, max_length=100)
+    bid_type: str = Field("manual", description="Campaign bid_type: 'manual' or 'unified'")
 
 
 class ChangeBidsResponse(BaseModel):

@@ -197,6 +197,7 @@ class WBAdManagementService:
         advert_id: int,
         placement: str,
         bids: List[Dict[str, int]],
+        bid_type: str = "manual",
     ) -> Dict[str, Any]:
         """
         Change bids for nm_ids in a campaign.
@@ -206,28 +207,66 @@ class WBAdManagementService:
 
         Args:
             advert_id: Campaign ID
-            placement: 'search' or 'recommendations'
+            placement: 'search', 'recommendations', or 'combined'
             bids: List of {"nm_id": int, "bid": int} (bid in KOPECKS)
+            bid_type: 'manual' or 'unified' — determines placement mapping
 
-        Request body format:
+        Current WB API request body format:
         {
-            "advertId": 12345,
-            "placement": "search",
             "bids": [
-                {"nmId": 67890, "bid": 15000}  // 150 rubles
+                {
+                    "advert_id": 12345,
+                    "nm_id": 67890,
+                    "placement": "combined",
+                    "bid": 15000
+                }
             ]
         }
+
+        For unified campaigns: placement must be "combined".
+        For manual campaigns: placement is "search" or "recommendations".
         """
-        # Convert field names to WB API format
-        api_bids = [
-            {"nmId": b["nm_id"], "bid": b["bid"]}
+        # Map placement based on bid_type
+        api_placement = placement
+        if bid_type == "unified":
+            api_placement = "combined"
+        
+        # WB API PATCH /api/advert/v1/bids — verified format (tested 2026-04-02):
+        # All fields are snake_case. nm_bids is ALWAYS required.
+        #
+        # {
+        #   "bids": [{
+        #     "advert_id": 34293797,
+        #     "cpm": 90500,
+        #     "placement": "combined",   // "combined" for unified, "search"/"recommendations" for manual
+        #     "nm_bids": [{
+        #       "nm_id": 400392978,
+        #       "bid_kopecks": 90500,    // NOT "bid"! Must be "bid_kopecks"
+        #       "placement": "combined"  // same placement
+        #     }]
+        #   }]
+        # }
+        
+        # Use the first bid's value as the campaign-level CPM
+        cpm_value = bids[0]["bid"] if bids else 0
+        
+        # Build nm_bids array (always required)
+        nm_bids = [
+            {
+                "nm_id": b["nm_id"],
+                "bid_kopecks": b["bid"],
+                "placement": api_placement,
+            }
             for b in bids
         ]
-
+        
         payload = {
-            "advertId": advert_id,
-            "placement": placement,
-            "bids": api_bids,
+            "bids": [{
+                "advert_id": advert_id,
+                "cpm": cpm_value,
+                "placement": api_placement,
+                "nm_bids": nm_bids,
+            }]
         }
 
         async with MarketplaceClient(
@@ -249,11 +288,11 @@ class WBAdManagementService:
                 )
                 logger.info(
                     f"[ad-mgmt] Bids changed: advert={advert_id} "
-                    f"placement={placement} [{bid_summary}] (shop={self.shop_id})"
+                    f"placement={api_placement} [{bid_summary}] (shop={self.shop_id})"
                 )
                 return {
                     "success": True,
-                    "message": f"Ставки обновлены ({placement})",
+                    "message": f"Ставки обновлены ({api_placement})",
                     "status_code": response.status_code,
                     "bids_applied": len(bids),
                 }
@@ -261,7 +300,10 @@ class WBAdManagementService:
             error_msg = self._parse_error(response)
             logger.warning(
                 f"[ad-mgmt] Failed to change bids: advert={advert_id} "
-                f"status={response.status_code}, error={error_msg}"
+                f"placement={api_placement} "
+                f"status={response.status_code}, error={error_msg}, "
+                f"response_body={response.data}, "
+                f"payload={payload}"
             )
             return {
                 "success": False,

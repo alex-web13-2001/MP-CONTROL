@@ -266,12 +266,13 @@ export async function stopCampaign(
 export async function changeBids(
   shopId: number,
   advertId: number,
-  placement: 'search' | 'recommendations',
+  placement: 'search' | 'recommendations' | 'combined',
   bids: { nm_id: number; bid: number }[],
+  bidType: string = 'manual',
 ): Promise<ChangeBidsResponse> {
   const res = await apiClient.post<ChangeBidsResponse>(
     `${PREFIX}/bids/change`,
-    { shop_id: shopId, advert_id: advertId, placement, bids },
+    { shop_id: shopId, advert_id: advertId, placement, bids, bid_type: bidType },
   )
   return res.data
 }
@@ -340,7 +341,7 @@ export async function depositBudget(
   advertId: number,
   amount: number,
   budgetType: number = 1,
-): Promise<{ success: boolean; message: string }> {
+): Promise<{ success: boolean; message: string; new_budget_total?: number | null }> {
   const res = await apiClient.post(
     `${PREFIX}/budget/deposit`,
     { shop_id: shopId, advert_id: advertId, amount, budget_type: budgetType },

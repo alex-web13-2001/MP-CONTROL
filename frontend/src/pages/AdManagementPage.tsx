@@ -15,7 +15,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, Play, Pause, ChevronDown, ChevronUp, AlertTriangle,
-  Plus, X, Loader2, Check, ChevronsUpDown, DollarSign,
+  Plus, X, Loader2, Check, ChevronsUpDown, DollarSign, BarChart3,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
@@ -26,6 +26,7 @@ import {
   type EnrichedCampaign, type EnrichedCampaignsResponse,
 } from '../api/ad-management'
 import CampaignManagementModal from '../components/CampaignManagementModal'
+import { CampaignDetailModal } from '../components/CampaignDetailModal'
 
 // ── Sticky cell styles (matching ProductFinanceTable pattern) ─────
 const stickyCol: React.CSSProperties = {
@@ -186,7 +187,7 @@ function TypeFilterDropdown({
 function BudgetDepositModal({
   campaign, shopId, balance, onClose, onSuccess,
 }: {
-  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: (depositedAmount: number) => void
+  campaign: EnrichedCampaign; shopId: number; balance: number; onClose: () => void; onSuccess: (depositedAmount: number, newBudgetTotal: number | null) => void
 }) {
   const [amount, setAmount] = useState<string>('3000')
   const [loading, setLoading] = useState(false)
@@ -215,10 +216,10 @@ function BudgetDepositModal({
     setLoading(true)
     setError('')
     try {
-      await depositBudget(shopId, campaign.advert_id, numAmount)
+      const response = await depositBudget(shopId, campaign.advert_id, numAmount)
       setSuccess(true)
       setTimeout(() => {
-        onSuccess(numAmount)
+        onSuccess(numAmount, response.new_budget_total ?? null)
       }, 1500)
     } catch (e: any) {
       setError(e?.response?.data?.detail || 'Ошибка пополнения')
@@ -410,11 +411,39 @@ export default function AdManagementPage() {
   // UI
   const [managementModal, setManagementModal] = useState<EnrichedCampaign | null>(null)
   const [budgetModal, setBudgetModal] = useState<EnrichedCampaign | null>(null)
+  const [analyticsModal, setAnalyticsModal] = useState<EnrichedCampaign | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchBudgetAmount, setBatchBudgetAmount] = useState<number | null>(null)
 
   // Budgets — from Redis cache (synced by Celery every 15 min)
   const [budgets, setBudgets] = useState<Record<number, { total: number; daily: number; loading: boolean }>>({})
+
+  // sessionStorage-backed recent deposits — survives F5 page reload (unlike useRef)
+  const DEPOSIT_STORAGE_KEY = 'recent_deposits'
+  const getRecentDeposits = (): Record<number, { amount: number; ts: number }> => {
+    try {
+      const raw = sessionStorage.getItem(DEPOSIT_STORAGE_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch { return {} }
+  }
+  const setRecentDeposit = (cid: number, amount: number) => {
+    const deposits = getRecentDeposits()
+    deposits[cid] = { amount, ts: Date.now() }
+    sessionStorage.setItem(DEPOSIT_STORAGE_KEY, JSON.stringify(deposits))
+  }
+  const clearExpiredDeposits = () => {
+    const deposits = getRecentDeposits()
+    const now = Date.now()
+    let changed = false
+    for (const key of Object.keys(deposits)) {
+      if (now - deposits[Number(key)].ts >= 120_000) {
+        delete deposits[Number(key)]
+        changed = true
+      }
+    }
+    if (changed) sessionStorage.setItem(DEPOSIT_STORAGE_KEY, JSON.stringify(deposits))
+    return deposits
+  }
 
   // Track whether data has been loaded for this shop (to avoid re-fetching on period change)
   const wbDataLoadedForShop = useRef<number | null>(null)
@@ -449,10 +478,19 @@ export default function AdManagementPage() {
 
       // Extract budgets from response (cached by Celery in Redis)
       const budgetState: Record<number, { total: number; daily: number; loading: boolean }> = {}
+      const deposits = clearExpiredDeposits()
       for (const c of result.campaigns) {
         if (c.budget_total !== undefined || c.budget_daily !== undefined) {
+          const apiTotal = c.budget_total || 0
+          const deposit = deposits[c.advert_id]
+          // If this campaign was recently deposited (within 2min) and API still shows lower value,
+          // keep the optimistic value to prevent UI reset
+          let total = apiTotal
+          if (deposit && apiTotal < deposit.amount) {
+            total = deposit.amount
+          }
           budgetState[c.advert_id] = {
-            total: c.budget_total || 0,
+            total,
             daily: c.budget_daily || 0,
             loading: false,
           }
@@ -970,6 +1008,13 @@ export default function AdManagementPage() {
                                   )}
                                 </div>
                               </div>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setAnalyticsModal(c) }}
+                                className="p-1 rounded-md hover:bg-violet-500/15 text-[hsl(var(--muted-foreground))] hover:text-violet-500 transition-colors flex-shrink-0"
+                                title="Статистика кампании"
+                              >
+                                <BarChart3 className="w-4 h-4" />
+                              </button>
                               <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0
                                 ${ptLabel === 'CPM' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400' :
                                   ptLabel === 'CPC' ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400' :
@@ -1089,20 +1134,27 @@ export default function AdManagementPage() {
             shopId={shopId}
             balance={accountBalance}
             onClose={() => setBudgetModal(null)}
-            onSuccess={(depositedAmount) => {
+            onSuccess={(depositedAmount, newBudgetTotal) => {
               const cid = budgetModal.advert_id
-              // Optimistic update: immediately add deposited amount to budget
+              // Use real budget total from WB API (returned by backend after deposit)
+              // Fallback to optimistic calculation only if backend couldn't fetch it
+              const actualTotal = newBudgetTotal != null
+                ? newBudgetTotal
+                : (budgets[cid]?.total || budgetModal.budget_total || 0) + depositedAmount
+              // Track this deposit so loadFullData won't overwrite with stale Redis data
+              setRecentDeposit(cid, actualTotal)
+              // Update budget display with real value from WB API
               setBudgets(prev => ({
                 ...prev,
                 [cid]: {
-                  total: (prev[cid]?.total || budgetModal.budget_total || 0) + depositedAmount,
+                  total: actualTotal,
                   daily: prev[cid]?.daily || 0,
                   loading: false,
                 },
               }))
               setBudgetModal(null)
-              // Delayed reload to sync with Redis (WB API eventual consistency)
-              setTimeout(() => loadFullData(), 3000)
+              // No loadFullData() here — it would overwrite with stale Redis.
+              // Budget will sync naturally on next Celery cycle (every 15 min).
             }}
           />
         )}
@@ -1127,6 +1179,19 @@ export default function AdManagementPage() {
           />
         )}
       </AnimatePresence>
+
+      {/* ── Campaign Analytics Detail Modal ──────────────────────── */}
+      {analyticsModal && (
+        <CampaignDetailModal
+          isOpen={true}
+          onClose={() => setAnalyticsModal(null)}
+          marketplace={marketplace === 'wildberries' ? 'wb' : marketplace || 'wb'}
+          campaignId={analyticsModal.advert_id}
+          campaignTitle={analyticsModal.name || `Кампания ${analyticsModal.advert_id}`}
+          startDate=""
+          endDate=""
+        />
+      )}
     </div>
   )
 }

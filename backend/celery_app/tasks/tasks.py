@@ -422,6 +422,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 sync_commercial_data,
                 sync_warehouses,
                 backfill_wb_paid_storage,
+                backfill_normquery_data,
             )
 
             steps = [
@@ -433,6 +434,7 @@ def load_historical_data(self, shop_id: int, months: int = 6):
                 ("Загрузка цен и остатков", sync_commercial_data, dict(shop_id=shop_id, api_key=api_key)),
                 ("Загрузка складов", sync_warehouses, dict(shop_id=shop_id, api_key=api_key)),
                 ("Загрузка платного хранения (90 дней)", backfill_wb_paid_storage, dict(shop_id=shop_id, api_key=api_key, months=3)),
+                ("Загрузка кластерных данных (30 дней)", backfill_normquery_data, dict(shop_id=shop_id, api_key=api_key, days_back=30)),
             ]
             total = len(steps)
 
@@ -5465,13 +5467,16 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                     bids_data = await svc.get_normquery_bids(items=items)
 
                     # Build bid map and enrich stats rows
+                    # NOTE: WB API /normquery/get-bids returns "bid" in RUBLES (not kopecks!)
+                    # We convert to kopecks (*100) for consistent storage in bid_kopecks column
                     bid_map = {}
                     if isinstance(bids_data, dict):
                         for bid in bids_data.get("bids", []):
                             nq = bid.get("norm_query", "")
-                            bid_map[nq] = int(bid.get("bid", 0))
+                            bid_rub = int(bid.get("bid", 0))
+                            bid_map[nq] = bid_rub * 100  # rubles → kopecks
 
-                    # Enrich stats rows with current bids
+                    # Enrich stats rows with current bids (kopecks)
                     for row in stats_rows:
                         row["bid_kopecks"] = bid_map.get(row["norm_query"], 0)
 
@@ -5515,7 +5520,7 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
                                 "advert_id": cid,
                                 "nm_id": nm_ids[0],
                                 "norm_query": nq,
-                                "bid_kopecks": bid_k,
+                                "bid_kopecks": bid_k,  # already in kopecks (converted above)
                                 "reach_max_bid": rec.get("reach_max", 0),
                                 "reach_med_bid": rec.get("reach_med", 0),
                                 "reach_min_bid": rec.get("reach_min", 0),
@@ -5581,5 +5586,308 @@ def sync_normquery_data(self, shop_id: int, api_key: str):
 
     try:
         return asyncio.run(run_sync())
+    except Exception as exc:
+        self.retry(exc=exc, countdown=60, max_retries=2)
+
+
+# ===================
+# NORMQUERY BACKFILL (one-time, for WB shop onboarding)
+# Collects 30 days of normquery stats + current bid snapshot
+# ===================
+
+@celery_app.task(bind=True, time_limit=1800, soft_time_limit=1750)
+def backfill_normquery_data(self, shop_id: int, api_key: str, days_back: int = 30):
+    """
+    One-time backfill of normquery (search cluster) stats for WB shop onboarding.
+
+    Identical to sync_normquery_data but collects data for `days_back` days
+    instead of 7. Runs once during load_historical_data WB pipeline.
+
+    Steps:
+    1. Get active UWB campaign_ids from dim_advert_campaigns (ClickHouse)
+    2. For each campaign: get nm_ids from fact_advert_stats_v3
+    3. Fetch normquery daily stats for last `days_back` days
+    4. Fetch current bids per cluster (single snapshot)
+    5. Fetch bid recommendations
+    6. Insert stats into fact_normquery_stats_daily
+    7. Insert bid snapshots into log_normquery_bids
+
+    Queue: SYNC (via backfill pipeline).
+    """
+    import asyncio
+    import os
+    import logging
+    from datetime import date, timedelta
+
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+    from sqlalchemy.orm import sessionmaker
+
+    from app.config import get_settings
+    from app.core.clickhouse import get_clickhouse_client
+    from app.services.wb_normquery_service import WBNormqueryService
+
+    logger = logging.getLogger(__name__)
+    settings = get_settings()
+
+    async def run_backfill():
+        engine = create_async_engine(settings.database_url)
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        ch = get_clickhouse_client()
+
+        # 1. Get active CPM campaigns (manual + unified)
+        try:
+            campaign_rows = ch.query(
+                """
+                SELECT advert_id,
+                       argMax(status, updated_at) as status
+                FROM mms_analytics.dim_advert_campaigns
+                WHERE shop_id = {sid:UInt32}
+                GROUP BY advert_id
+                HAVING argMax(bid_type, updated_at) IN ('manual', 'unified')
+                   AND argMax(payment_type, updated_at) = 'cpm'
+                   AND status IN (9, 11)
+                """,
+                parameters={"sid": shop_id}
+            ).result_rows
+        except Exception as e:
+            logger.error(f"[normquery-backfill] shop={shop_id} failed to get campaigns: {e}")
+            await engine.dispose()
+            return {"shop_id": shop_id, "status": "error", "error": str(e)}
+
+        if not campaign_rows:
+            logger.info(f"[normquery-backfill] shop={shop_id} no UWB campaigns found")
+            await engine.dispose()
+            return {"shop_id": shop_id, "status": "no_campaigns"}
+
+        campaign_ids = [int(r[0]) for r in campaign_rows]
+        logger.info(
+            f"[normquery-backfill] shop={shop_id} found {len(campaign_ids)} UWB campaigns, "
+            f"backfilling {days_back} days"
+        )
+
+        end_dt = date.today()
+        total_stats_rows = 0
+        total_bid_rows = 0
+        errors = []
+
+        async with async_session() as db:
+            svc = WBNormqueryService(db=db, shop_id=shop_id, api_key=api_key)
+
+            for ci, cid in enumerate(campaign_ids):
+                try:
+                    self.update_state(state='PROGRESS', meta={
+                        'status': f'Кампания {ci+1}/{len(campaign_ids)} (ID {cid})',
+                        'progress': f'{(ci+1)*100//len(campaign_ids)}%',
+                    })
+
+                    # 2. Get nm_ids for this campaign
+                    nm_rows = ch.query(
+                        "SELECT DISTINCT nm_id FROM mms_analytics.fact_advert_stats_v3 FINAL "
+                        "WHERE advert_id = {cid:UInt64} AND shop_id = {sid:UInt32} "
+                        "AND (views > 0 OR clicks > 0 OR spend > 0)",
+                        parameters={"cid": cid, "sid": shop_id}
+                    ).result_rows
+
+                    if not nm_rows:
+                        continue
+
+                    nm_ids = [int(r[0]) for r in nm_rows]
+                    items = [{"advert_id": cid, "nm_id": nm} for nm in nm_ids]
+
+                    # 3. Fetch stats per-day for days_back days
+                    stats_rows = []
+                    for day_offset in range(days_back):
+                        day_dt = end_dt - timedelta(days=day_offset)
+                        day_str = day_dt.isoformat()
+                        try:
+                            day_stats = await svc.get_normquery_stats(
+                                items=items,
+                                date_from=day_str,
+                                date_to=day_str,
+                            )
+                            if isinstance(day_stats, dict):
+                                raw_stats = day_stats.get("stats", [])
+                                flat_items = []
+                                for stat_item in raw_stats:
+                                    if not isinstance(stat_item, dict):
+                                        continue
+                                    if "norm_query" in stat_item:
+                                        flat_items.append((nm_ids[0] if nm_ids else 0, stat_item))
+                                    elif "stats" in stat_item:
+                                        nm_val = stat_item.get("nm_id", nm_ids[0] if nm_ids else 0)
+                                        for s in stat_item.get("stats", []):
+                                            flat_items.append((nm_val, s))
+
+                                for nm_id_val, s in flat_items:
+                                    nq = s.get("norm_query", "")
+                                    if not nq:
+                                        continue
+                                    stats_rows.append({
+                                        "dt": day_dt,
+                                        "shop_id": shop_id,
+                                        "advert_id": cid,
+                                        "nm_id": nm_id_val,
+                                        "norm_query": nq,
+                                        "views": int(s.get("views", 0)),
+                                        "clicks": int(s.get("clicks", 0)),
+                                        "atbs": int(s.get("atbs", 0)),
+                                        "orders": int(s.get("orders", 0)),
+                                        "avg_pos": float(s.get("avg_pos", 0)),
+                                        "cpc": int(float(s.get("cpc", 0))),
+                                        "cpm": int(float(s.get("cpm", 0))),
+                                        "ctr": float(s.get("ctr", 0)),
+                                        "bid_kopecks": 0,
+                                        "spend": float(s.get("spend", 0)),
+                                        "shks": int(s.get("shks", 0)),
+                                        "cpc_rub": float(s.get("cpc", 0)),
+                                        "cpm_rub": float(s.get("cpm", 0)),
+                                    })
+                            elif isinstance(day_stats, list):
+                                for s in day_stats:
+                                    if isinstance(s, dict) and s.get("norm_query"):
+                                        stats_rows.append({
+                                            "dt": day_dt,
+                                            "shop_id": shop_id,
+                                            "advert_id": cid,
+                                            "nm_id": nm_ids[0] if nm_ids else 0,
+                                            "norm_query": s["norm_query"],
+                                            "views": int(s.get("views", 0)),
+                                            "clicks": int(s.get("clicks", 0)),
+                                            "atbs": int(s.get("atbs", 0)),
+                                            "orders": int(s.get("orders", 0)),
+                                            "avg_pos": float(s.get("avg_pos", 0)),
+                                            "cpc": int(float(s.get("cpc", 0))),
+                                            "cpm": int(float(s.get("cpm", 0))),
+                                            "ctr": float(s.get("ctr", 0)),
+                                            "bid_kopecks": 0,
+                                            "spend": float(s.get("spend", 0)),
+                                            "shks": int(s.get("shks", 0)),
+                                            "cpc_rub": float(s.get("cpc", 0)),
+                                            "cpm_rub": float(s.get("cpm", 0)),
+                                        })
+                            await asyncio.sleep(0.5)  # rate limit between daily calls
+                        except Exception as e:
+                            logger.warning(f"[normquery-backfill] day stats failed for {cid} {day_str}: {e}")
+
+                    # 4. Fetch current bids
+                    bids_data = await svc.get_normquery_bids(items=items)
+                    # NOTE: WB API /normquery/get-bids returns "bid" in RUBLES (not kopecks!)
+                    # Convert to kopecks (*100) for consistent storage
+                    bid_map = {}
+                    if isinstance(bids_data, dict):
+                        for bid in bids_data.get("bids", []):
+                            nq = bid.get("norm_query", "")
+                            bid_rub = int(bid.get("bid", 0))
+                            bid_map[nq] = bid_rub * 100  # rubles → kopecks
+
+                    # Enrich stats rows with current bids (kopecks)
+                    for row in stats_rows:
+                        row["bid_kopecks"] = bid_map.get(row["norm_query"], 0)
+
+                    # 5. Fetch bid recommendations
+                    rec_map = {}
+                    base_competitive = 0
+                    base_leaders = 0
+                    try:
+                        rec_data = await svc.get_bid_recommendations(cid, nm_ids[0])
+                        if isinstance(rec_data, dict):
+                            base = rec_data.get("base", {})
+                            base_competitive = base.get("competitiveBid", {}).get("bidKopecks", 0)
+                            base_leaders = base.get("leadersBid", {}).get("bidKopecks", 0)
+                            for nq_rec in rec_data.get("normQueries", []):
+                                nq_name = nq_rec.get("normQuery", "")
+                                rec_map[nq_name] = {
+                                    "reach_max": nq_rec.get("reachMax", {}).get("bidKopecks", 0),
+                                    "reach_med": nq_rec.get("reachMedium", {}).get("bidKopecks", 0),
+                                    "reach_min": nq_rec.get("reachMin", {}).get("bidKopecks", 0),
+                                }
+                    except Exception:
+                        pass
+
+                    # 6. Insert stats into ClickHouse
+                    if stats_rows:
+                        ch.insert(
+                            "mms_analytics.fact_normquery_stats_daily",
+                            [list(r.values()) for r in stats_rows],
+                            column_names=list(stats_rows[0].keys()),
+                        )
+                        total_stats_rows += len(stats_rows)
+
+                    # 7. Insert bid snapshots
+                    bid_rows = []
+                    if bid_map:
+                        for nq, bid_k in bid_map.items():
+                            rec = rec_map.get(nq, {})
+                            bid_rows.append({
+                                "shop_id": shop_id,
+                                "advert_id": cid,
+                                "nm_id": nm_ids[0],
+                                "norm_query": nq,
+                                "bid_kopecks": bid_k,  # already in kopecks (converted above)
+                                "reach_max_bid": rec.get("reach_max", 0),
+                                "reach_med_bid": rec.get("reach_med", 0),
+                                "reach_min_bid": rec.get("reach_min", 0),
+                                "competitive_bid": base_competitive,
+                                "leaders_bid": base_leaders,
+                            })
+                    elif stats_rows and (base_competitive or base_leaders or rec_map):
+                        seen_nq = set()
+                        for sr in stats_rows:
+                            nq = sr["norm_query"]
+                            if nq in seen_nq:
+                                continue
+                            seen_nq.add(nq)
+                            rec = rec_map.get(nq, {})
+                            bid_rows.append({
+                                "shop_id": shop_id,
+                                "advert_id": cid,
+                                "nm_id": nm_ids[0],
+                                "norm_query": nq,
+                                "bid_kopecks": 0,
+                                "reach_max_bid": rec.get("reach_max", 0),
+                                "reach_med_bid": rec.get("reach_med", 0),
+                                "reach_min_bid": rec.get("reach_min", 0),
+                                "competitive_bid": base_competitive,
+                                "leaders_bid": base_leaders,
+                            })
+
+                    if bid_rows:
+                        ch.insert(
+                            "mms_analytics.log_normquery_bids",
+                            [list(r.values()) for r in bid_rows],
+                            column_names=list(bid_rows[0].keys()),
+                        )
+                        total_bid_rows += len(bid_rows)
+
+                    logger.info(
+                        f"[normquery-backfill] shop={shop_id} campaign={cid}: "
+                        f"stats={len(stats_rows)} bids={len(bid_rows)}"
+                    )
+
+                    # Pause between campaigns to avoid rate limiting
+                    await asyncio.sleep(2)
+
+                except Exception as e:
+                    errors.append(f"campaign {cid}: {e}")
+                    logger.error(f"[normquery-backfill] shop={shop_id} campaign={cid} error: {e}")
+                    continue
+
+        await engine.dispose()
+
+        result = {
+            "shop_id": shop_id,
+            "status": "completed" if not errors else "completed_with_errors",
+            "campaigns_processed": len(campaign_ids),
+            "days_back": days_back,
+            "stats_rows_inserted": total_stats_rows,
+            "bid_rows_inserted": total_bid_rows,
+            "errors": errors,
+        }
+        logger.info(f"[normquery-backfill] shop={shop_id} done: {result}")
+        return result
+
+    try:
+        return asyncio.run(run_backfill())
     except Exception as exc:
         self.retry(exc=exc, countdown=60, max_retries=2)

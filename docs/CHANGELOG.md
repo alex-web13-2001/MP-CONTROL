@@ -1,3 +1,158 @@
+## 2026-04-03 (v17.33.1)
+
+### fix(budget): Бюджет сбрасывался на 0 после пополнения
+
+**Проблема**: После пополнения бюджета кампании UI показывал правильную сумму ~1.5с, затем сбрасывался на 0. При повторном пополнении — показывал `0 + amount` вместо реального баланса (напр. 1000₽ вместо 1999₽).
+
+**Корневые причины:**
+
+1. **Frontend**: `onSuccess` вызывал `setTimeout(() => loadFullData(), 3000)` — через 3с `loadFullData()` полностью перезаписывал `budgets` state из Redis, который ещё не обновился (WB API eventual consistency ~5-15с).
+
+2. **Frontend**: Optimistic update `old_total + amount` считал `old_total` из текущего state (0), а не реальный баланс на WB.
+
+3. **Backend**: Endpoint `deposit_budget` ждал 1с — мало для WB API eventual consistency, но даже при корректном Redis ответе, фронт перезаписывал его нулями из `/campaigns/from-db`.
+
+**Решение — 3 уровня:**
+
+1. **Backend**: Endpoint `POST /budget/deposit` теперь возвращает `new_budget_total` (реальный баланс из WB API после deposit). Задержка увеличена с 1с до 2с. Если WB API ещё не обновился → optimistic fallback (old + amount).
+
+2. **Frontend — BudgetDepositModal**: Передаёт `new_budget_total` из backend response в `onSuccess(amount, newBudgetTotal)`. UI ставит **реальную** сумму от WB API, а не наивный `0 + 1000`.
+
+3. **Frontend — loadFullData()**: Добавлен `recentDeposits` ref — трекает кампании с пополнением за последние 60с. Если `loadFullData()` получает из Redis budget < того что мы только что записали → **сохраняет** optimistic значение. Удалён `setTimeout(loadFullData, 3000)`.
+
+**Цепочка после фикса:**
+- Deposit 1000₽ → backend ждёт 2с → WB API: total=1999₽ → response: `{new_budget_total: 1999}`
+- Frontend: `setBudgets({[cid]: {total: 1999}})` ✅ (не `0 + 1000`)
+- `recentDeposits[cid] = {amount: 1999, ts: now}` — защита от перезаписи
+- Любой будущий `loadFullData()` в течение 60с: если Redis вернул `< 1999` → сохраняет 1999
+
+**Файлы:**
+- `backend/app/api/v1/ad_management.py` — return new_budget_total + sleep 2s
+- `frontend/src/api/ad-management.ts` — depositBudget return type + new_budget_total
+- `frontend/src/pages/AdManagementPage.tsx` — recentDeposits ref + real budget from response
+
+---
+
+## 2026-04-03 (v17.33.0)
+
+### fix(bids): Ставки кластеров показывались в 100 раз ниже реальных
+
+**Проблема**: В модале управления кампанией (CPM Ручная) колонка «Ставка» показывала ~50₽ при реальном CPM ~4000₽ и рекомендациях ~5000₽. Расхождение в ~100 раз.
+
+**Корневая причина**: WB API `POST /adv/v0/normquery/get-bids` возвращает поле `bid` в **РУБЛЯХ** (не в копейках!), при этом другие endpoints (recommendations) используют `bidKopecks`. Наш код считал `bid` копейками и делил на 100 → получалось 52₽ вместо 5200₽.
+
+**Доказательство**: CPM = spend/views×1000 = 37209/8925×1000 = 4168₽. При ставке 52₽ CPM не может быть 4168₽ (CPM ≤ ставка). Значит bid=5200 — это рубли.
+
+**Фикс — 3 уровня:**
+
+1. **Backend live endpoint** (`ad_management.py`, `_build_cluster`):
+   - `current_bid_kopecks: bid_rub * 100` (конвертация в копейки для фронтенда)
+   - `current_bid_rub: bid_rub` (без деления на 100)
+
+2. **Celery sync_normquery_data + backfill_normquery_data** (`tasks.py`):
+   - `bid_map[nq] = bid_rub * 100` (сохранение в CH колонку `bid_kopecks` в правильных копейках)
+
+3. **Документация сервиса** (`wb_normquery_service.py`):
+   - Исправлен docstring: `bid` → RUBLES (NOT kopecks!)
+
+**Цепочка после фикса:**
+- WB API: `bid: 5200` (рубли)
+- Backend: `current_bid_kopecks: 520000`, `current_bid_rub: 5200`
+- Frontend: `520000/100 = 5200₽` ✅
+- Запись: `5200₽ → 520000 kopecks → WB API /normquery/bids` (принимает kopecks) ✅
+
+**Файлы:**
+- `backend/app/api/v1/ad_management.py` — live endpoint bid conversion
+- `backend/celery_app/tasks/tasks.py` — sync + backfill bid storage
+- `backend/app/services/wb_normquery_service.py` — docstring fix
+
+---
+
+## 2026-04-02 (v17.32.0)
+
+### feat(normquery): Backfill кластерных данных при onboarding WB-магазина
+
+**Проблема**: При добавлении нового WB-магазина кластерные данные (normquery stats) начинали появляться только через 6 часов (первый sync) и только за последние 7 дней. Модал управления кампанией показывал пустые кластеры.
+
+**Решение — новая Celery-задача `backfill_normquery_data`:**
+
+**Что делает:**
+- Находит все UWB кампании (manual + unified, payment_type=cpm) из dim_advert_campaigns
+- Для каждой кампании собирает **daily normquery stats за 30 дней** через WB API
+- Снимает текущий snapshot ставок per-cluster (bids)
+- Получает рекомендованные ставки рынка (reach max/med/min, competitive, leaders)
+- Записывает в `fact_normquery_stats_daily` + `log_normquery_bids`
+
+**Интеграция в WB pipeline:**
+- Добавлена как **шаг 9** (последний) в `load_historical_data` (WB ветка)
+- Выполняется после шага 5 (рекламная история) — к этому моменту `dim_advert_campaigns` заполнена
+- `time_limit=1800` (30 мин) — с запасом для 20+ кампаний с rate limiting
+
+**Rate limiting:**
+- 0.5с пауза между дневными запросами
+- 2с пауза между кампаниями
+- Оценка: ~6 мин для 20 кампаний × 30 дней
+
+**Файлы:**
+- `backend/celery_app/tasks/tasks.py` — новая задача `backfill_normquery_data` (~300 строк) + шаг 9 в WB pipeline
+
+---
+
+## 2026-04-02 (v17.31.0)
+
+### fix(bids): Исправлена смена ставок WB — верифицированный формат API
+
+**Проблема**: Изменение ставок в модале управления кампанией не работало — WB API возвращал 400 Bad Request. Уведомление об ошибке показывалось, но без деталей. Ставка не менялась ни в UI, ни на WB.
+
+**Корневая причина**: Payload для `PATCH /api/advert/v1/bids` был неверного формата. Выяснено путём прямых тестов к WB API с перебором 6+ вариантов.
+
+**Верифицированный формат WB API (тестирование 2026-04-02):**
+```json
+{
+  "bids": [{
+    "advert_id": 34293797,
+    "cpm": 90500,
+    "placement": "combined",
+    "nm_bids": [{
+      "nm_id": 400392978,
+      "bid_kopecks": 90500,
+      "placement": "combined"
+    }]
+  }]
+}
+```
+
+**Ключевые находки:**
+- Все поля **snake_case** (не camelCase): `advert_id`, `nm_bids`, `bid_kopecks`
+- Поле ставки: `bid_kopecks` (не `bid`, не `price`, не `cpm`)
+- `nm_bids` массив **обязателен** (даже для unified кампаний)
+- `placement` нужен **дважды**: на уровне bid и внутри каждого nm_bid
+- `cpm` — ставка на уровне кампании (копейки)
+
+**Backend (`wb_ad_management_service.py`):**
+- Полностью переписан `change_bids()` с верным форматом payload
+- Добавлено логирование `response_body` при ошибках WB API
+
+**Backend (`schemas/ad_management.py`):**
+- Добавлен `bid_type` в `ChangeBidsRequest`, `combined` в допустимые placements
+
+**Frontend (`CampaignManagementModal.tsx`):**
+- Проверка поля `success` в ответе API (раньше игнорировалась)
+- Передача `bidType` при вызове `changeBids()`
+- Optimistic update ставки в UI при успешном ответе
+
+**Frontend (`ad-management.ts`):**
+- Параметр `bidType` в `changeBids()` API-клиенте
+
+**Файлы:**
+- `backend/app/services/wb_ad_management_service.py` — payload fix + response_body logging
+- `backend/app/schemas/ad_management.py` — bid_type + combined placement
+- `backend/app/api/v1/ad_management.py` — bid_type передача
+- `frontend/src/components/CampaignManagementModal.tsx` — success check + optimistic update
+- `frontend/src/api/ad-management.ts` — bidType parameter
+
+---
+
 ## 2026-04-02 (v17.30.0)
 
 ### feat(clusters): Фильтр периода 7д/14д/30д для поисковых кластеров

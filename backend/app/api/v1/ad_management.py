@@ -339,6 +339,7 @@ async def change_bids(
         advert_id=request.advert_id,
         placement=request.placement,
         bids=bids_dicts,
+        bid_type=request.bid_type,
     )
 
     await _log_audit(
@@ -1320,63 +1321,74 @@ async def deposit_budget(
             detail=result["message"],
         )
 
-    # After successful deposit — refresh Redis cache for this campaign's budget
+    # After successful deposit — update Redis cache with new budget
+    new_budget_total = None
     try:
-        import asyncio
         import redis.asyncio as aioredis
         from app.config import get_settings
         settings = get_settings()
 
         redis_client = await aioredis.from_url(
             settings.redis_url, encoding="utf-8", decode_responses=True,
-            socket_connect_timeout=2, socket_timeout=2,
+            socket_connect_timeout=3, socket_timeout=3,
         )
         cache_key = f"budget:{shop.id}:{request.advert_id}"
 
-        # Read old cached budget first (for optimistic fallback)
-        old_cached = await redis_client.get(cache_key)
+        # Step 1: Read old cached budget
         old_total = 0
-        if old_cached:
-            old_data = json.loads(old_cached)
-            old_total = old_data.get("total", 0)
+        try:
+            old_cached = await redis_client.get(cache_key)
+            if old_cached:
+                old_data = json.loads(old_cached)
+                old_total = old_data.get("total", 0)
+        except Exception:
+            pass
 
-        # Wait for WB API eventual consistency
-        await asyncio.sleep(1.0)
+        # Step 2: IMMEDIATELY write optimistic budget to Redis
+        # Don't wait for WB API — this ensures any page reload shows correct value
+        optimistic_total = old_total + request.amount
+        optimistic_data = {"total": optimistic_total, "daily": 0, "currency": "RUB"}
+        await redis_client.set(cache_key, json.dumps(optimistic_data), ex=1200)
+        new_budget_total = optimistic_total
+        logger.info(
+            f"[deposit] Optimistic Redis update: budget:{shop.id}:{request.advert_id} "
+            f"old={old_total} + {request.amount} = {optimistic_total}"
+        )
 
-        # Fetch fresh budget from WB API
-        budget_result = await service.get_campaign_budget(request.advert_id)
-
-        if budget_result.get("success"):
-            new_data = budget_result["data"]
-            api_total = new_data.get("total", 0)
-
-            # If WB API still returns stale data (total didn't increase),
-            # use optimistic calculation: old_total + deposited amount
-            if api_total <= old_total and old_total > 0:
-                new_data["total"] = old_total + request.amount
-                logger.info(
-                    f"[deposit] WB API stale ({api_total}), using optimistic: "
-                    f"{old_total} + {request.amount} = {new_data['total']}"
-                )
-
-            await redis_client.set(cache_key, json.dumps(new_data), ex=1200)
-            logger.info(
-                f"[deposit] Refreshed Redis cache for budget:{shop.id}:{request.advert_id} "
-                f"total={new_data.get('total')}"
-            )
-        else:
-            # WB API failed — do optimistic update in Redis anyway
-            optimistic_data = {"total": old_total + request.amount, "daily": 0, "currency": "RUB"}
-            await redis_client.set(cache_key, json.dumps(optimistic_data), ex=1200)
-            logger.info(
-                f"[deposit] WB budget API failed, optimistic Redis update: "
-                f"budget:{shop.id}:{request.advert_id} total={optimistic_data['total']}"
-            )
+        # Step 3: Try to get REAL budget from WB API (2s delay for eventual consistency)
+        # This is best-effort — if it fails, we already have optimistic value
+        try:
+            import asyncio
+            await asyncio.sleep(2.0)
+            budget_result = await service.get_campaign_budget(request.advert_id)
+            if budget_result.get("success"):
+                api_data = budget_result["data"]
+                api_total = api_data.get("total", 0)
+                # Use WB API value only if it's higher than our optimistic
+                # (WB API may return stale data that's lower)
+                if api_total >= optimistic_total:
+                    new_budget_total = api_total
+                    await redis_client.set(cache_key, json.dumps(api_data), ex=1200)
+                    logger.info(
+                        f"[deposit] WB API confirms: budget:{shop.id}:{request.advert_id} "
+                        f"total={api_total} (>= optimistic {optimistic_total})"
+                    )
+                else:
+                    logger.info(
+                        f"[deposit] WB API stale: {api_total} < optimistic {optimistic_total}, "
+                        f"keeping optimistic value"
+                    )
+        except Exception as e2:
+            logger.warning(f"[deposit] WB API budget fetch failed (keeping optimistic): {e2}")
 
         await redis_client.aclose()
     except Exception as e:
-        logger.warning(f"[deposit] Failed to refresh Redis budget cache: {e}")
+        # Redis itself failed — still try optimistic as return value
+        new_budget_total = request.amount  # at minimum, we just deposited this
+        logger.error(f"[deposit] Redis budget update FAILED: {e}")
 
+    # Return result WITH the new budget total so frontend can show correct value
+    result["new_budget_total"] = new_budget_total
     return result
 
 
@@ -1610,7 +1622,7 @@ async def get_cluster_list(
                 excluded_clusters = nq.get("excluded", []) or []
                 break
 
-    # Parse bids: norm_query → bid_kopecks
+    # Parse bids: norm_query → bid (RUBLES! WB API returns bid in rubles, not kopecks)
     bid_map: dict = {}
     if isinstance(bids_result, dict):
         bids_list = bids_result.get("bids", [])
@@ -1670,7 +1682,7 @@ async def get_cluster_list(
             return None
         seen.add(nq)
         stat = cluster_stats_map.get(nq, {})
-        bid_kopecks = bid_map.get(nq, 0)
+        bid_rub = bid_map.get(nq, 0)  # WB API returns bid in RUBLES
         reach = reach_map.get(nq, {})
 
         views = stat.get("views", 0)
@@ -1704,8 +1716,8 @@ async def get_cluster_list(
             "cpc_rub": cpc_rub,
             "cpm_kopecks": cpm,
             "cpm_rub": cpm_rub,
-            "current_bid_kopecks": bid_kopecks,
-            "current_bid_rub": round(bid_kopecks / 100, 2) if bid_kopecks else 0,
+            "current_bid_kopecks": bid_rub * 100,  # convert to kopecks for frontend compat
+            "current_bid_rub": round(bid_rub, 2) if bid_rub else 0,
             "reach_max_bid": reach.get("max", 0),
             "reach_med_bid": reach.get("med", 0),
             "reach_min_bid": reach.get("min", 0),

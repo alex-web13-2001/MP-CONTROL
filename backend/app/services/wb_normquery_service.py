@@ -190,9 +190,13 @@ class WBNormqueryService:
                 "advert_id": 123,
                 "nm_id": 456,
                 "norm_query": "...",
-                "bid": 9000  // kopecks
+                "bid": 5200  // RUBLES (NOT kopecks!)
               }]
             }
+
+        NOTE: Despite other WB API endpoints using kopecks (bidKopecks),
+        this endpoint returns "bid" in RUBLES. Verified by comparing with
+        actual CPM and recommendation values on live data.
         """
         payload = {
             "items": [
