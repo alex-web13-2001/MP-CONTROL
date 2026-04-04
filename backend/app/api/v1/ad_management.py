@@ -2270,7 +2270,7 @@ async def create_campaign(
         name=request.name,
         status=4,
         payment_type=request.payment_type,
-        bid_type="manual" if request.bid_type == "manual" else "auto",
+        bid_type=request.bid_type,  # 'manual' or 'unified' — used by frontend to determine column layout
         search_enabled=1,
         recommendations_enabled=1 if request.bid_type == "unified" else 0,
     )
