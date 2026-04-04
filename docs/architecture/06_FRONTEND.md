@@ -663,13 +663,16 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | `AuthGuard`           | `components/auth/`   | Защита маршрутов                                         |
 | `OnboardingGuard`     | `components/`        | Защита от отсутствия магазинов                           |
 | `ShopWizard`          | `components/shops/`  | Пошаговый мастер подключения                             |
-| `ProductFinanceTable` | `components/`        | Товарный P&L — unified table style                       |
-| `DateRangePicker`     | `components/`        | Календарь произвольного диапазона (2 месяца, popupAlign) |
-| `Button`              | `components/ui/`     | Единая кнопка (primary/outline/ghost/danger)             |
-| `Card`                | `components/ui/`     | Карточка с заголовком                                    |
-| `Badge`               | `components/ui/`     | Стилизованный бейдж                                      |
-| `Skeleton`            | `components/ui/`     | Placeholder для загрузки                                 |
-| Input/Label           | `components/ui/`     | Элементы форм                                            |
+| `ProductFinanceTable`   | `components/`        | Товарный P&L — unified table style                       |
+| `CampaignUnifiedModal`  | `components/`        | Единый модал кампании: управление + аналитика (табы)     |
+| `CampaignManagementModal` | `components/`      | Управление кампанией: кластеры, товары, ставки           |
+| `CampaignDetailModal`   | `components/`        | Аналитика кампании: графики, KPI, фразы, ИИ-анализ      |
+| `DateRangePicker`       | `components/`        | Календарь произвольного диапазона (2 месяца, popupAlign) |
+| `Button`                | `components/ui/`     | Единая кнопка (primary/outline/ghost/danger)             |
+| `Card`                  | `components/ui/`     | Карточка с заголовком                                    |
+| `Badge`                 | `components/ui/`     | Стилизованный бейдж                                      |
+| `Skeleton`              | `components/ui/`     | Placeholder для загрузки                                 |
+| Input/Label             | `components/ui/`     | Элементы форм                                            |
 
 ---
 
@@ -1085,4 +1088,18 @@ Bоковая панель с вложенной навигацией (collapse 
     - Статус: счётчик пополнений за сегодня + время последнего
   - **API модуль:** `ad-management.ts` — `getAutoBudgetSettings()`, `saveAutoBudgetSettings()`, тип `AutoBudgetSettings`
   - **Audit:** `auto_budget_config` и `auto_budget_deposit` — новые action labels в ленте аудита
+- **AdManagementPage** — Универсальный поиск кампаний:
+  - Поиск теперь ищет по **6 полям**: название кампании, ID кампании, nm_id товара, артикул (vendor_code), название товара (product_name), категория (subject_name)
+  - Ранее: только название + ID + nm_id
+  - Placeholder обновлён: «Поиск по ID, названию, артикулу или товару...»
+- **CampaignUnifiedModal** — новый объединённый модал кампании (NEW):
+  - Заменяет два отдельных модала (`CampaignManagementModal` + `CampaignDetailModal`) единым интерфейсом с табами
+  - Табы: «Управление» (иконка Settings2) + «Аналитика» (иконка BarChart3)
+  - Открывается из таблицы: клик по названию → таб «Управление», клик по иконке 📊 → таб «Аналитика»
+  - Сохраняет контекст кампании при переключении между табами (без перезагрузки данных)
+- **CampaignManagementModal** — layout фиксы:
+  - Hybrid scroll: глобальный скролл модала + локальный `max-h-[60vh]` для таблиц кластеров
+  - Sticky header таблицы кластеров работает корректно внутри scroll-контейнера
+- **CampaignDetailModal** — layout фиксы:
+  - Аналогичная hybrid scroll архитектура для таблиц фраз и товаров
 

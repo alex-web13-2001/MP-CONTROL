@@ -54,6 +54,8 @@ interface Props {
   shopId: number
   onClose: () => void
   onCampaignUpdate?: (campaign: EnrichedCampaign) => void
+  /** When true, renders only internal content without overlay/header (for embedding in unified modal) */
+  embedded?: boolean
 }
 
 // ── Clusters Sort ─────────────────────────────────────────────────
@@ -65,7 +67,7 @@ type ClusterSortKey = 'norm_query' | 'status' | 'views' | 'clicks' | 'ctr' | 'at
 // Main Component
 // ══════════════════════════════════════════════════════════════════
 
-export default function CampaignManagementModal({ campaign, shopId, onClose, onCampaignUpdate }: Props) {
+export default function CampaignManagementModal({ campaign, shopId, onClose, onCampaignUpdate, embedded = false }: Props) {
   const hasClusters = campaign.payment_type === 'cpm'
   const canEditClusterBids = campaign.bid_type === 'manual' && hasClusters
 
@@ -96,8 +98,7 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
   type ClusterPeriod = 7 | 14 | 30
   const [clusterPeriod, setClusterPeriod] = useState<ClusterPeriod>(14)
 
-  // Budget display + inline deposit
-  const [showDepositInput, setShowDepositInput] = useState(false)
+  // Budget inline deposit
   const [depositAmount, setDepositAmount] = useState('')
   const [depositLoading, setDepositLoading] = useState(false)
 
@@ -127,7 +128,6 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
       await depositBudget(shopId, campaign.advert_id, amt)
       onCampaignUpdate?.({ ...campaign, budget_total: currentBudget + amt })
       setToast({ type: 'success', message: `Бюджет пополнен на ${amt.toLocaleString('ru-RU')} ₽` })
-      setShowDepositInput(false)
       setDepositAmount('')
     } catch (e: any) {
       setToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка пополнения' })
@@ -332,126 +332,9 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
   const sc = STATUS_COLORS[campaign.status] || STATUS_COLORS[8]
   const ptLabel = campaign.payment_type === 'cpm' ? 'CPM' : campaign.payment_type === 'cpc' ? 'CPC' : campaign.payment_type?.toUpperCase() || '—'
 
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
-        transition={{ type: 'spring', duration: 0.3 }}
-        onClick={e => e.stopPropagation()}
-        className="w-full max-w-[1200px] max-h-[90vh] bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
-      >
-        {/* ── Header ─────────────────────────────────────────────── */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[hsl(var(--border))] shrink-0">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <h2 className="text-lg font-bold text-[hsl(var(--foreground))] truncate max-w-[400px]">
-                  {campaign.name || `Кампания ${campaign.advert_id}`}
-                </h2>
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.bg} ${sc.text}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${sc.dot}`} />
-                  {STATUS_LABELS[campaign.status] || '—'}
-                </span>
-                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold
-                  ${ptLabel === 'CPM' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400' :
-                    ptLabel === 'CPC' ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400' :
-                      'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'}`}
-                >
-                  {ptLabel} {campaign.bid_type === 'manual' ? 'Ручная' : campaign.bid_type === 'unified' ? 'Единая' : ''}
-                </span>
-              </div>
-              <div className="flex items-center gap-3 mt-1 text-xs text-[hsl(var(--muted-foreground))]">
-                <span>ID: {campaign.advert_id}</span>
-                {campaign.search_enabled && <span>🔍 Поиск</span>}
-                {campaign.recommendations_enabled && <span>📦 Полки</span>}
-                <span className="border-l border-[hsl(var(--border))] pl-3 flex items-center gap-1.5">
-                  <Wallet className="w-3 h-3" />
-                  <span className={`font-semibold ${currentBudget <= 0 ? 'text-red-500' : currentBudget < 500 ? 'text-amber-500' : 'text-emerald-500'}`}>
-                    {currentBudget.toLocaleString('ru-RU')} ₽
-                  </span>
-                  {!showDepositInput ? (
-                    <button
-                      onClick={() => setShowDepositInput(true)}
-                      className="text-violet-500 hover:text-violet-400 font-medium transition-colors"
-                    >
-                      Пополнить
-                    </button>
-                  ) : (
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        value={depositAmount}
-                        onChange={e => setDepositAmount(e.target.value)}
-                        placeholder="₽"
-                        className="w-16 px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-xs text-center outline-none focus:border-violet-500"
-                        autoFocus
-                        onKeyDown={e => e.key === 'Enter' && handleDeposit()}
-                      />
-                      <button
-                        onClick={handleDeposit}
-                        disabled={depositLoading || !depositAmount}
-                        className="text-emerald-500 hover:text-emerald-400 disabled:opacity-50"
-                      >
-                        {depositLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                      </button>
-                      <button
-                        onClick={() => { setShowDepositInput(false); setDepositAmount('') }}
-                        className="text-[hsl(var(--muted-foreground))] hover:text-red-400"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  )}
-                  {autoBudget?.enabled && (
-                    <span className="flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-500">
-                      <Zap className="w-2.5 h-2.5" />
-                      Авто
-                    </span>
-                  )}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Status actions */}
-            {campaign.status === 9 && (
-              <button
-                onClick={() => handleStatusAction('pause')}
-                disabled={actionLoading !== null}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-sm font-medium transition-colors disabled:opacity-50"
-              >
-                {actionLoading === 'pause' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pause className="w-4 h-4" />}
-                Пауза
-              </button>
-            )}
-            {(campaign.status === 11 || campaign.status === 4) && (
-              <button
-                onClick={() => handleStatusAction('start')}
-                disabled={actionLoading !== null}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm font-medium transition-colors disabled:opacity-50"
-              >
-                {actionLoading === 'start' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-                Запустить
-              </button>
-            )}
-
-            <button
-              onClick={onClose}
-              className="p-2 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
+  // ── Inner content (shared between standalone and embedded modes) ──
+  const innerContent = (
+    <>
 
         {/* ── Base bids bar (UWB only) ───────────────────────────── */}
         {hasClusters && clusterData?.base_bids && (clusterData.base_bids.competitive_rub || clusterData.base_bids.leaders_rub) && (
@@ -496,103 +379,217 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
             )}
           </AnimatePresence>
 
-          {/* ── Auto-Budget Settings ────────────────────────────── */}
-          <div className="px-6 pt-4 pb-2">
-            <div
-              className="flex items-center justify-between cursor-pointer group"
-              onClick={() => {
-                if (!autoBudget) return
-                const next = { ...abDraft, enabled: !abDraft.enabled }
-                setAbDraft(next)
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <Zap className={`w-4 h-4 ${abDraft.enabled ? 'text-violet-500' : 'text-[hsl(var(--muted-foreground))]'}`} />
-                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Автопополнение бюджета</h3>
+          {/* ── Unified Budget Card ────────────────────────────── */}
+          <div className="mx-6 mt-4 mb-2 rounded-xl border border-[hsl(var(--border))] bg-gradient-to-br from-[hsl(var(--card))] to-[hsl(var(--muted))]/10 overflow-hidden">
+            {/* Budget top row: balance + deposit */}
+            <div className="px-5 pt-4 pb-3">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${
+                    currentBudget <= 0 ? 'bg-red-500/15' : currentBudget < 500 ? 'bg-amber-500/15' : 'bg-emerald-500/15'
+                  }`}>
+                    <Wallet className={`w-4 h-4 ${
+                      currentBudget <= 0 ? 'text-red-500' : currentBudget < 500 ? 'text-amber-500' : 'text-emerald-500'
+                    }`} />
+                  </div>
+                  <div>
+                    <div className="text-[11px] text-[hsl(var(--muted-foreground))] leading-none mb-0.5">Бюджет кампании</div>
+                    <div className={`text-xl font-bold tracking-tight ${
+                      currentBudget <= 0 ? 'text-red-500' : currentBudget < 500 ? 'text-amber-500' : 'text-[hsl(var(--foreground))]'
+                    }`}>
+                      {currentBudget.toLocaleString('ru-RU')} <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">₽</span>
+                    </div>
+                  </div>
+                  {autoBudget?.enabled && (
+                    <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-violet-500/12 text-violet-500 border border-violet-500/20 ml-1">
+                      <Zap className="w-2.5 h-2.5" />
+                      Авто
+                    </span>
+                  )}
+                </div>
+
+                {/* Deposit inline */}
+                <div className="flex items-center gap-2">
+                  <div className="relative">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={depositAmount}
+                      onChange={e => {
+                        const v = e.target.value.replace(/[^\d]/g, '')
+                        setDepositAmount(v)
+                      }}
+                      placeholder="Сумма"
+                      className="w-28 pl-3 pr-8 py-2 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      onKeyDown={e => e.key === 'Enter' && handleDeposit()}
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[hsl(var(--muted-foreground))] pointer-events-none">₽</span>
+                  </div>
+                  <button
+                    onClick={handleDeposit}
+                    disabled={depositLoading || !depositAmount}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 active:bg-violet-700 text-white text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-sm shadow-violet-600/20"
+                  >
+                    {depositLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                    Пополнить
+                  </button>
+                </div>
               </div>
-              <button
-                className={`relative w-9 h-5 rounded-full transition-colors ${abDraft.enabled ? 'bg-violet-600' : 'bg-[hsl(var(--muted))]/50'}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${abDraft.enabled ? 'translate-x-4' : ''}`} />
-              </button>
+
+              {/* Budget level indicator bar */}
+              {(() => {
+                const threshold = abDraft.threshold ?? 500
+                const maxDisplay = Math.max(currentBudget, threshold * 3, 2000)
+                const budgetPct = Math.min((currentBudget / maxDisplay) * 100, 100)
+                const thresholdPct = abDraft.enabled ? Math.min((threshold / maxDisplay) * 100, 100) : 0
+                const barColor = currentBudget <= 0 ? 'bg-red-500' : currentBudget < threshold ? 'bg-amber-500' : 'bg-emerald-500'
+
+                return (
+                  <div className="relative h-1.5 rounded-full bg-[hsl(var(--muted))]/30 overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${budgetPct}%` }}
+                      transition={{ duration: 0.6, ease: 'easeOut' }}
+                      className={`absolute inset-y-0 left-0 rounded-full ${barColor}`}
+                    />
+                    {abDraft.enabled && thresholdPct > 0 && (
+                      <div
+                        className="absolute top-[-3px] w-0.5 h-[calc(100%+6px)] bg-amber-400/70"
+                        style={{ left: `${thresholdPct}%` }}
+                        title={`Порог: ${threshold.toLocaleString('ru-RU')} ₽`}
+                      />
+                    )}
+                  </div>
+                )
+              })()}
             </div>
 
-            <AnimatePresence>
-              {abDraft.enabled && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <div className="mt-3 grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Если бюджет ниже (₽)</label>
-                      <input
-                        type="number"
-                        value={abDraft.threshold ?? 500}
-                        onChange={e => setAbDraft(p => ({ ...p, threshold: parseInt(e.target.value) || 0 }))}
-                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Пополнять на (₽)</label>
-                      <input
-                        type="number"
-                        value={abDraft.amount ?? 1000}
-                        onChange={e => setAbDraft(p => ({ ...p, amount: parseInt(e.target.value) || 0 }))}
-                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Макс. раз в день</label>
-                      <input
-                        type="number"
-                        value={abDraft.max_per_day ?? 5}
-                        onChange={e => setAbDraft(p => ({ ...p, max_per_day: parseInt(e.target.value) || 1 }))}
-                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between mt-3">
-                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
-                      {autoBudget && autoBudget.deposits_today > 0 && (
-                        <span>
-                          Сегодня пополнено: <span className="font-medium text-[hsl(var(--foreground))]">{autoBudget.deposits_today} раз</span>
-                          {autoBudget.last_deposit_at && (
-                            <span className="ml-1.5">· последнее в {new Date(autoBudget.last_deposit_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
-                          )}
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      onClick={handleSaveAutoBudget}
-                      disabled={autoBudgetSaving}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
-                    >
-                      {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                      Сохранить
-                    </button>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Save button when toggling off */}
-            {!abDraft.enabled && autoBudget?.enabled && (
-              <div className="mt-2 flex justify-end">
+            {/* Auto-budget divider + section */}
+            <div className="border-t border-[hsl(var(--border))]/50">
+              <div
+                className="flex items-center justify-between px-5 py-2.5 cursor-pointer hover:bg-[hsl(var(--muted))]/5 transition-colors select-none"
+                onClick={() => {
+                  if (!autoBudget) return
+                  setAbDraft(p => ({ ...p, enabled: !p.enabled }))
+                }}
+              >
+                <div className="flex items-center gap-2">
+                  <Zap className={`w-3.5 h-3.5 ${abDraft.enabled ? 'text-violet-500' : 'text-[hsl(var(--muted-foreground))]'}`} />
+                  <span className="text-[13px] font-medium text-[hsl(var(--foreground))]">Автопополнение</span>
+                  {abDraft.enabled && autoBudget && autoBudget.deposits_today > 0 && (
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] ml-1">
+                      сегодня: {autoBudget.deposits_today}×
+                    </span>
+                  )}
+                </div>
                 <button
-                  onClick={handleSaveAutoBudget}
-                  disabled={autoBudgetSaving}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-medium transition-colors disabled:opacity-50"
+                  className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${abDraft.enabled ? 'bg-violet-600' : 'bg-[hsl(var(--muted))]/50'}`}
+                  onClick={e => { e.stopPropagation(); if (!autoBudget) return; setAbDraft(p => ({ ...p, enabled: !p.enabled })) }}
                 >
-                  {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  Выключить автопополнение
+                  <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${abDraft.enabled ? 'translate-x-4' : ''}`} />
                 </button>
               </div>
-            )}
+
+              <AnimatePresence>
+                {abDraft.enabled && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-5 pb-4 pt-1">
+                      <div className="grid grid-cols-3 gap-3">
+                        <div>
+                          <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1.5 block">Порог пополнения</label>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={abDraft.threshold ?? 500}
+                              onChange={e => {
+                                const v = e.target.value.replace(/[^\d]/g, '')
+                                setAbDraft(p => ({ ...p, threshold: parseInt(v) || 0 }))
+                              }}
+                              className="w-full pl-3 pr-7 py-2 rounded-lg bg-[hsl(var(--muted))]/15 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[hsl(var(--muted-foreground))] pointer-events-none">₽</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1.5 block">Сумма пополнения</label>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={abDraft.amount ?? 1000}
+                              onChange={e => {
+                                const v = e.target.value.replace(/[^\d]/g, '')
+                                setAbDraft(p => ({ ...p, amount: parseInt(v) || 0 }))
+                              }}
+                              className="w-full pl-3 pr-7 py-2 rounded-lg bg-[hsl(var(--muted))]/15 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[hsl(var(--muted-foreground))] pointer-events-none">₽</span>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1.5 block">Макс. в день</label>
+                          <div className="relative">
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={abDraft.max_per_day ?? 5}
+                              onChange={e => {
+                                const v = e.target.value.replace(/[^\d]/g, '')
+                                setAbDraft(p => ({ ...p, max_per_day: parseInt(v) || 1 }))
+                              }}
+                              className="w-full pl-3 pr-8 py-2 rounded-lg bg-[hsl(var(--muted))]/15 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[hsl(var(--muted-foreground))] pointer-events-none">раз</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mt-3">
+                        <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                          {autoBudget && autoBudget.deposits_today > 0 && (
+                            <span>
+                              Пополнено {autoBudget.deposits_today} раз
+                              {autoBudget.last_deposit_at && (
+                                <span className="ml-1">· {new Date(autoBudget.last_deposit_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          onClick={handleSaveAutoBudget}
+                          disabled={autoBudgetSaving}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50 shadow-sm shadow-violet-600/20"
+                        >
+                          {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                          Сохранить
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Confirm disable when was enabled */}
+              {!abDraft.enabled && autoBudget?.enabled && (
+                <div className="px-5 pb-3 flex justify-end">
+                  <button
+                    onClick={handleSaveAutoBudget}
+                    disabled={autoBudgetSaving}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-medium transition-colors disabled:opacity-50"
+                  >
+                    {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <X className="w-3.5 h-3.5" />}
+                    Выключить
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ── Products Section ────────────────────────────────── */}
@@ -765,6 +762,118 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
             />
           )}
         </AnimatePresence>
+    </>
+  )
+
+  // ── Embedded mode: just render content, no overlay ──
+  if (embedded) {
+    return (
+      <div className="flex flex-col">
+        {/* Status action bar in embedded mode */}
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-[hsl(var(--border))] shrink-0">
+          {campaign.status === 9 && (
+            <button
+              onClick={() => handleStatusAction('pause')}
+              disabled={actionLoading !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {actionLoading === 'pause' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pause className="w-4 h-4" />}
+              Пауза
+            </button>
+          )}
+          {(campaign.status === 11 || campaign.status === 4) && (
+            <button
+              onClick={() => handleStatusAction('start')}
+              disabled={actionLoading !== null}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {actionLoading === 'start' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Запустить
+            </button>
+          )}
+        </div>
+        {innerContent}
+      </div>
+    )
+  }
+
+  // ── Standalone mode: full overlay + card + header ──
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ type: 'spring', duration: 0.3 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-[1200px] max-h-[90vh] bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+      >
+        {/* ── Header ─────────────────────────────────────────────── */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[hsl(var(--border))] shrink-0">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-lg font-bold text-[hsl(var(--foreground))] truncate max-w-[400px]">
+                  {campaign.name || `Кампания ${campaign.advert_id}`}
+                </h2>
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.bg} ${sc.text}`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${sc.dot}`} />
+                  {STATUS_LABELS[campaign.status] || '—'}
+                </span>
+                <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold
+                  ${ptLabel === 'CPM' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400' :
+                    ptLabel === 'CPC' ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400' :
+                      'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'}`}
+                >
+                  {ptLabel} {campaign.bid_type === 'manual' ? 'Ручная' : campaign.bid_type === 'unified' ? 'Единая' : ''}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+                <span>ID: {campaign.advert_id}</span>
+                {campaign.search_enabled && <span>🔍 Поиск</span>}
+                {campaign.recommendations_enabled && <span>📦 Полки</span>}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {campaign.status === 9 && (
+              <button
+                onClick={() => handleStatusAction('pause')}
+                disabled={actionLoading !== null}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {actionLoading === 'pause' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Pause className="w-4 h-4" />}
+                Пауза
+              </button>
+            )}
+            {(campaign.status === 11 || campaign.status === 4) && (
+              <button
+                onClick={() => handleStatusAction('start')}
+                disabled={actionLoading !== null}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {actionLoading === 'start' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                Запустить
+              </button>
+            )}
+
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {innerContent}
       </motion.div>
     </motion.div>
   )
@@ -814,7 +923,7 @@ function ClustersTab({ clusters, editingBids, setEditingBids, sortKey, sortDir, 
   canEditBids: boolean
 }) {
   return (
-    <div className="px-0">
+    <div className="max-h-[60vh] overflow-y-auto overflow-x-auto">
       <table className="w-full border-collapse" style={{ minWidth: 1100 }}>
         <thead className="sticky top-0 z-10 bg-[hsl(var(--card))]">
           <tr className="border-b border-[hsl(var(--border))]">

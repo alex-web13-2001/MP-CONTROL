@@ -25,8 +25,7 @@ import {
   formatMoney, formatNum,
   type EnrichedCampaign, type EnrichedCampaignsResponse,
 } from '../api/ad-management'
-import CampaignManagementModal from '../components/CampaignManagementModal'
-import { CampaignDetailModal } from '../components/CampaignDetailModal'
+import CampaignUnifiedModal from '../components/CampaignUnifiedModal'
 import CreateCampaignModal from '../components/CreateCampaignModal'
 
 // ── Sticky cell styles (matching ProductFinanceTable pattern) ─────
@@ -455,9 +454,8 @@ export default function AdManagementPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
   // UI
-  const [managementModal, setManagementModal] = useState<EnrichedCampaign | null>(null)
+  const [unifiedModal, setUnifiedModal] = useState<{ campaign: EnrichedCampaign; tab: 'management' | 'analytics' } | null>(null)
   const [budgetModal, setBudgetModal] = useState<EnrichedCampaign | null>(null)
-  const [analyticsModal, setAnalyticsModal] = useState<EnrichedCampaign | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchBudgetAmount, setBatchBudgetAmount] = useState<number | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
@@ -708,9 +706,17 @@ export default function AdManagementPage() {
     if (search.trim()) {
       const q = search.toLowerCase().trim()
       list = list.filter(c => {
+        // По названию кампании
         if (c.name?.toLowerCase().includes(q)) return true
+        // По ID кампании
         if (String(c.advert_id).includes(q)) return true
-        if (c.nm_settings?.some(s => String(s.nm_id).includes(q))) return true
+        // По товарам внутри кампании: nm_id, артикул (vendor_code), название товара
+        if (c.nm_settings?.some(s =>
+          String(s.nm_id).includes(q) ||
+          s.vendor_code?.toLowerCase().includes(q) ||
+          s.product_name?.toLowerCase().includes(q) ||
+          s.subject_name?.toLowerCase().includes(q)
+        )) return true
         return false
       })
     }
@@ -803,7 +809,7 @@ export default function AdManagementPage() {
         <div className="relative flex-1 min-w-[200px] max-w-[400px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground))]" />
           <input
-            placeholder="Поиск по ID / названию..."
+            placeholder="Поиск по ID, названию, артикулу или товару..."
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="w-full pl-10 pr-8 py-2 rounded-xl bg-[hsl(var(--card))] border border-[hsl(var(--border))] text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-2 focus:ring-violet-500/30 transition-all"
@@ -1036,7 +1042,7 @@ export default function AdManagementPage() {
                           style={{ ...stickyCol3 }}
                         >
                           <button
-                            onClick={() => setManagementModal(c)}
+                            onClick={() => setUnifiedModal({ campaign: c, tab: 'management' })}
                             className="text-left w-full"
                           >
                             <div className="flex items-center gap-2">
@@ -1059,7 +1065,7 @@ export default function AdManagementPage() {
                                 </div>
                               </div>
                               <button
-                                onClick={(e) => { e.stopPropagation(); setAnalyticsModal(c) }}
+                                onClick={(e) => { e.stopPropagation(); setUnifiedModal({ campaign: c, tab: 'analytics' }) }}
                                 className="p-1 rounded-md hover:bg-violet-500/15 text-[hsl(var(--muted-foreground))] hover:text-violet-500 transition-colors flex-shrink-0"
                                 title="Статистика кампании"
                               >
@@ -1219,13 +1225,15 @@ export default function AdManagementPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Campaign Management Modal ───────────────────────────── */}
+      {/* ── Unified Campaign Modal (Management + Analytics) ─────── */}
       <AnimatePresence>
-        {managementModal && (
-          <CampaignManagementModal
-            campaign={managementModal}
+        {unifiedModal && (
+          <CampaignUnifiedModal
+            campaign={unifiedModal.campaign}
             shopId={shopId}
-            onClose={() => setManagementModal(null)}
+            marketplace={marketplace || 'wildberries'}
+            initialTab={unifiedModal.tab}
+            onClose={() => setUnifiedModal(null)}
             onCampaignUpdate={(updated) => {
               setData(prev => prev ? {
                 ...prev,
@@ -1233,24 +1241,11 @@ export default function AdManagementPage() {
                   c.advert_id === updated.advert_id ? { ...c, ...updated } : c
                 ),
               } : prev)
-              setManagementModal(updated)
+              setUnifiedModal(prev => prev ? { ...prev, campaign: updated } : null)
             }}
           />
         )}
       </AnimatePresence>
-
-      {/* ── Campaign Analytics Detail Modal ──────────────────────── */}
-      {analyticsModal && (
-        <CampaignDetailModal
-          isOpen={true}
-          onClose={() => setAnalyticsModal(null)}
-          marketplace={marketplace === 'wildberries' ? 'wb' : marketplace || 'wb'}
-          campaignId={analyticsModal.advert_id}
-          campaignTitle={analyticsModal.name || `Кампания ${analyticsModal.advert_id}`}
-          startDate=""
-          endDate=""
-        />
-      )}
 
       {/* ── Create Campaign Modal ─────────────────────────────────── */}
       <AnimatePresence>

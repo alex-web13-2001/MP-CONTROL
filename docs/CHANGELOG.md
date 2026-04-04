@@ -1,3 +1,33 @@
+## 2026-04-05 (v17.38.1)
+
+### feat(ad-management): Универсальный поиск + объединённый модал кампании
+
+**3 улучшения страницы управления рекламой:**
+
+**1. Универсальный поиск кампаний (AdManagementPage):**
+- Поиск теперь ищет по **6 полям**: название кампании, ID, nm_id товара, артикул (vendor_code), название товара (product_name), категория (subject_name)
+- Ранее: только название + ID + nm_id — невозможно найти кампанию по артикулу товара
+- Placeholder обновлён: «Поиск по ID, названию, артикулу или товару...»
+
+**2. CampaignUnifiedModal — единый модал (NEW):**
+- Заменяет два отдельных модала (CampaignManagementModal + CampaignDetailModal) единым интерфейсом с табами
+- Табы: «Управление» (Settings2) + «Аналитика» (BarChart3)
+- Клик по названию кампании → таб «Управление», клик по 📊 → таб «Аналитика»
+- Контекст кампании сохраняется при переключении (без перезагрузки)
+
+**3. Layout/scroll фиксы модалов:**
+- Hybrid scroll: глобальный скролл модала + локальный `max-h-[60vh]` для таблиц
+- Sticky header кластеров корректно работает внутри scroll-контейнера
+- CampaignDetailModal: аналогичная архитектура для таблиц фраз и товаров
+
+**Файлы:**
+- `frontend/src/components/CampaignUnifiedModal.tsx` — новый компонент (NEW)
+- `frontend/src/components/CampaignManagementModal.tsx` — scroll/layout рефакторинг
+- `frontend/src/components/CampaignDetailModal.tsx` — scroll/layout рефакторинг
+- `frontend/src/pages/AdManagementPage.tsx` — универсальный поиск + интеграция unified modal
+
+---
+
 ## 2026-04-05 (v17.38.0)
 
 ### feat(ad-management): Автопополнение бюджета WB-кампаний + гардрейл запуска
