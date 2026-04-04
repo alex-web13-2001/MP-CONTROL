@@ -1201,11 +1201,15 @@ def sync_wb_budgets(self, shop_id: int, api_key: str):
     import json
     import logging
     import redis as redis_lib
+    from datetime import datetime, date
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
     from sqlalchemy.orm import sessionmaker
     from app.config import get_settings
     from app.services.wb_ad_management_service import WBAdManagementService
     from app.core.clickhouse import get_clickhouse_client
+    from app.models.ad_auto_budget import AdAutoBudget
+    from app.models.ad_audit_log import AdAuditLog
 
     logger = logging.getLogger(__name__)
     settings = get_settings()
@@ -1254,17 +1258,159 @@ def sync_wb_budgets(self, shop_id: int, api_key: str):
         pipeline.execute()
         r.close()
 
-        await engine.dispose()
-
         logger.info(
             f"[budget-sync] shop={shop_id}: cached {budget_count} budgets, "
             f"balance={'ok' if balance_raw.get('success') else 'fail'}"
         )
+
+        # ── Auto-replenishment check ─────────────────────────────
+        auto_deposits = 0
+        try:
+            async with async_session() as db:
+                result = await db.execute(
+                    select(AdAutoBudget).where(
+                        AdAutoBudget.shop_id == shop_id,
+                        AdAutoBudget.enabled == True,  # noqa: E712
+                    )
+                )
+                auto_rules = result.scalars().all()
+
+            if auto_rules:
+                logger.info(
+                    f"[auto-budget] shop={shop_id}: checking {len(auto_rules)} enabled rules"
+                )
+
+            for rule in auto_rules:
+                try:
+                    # Reset daily counter if date changed
+                    today = date.today()
+                    if rule.last_reset_date != today:
+                        rule.deposits_today = 0
+                        rule.last_reset_date = today
+
+                    # Skip if daily limit reached
+                    if rule.deposits_today >= rule.max_per_day:
+                        logger.debug(
+                            f"[auto-budget] advert={rule.advert_id}: "
+                            f"daily limit reached ({rule.deposits_today}/{rule.max_per_day})"
+                        )
+                        continue
+
+                    # Check budget from freshly fetched data
+                    budget_data = budgets.get(rule.advert_id, {})
+                    current_total = budget_data.get("total", 0)
+
+                    if current_total >= rule.threshold:
+                        continue  # Budget OK — no action needed
+
+                    # Budget below threshold → deposit!
+                    logger.info(
+                        f"[auto-budget] advert={rule.advert_id}: "
+                        f"budget={current_total}₽ < threshold={rule.threshold}₽ → "
+                        f"depositing {rule.amount}₽"
+                    )
+
+                    async with async_session() as db:
+                        svc = WBAdManagementService(
+                            db=db, shop_id=shop_id, api_key=api_key
+                        )
+                        deposit_result = await svc.deposit_budget(
+                            rule.advert_id, rule.amount, rule.budget_type
+                        )
+
+                    if deposit_result.get("success"):
+                        # Update rule state
+                        async with async_session() as db:
+                            result = await db.execute(
+                                select(AdAutoBudget).where(
+                                    AdAutoBudget.id == rule.id
+                                )
+                            )
+                            fresh_rule = result.scalar_one()
+                            fresh_rule.deposits_today += 1
+                            fresh_rule.last_deposit_at = datetime.utcnow()
+                            fresh_rule.last_reset_date = today
+                            await db.commit()
+
+                        # Update Redis cache with new budget
+                        new_total = current_total + rule.amount
+                        r2 = redis_lib.from_url(
+                            os.getenv("REDIS_URL", "redis://redis:6379/0")
+                        )
+                        cache_key = f"budget:{shop_id}:{rule.advert_id}"
+                        r2.setex(
+                            cache_key, BUDGET_TTL,
+                            json.dumps({"total": new_total, "daily": 0, "currency": "RUB"})
+                        )
+                        r2.close()
+
+                        # Audit log
+                        async with async_session() as db:
+                            audit = AdAuditLog(
+                                shop_id=shop_id,
+                                action="auto_budget_deposit",
+                                advert_id=rule.advert_id,
+                                details={
+                                    "amount": rule.amount,
+                                    "budget_type": rule.budget_type,
+                                    "budget_before": current_total,
+                                    "budget_after": new_total,
+                                    "threshold": rule.threshold,
+                                    "deposits_today": rule.deposits_today + 1,
+                                    "source": "celery:sync_wb_budgets",
+                                },
+                                success="true",
+                            )
+                            db.add(audit)
+                            await db.commit()
+
+                        auto_deposits += 1
+                        logger.info(
+                            f"[auto-budget] ✅ advert={rule.advert_id}: "
+                            f"deposited {rule.amount}₽ (budget: {current_total}→{new_total}₽)"
+                        )
+
+                        # Small delay between deposits to respect WB rate limits
+                        await asyncio.sleep(1.0)
+                    else:
+                        logger.warning(
+                            f"[auto-budget] ❌ advert={rule.advert_id}: "
+                            f"deposit failed: {deposit_result.get('message')}"
+                        )
+                        # Log failed deposit
+                        async with async_session() as db:
+                            audit = AdAuditLog(
+                                shop_id=shop_id,
+                                action="auto_budget_deposit",
+                                advert_id=rule.advert_id,
+                                details={
+                                    "amount": rule.amount,
+                                    "budget_before": current_total,
+                                    "threshold": rule.threshold,
+                                    "error": deposit_result.get("message", "Unknown"),
+                                },
+                                success="false",
+                                error_message=deposit_result.get("message", "")[:500],
+                            )
+                            db.add(audit)
+                            await db.commit()
+
+                except Exception as e:
+                    logger.error(
+                        f"[auto-budget] Error processing rule for advert={rule.advert_id}: {e}"
+                    )
+
+        except Exception as e:
+            logger.error(f"[auto-budget] Failed to check auto-budget rules for shop={shop_id}: {e}")
+
+        await engine.dispose()
+
         return {
             "status": "completed",
             "shop_id": shop_id,
             "budgets_cached": budget_count,
             "balance_cached": bool(balance_raw.get("success")),
+            "auto_deposits": auto_deposits,
         }
 
     return asyncio.run(run_sync())

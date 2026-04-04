@@ -1,3 +1,147 @@
+## 2026-04-05 (v17.38.0)
+
+### feat(ad-management): Автопополнение бюджета WB-кампаний + гардрейл запуска
+
+**Новая функция**: Автоматическое пополнение бюджета кампаний по пороговому правилу + UI для inline-пополнения и настройки.
+
+**3 компонента:**
+
+**1. Гардрейл запуска (Launch Guard):**
+- Кнопка «Запустить» заблокирована при бюджете = 0₽
+- Toast: «⚠️ Невозможно запустить: бюджет кампании = 0 ₽. Пополните бюджет.»
+- Предотвращает бесполезный старт кампании без бюджета
+
+**2. Бюджет в хедере модала + inline пополнение:**
+- Текущий бюджет отображается в мета-строке (ID · 🔍 Поиск · 📦 Полки · 💰 500 ₽)
+- Цветовая индикация: зелёный (≥500₽), янтарный (<500₽), красный (0₽)
+- Кнопка «Пополнить» → инлайн-ввод суммы → Enter → мгновенное пополнение
+- Бейдж «⚡ Авто» если автопополнение включено
+
+**3. Автопополнение (Auto-Budget):**
+- Секция с toggle в модале управления кампанией
+- Настраиваемые параметры: порог (₽), сумма пополнения (₽), макс. раз/день
+- Celery: проверка каждые 15 мин (в `sync_wb_budgets`)
+- Если `budget < threshold` → `deposit_budget(amount)` + обновление Redis + audit log
+- Safety: `max_per_day` лимит, ежедневный сброс счётчика, 1с пауза между депозитами
+- Статус: «Сегодня пополнено: N раз · последнее в HH:MM»
+
+**PostgreSQL:**
+- Новая таблица `ad_auto_budget`: настройки + execution state per campaign
+- Alembic миграция: `abe1a57ab0a1_add_ad_auto_budget`
+
+**API:**
+- `GET /ad-management/wb/auto-budget?shop_id=&advert_id=` — получение настроек
+- `POST /ad-management/wb/auto-budget` — сохранение настроек + audit log
+
+**Аудит:**
+- `auto_budget_config` — изменение настроек (ручное)
+- `auto_budget_deposit` — автоматическое пополнение (Celery)
+
+**Файлы:**
+- `backend/app/models/ad_auto_budget.py` — SQLAlchemy модель (NEW)
+- `backend/app/api/v1/ad_management.py` — +2 endpoints, +2 Pydantic schemas
+- `backend/celery_app/tasks/tasks.py` — auto-replenishment loop в sync_wb_budgets
+- `backend/alembic/versions/abe1a57ab0a1_add_ad_auto_budget.py` — миграция (NEW)
+- `frontend/src/api/ad-management.ts` — AutoBudgetSettings type + API functions
+- `frontend/src/components/CampaignManagementModal.tsx` — budget display + UI настроек
+
+---
+
+## 2026-04-04 (v17.37.1)
+
+### refactor(ad-management): Bid History — per-product вместо per-campaign
+
+**Ключевой рефакторинг**: история ставок перенесена с уровня кампании на уровень товара.
+
+**Проблема**: В одной кампании может быть несколько товаров (`nm_id`), у каждого — своя история ставок. Общая секция «История ставок» внизу модала смешивала события от разных товаров.
+
+**Решение — Per-product bid history:**
+- 🕐 Иконка часов (`History`) слева от каждого товара в `ProductsSection`
+- Клик → inline-раскрытие истории ставок **только для конкретного nm_id**
+- Framer Motion анимация раскрытия под строкой товара (`<AnimatePresence>`)
+- Группировка по дате, время · ↗/↘ · тип ставки (поиск/рекоменд.) · old → new
+- Цвета: красный ↗ (повышение), зелёный ↘ (снижение)
+- WB ставки конвертируются из копеек в рубли
+
+**Оптимизация загрузки:**
+- Все BID_CHANGE события кампании загружаются **один раз** (lazy, при первом клике на любой товар)
+- Сохраняются в `allBidEvents` — shared cache внутри `ProductsSection`
+- Per-product фильтрация: `events.filter(e => e.product_id === nmStr)`
+
+**Удалено:**
+- `BidHistorySection` компонент (~120 строк) — заменён на `ProductBidHistoryInline`
+- Standalone accordion-секция «История ставок» внизу модала
+- State переменные: `bidHistory`, `bidHistoryLoading`, `showBidHistory`
+
+**Добавлено:**
+- `ProductBidHistoryInline` — новый sub-компонент (~100 строк)
+- State: `expandedNm`, `productBidHistory`, `loadingHistory`, `allBidEvents`
+- Prop `advertId` передаётся в `ProductsSection` для загрузки событий
+
+**Файлы:**
+- `frontend/src/components/CampaignManagementModal.tsx` — рефакторинг ProductsSection + новый ProductBidHistoryInline
+
+---
+
+## 2026-04-04 (v17.37.0)
+
+### feat(ad-management): Sticky header + CPC без копеек
+
+**2 улучшения модала управления кампанией CampaignManagementModal:**
+
+**1. Sticky header таблицы кластеров:**
+- `<thead>` таблицы кластеров теперь фиксируется при вертикальном скролле
+- Убрано `overflow-auto` с wrapper div ClustersTab → скролл делегирован родительскому контейнеру модала
+- `position: sticky; top: 0; z-index: 10` с фоном `bg-[hsl(var(--card))]`
+
+**2. CPC без десятичных (копеек):**
+- `c.cpc_rub.toFixed(2)` → `Math.round(c.cpc_rub)` — целые рубли вместо `31.42 ₽` → `31 ₽`
+- Уменьшает визуальный шум в таблице кластеров
+
+**Файлы:**
+- `frontend/src/components/CampaignManagementModal.tsx` — sticky header, CPC rounding
+
+---
+
+
+
+### feat(ad-management): Единый layout модала + поиск товаров (AddProductSubModal)
+
+**Проблема**: Модал управления кампанией имел 2 вкладки («Кластеры» / «Товары»), переключение между которыми скрывало контекст. Добавление товаров в кампанию работало через примитивное поле ввода nm_id — без поиска, названий или артикулов.
+
+**Решение — Unified Layout:**
+
+| Было | Стало |
+|------|-------|
+| 2 вкладки (Clusters / Products) | Единый скроллируемый экран |
+| Кнопка добавления внизу таблицы | Кнопка «+ Добавить товар» в заголовке секции |
+| Ввод nm_id вручную | Полноценная модалка поиска с чекбоксами |
+| Данные товаров скрыты за табом | Товары всегда видны сверху, кластеры снизу |
+
+**AddProductSubModal — новый компонент:**
+- Поиск по артикулу, nm_id или названию (3 поля фильтрации)
+- Загрузка доступных товаров через `getCreationSubjects()` + `getCreationProducts()`
+- Множественный выбор (чекбоксы)
+- Товары, уже в кампании → серые + «уже в кампании» бейдж
+- Счётчик «52 доступно · 3 выбрано» + кнопка «Добавить (3)»
+- Добавление через `manageCampaignNms()` + optimistic update
+
+**Удалённые компоненты:**
+- `TabButton` — больше не нужен (нет табов)
+- `AddNmInput` — заменён на AddProductSubModal
+- `ProductsTab` → переименован в `ProductsSection` (без встроенной кнопки добавления)
+
+**Toolbar (для CPM кампаний):**
+- Селектор периода (7д/14д/30д)
+- Фильтр кластеров (Все/Активные/Исключённые)
+- Кнопка сохранения изменённых ставок
+- Индикатор источника данных (кеш/live)
+
+**Файлы:**
+- `frontend/src/components/CampaignManagementModal.tsx` — полная перезапись layout (~1200 строк)
+
+---
+
 ## 2026-04-04 (v17.35.0)
 
 ### feat(ad-management): Split-panel визард создания кампании + начальные ставки

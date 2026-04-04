@@ -30,6 +30,7 @@ from app.core.database import get_db
 from app.core.encryption import decrypt_api_key
 from app.core.security import get_current_user
 from app.models.ad_audit_log import AdAuditLog
+from app.models.ad_auto_budget import AdAutoBudget
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.ad_management import (
@@ -2486,3 +2487,125 @@ async def _insert_initial_nm_settings_to_ch(
             f"[campaign-create] Failed to insert nm_settings into log_wb_bids: {e}"
         )
 
+
+# ══════════════════════════════════════════════════════════════════
+# Auto-Budget Settings
+# ══════════════════════════════════════════════════════════════════
+
+
+class AutoBudgetSettingsResponse(BaseModel):
+    enabled: bool = False
+    threshold: int = 500
+    amount: int = 1000
+    budget_type: int = 1
+    max_per_day: int = 5
+    deposits_today: int = 0
+    last_deposit_at: Optional[str] = None
+
+
+class SaveAutoBudgetRequest(BaseModel):
+    shop_id: int
+    advert_id: int
+    enabled: bool
+    threshold: int = Field(500, gt=0, le=100000, description="Replenish when below (₽)")
+    amount: int = Field(1000, gt=0, le=50000, description="Deposit amount (₽)")
+    budget_type: int = Field(1, ge=0, le=3, description="0=Account, 1=Balance, 3=Bonuses")
+    max_per_day: int = Field(5, gt=0, le=50, description="Max deposits per day")
+
+
+@router.get("/auto-budget")
+async def get_auto_budget_settings(
+    shop_id: int = Query(...),
+    advert_id: int = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get auto-budget settings for a campaign."""
+    await _verify_wb_shop(shop_id, current_user, db)
+
+    result = await db.execute(
+        select(AdAutoBudget).where(
+            AdAutoBudget.shop_id == shop_id,
+            AdAutoBudget.advert_id == advert_id,
+        )
+    )
+    record = result.scalar_one_or_none()
+
+    if not record:
+        return AutoBudgetSettingsResponse()
+
+    return AutoBudgetSettingsResponse(
+        enabled=record.enabled,
+        threshold=record.threshold,
+        amount=record.amount,
+        budget_type=record.budget_type,
+        max_per_day=record.max_per_day,
+        deposits_today=record.deposits_today,
+        last_deposit_at=record.last_deposit_at.isoformat() if record.last_deposit_at else None,
+    )
+
+
+@router.post("/auto-budget")
+async def save_auto_budget_settings(
+    request: SaveAutoBudgetRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save or update auto-budget settings for a campaign."""
+    await _verify_wb_shop(request.shop_id, current_user, db)
+
+    result = await db.execute(
+        select(AdAutoBudget).where(
+            AdAutoBudget.shop_id == request.shop_id,
+            AdAutoBudget.advert_id == request.advert_id,
+        )
+    )
+    record = result.scalar_one_or_none()
+
+    if record:
+        record.enabled = request.enabled
+        record.threshold = request.threshold
+        record.amount = request.amount
+        record.budget_type = request.budget_type
+        record.max_per_day = request.max_per_day
+        record.updated_at = datetime.utcnow()
+    else:
+        record = AdAutoBudget(
+            shop_id=request.shop_id,
+            advert_id=request.advert_id,
+            enabled=request.enabled,
+            threshold=request.threshold,
+            amount=request.amount,
+            budget_type=request.budget_type,
+            max_per_day=request.max_per_day,
+        )
+        db.add(record)
+
+    await db.commit()
+
+    # Audit log
+    await _log_audit(
+        db, current_user, request.shop_id,
+        action="auto_budget_config",
+        advert_id=request.advert_id,
+        details={
+            "advert_id": request.advert_id,
+            "enabled": request.enabled,
+            "threshold": request.threshold,
+            "amount": request.amount,
+            "budget_type": request.budget_type,
+            "max_per_day": request.max_per_day,
+        },
+        success=True,
+    )
+
+    logger.info(
+        f"[auto-budget] Settings saved: advert={request.advert_id} "
+        f"enabled={request.enabled} threshold={request.threshold}₽ amount={request.amount}₽"
+    )
+
+    return {
+        "success": True,
+        "message": "Настройки автопополнения сохранены",
+        "enabled": request.enabled,
+    }

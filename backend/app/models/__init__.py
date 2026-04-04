@@ -7,3 +7,4 @@ from app.models.warehouse import DimWarehouse  # noqa: F401
 from app.models.user import User  # noqa: F401
 from app.models.shop import Shop  # noqa: F401
 from app.models.dim_ozon_campaigns import DimOzonCampaign, DimOzonCampaignProduct  # noqa: F401
+from app.models.ad_auto_budget import AdAutoBudget  # noqa: F401

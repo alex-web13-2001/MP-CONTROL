@@ -407,6 +407,8 @@ export const ACTION_LABELS: Record<string, string> = {
   batch_status: '📋 Массовое изменение статуса',
   batch_bid_change: '📋 Массовое изменение ставок',
   budget_deposit: '💳 Пополнение бюджета',
+  auto_budget_deposit: '🔄 Автопополнение бюджета',
+  auto_budget_config: '⚙️ Настройка автопополнения',
   normquery_bid_change: '🎯 Изменение ставок кластеров',
   normquery_minus_phrases: '🚫 Изменение минус-фраз',
   normquery_toggle_exclude: '🔄 Переключение кластера',
@@ -667,3 +669,44 @@ export async function createCampaign(
   return res.data
 }
 
+
+// ── Auto-Budget Settings ─────────────────────────────────────────
+
+export interface AutoBudgetSettings {
+  enabled: boolean
+  threshold: number      // ₽
+  amount: number         // ₽
+  budget_type: number    // 0=Account, 1=Balance, 3=Bonuses
+  max_per_day: number
+  deposits_today: number
+  last_deposit_at: string | null
+}
+
+/**
+ * Get auto-budget settings for a campaign.
+ */
+export async function getAutoBudgetSettings(
+  shopId: number,
+  advertId: number,
+): Promise<AutoBudgetSettings> {
+  const res = await apiClient.get<AutoBudgetSettings>(
+    `${PREFIX}/auto-budget`,
+    { params: { shop_id: shopId, advert_id: advertId } },
+  )
+  return res.data
+}
+
+/**
+ * Save auto-budget settings for a campaign.
+ */
+export async function saveAutoBudgetSettings(
+  shopId: number,
+  advertId: number,
+  settings: Partial<AutoBudgetSettings>,
+): Promise<{ success: boolean; message: string; enabled: boolean }> {
+  const res = await apiClient.post(
+    `${PREFIX}/auto-budget`,
+    { shop_id: shopId, advert_id: advertId, ...settings },
+  )
+  return res.data
+}

@@ -17,16 +17,21 @@ import {
   Package, ChevronDown, ChevronUp, ChevronsUpDown,
   Check, AlertTriangle, Plus, Trash2,
   Save, RefreshCw, ToggleLeft, ToggleRight,
-  Calendar,
+  Calendar, Search, History, ArrowUpRight, ArrowDownRight,
+  Wallet, Zap,
 } from 'lucide-react'
 import {
   getClusterList, getClusterListCached, toggleClusterExclusion,
   setNormqueryBids, manageCampaignNms,
   changeBids, startCampaign, pauseCampaign,
-  formatNum,
+  formatNum, depositBudget,
+  getAutoBudgetSettings, saveAutoBudgetSettings,
+  getCreationSubjects, getCreationProducts,
   type EnrichedCampaign, type NormqueryClusterStat,
-  type ClusterListResponse,
+  type ClusterListResponse, type ProductItem,
+  type AutoBudgetSettings,
 } from '../api/ad-management'
+import { getCampaignEvents, type CampaignEventRow } from '../api/campaignDetails'
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -42,7 +47,6 @@ const STATUS_COLORS: Record<number, { bg: string; text: string; dot: string }> =
   [-1]: { bg: 'bg-red-500/10', text: 'text-red-500', dot: 'bg-red-500' },
 }
 
-type Tab = 'clusters' | 'products'
 type ClusterFilter = 'all' | 'active' | 'excluded'
 
 interface Props {
@@ -65,7 +69,7 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
   const hasClusters = campaign.payment_type === 'cpm'
   const canEditClusterBids = campaign.bid_type === 'manual' && hasClusters
 
-  const [tab, setTab] = useState<Tab>(hasClusters ? 'clusters' : 'products')
+  const [showAddProduct, setShowAddProduct] = useState(false)
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
@@ -91,6 +95,59 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
   // Date range — configurable period
   type ClusterPeriod = 7 | 14 | 30
   const [clusterPeriod, setClusterPeriod] = useState<ClusterPeriod>(14)
+
+  // Budget display + inline deposit
+  const [showDepositInput, setShowDepositInput] = useState(false)
+  const [depositAmount, setDepositAmount] = useState('')
+  const [depositLoading, setDepositLoading] = useState(false)
+
+  // Auto-budget settings
+  const [autoBudget, setAutoBudget] = useState<AutoBudgetSettings | null>(null)
+
+  const [autoBudgetSaving, setAutoBudgetSaving] = useState(false)
+  const [abDraft, setAbDraft] = useState<Partial<AutoBudgetSettings>>({})
+
+  // Load auto-budget settings
+  useEffect(() => {
+    getAutoBudgetSettings(shopId, campaign.advert_id)
+      .then(data => {
+        setAutoBudget(data)
+        setAbDraft(data)
+      })
+      .catch(() => {})
+  }, [shopId, campaign.advert_id])
+
+  const currentBudget = campaign.budget_total ?? 0
+
+  const handleDeposit = async () => {
+    const amt = parseInt(depositAmount)
+    if (!amt || amt <= 0) return
+    setDepositLoading(true)
+    try {
+      await depositBudget(shopId, campaign.advert_id, amt)
+      onCampaignUpdate?.({ ...campaign, budget_total: currentBudget + amt })
+      setToast({ type: 'success', message: `Бюджет пополнен на ${amt.toLocaleString('ru-RU')} ₽` })
+      setShowDepositInput(false)
+      setDepositAmount('')
+    } catch (e: any) {
+      setToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка пополнения' })
+    } finally {
+      setDepositLoading(false)
+    }
+  }
+
+  const handleSaveAutoBudget = async () => {
+    setAutoBudgetSaving(true)
+    try {
+      await saveAutoBudgetSettings(shopId, campaign.advert_id, abDraft)
+      setAutoBudget(prev => ({ ...prev, ...abDraft } as AutoBudgetSettings))
+      setToast({ type: 'success', message: abDraft.enabled ? 'Автопополнение включено' : 'Автопополнение выключено' })
+    } catch (e: any) {
+      setToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка сохранения' })
+    } finally {
+      setAutoBudgetSaving(false)
+    }
+  }
 
   const dateRange = useMemo(() => {
     const end = new Date()
@@ -125,6 +182,8 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
     loadClusters()
   }, [loadClusters])
 
+
+
   // ── Toast auto-hide ──────────────────────────────────────────────
 
   useEffect(() => {
@@ -137,6 +196,11 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
   // ── Campaign status actions ──────────────────────────────────────
 
   const handleStatusAction = async (action: 'start' | 'pause') => {
+    // Guardrail: block start with zero budget
+    if (action === 'start' && currentBudget <= 0) {
+      setToast({ type: 'error', message: '⚠️ Невозможно запустить: бюджет кампании = 0 ₽. Пополните бюджет.' })
+      return
+    }
     setActionLoading(action)
     try {
       if (action === 'start') await startCampaign(shopId, campaign.advert_id)
@@ -308,6 +372,51 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
                 <span>ID: {campaign.advert_id}</span>
                 {campaign.search_enabled && <span>🔍 Поиск</span>}
                 {campaign.recommendations_enabled && <span>📦 Полки</span>}
+                <span className="border-l border-[hsl(var(--border))] pl-3 flex items-center gap-1.5">
+                  <Wallet className="w-3 h-3" />
+                  <span className={`font-semibold ${currentBudget <= 0 ? 'text-red-500' : currentBudget < 500 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                    {currentBudget.toLocaleString('ru-RU')} ₽
+                  </span>
+                  {!showDepositInput ? (
+                    <button
+                      onClick={() => setShowDepositInput(true)}
+                      className="text-violet-500 hover:text-violet-400 font-medium transition-colors"
+                    >
+                      Пополнить
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        value={depositAmount}
+                        onChange={e => setDepositAmount(e.target.value)}
+                        placeholder="₽"
+                        className="w-16 px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/30 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-xs text-center outline-none focus:border-violet-500"
+                        autoFocus
+                        onKeyDown={e => e.key === 'Enter' && handleDeposit()}
+                      />
+                      <button
+                        onClick={handleDeposit}
+                        disabled={depositLoading || !depositAmount}
+                        className="text-emerald-500 hover:text-emerald-400 disabled:opacity-50"
+                      >
+                        {depositLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                      </button>
+                      <button
+                        onClick={() => { setShowDepositInput(false); setDepositAmount('') }}
+                        className="text-[hsl(var(--muted-foreground))] hover:text-red-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  )}
+                  {autoBudget?.enabled && (
+                    <span className="flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-500">
+                      <Zap className="w-2.5 h-2.5" />
+                      Авто
+                    </span>
+                  )}
+                </span>
               </div>
             </div>
           </div>
@@ -366,76 +475,9 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
           </div>
         )}
 
-        {/* ── Tabs ───────────────────────────────────────────────── */}
-        <div className="px-6 pt-2 border-b border-[hsl(var(--border))] flex items-center gap-1 shrink-0">
-          {hasClusters && (
-            <TabButton active={tab === 'clusters'} onClick={() => setTab('clusters')} icon={<Target className="w-3.5 h-3.5" />} label="Кластеры" count={clusterData?.total_clusters} />
-          )}
-          <TabButton active={tab === 'products'} onClick={() => setTab('products')} icon={<Package className="w-3.5 h-3.5" />} label="Товары" count={campaign.nm_settings?.length} />
 
-          {/* Right side: period, filter, save/refresh */}
-          <div className="flex-1" />
 
-          {/* Period selector */}
-          {tab === 'clusters' && hasClusters && (
-            <div className="flex items-center gap-0.5 mr-3 mb-1 bg-[hsl(var(--muted))]/20 rounded-lg p-0.5">
-              <Calendar className="w-3 h-3 text-[hsl(var(--muted-foreground))] ml-1.5 mr-0.5" />
-              {([7, 14, 30] as const).map(p => (
-                <button
-                  key={p}
-                  onClick={() => setClusterPeriod(p)}
-                  className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors
-                    ${clusterPeriod === p
-                      ? 'bg-violet-600 text-white shadow-sm'
-                      : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/40'}`}
-                >
-                  {p}д
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Cluster filter */}
-          {tab === 'clusters' && hasClusters && clusterData && (
-            <div className="flex items-center gap-1 mr-2 mb-1">
-              <FilterButton active={clusterFilter === 'all'} onClick={() => setClusterFilter('all')} label="Все" />
-              <FilterButton active={clusterFilter === 'active'} onClick={() => setClusterFilter('active')} label="Активные" color="emerald" />
-              <FilterButton active={clusterFilter === 'excluded'} onClick={() => setClusterFilter('excluded')} label="Исключённые" color="red" />
-            </div>
-          )}
-
-          {tab === 'clusters' && changedBidsCount > 0 && (
-            <button
-              onClick={handleSaveBids}
-              disabled={savingBids}
-              className="flex items-center gap-1.5 px-3 py-1.5 mb-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
-            >
-              {savingBids ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              Сохранить {changedBidsCount} {changedBidsCount === 1 ? 'ставку' : changedBidsCount < 5 ? 'ставки' : 'ставок'}
-            </button>
-          )}
-          {hasClusters && (
-            <button
-              onClick={() => loadClusters(true)}
-              disabled={loading}
-              className="p-1.5 mb-1 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))] transition-colors disabled:opacity-50"
-              title={dataSource === 'clickhouse' ? 'Обновить из WB API' : 'Обновить данные'}
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-          )}
-          {dataSource && (
-            <span className={`text-[10px] font-medium px-1.5 py-0.5 mb-1 rounded ${
-              dataSource === 'clickhouse'
-                ? 'bg-blue-500/10 text-blue-400'
-                : 'bg-emerald-500/10 text-emerald-400'
-            }`}>
-              {dataSource === 'clickhouse' ? 'кеш' : 'live'}
-            </span>
-          )}
-        </div>
-
-        {/* ── Tab Content ────────────────────────────────────────── */}
+        {/* ── Scrollable Content ──────────────────────────────── */}
         <div className="flex-1 overflow-auto">
           {/* Toast */}
           <AnimatePresence>
@@ -454,81 +496,281 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
             )}
           </AnimatePresence>
 
-          {/* Loading */}
-          {loading && !clusterData && (
-            <div className="flex items-center justify-center h-40 gap-3 text-[hsl(var(--muted-foreground))]">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Загрузка данных кластеров...
+          {/* ── Auto-Budget Settings ────────────────────────────── */}
+          <div className="px-6 pt-4 pb-2">
+            <div
+              className="flex items-center justify-between cursor-pointer group"
+              onClick={() => {
+                if (!autoBudget) return
+                const next = { ...abDraft, enabled: !abDraft.enabled }
+                setAbDraft(next)
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <Zap className={`w-4 h-4 ${abDraft.enabled ? 'text-violet-500' : 'text-[hsl(var(--muted-foreground))]'}`} />
+                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Автопополнение бюджета</h3>
+              </div>
+              <button
+                className={`relative w-9 h-5 rounded-full transition-colors ${abDraft.enabled ? 'bg-violet-600' : 'bg-[hsl(var(--muted))]/50'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${abDraft.enabled ? 'translate-x-4' : ''}`} />
+              </button>
             </div>
-          )}
 
-          {/* Error */}
-          {clusterError && (
-            <div className="mx-6 mt-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm">
-              {clusterError}
+            <AnimatePresence>
+              {abDraft.enabled && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="mt-3 grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Если бюджет ниже (₽)</label>
+                      <input
+                        type="number"
+                        value={abDraft.threshold ?? 500}
+                        onChange={e => setAbDraft(p => ({ ...p, threshold: parseInt(e.target.value) || 0 }))}
+                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Пополнять на (₽)</label>
+                      <input
+                        type="number"
+                        value={abDraft.amount ?? 1000}
+                        onChange={e => setAbDraft(p => ({ ...p, amount: parseInt(e.target.value) || 0 }))}
+                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] text-[hsl(var(--muted-foreground))] mb-1 block">Макс. раз в день</label>
+                      <input
+                        type="number"
+                        value={abDraft.max_per_day ?? 5}
+                        onChange={e => setAbDraft(p => ({ ...p, max_per_day: parseInt(e.target.value) || 1 }))}
+                        className="w-full px-3 py-1.5 rounded-lg bg-[hsl(var(--muted))]/20 border border-[hsl(var(--border))] text-[hsl(var(--foreground))] text-sm outline-none focus:border-violet-500 transition-colors"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-3">
+                    <div className="text-[11px] text-[hsl(var(--muted-foreground))]">
+                      {autoBudget && autoBudget.deposits_today > 0 && (
+                        <span>
+                          Сегодня пополнено: <span className="font-medium text-[hsl(var(--foreground))]">{autoBudget.deposits_today} раз</span>
+                          {autoBudget.last_deposit_at && (
+                            <span className="ml-1.5">· последнее в {new Date(autoBudget.last_deposit_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleSaveAutoBudget}
+                      disabled={autoBudgetSaving}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                      Сохранить
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Save button when toggling off */}
+            {!abDraft.enabled && autoBudget?.enabled && (
+              <div className="mt-2 flex justify-end">
+                <button
+                  onClick={handleSaveAutoBudget}
+                  disabled={autoBudgetSaving}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-500 text-xs font-medium transition-colors disabled:opacity-50"
+                >
+                  {autoBudgetSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  Выключить автопополнение
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* ── Products Section ────────────────────────────────── */}
+          <div className="px-6 pt-4 pb-2 border-t border-[hsl(var(--border))]/50">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Package className="w-4 h-4 text-violet-500" />
+                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Товары</h3>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-600 dark:text-violet-400">
+                  {campaign.nm_settings?.length || 0}
+                </span>
+              </div>
+              <button
+                onClick={() => setShowAddProduct(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/10 hover:bg-violet-600/20 text-violet-600 dark:text-violet-400 text-xs font-medium transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Добавить товар
+              </button>
             </div>
-          )}
 
-          {/* Clusters Tab */}
-          {tab === 'clusters' && hasClusters && clusterData && (
-            <ClustersTab
-              clusters={sortedClusters}
-              editingBids={editingBids}
-              setEditingBids={setEditingBids}
-              sortKey={clusterSort}
-              sortDir={clusterSortDir}
-              onSort={handleClusterSort}
-              getBidColor={getBidColor}
-              onToggle={handleToggleCluster}
-              togglingClusters={togglingClusters}
-              loading={loading}
-              canEditBids={canEditClusterBids}
-            />
-          )}
-
-          {/* Products Tab */}
-          {tab === 'products' && (
-            <ProductsTab
+            <ProductsSection
               campaign={campaign}
               shopId={shopId}
               onToast={setToast}
               onCampaignUpdate={onCampaignUpdate}
               baseBids={hasClusters ? clusterData?.base_bids : undefined}
+              advertId={campaign.advert_id}
+            />
+          </div>
+
+          {/* ── Clusters Section ────────────────────────────────── */}
+          {hasClusters && (
+            <div className="border-t border-[hsl(var(--border))]/50 mt-2">
+              {/* Clusters header + controls */}
+              <div className="px-6 pt-4 pb-2">
+                <div className="flex items-center gap-2 mb-2">
+                  <Target className="w-4 h-4 text-violet-500" />
+                  <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Кластеры</h3>
+                  {clusterData && (
+                    <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                      <span className="text-emerald-500 font-medium">{clusterData.total_active}</span> активных
+                      {clusterData.total_excluded > 0 && (
+                        <> / <span className="text-red-400 font-medium">{clusterData.total_excluded}</span> исключённых</>
+                      )}
+                    </span>
+                  )}
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => loadClusters(true)}
+                    disabled={loading}
+                    className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))] transition-colors disabled:opacity-50"
+                    title={dataSource === 'clickhouse' ? 'Обновить из WB API' : 'Обновить данные'}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                  </button>
+                  {dataSource && (
+                    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
+                      dataSource === 'clickhouse'
+                        ? 'bg-blue-500/10 text-blue-400'
+                        : 'bg-emerald-500/10 text-emerald-400'
+                    }`}>
+                      {dataSource === 'clickhouse' ? 'кеш' : 'live'}
+                    </span>
+                  )}
+                </div>
+
+                {/* Period + Filter + Save bids */}
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-0.5 bg-[hsl(var(--muted))]/20 rounded-lg p-0.5">
+                    <Calendar className="w-3 h-3 text-[hsl(var(--muted-foreground))] ml-1.5 mr-0.5" />
+                    {([7, 14, 30] as const).map(p => (
+                      <button
+                        key={p}
+                        onClick={() => setClusterPeriod(p)}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors
+                          ${clusterPeriod === p
+                            ? 'bg-violet-600 text-white shadow-sm'
+                            : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/40'}`}
+                      >
+                        {p}д
+                      </button>
+                    ))}
+                  </div>
+
+                  {clusterData && (
+                    <div className="flex items-center gap-1">
+                      <FilterButton active={clusterFilter === 'all'} onClick={() => setClusterFilter('all')} label="Все" />
+                      <FilterButton active={clusterFilter === 'active'} onClick={() => setClusterFilter('active')} label="Активные" color="emerald" />
+                      <FilterButton active={clusterFilter === 'excluded'} onClick={() => setClusterFilter('excluded')} label="Исключённые" color="red" />
+                    </div>
+                  )}
+
+                  <div className="flex-1" />
+
+                  {changedBidsCount > 0 && (
+                    <button
+                      onClick={handleSaveBids}
+                      disabled={savingBids}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
+                    >
+                      {savingBids ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                      Сохранить {changedBidsCount} {changedBidsCount === 1 ? 'ставку' : changedBidsCount < 5 ? 'ставки' : 'ставок'}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Loading */}
+              {loading && !clusterData && (
+                <div className="flex items-center justify-center h-32 gap-3 text-[hsl(var(--muted-foreground))]">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Загрузка данных кластеров...
+                </div>
+              )}
+
+              {/* Error */}
+              {clusterError && (
+                <div className="mx-6 mb-4 p-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-sm">
+                  {clusterError}
+                </div>
+              )}
+
+              {/* Clusters table */}
+              {clusterData && (
+                <ClustersTab
+                  clusters={sortedClusters}
+                  editingBids={editingBids}
+                  setEditingBids={setEditingBids}
+                  sortKey={clusterSort}
+                  sortDir={clusterSortDir}
+                  onSort={handleClusterSort}
+                  getBidColor={getBidColor}
+                  onToggle={handleToggleCluster}
+                  togglingClusters={togglingClusters}
+                  loading={loading}
+                  canEditBids={canEditClusterBids}
+                />
+              )}
+            </div>
+          )}
+
+
+        </div>
+
+        {/* ── Add Product Sub-Modal ────────────────────────────── */}
+        <AnimatePresence>
+          {showAddProduct && (
+            <AddProductSubModal
+              shopId={shopId}
+              campaign={campaign}
+              onClose={() => setShowAddProduct(false)}
+              onAdded={(addedNmIds) => {
+                if (onCampaignUpdate && campaign.nm_settings) {
+                  const existing = new Set(campaign.nm_settings.map(ns => ns.nm_id))
+                  const newSettings = addedNmIds
+                    .filter(nm => !existing.has(nm))
+                    .map(nm => ({
+                      nm_id: nm, bid_search: 0, bid_recommendations: 0,
+                      subject_name: '', product_name: `Товар ${nm}`, vendor_code: '',
+                    }))
+                  onCampaignUpdate({
+                    ...campaign,
+                    nm_settings: [...campaign.nm_settings, ...newSettings],
+                  })
+                }
+                setShowAddProduct(false)
+              }}
+              onToast={setToast}
             />
           )}
-        </div>
+        </AnimatePresence>
       </motion.div>
     </motion.div>
   )
 }
 
 
-// ══════════════════════════════════════════════════════════════════
-// Tab Button
-// ══════════════════════════════════════════════════════════════════
-
-function TabButton({ active, onClick, icon, label, count }: {
-  active: boolean; onClick: () => void; icon: React.ReactNode; label: string; count?: number
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors
-        ${active
-          ? 'border-violet-500 text-violet-600 dark:text-violet-400'
-          : 'border-transparent text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:border-[hsl(var(--border))]'}`}
-    >
-      {icon}
-      {label}
-      {count !== undefined && count > 0 && (
-        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full
-          ${active ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400' : 'bg-[hsl(var(--muted))]/50 text-[hsl(var(--muted-foreground))]'}`}>
-          {count}
-        </span>
-      )}
-    </button>
-  )
-}
 
 
 // ── Filter Button ──────────────────────────────────────────────────
@@ -572,7 +814,7 @@ function ClustersTab({ clusters, editingBids, setEditingBids, sortKey, sortDir, 
   canEditBids: boolean
 }) {
   return (
-    <div className="overflow-auto">
+    <div className="px-0">
       <table className="w-full border-collapse" style={{ minWidth: 1100 }}>
         <thead className="sticky top-0 z-10 bg-[hsl(var(--card))]">
           <tr className="border-b border-[hsl(var(--border))]">
@@ -682,7 +924,7 @@ function ClustersTab({ clusters, editingBids, setEditingBids, sortKey, sortDir, 
                 </td>
                 {/* CPC */}
                 <td className="px-3 py-2 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                  {c.cpc_rub > 0 ? `${c.cpc_rub.toFixed(2)} ₽` : '—'}
+                  {c.cpc_rub > 0 ? `${Math.round(c.cpc_rub)} ₽` : '—'}
                 </td>
                 {/* CR click→cart */}
                 <td className="px-3 py-2 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
@@ -752,6 +994,7 @@ function ClustersTab({ clusters, editingBids, setEditingBids, sortKey, sortDir, 
     </div>
   )
 }
+
 
 
 // ── Sort Table Header ──────────────────────────────────────────────
@@ -841,24 +1084,70 @@ function BidInput({ valueKopecks, isEdited, bidColor, onChange }: {
 
 
 // ══════════════════════════════════════════════════════════════════
-// Products Tab (nm_id bids + add/remove)
+// Products Tab (nm_id bids + add/remove + per-product bid history)
 // ══════════════════════════════════════════════════════════════════
 
-function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: {
+function ProductsSection({ campaign, shopId, onToast, onCampaignUpdate, baseBids, advertId }: {
   campaign: EnrichedCampaign
   shopId: number
   onToast: (t: { type: 'success' | 'error'; message: string }) => void
   onCampaignUpdate?: (campaign: EnrichedCampaign) => void
   baseBids?: { competitive_kopecks?: number; leaders_kopecks?: number; competitive_rub?: number; leaders_rub?: number }
+  advertId: number
 }) {
   const [editingProduct, setEditingProduct] = useState<{ nm_id: number; placement: 'search' | 'recommendations'; value: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [removingNm, setRemovingNm] = useState<number | null>(null)
-  const [showAddInput, setShowAddInput] = useState(false)
-  const [newNmId, setNewNmId] = useState('')
-  const [addingNm, setAddingNm] = useState(false)
+
+  // Per-product bid history state
+  const [expandedNm, setExpandedNm] = useState<number | null>(null)
+  const [productBidHistory, setProductBidHistory] = useState<Record<number, CampaignEventRow[]>>({})
+  const [loadingHistory, setLoadingHistory] = useState<number | null>(null)
+  // Cache all events for campaign (loaded once)
+  const [allBidEvents, setAllBidEvents] = useState<CampaignEventRow[] | null>(null)
+  const [loadingAllEvents, setLoadingAllEvents] = useState(false)
 
   const isUnifiedBidType = campaign.bid_type === 'unified'
+
+  // Load all bid events for campaign (lazy, once)
+  const loadAllBidEvents = useCallback(async (): Promise<CampaignEventRow[]> => {
+    if (allBidEvents !== null) return allBidEvents
+    setLoadingAllEvents(true)
+    try {
+      const events = await getCampaignEvents('wb', advertId, undefined, 500)
+      const bidEvents = events.filter(e => e.event_type === 'BID_CHANGE' || e.event_type === 'OZON_BID_CHANGE')
+      setAllBidEvents(bidEvents)
+      return bidEvents
+    } catch {
+      return []
+    } finally {
+      setLoadingAllEvents(false)
+    }
+  }, [advertId, allBidEvents])
+
+  const toggleProductHistory = useCallback(async (nmId: number) => {
+    if (expandedNm === nmId) {
+      setExpandedNm(null)
+      return
+    }
+    setExpandedNm(nmId)
+
+    // If already loaded for this product, skip
+    if (productBidHistory[nmId]) return
+
+    setLoadingHistory(nmId)
+    try {
+      const events = await loadAllBidEvents()
+      // Filter by product_id (nm_id stored as string)
+      const nmStr = String(nmId)
+      const productEvents = events.filter(e => e.product_id === nmStr)
+      setProductBidHistory(prev => ({ ...prev, [nmId]: productEvents }))
+    } catch {
+      setProductBidHistory(prev => ({ ...prev, [nmId]: [] }))
+    } finally {
+      setLoadingHistory(null)
+    }
+  }, [expandedNm, productBidHistory, loadAllBidEvents])
 
   const handleSaveProductBid = async (nmId: number, placement: 'search' | 'recommendations', rublesStr: string) => {
     const rubles = parseInt(rublesStr, 10)
@@ -875,7 +1164,6 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
       if (result.success) {
         onToast({ type: 'success', message: `Ставка ${placement === 'search' ? 'поиска' : 'полок'} обновлена: ${rubles} ₽` })
         setEditingProduct(null)
-        // Optimistic update: update bid in campaign nm_settings
         if (onCampaignUpdate && campaign.nm_settings) {
           const newBidKopecks = rubles * 100
           onCampaignUpdate({
@@ -907,7 +1195,6 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
     try {
       await manageCampaignNms(shopId, campaign.advert_id, [], [nmId])
       onToast({ type: 'success', message: `Товар #${nmId} удалён из кампании` })
-      // Optimistic update
       if (onCampaignUpdate && campaign.nm_settings) {
         onCampaignUpdate({
           ...campaign,
@@ -921,86 +1208,20 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
     }
   }
 
-  const handleAddNm = async () => {
-    const nmId = parseInt(newNmId, 10)
-    if (isNaN(nmId) || nmId <= 0) return
-    setAddingNm(true)
-    try {
-      await manageCampaignNms(shopId, campaign.advert_id, [nmId], [])
-      onToast({ type: 'success', message: `Товар #${nmId} добавлен в кампанию` })
-      setNewNmId('')
-      setShowAddInput(false)
-      // Optimistic update
-      if (onCampaignUpdate && campaign.nm_settings) {
-        onCampaignUpdate({
-          ...campaign,
-          nm_settings: [...campaign.nm_settings, {
-            nm_id: nmId,
-            bid_search: 0,
-            bid_recommendations: 0,
-            subject_name: '',
-            product_name: `Товар ${nmId}`,
-            vendor_code: '',
-          }],
-        })
-      }
-    } catch (e: any) {
-      onToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка добавления товара' })
-    } finally {
-      setAddingNm(false)
-    }
-  }
-
   if (!campaign.nm_settings || campaign.nm_settings.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-32 gap-3">
-        <span className="text-sm text-[hsl(var(--muted-foreground))]">Нет данных о товарах в этой кампании</span>
-        {!showAddInput ? (
-          <button
-            onClick={() => setShowAddInput(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Добавить товар
-          </button>
-        ) : (
-          <AddNmInput
-            newNmId={newNmId}
-            setNewNmId={setNewNmId}
-            onAdd={handleAddNm}
-            onCancel={() => setShowAddInput(false)}
-            adding={addingNm}
-          />
-        )}
+      <div className="flex items-center justify-center h-20 text-sm text-[hsl(var(--muted-foreground))]">
+        Нет товаров в этой кампании
       </div>
     )
   }
 
+  // Column count for spanning the history row
+  const colCount = 3 + (isUnifiedBidType && baseBids && (baseBids.competitive_rub || baseBids.leaders_rub) ? 1 : 0)
+    + (!isUnifiedBidType ? 1 : 0) + 1
+
   return (
-    <div className="overflow-auto">
-      {/* Add product button */}
-      <div className="px-6 py-3 flex items-center gap-3 border-b border-[hsl(var(--border))]/30">
-        {!showAddInput ? (
-          <button
-            onClick={() => setShowAddInput(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600/10 hover:bg-violet-600/20 text-violet-600 dark:text-violet-400 text-xs font-medium transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Добавить товар
-          </button>
-        ) : (
-          <AddNmInput
-            newNmId={newNmId}
-            setNewNmId={setNewNmId}
-            onAdd={handleAddNm}
-            onCancel={() => setShowAddInput(false)}
-            adding={addingNm}
-          />
-        )}
-        <span className="text-xs text-[hsl(var(--muted-foreground))]">
-          Всего товаров: {campaign.nm_settings.length}
-        </span>
-      </div>
+    <div className="overflow-auto rounded-xl border border-[hsl(var(--border))]/50">
 
       <table className="w-full border-collapse">
         <thead className="sticky top-0 z-10 bg-[hsl(var(--card))]">
@@ -1023,78 +1244,119 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
           {campaign.nm_settings.map(ns => {
             const isUnifiedBid = campaign.bid_type === 'unified'
             const isRemoving = removingNm === ns.nm_id
+            const isExpanded = expandedNm === ns.nm_id
+            const historyEvents = productBidHistory[ns.nm_id]
+            const isHistoryLoading = loadingHistory === ns.nm_id || (loadingAllEvents && expandedNm === ns.nm_id)
             return (
-              <tr key={ns.nm_id} className={`border-b border-[hsl(var(--border))]/30 hover:bg-[hsl(var(--muted))]/10 transition-colors group ${isRemoving ? 'opacity-50' : ''}`}>
-                <td className="px-3 py-3 pl-6">
-                  <div className="text-sm font-medium text-[hsl(var(--foreground))]">
-                    {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
-                  </div>
-                  <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">
-                    #{ns.nm_id}
-                  </div>
-                </td>
-                <td className="px-3 py-3">
-                  {ns.vendor_code && (
-                    <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))]">
-                      {ns.vendor_code}
-                    </span>
-                  )}
-                </td>
-                {/* Search bid */}
-                <td className="px-3 py-3 text-right">
-                  <ProductBidCell
-                    nmId={ns.nm_id}
-                    placement="search"
-                    bidKopecks={isUnifiedBid ? (ns.bid_search || ns.bid_recommendations) : ns.bid_search}
-                    editing={editingProduct}
-                    setEditing={setEditingProduct}
-                    onSave={handleSaveProductBid}
-                    saving={saving}
-                  />
-                </td>
-                {/* Recommendations for unified CPM */}
-                {isUnifiedBid && baseBids && (baseBids.competitive_rub || baseBids.leaders_rub) && (
-                  <td className="px-3 py-3 text-center whitespace-nowrap">
-                    <div className="flex flex-col items-center gap-0.5">
-                      {baseBids.competitive_rub && baseBids.competitive_rub > 0 && (
-                        <span className="text-[10px] text-blue-500" title="Конкурентная">
-                          Конк.: {baseBids.competitive_rub} ₽
-                        </span>
-                      )}
-                      {baseBids.leaders_rub && baseBids.leaders_rub > 0 && (
-                        <span className="text-[10px] text-emerald-500" title="Лидерская">
-                          Лидер.: {baseBids.leaders_rub} ₽
-                        </span>
-                      )}
+              <React.Fragment key={ns.nm_id}>
+                <tr className={`border-b border-[hsl(var(--border))]/30 hover:bg-[hsl(var(--muted))]/10 transition-colors group ${isRemoving ? 'opacity-50' : ''} ${isExpanded ? 'bg-[hsl(var(--muted))]/5' : ''}`}>
+                  <td className="px-3 py-3 pl-6">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => toggleProductHistory(ns.nm_id)}
+                        className={`p-1 rounded-md transition-all shrink-0 ${isExpanded
+                          ? 'bg-violet-500/15 text-violet-500'
+                          : 'text-[hsl(var(--muted-foreground))] hover:text-violet-500 hover:bg-violet-500/10'}`}
+                        title="История ставок"
+                      >
+                        {isHistoryLoading
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <History className="w-3.5 h-3.5" />}
+                      </button>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium text-[hsl(var(--foreground))]">
+                          {ns.product_name || ns.subject_name || `Товар ${ns.nm_id}`}
+                        </div>
+                        <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 font-mono">
+                          #{ns.nm_id}
+                        </div>
+                      </div>
                     </div>
                   </td>
-                )}
-                {/* Recommendations bid (manual only) */}
-                {!isUnifiedBid && (
+                  <td className="px-3 py-3">
+                    {ns.vendor_code && (
+                      <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/40 text-[hsl(var(--muted-foreground))]">
+                        {ns.vendor_code}
+                      </span>
+                    )}
+                  </td>
+                  {/* Search bid */}
                   <td className="px-3 py-3 text-right">
                     <ProductBidCell
                       nmId={ns.nm_id}
-                      placement="recommendations"
-                      bidKopecks={ns.bid_recommendations}
+                      placement="search"
+                      bidKopecks={isUnifiedBid ? (ns.bid_search || ns.bid_recommendations) : ns.bid_search}
                       editing={editingProduct}
                       setEditing={setEditingProduct}
                       onSave={handleSaveProductBid}
                       saving={saving}
                     />
                   </td>
-                )}
-                {/* Remove button */}
-                <td className="px-3 py-3 text-center pr-6">
-                  <button
-                    onClick={() => handleRemoveNm(ns.nm_id)}
-                    disabled={isRemoving}
-                    className="p-1 rounded hover:bg-red-500/10 text-[hsl(var(--muted-foreground))] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
-                    title="Удалить товар из кампании"
-                  >
-                    {isRemoving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
-                  </button>
-                </td>
-              </tr>
+                  {/* Recommendations for unified CPM */}
+                  {isUnifiedBid && baseBids && (baseBids.competitive_rub || baseBids.leaders_rub) && (
+                    <td className="px-3 py-3 text-center whitespace-nowrap">
+                      <div className="flex flex-col items-center gap-0.5">
+                        {baseBids.competitive_rub && baseBids.competitive_rub > 0 && (
+                          <span className="text-[10px] text-blue-500" title="Конкурентная">
+                            Конк.: {baseBids.competitive_rub} ₽
+                          </span>
+                        )}
+                        {baseBids.leaders_rub && baseBids.leaders_rub > 0 && (
+                          <span className="text-[10px] text-emerald-500" title="Лидерская">
+                            Лидер.: {baseBids.leaders_rub} ₽
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  )}
+                  {/* Recommendations bid (manual only) */}
+                  {!isUnifiedBid && (
+                    <td className="px-3 py-3 text-right">
+                      <ProductBidCell
+                        nmId={ns.nm_id}
+                        placement="recommendations"
+                        bidKopecks={ns.bid_recommendations}
+                        editing={editingProduct}
+                        setEditing={setEditingProduct}
+                        onSave={handleSaveProductBid}
+                        saving={saving}
+                      />
+                    </td>
+                  )}
+                  {/* Remove button */}
+                  <td className="px-3 py-3 text-center pr-6">
+                    <button
+                      onClick={() => handleRemoveNm(ns.nm_id)}
+                      disabled={isRemoving}
+                      className="p-1 rounded hover:bg-red-500/10 text-[hsl(var(--muted-foreground))] hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
+                      title="Удалить товар из кампании"
+                    >
+                      {isRemoving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                    </button>
+                  </td>
+                </tr>
+                {/* Per-product bid history (expandable row) */}
+                <AnimatePresence>
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={colCount} className="p-0">
+                        <motion.div
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden"
+                        >
+                          <ProductBidHistoryInline
+                            events={historyEvents || []}
+                            loading={isHistoryLoading}
+                          />
+                        </motion.div>
+                      </td>
+                    </tr>
+                  )}
+                </AnimatePresence>
+              </React.Fragment>
             )
           })}
         </tbody>
@@ -1104,43 +1366,325 @@ function ProductsTab({ campaign, shopId, onToast, onCampaignUpdate, baseBids }: 
 }
 
 
-// ── Add NM Input ────────────────────────────────────────────────
+// ── Per-product bid history inline ──────────────────────────────
 
-function AddNmInput({ newNmId, setNewNmId, onAdd, onCancel, adding }: {
-  newNmId: string; setNewNmId: (v: string) => void
-  onAdd: () => void; onCancel: () => void; adding: boolean
+function ProductBidHistoryInline({ events, loading }: {
+  events: CampaignEventRow[]
+  loading: boolean
 }) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 px-6 py-4 text-[hsl(var(--muted-foreground))] text-xs bg-[hsl(var(--muted))]/5">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        Загрузка истории ставок...
+      </div>
+    )
+  }
+
+  if (events.length === 0) {
+    return (
+      <div className="px-6 py-4 text-center text-[hsl(var(--muted-foreground))] text-xs bg-[hsl(var(--muted))]/5">
+        Нет изменений ставок для этого товара
+      </div>
+    )
+  }
+
+  // Group by date
+  const grouped = events.reduce((acc, event) => {
+    const dateStr = new Date(event.timestamp).toLocaleDateString('ru-RU', {
+      day: 'numeric', month: 'long', year: 'numeric'
+    })
+    if (!acc[dateStr]) acc[dateStr] = []
+    acc[dateStr].push(event)
+    return acc
+  }, {} as Record<string, CampaignEventRow[]>)
+
+  const formatBidValue = (value?: string, eventType?: string): string => {
+    if (!value) return '?'
+    const num = parseFloat(value)
+    if (isNaN(num)) return value
+    if (eventType === 'BID_CHANGE') return `${Math.round(num / 100)} ₽`
+    return `${Math.round(num)} ₽`
+  }
+
   return (
-    <div className="flex items-center gap-2">
-      <input
-        autoFocus
-        type="number"
-        min={1}
-        placeholder="nm_id товара"
-        value={newNmId}
-        onChange={e => setNewNmId(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === 'Enter') onAdd()
-          if (e.key === 'Escape') onCancel()
-        }}
-        className="w-40 px-3 py-1.5 rounded-lg bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] text-sm text-[hsl(var(--foreground))] focus:outline-none focus:ring-2 focus:ring-violet-500/30"
-        disabled={adding}
-      />
-      <button
-        onClick={onAdd}
-        disabled={adding || !newNmId.trim()}
-        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors disabled:opacity-50"
-      >
-        {adding ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-        Добавить
-      </button>
-      <button
-        onClick={onCancel}
-        className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))]"
-      >
-        <X className="w-3.5 h-3.5" />
-      </button>
+    <div className="px-6 py-3 bg-[hsl(var(--muted))]/5 border-t border-[hsl(var(--border))]/20 max-h-[250px] overflow-auto">
+      {Object.entries(grouped).map(([dateStr, dayEvents]) => (
+        <div key={dateStr} className="mb-3 last:mb-0">
+          <div className="flex items-center gap-2 mb-1.5">
+            <div className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+            <span className="text-[10px] font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider">
+              {dateStr}
+            </span>
+            <div className="flex-1 h-px bg-[hsl(var(--border))]/30" />
+          </div>
+
+          <div className="space-y-1 ml-4">
+            {dayEvents.map(event => {
+              const oldVal = parseFloat(event.old_value || '0')
+              const newVal = parseFloat(event.new_value || '0')
+              const isIncrease = newVal > oldVal
+              const time = new Date(event.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+              const meta = event.event_metadata || {}
+              const bidField = (meta as any).bid_field || ''
+              const bidFieldLabel = bidField === 'search' ? 'поиск' : bidField === 'recommendations' ? 'рекоменд.' : ''
+
+              return (
+                <div
+                  key={event.id}
+                  className="flex items-center gap-2.5 px-2.5 py-1.5 rounded-md bg-[hsl(var(--card))] hover:bg-[hsl(var(--muted))]/20 transition-colors text-xs"
+                >
+                  <span className="text-[hsl(var(--muted-foreground))] font-mono min-w-[36px]">
+                    {time}
+                  </span>
+
+                  <div className={`flex items-center justify-center w-4 h-4 rounded-full shrink-0 ${isIncrease ? 'bg-red-500/15 text-red-500' : 'bg-emerald-500/15 text-emerald-500'}`}>
+                    {isIncrease ? <ArrowUpRight className="w-2.5 h-2.5" /> : <ArrowDownRight className="w-2.5 h-2.5" />}
+                  </div>
+
+                  {bidFieldLabel && (
+                    <span className="text-[10px] text-[hsl(var(--muted-foreground))] px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/30">
+                      {bidFieldLabel}
+                    </span>
+                  )}
+
+                  <div className="flex items-center gap-1 ml-auto">
+                    <span className="text-[hsl(var(--muted-foreground))]">
+                      {formatBidValue(event.old_value, event.event_type)}
+                    </span>
+                    <span className="text-[hsl(var(--muted-foreground))]">→</span>
+                    <span className={`font-semibold ${isIncrease ? 'text-red-500' : 'text-emerald-500'}`}>
+                      {formatBidValue(event.new_value, event.event_type)}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
+  )
+}
+
+
+// ══════════════════════════════════════════════════════════════════
+// Add Product Sub-Modal — search + select products to add to campaign
+// ══════════════════════════════════════════════════════════════════
+
+function AddProductSubModal({ shopId, campaign, onClose, onAdded, onToast }: {
+  shopId: number
+  campaign: EnrichedCampaign
+  onClose: () => void
+  onAdded: (nmIds: number[]) => void
+  onToast: (t: { type: 'success' | 'error'; message: string }) => void
+}) {
+  const [, setSubjects] = useState<{ id: number; name: string; count: number }[]>([])
+  const [loadingSubjects, setLoadingSubjects] = useState(true)
+  const [products, setProducts] = useState<ProductItem[]>([])
+  const [loadingProducts, setLoadingProducts] = useState(false)
+  const [selectedNms, setSelectedNms] = useState<Set<number>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
+  const [adding, setAdding] = useState(false)
+
+  const existingNmIds = useMemo(() => {
+    return new Set((campaign.nm_settings || []).map(ns => ns.nm_id))
+  }, [campaign.nm_settings])
+
+  // Load subjects on mount
+  useEffect(() => {
+    let cancelled = false
+    setLoadingSubjects(true)
+    getCreationSubjects(shopId, 'cpm')
+      .then(r => {
+        if (!cancelled && r.success && r.subjects?.length) {
+          setSubjects(r.subjects)
+          // Auto-load all products
+          const subjectIds = r.subjects.map(s => s.id)
+          setLoadingProducts(true)
+          getCreationProducts(shopId, subjectIds)
+            .then(pr => {
+              if (!cancelled && pr.success) {
+                setProducts(pr.products || [])
+              }
+            })
+            .catch(() => {})
+            .finally(() => { if (!cancelled) setLoadingProducts(false) })
+        }
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoadingSubjects(false) })
+    return () => { cancelled = true }
+  }, [shopId])
+
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery.trim()) return products
+    const q = searchQuery.toLowerCase()
+    return products.filter(p =>
+      p.title?.toLowerCase().includes(q) ||
+      String(p.nm).includes(q) ||
+      p.vendor_code?.toLowerCase().includes(q)
+    )
+  }, [products, searchQuery])
+
+  const toggleNm = (nm: number) => {
+    setSelectedNms(prev => {
+      const next = new Set(prev)
+      if (next.has(nm)) next.delete(nm)
+      else next.add(nm)
+      return next
+    })
+  }
+
+  const handleAdd = async () => {
+    const nmsToAdd = Array.from(selectedNms).filter(nm => !existingNmIds.has(nm))
+    if (nmsToAdd.length === 0) return
+    setAdding(true)
+    try {
+      await manageCampaignNms(shopId, campaign.advert_id, nmsToAdd, [])
+      onToast({ type: 'success', message: `Добавлено товаров: ${nmsToAdd.length}` })
+      onAdded(nmsToAdd)
+    } catch (e: any) {
+      onToast({ type: 'error', message: e?.response?.data?.detail || 'Ошибка добавления товаров' })
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  const newSelectedCount = Array.from(selectedNms).filter(nm => !existingNmIds.has(nm)).length
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="absolute inset-0 z-20 bg-black/40 backdrop-blur-sm flex items-center justify-center p-6"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.95, opacity: 0 }}
+        transition={{ type: 'spring', duration: 0.25 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-[560px] max-h-[70vh] bg-[hsl(var(--card))] border border-[hsl(var(--border))] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[hsl(var(--border))] shrink-0">
+          <div>
+            <h3 className="text-base font-bold text-[hsl(var(--foreground))]">Добавить товар в кампанию</h3>
+            <p className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">{campaign.name}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-[hsl(var(--muted))]/30 text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="px-5 py-3 border-b border-[hsl(var(--border))]/50 shrink-0">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[hsl(var(--muted-foreground))]" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Поиск по артикулу, ID или названию..."
+              className="w-full pl-9 pr-3 py-2.5 rounded-lg bg-[hsl(var(--secondary))] border border-[hsl(var(--border))] text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+              autoFocus
+            />
+          </div>
+        </div>
+
+        {/* Product List */}
+        <div className="flex-1 overflow-y-auto px-3 py-2">
+          {(loadingSubjects || loadingProducts) ? (
+            <div className="flex items-center justify-center h-32 gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Загрузка товаров...
+            </div>
+          ) : filteredProducts.length === 0 ? (
+            <div className="flex items-center justify-center h-32 text-sm text-[hsl(var(--muted-foreground))]">
+              {products.length > 0 ? 'Ничего не найдено' : 'Нет доступных товаров'}
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {filteredProducts.map(p => {
+                const isExisting = existingNmIds.has(p.nm)
+                const isSelected = selectedNms.has(p.nm)
+                return (
+                  <button
+                    key={p.nm}
+                    onClick={() => !isExisting && toggleNm(p.nm)}
+                    disabled={isExisting}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all ${
+                      isExisting
+                        ? 'opacity-40 cursor-not-allowed'
+                        : isSelected
+                          ? 'border border-violet-500 bg-violet-500/5'
+                          : 'border border-transparent hover:bg-[hsl(var(--muted))]/40'
+                    }`}
+                  >
+                    <div className={`w-5 h-5 rounded-md border-2 flex-shrink-0 flex items-center justify-center transition-all ${
+                      isExisting
+                        ? 'bg-zinc-400/30 border-zinc-400/30'
+                        : isSelected
+                          ? 'bg-violet-600 border-violet-600'
+                          : 'border-[hsl(var(--border))] bg-[hsl(var(--secondary))]'
+                    }`}>
+                      {(isExisting || isSelected) && <Check className="w-3.5 h-3.5 text-white" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm text-[hsl(var(--foreground))] truncate">
+                        {p.title || `Товар ${p.nm}`}
+                      </div>
+                      <div className="text-xs text-[hsl(var(--muted-foreground))] flex items-center gap-2 flex-wrap mt-0.5">
+                        <span>nm: {p.nm}</span>
+                        {p.vendor_code && (
+                          <span className="px-1.5 py-0.5 rounded bg-[hsl(var(--muted))]/50 text-[10px] font-mono">
+                            {p.vendor_code}
+                          </span>
+                        )}
+                        {isExisting && (
+                          <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-500 text-[10px] font-medium">
+                            уже в кампании
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-[hsl(var(--border))] flex items-center justify-between shrink-0">
+          <span className="text-xs text-[hsl(var(--muted-foreground))]">
+            {products.length} доступно · {newSelectedCount} выбрано
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-2 rounded-lg text-sm text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))]/30 transition-colors"
+            >
+              Отмена
+            </button>
+            <button
+              onClick={handleAdd}
+              disabled={newSelectedCount === 0 || adding}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {adding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              Добавить {newSelectedCount > 0 ? `(${newSelectedCount})` : ''}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
 
