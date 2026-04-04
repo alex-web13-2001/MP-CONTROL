@@ -49,6 +49,9 @@ from app.schemas.ad_management import (
     StatusChangeResponse,
 )
 from app.services.wb_ad_management_service import WBAdManagementService
+from app.services.wb_campaign_creation_service import WBCampaignCreationService
+from pydantic import BaseModel, Field
+from typing import List as TypingList
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +228,50 @@ async def _update_campaign_status_in_ch(shop_id: int, advert_id: int, new_status
         logger.info(f"[ad-mgmt] Updated CH status: advert={advert_id} → {new_status}")
     except Exception as e:
         logger.warning(f"[ad-mgmt] Failed to update CH status: {e}")
+
+
+async def _insert_new_campaign_to_ch(
+    shop_id: int,
+    advert_id: int,
+    name: str,
+    status: int = 4,
+    payment_type: str = "cpm",
+    bid_type: str = "auto",
+    search_enabled: int = 1,
+    recommendations_enabled: int = 1,
+):
+    """Insert a brand-new campaign into ClickHouse so it appears immediately in from-db list."""
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        from datetime import datetime
+        ch = get_clickhouse_client()
+        ch.command("""
+            INSERT INTO mms_analytics.dim_advert_campaigns
+                (shop_id, advert_id, name, type, status, updated_at,
+                 payment_type, bid_type, search_enabled, recommendations_enabled)
+            VALUES (
+                {shop_id:UInt32}, {advert_id:UInt64}, {name:String},
+                9, {status:Int8}, {now:DateTime},
+                {payment_type:String}, {bid_type:String},
+                {search_enabled:UInt8}, {reco_enabled:UInt8}
+            )
+        """, parameters={
+            "shop_id": shop_id,
+            "advert_id": advert_id,
+            "name": name,
+            "status": status,
+            "now": datetime.utcnow(),
+            "payment_type": payment_type,
+            "bid_type": bid_type,
+            "search_enabled": search_enabled,
+            "reco_enabled": recommendations_enabled,
+        })
+        logger.info(
+            f"[ad-mgmt] Inserted new campaign in CH: "
+            f"advert={advert_id} name='{name}' status={status}"
+        )
+    except Exception as e:
+        logger.warning(f"[ad-mgmt] Failed to insert new campaign in CH: {e}")
 
 
 @router.post("/campaigns/start", response_model=StatusChangeResponse)
@@ -2060,3 +2107,382 @@ async def get_cluster_list_cached(
         "base_bids": base_bids,
         "source": "clickhouse",  # indicator for frontend
     }
+
+
+# ══════════════════════════════════════════════════════════════════
+# Campaign Creation
+# ══════════════════════════════════════════════════════════════════
+
+
+@router.get("/creation/subjects")
+async def get_creation_subjects(
+    shop_id: int = Query(...),
+    payment_type: str = Query("cpm"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get available subjects (categories) for campaign creation."""
+    shop = await _verify_wb_shop(shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    service = WBCampaignCreationService(db=db, shop_id=shop.id, api_key=api_key)
+    result = await service.get_subjects(payment_type=payment_type)
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Ошибка"))
+
+    return result
+
+
+@router.post("/creation/products")
+async def get_creation_products(
+    request: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get products available for advertising by subject IDs.
+
+    WB API only returns title/nm/subjectId.
+    We enrich each product with vendor_code from PostgreSQL dim_products.
+    """
+    shop_id = request.get("shop_id")
+    subject_ids = request.get("subject_ids", [])
+
+    if not shop_id:
+        raise HTTPException(status_code=400, detail="shop_id is required")
+
+    shop = await _verify_wb_shop(shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    service = WBCampaignCreationService(db=db, shop_id=shop.id, api_key=api_key)
+    result = await service.get_products(subject_ids=subject_ids)
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("message", "Ошибка"))
+
+    # Enrich products with vendor_code from PostgreSQL
+    products = result.get("products", [])
+    if products:
+        nm_ids = [p.get("nm") for p in products if isinstance(p, dict) and p.get("nm")]
+        if nm_ids:
+            from sqlalchemy import text
+            product_rows = await db.execute(
+                text("SELECT nm_id, vendor_code FROM dim_products WHERE nm_id = ANY(:ids)"),
+                {"ids": nm_ids},
+            )
+            vendor_map = {
+                int(r[0]): r[1] or ""
+                for r in product_rows.fetchall()
+            }
+            for p in products:
+                if isinstance(p, dict):
+                    p["vendor_code"] = vendor_map.get(p.get("nm", 0), "")
+
+    return result
+
+
+class InitialBidItem(BaseModel):
+    nm_id: int
+    bid_kopecks: int = Field(..., gt=0, description="Bid in kopecks (e.g. 15000 = 150₽)")
+
+
+class CreateCampaignRequest(BaseModel):
+    shop_id: int
+    name: str = Field(..., min_length=1, max_length=128)
+    nms: TypingList[int] = Field(..., min_length=1, max_length=50)
+    bid_type: str = Field("unified", pattern="^(unified|manual)$")
+    payment_type: str = Field("cpm", pattern="^(cpm|cpc)$")
+    placement_types: TypingList[str] = Field(default=[])
+    budget: int = Field(0, ge=0, description="Initial budget in rubles (0 = no deposit)")
+    auto_start: bool = Field(False, description="Auto-start campaign after creation")
+    initial_bids: TypingList[InitialBidItem] = Field(default=[], description="Initial bids per nm_id in kopecks")
+
+
+@router.post("/creation/create")
+async def create_campaign(
+    request: CreateCampaignRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new WB advertising campaign.
+
+    Flow:
+    1. POST /adv/v2/seacat/save-ad → get advert_id
+    2. (optional) POST /adv/v1/budget/deposit → fund the campaign
+    3. (optional) GET /adv/v0/start → start the campaign
+
+    Returns combined result with advert_id, budget status, and start status.
+    """
+    shop = await _verify_wb_shop(request.shop_id, current_user, db)
+    api_key = await _get_api_key(shop)
+
+    creation_svc = WBCampaignCreationService(
+        db=db, shop_id=shop.id, api_key=api_key,
+    )
+    mgmt_svc = WBAdManagementService(
+        db=db, shop_id=shop.id, api_key=api_key,
+    )
+
+    # Step 1: Create campaign
+    create_result = await creation_svc.create_campaign(
+        name=request.name,
+        nms=request.nms,
+        bid_type=request.bid_type,
+        payment_type=request.payment_type,
+        placement_types=request.placement_types if request.bid_type == "manual" else None,
+    )
+
+    if not create_result.get("success"):
+        await _log_audit(
+            db, current_user, shop.id,
+            action="campaign_create",
+            advert_id=None,
+            details={
+                "name": request.name,
+                "nms_count": len(request.nms),
+                "bid_type": request.bid_type,
+            },
+            success=False,
+            error_message=create_result.get("message"),
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=create_result.get("message", "Ошибка создания кампании"),
+        )
+
+    advert_id = create_result["advert_id"]
+    response = {
+        "success": True,
+        "advert_id": advert_id,
+        "message": create_result["message"],
+        "budget_deposited": False,
+        "campaign_started": False,
+        "bids_applied": False,
+    }
+
+    # Immediately insert the new campaign into ClickHouse so it appears in the list
+    # Status 4 = "Готова к запуску" (initial status after save-ad)
+    await _insert_new_campaign_to_ch(
+        shop_id=shop.id,
+        advert_id=advert_id,
+        name=request.name,
+        status=4,
+        payment_type=request.payment_type,
+        bid_type="manual" if request.bid_type == "manual" else "auto",
+        search_enabled=1,
+        recommendations_enabled=1 if request.bid_type == "unified" else 0,
+    )
+
+    # Immediately insert nm_ids into log_wb_bids so products appear in management modal
+    # (otherwise they only appear after the next Celery sync, ~15 min later)
+    await _insert_initial_nm_settings_to_ch(
+        shop_id=shop.id,
+        advert_id=advert_id,
+        nms=request.nms,
+        initial_bids={b.nm_id: b.bid_kopecks for b in request.initial_bids},
+    )
+
+    # Step 2: Deposit budget (if requested)
+    if request.budget > 0:
+        # Small delay to let WB register the campaign
+        await asyncio.sleep(1.5)
+        deposit_result = await mgmt_svc.deposit_budget(
+            advert_id=advert_id,
+            amount=request.budget,
+            budget_type=1,  # Balance
+        )
+        response["budget_deposited"] = deposit_result.get("success", False)
+        if deposit_result.get("success"):
+            # Immediately cache budget in Redis so from-db shows it
+            try:
+                import redis.asyncio as aioredis
+                from app.config import get_settings
+                settings = get_settings()
+                redis_client = await aioredis.from_url(
+                    settings.redis_url, encoding="utf-8", decode_responses=True,
+                    socket_connect_timeout=2, socket_timeout=2,
+                )
+                cache_key = f"budget:{shop.id}:{advert_id}"
+                budget_data = {"total": request.budget, "daily": 0, "currency": "RUB"}
+                await redis_client.set(cache_key, json.dumps(budget_data), ex=1200)
+                await redis_client.aclose()
+                logger.info(
+                    f"[campaign-create] Cached budget in Redis: {cache_key} = {request.budget}₽"
+                )
+            except Exception as e:
+                logger.warning(f"[campaign-create] Failed to cache budget: {e}")
+        else:
+            response["budget_message"] = deposit_result.get("message", "")
+            logger.warning(
+                f"[campaign-create] Budget deposit failed for new campaign {advert_id}: "
+                f"{deposit_result.get('message')}"
+            )
+
+    # Step 3: Set initial bids BEFORE start
+    # WB sets default minimum bids on save-ad, so we need to override them.
+    # Doing this BEFORE start ensures the campaign runs with correct bids from the first second.
+    bids_applied_ok = False
+    if request.initial_bids:
+        await asyncio.sleep(3)  # WB needs time to register the campaign
+        placement = "combined" if request.bid_type == "unified" else "search"
+        bids_dicts = [{"nm_id": b.nm_id, "bid": b.bid_kopecks} for b in request.initial_bids]
+        try:
+            logger.info(
+                f"[campaign-create] Step 3: Setting initial bids for campaign {advert_id} "
+                f"(status=4, before start). "
+                f"Placement={placement}, bid_type={request.bid_type}, "
+                f"bids={[{'nm_id': b.nm_id, 'bid_kopecks': b.bid_kopecks} for b in request.initial_bids]}"
+            )
+            bids_result = await mgmt_svc.change_bids(
+                advert_id=advert_id,
+                placement=placement,
+                bids=bids_dicts,
+                bid_type=request.bid_type,
+            )
+            bids_applied_ok = bids_result.get("success", False)
+            response["bids_applied"] = bids_applied_ok
+            if bids_applied_ok:
+                logger.info(
+                    f"[campaign-create] ✅ Initial bids set for campaign {advert_id}: "
+                    f"{len(request.initial_bids)} nm_ids, placement={placement}"
+                )
+            else:
+                logger.warning(
+                    f"[campaign-create] ⚠ Failed to set initial bids (pre-start) for {advert_id}: "
+                    f"status_code={bids_result.get('status_code')}, "
+                    f"message={bids_result.get('message')}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[campaign-create] ❌ Error setting initial bids (pre-start) for {advert_id}: {e}"
+            )
+
+    # Step 4: Auto-start (if requested and budget was deposited)
+    if request.auto_start and response["budget_deposited"]:
+        await asyncio.sleep(1)
+        start_result = await mgmt_svc.start_campaign(advert_id)
+        response["campaign_started"] = start_result.get("success", False)
+        if response["campaign_started"]:
+            await _update_campaign_status_in_ch(shop.id, advert_id, 9)
+
+    # Step 5: Retry bids after start (if pre-start attempt failed)
+    # Some WB campaigns may only accept bid changes in status=9 (active)
+    if request.initial_bids and not bids_applied_ok and response["campaign_started"]:
+        await asyncio.sleep(3)
+        placement = "combined" if request.bid_type == "unified" else "search"
+        bids_dicts = [{"nm_id": b.nm_id, "bid": b.bid_kopecks} for b in request.initial_bids]
+        try:
+            logger.info(
+                f"[campaign-create] Step 5: Retrying bids for campaign {advert_id} "
+                f"(status=9, after start). Attempt 2."
+            )
+            bids_result = await mgmt_svc.change_bids(
+                advert_id=advert_id,
+                placement=placement,
+                bids=bids_dicts,
+                bid_type=request.bid_type,
+            )
+            response["bids_applied"] = bids_result.get("success", False)
+            if bids_result.get("success"):
+                logger.info(
+                    f"[campaign-create] ✅ Initial bids set (post-start retry) for {advert_id}"
+                )
+            else:
+                logger.warning(
+                    f"[campaign-create] ⚠ Failed to set bids (post-start retry) for {advert_id}: "
+                    f"status_code={bids_result.get('status_code')}, "
+                    f"message={bids_result.get('message')}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[campaign-create] ❌ Error setting bids (post-start retry) for {advert_id}: {e}"
+            )
+
+    # Audit log
+    await _log_audit(
+        db, current_user, shop.id,
+        action="campaign_create",
+        advert_id=advert_id,
+        details={
+            "name": request.name,
+            "nms": request.nms,
+            "bid_type": request.bid_type,
+            "payment_type": request.payment_type,
+            "budget": request.budget,
+            "auto_start": request.auto_start,
+            "budget_deposited": response["budget_deposited"],
+            "campaign_started": response["campaign_started"],
+            "bids_applied": response["bids_applied"],
+            "initial_bids_count": len(request.initial_bids),
+        },
+        success=True,
+    )
+
+    return response
+
+
+async def _insert_initial_nm_settings_to_ch(
+    shop_id: int,
+    advert_id: int,
+    nms: TypingList[int],
+    initial_bids: dict = None,
+):
+    """
+    Insert initial nm_ids into log_wb_bids so that the management modal
+    shows products immediately after campaign creation (without waiting for Celery sync).
+
+    Args:
+        shop_id: Shop ID
+        advert_id: Campaign ID
+        nms: List of nm_ids added to the campaign
+        initial_bids: Optional dict {nm_id: bid_kopecks} with requested bids
+    """
+    if not nms:
+        return
+
+    try:
+        from app.core.clickhouse import get_clickhouse_client
+        from datetime import datetime
+        ch = get_clickhouse_client()
+
+        bids = initial_bids or {}
+        now = datetime.utcnow()
+
+        # Build batch insert: each nm_id gets a row in log_wb_bids
+        rows = []
+        for nm_id in nms:
+            bid_kopecks = max(bids.get(nm_id, 0), 1)  # min 1 kopeck to ensure HAVING clause passes
+            rows.append({
+                "shop_id": shop_id,
+                "advert_id": advert_id,
+                "nm_id": nm_id,
+                "bid_search": bid_kopecks,
+                "bid_recommendations": bid_kopecks,
+                "timestamp": now,
+            })
+
+        if rows:
+            ch.command(
+                """
+                INSERT INTO mms_analytics.log_wb_bids
+                    (shop_id, advert_id, nm_id, bid_search, bid_recommendations, timestamp)
+                VALUES
+                """
+                + ", ".join(
+                    f"({r['shop_id']}, {r['advert_id']}, {r['nm_id']}, "
+                    f"{r['bid_search']}, {r['bid_recommendations']}, "
+                    f"'{r['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}')"
+                    for r in rows
+                )
+            )
+            logger.info(
+                f"[campaign-create] Inserted {len(rows)} nm_settings into log_wb_bids "
+                f"for campaign {advert_id} (shop={shop_id})"
+            )
+    except Exception as e:
+        logger.warning(
+            f"[campaign-create] Failed to insert nm_settings into log_wb_bids: {e}"
+        )
+

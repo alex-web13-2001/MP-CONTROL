@@ -1,3 +1,104 @@
+## 2026-04-04 (v17.35.0)
+
+### feat(ad-management): Split-panel визард создания кампании + начальные ставки
+
+**Проблема**: При создании кампании с большим количеством товаров пользователь не видит, какие товары уже выбраны — они скрыты за прокруткой. Также нельзя задать начальные ставки CPM при создании — приходилось заходить в управление кампанией после создания.
+
+**Решение — Split-Panel UI (Step 2):**
+
+| Левая панель | Правая панель |
+|---|---|
+| Каталог товаров (чекбоксы) | Выбранные товары (корзина) |
+| Поиск по артикулу/ID/названию | Поле ставки для каждого товара |
+| «Выбрать все» / «Сбросить» | Кнопка удаления из кампании |
+| | «Ставка для всех» — массовое назначение |
+
+**Начальные ставки (CPM):**
+- Пользователь задаёт ставку (₽) для каждого товара прямо в визарде
+- «Применить ко всем» — задать одинаковую ставку для всех выбранных товаров
+- Подсказка: «Ставки задаются в рублях за 1000 показов (CPM). Без ставки — WB установит минимальную»
+- Ставки отображаются в Step 3 (сводка) перед созданием
+
+**Backend — Step 4 в creation flow:**
+- Новый request field: `initial_bids: [{nm_id: int, bid_kopecks: int}]`
+- После save-ad → deposit → start → **PATCH /api/advert/v1/bids** для начальных ставок
+- `InitialBidItem` Pydantic schema для валидации ставок
+- Response: `bids_applied: true/false`
+- Полный аудит-лог: кол-во ставок + статус применения
+
+**Frontend — CreateCampaignModal.tsx (полная перезапись):**
+- State: `bidPerNm: Map<number, string>` — ставки в рублях per nm_id
+- Анимированный модал расширяется на Step 2 (`max-w-4xl` → `max-w-2xl`)
+- Split-panel: `flex` layout с разделителем
+- Массовая ставка: `applyBulkBid()` для всех выбранных товаров
+- `initial_bids` конвертируются руб→копейки при submit
+
+**Файлы:**
+- `frontend/src/components/CreateCampaignModal.tsx` — полная перезапись (530 строк)
+- `frontend/src/api/ad-management.ts` — `initial_bids` в payload, `bids_applied` в response
+- `backend/app/api/v1/ad_management.py` — `InitialBidItem` schema + Step 4 в create flow
+
+---
+
+
+
+### fix(ad-management): Новая кампания не появлялась в списке + поиск по артикулу продавца
+
+**Проблема 1**: После создания кампании через визард она появлялась на WB, но не в нашем списке. `loadFullData()` читал из ClickHouse `dim_advert_campaigns`, куда новая кампания попадала только при следующем Celery-синке (через 15 мин).
+
+**Решение**: Новая функция `_insert_new_campaign_to_ch()` — сразу после `save-ad` вставляет запись в `dim_advert_campaigns` с name, payment_type, bid_type, status=4. При автостарте — `_update_campaign_status_in_ch(status=9)` обновляет до «Активна». Теперь `loadFullData()` сразу видит кампанию.
+
+**Проблема 2**: Бюджет новой кампании показывался 0₽, хотя на WB — корректный. Причина: `from-db` читает бюджет из Redis-кеша (`budget:{shop_id}:{advert_id}`), но при создании кампании deposit бюджета шёл через сервисный метод напрямую, минуя Redis-запись.
+
+**Решение**: После успешного `deposit_budget` во время создания кампании — сразу пишем `{"total": amount, "daily": 0}` в Redis с TTL=1200s. Следующий Celery-синк обновит точным значением.
+
+**Проблема 3**: Поиск товаров на шаге 2 визарда не искал по артикулу продавца (vendor_code). WB API `/adv/v2/supplier/nms` возвращает только title/nm/subjectId — без vendor_code.
+
+**Решение**: Backend endpoint `/creation/products` теперь обогащает товары артикулом из PostgreSQL `dim_products` (JOIN по nm_id → vendor_code). Frontend фильтр ищет по 3 полям: title, nm_id, vendor_code. Артикул отображается бейджем рядом с nm_id.
+
+**Файлы:**
+- `backend/app/api/v1/ad_management.py` — `_insert_new_campaign_to_ch()` + enrichment products
+- `frontend/src/api/ad-management.ts` — `vendor_code` в `ProductItem`
+- `frontend/src/components/CreateCampaignModal.tsx` — фильтр + UI артикула
+
+---
+
+## 2026-04-03 (v17.34.0)
+
+### feat(ad-management): Создание рекламных кампаний WB — 3-шаговый визард
+
+**Новая функция**: Полный цикл создания рекламных кампаний Wildberries прямо из интерфейса MP-CONTROL.
+
+**3-шаговый визард (CreateCampaignModal):**
+- **Шаг 1 — Настройки**: Название, тип ставки (Единая/Ручная), модель оплаты (CPM/CPC), начальный бюджет, чекбокс автозапуска
+- **Шаг 2 — Товары**: Загрузка категорий из WB API → выбор товаров (nm_ids, макс 50), поиск по артикулу/названию, массовый выбор
+- **Шаг 3 — Подтверждение**: Обзор всех параметров, предупреждение баланса, кнопка создания
+
+**Backend — 3 новых endpoint + сервис:**
+- `GET /creation/subjects` — доступные категории (WB API `/adv/v1/supplier/subjects`)
+- `POST /creation/products` — товары по категориям (WB API `/adv/v2/supplier/nms`)
+- `POST /creation/create` — оркестрация полного цикла:
+  1. `POST /adv/v2/seacat/save-ad` → создание кампании (status=4)
+  2. `POST /adv/v1/budget/deposit` → пополнение бюджета (опционально)
+  3. `GET /adv/v0/start` → запуск кампании (если бюджет пополнен + autostart)
+- `WBCampaignCreationService` — изолированный сервис для WB API создания
+- Аудит-лог `campaign_create` со всеми деталями
+
+**Frontend:**
+- `CreateCampaignModal.tsx` — модал-визард с анимациями (Framer Motion)
+- `ad-management.ts` — +3 API функции, новые типы
+- `AdManagementPage.tsx` — кнопка «Создать кампанию» → открытие визарда
+- `ACTION_LABELS` — новый action `campaign_create` для аудит-лога
+
+**Файлы:**
+- `backend/app/services/wb_campaign_creation_service.py` — сервис создания (220 строк)
+- `backend/app/api/v1/ad_management.py` — +3 endpoint, +1 Pydantic schema
+- `frontend/src/components/CreateCampaignModal.tsx` — визард (520 строк)
+- `frontend/src/api/ad-management.ts` — расширен
+- `frontend/src/pages/AdManagementPage.tsx` — интеграция кнопки + модала
+
+---
+
 ## 2026-04-03 (v17.33.3)
 
 ### fix(analytics): «Выр. общая» считала только выкупленные заказы

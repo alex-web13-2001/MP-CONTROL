@@ -27,6 +27,7 @@ import {
 } from '../api/ad-management'
 import CampaignManagementModal from '../components/CampaignManagementModal'
 import { CampaignDetailModal } from '../components/CampaignDetailModal'
+import CreateCampaignModal from '../components/CreateCampaignModal'
 
 // ── Sticky cell styles (matching ProductFinanceTable pattern) ─────
 const stickyCol: React.CSSProperties = {
@@ -459,6 +460,7 @@ export default function AdManagementPage() {
   const [analyticsModal, setAnalyticsModal] = useState<EnrichedCampaign | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchBudgetAmount, setBatchBudgetAmount] = useState<number | null>(null)
+  const [showCreateModal, setShowCreateModal] = useState(false)
 
   // Budgets — from Redis cache (synced by Celery every 15 min)
   const [budgets, setBudgets] = useState<Record<number, { total: number; daily: number; loading: boolean }>>({})
@@ -785,7 +787,10 @@ export default function AdManagementPage() {
               Баланс: <span className="text-[hsl(var(--foreground))] font-semibold">{accountBalance.toLocaleString('ru-RU')} ₽</span>
             </div>
           )}
-          <button className="flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium text-sm transition-colors">
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white font-medium text-sm transition-colors"
+          >
             <Plus className="w-4 h-4" /> Создать кампанию
           </button>
         </div>
@@ -1246,6 +1251,21 @@ export default function AdManagementPage() {
           endDate=""
         />
       )}
+
+      {/* ── Create Campaign Modal ─────────────────────────────────── */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <CreateCampaignModal
+            shopId={shopId}
+            balance={accountBalance}
+            onClose={() => setShowCreateModal(false)}
+            onSuccess={(_advertId, _started) => {
+              setShowCreateModal(false)
+              loadFullData()  // Refresh campaign list
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

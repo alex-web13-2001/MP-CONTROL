@@ -411,6 +411,7 @@ export const ACTION_LABELS: Record<string, string> = {
   normquery_minus_phrases: '🚫 Изменение минус-фраз',
   normquery_toggle_exclude: '🔄 Переключение кластера',
   campaign_nms_manage: '📦 Управление товарами',
+  campaign_create: '🚀 Создание кампании',
 }
 
 // ── Normquery (Search Cluster) Types ──────────────────────────────
@@ -582,6 +583,86 @@ export async function manageCampaignNms(
   const res = await apiClient.patch(
     `${PREFIX}/campaigns/nms`,
     { shop_id: shopId, advert_id: advertId, add, delete: remove },
+  )
+  return res.data
+}
+
+
+// ── Campaign Creation ─────────────────────────────────────────────
+
+export interface SubjectItem {
+  name: string
+  id: number
+  count: number
+}
+
+export interface ProductItem {
+  title: string
+  nm: number
+  subjectId: number
+  subjectName?: string
+  vendor_code?: string
+}
+
+export interface CreateCampaignPayload {
+  shop_id: number
+  name: string
+  nms: number[]
+  bid_type: 'unified' | 'manual'
+  payment_type: 'cpm' | 'cpc'
+  placement_types?: string[]
+  budget: number
+  auto_start: boolean
+  initial_bids?: { nm_id: number; bid_kopecks: number }[]
+}
+
+export interface CreateCampaignResponse {
+  success: boolean
+  advert_id: number
+  message: string
+  budget_deposited: boolean
+  campaign_started: boolean
+  budget_message?: string
+  bids_applied?: boolean
+}
+
+/**
+ * Get available subjects (categories) for campaign creation.
+ */
+export async function getCreationSubjects(
+  shopId: number,
+  paymentType: string = 'cpm',
+): Promise<{ success: boolean; subjects: SubjectItem[] }> {
+  const res = await apiClient.get(
+    `${PREFIX}/creation/subjects`,
+    { params: { shop_id: shopId, payment_type: paymentType } },
+  )
+  return res.data
+}
+
+/**
+ * Get products available for advertising by subject IDs.
+ */
+export async function getCreationProducts(
+  shopId: number,
+  subjectIds: number[],
+): Promise<{ success: boolean; products: ProductItem[] }> {
+  const res = await apiClient.post(
+    `${PREFIX}/creation/products`,
+    { shop_id: shopId, subject_ids: subjectIds },
+  )
+  return res.data
+}
+
+/**
+ * Create a new campaign (save-ad → deposit budget → optional auto-start).
+ */
+export async function createCampaign(
+  payload: CreateCampaignPayload,
+): Promise<CreateCampaignResponse> {
+  const res = await apiClient.post<CreateCampaignResponse>(
+    `${PREFIX}/creation/create`,
+    payload,
   )
   return res.data
 }
