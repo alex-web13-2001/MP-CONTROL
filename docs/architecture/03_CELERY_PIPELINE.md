@@ -516,3 +516,15 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
   - Интеграция в `sync_all_daily` для Ozon магазинов
 - Обновлён Ozon startup pipeline: 8 → 10 шагов
 - Обновлена таблица backfill стратегий: добавлен `backfill_ozon_placement_cost`
+
+### 2026-04-05
+
+- **`sync_wb_budgets` — авто-пополнение бюджета кампаний WB:**
+  - После кеширования бюджетов в Redis → проверка `ad_auto_budget WHERE enabled=true AND shop_id=shop`
+  - Если `budget < threshold` → вызов `WBAdManagementService.deposit_budget(advert_id, amount, budget_type)`
+  - **Safety:** `max_per_day` лимит, автоматический сброс `deposits_today` при новой дате
+  - **Rate limiting:** `time.sleep(1.0)` между пополнениями
+  - **Redis update:** после deposit → `SET budget:{shop_id}:{advert_id} new_budget EX 600`
+  - **Audit:** `ad_audit_log` запись с `action=auto_budget_deposit`
+  - **Error handling:** ошибки отдельных кампаний логируются, не прерывают цикл
+  - Источник настроек: PostgreSQL `ad_auto_budget` (UPSERT через API)

@@ -1070,3 +1070,19 @@ Bоковая панель с вложенной навигацией (collapse 
   - Для Ozon — без изменений (стандартные 4 колонки)
 - **campaignDetails.ts** — расширен `CampaignPhraseRow`: `+atbs?`, `+avg_pos?`, `+cpc?` (опциональные поля)
 
+### 2026-04-05
+
+- **CampaignManagementModal** — автопополнение бюджета и launch guardrail:
+  - **Бюджет в header:** inline-отображение баланса + цветовой индикатор (🟢 >500₽, 🟡 100-500₽, 🔴 <100₽)
+  - **Inline deposit:** поле ввода суммы + кнопка «Пополнить» прямо в header кампании
+  - **Auto badge:** индикатор «Auto» рядом с бюджетом когда автопополнение включено
+  - **Launch guardrail:** блокировка `handleStatusAction("start")` если бюджет = 0₽, toast «Пополните бюджет»
+  - **Секция настроек авто-пополнения:**
+    - Toggle включения/выключения
+    - Порог срабатывания (threshold ₽)
+    - Сумма пополнения (amount ₽)
+    - Макс. пополнений в день (max_per_day)
+    - Статус: счётчик пополнений за сегодня + время последнего
+  - **API модуль:** `ad-management.ts` — `getAutoBudgetSettings()`, `saveAutoBudgetSettings()`, тип `AutoBudgetSettings`
+  - **Audit:** `auto_budget_config` и `auto_budget_deposit` — новые action labels в ленте аудита
+

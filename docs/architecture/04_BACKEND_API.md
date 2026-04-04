@@ -1026,6 +1026,59 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
 
 ---
 
+## Управление рекламой WB — `/api/v1/ad-management`
+
+> **Файл:** `backend/app/api/v1/ad_management.py` (~2600 строк)  
+> **Описание:** Полное управление WB-рекламой: статусы, ставки, бюджеты, создание кампаний, авто-пополнение
+
+### Endpoints (автопополнение бюджета)
+
+| Метод  | Path                              | Описание                                         | Auth   |
+| ------ | --------------------------------- | ------------------------------------------------ | ------ |
+| `GET`  | `/ad-management/wb/auto-budget`   | Настройки автопополнения для кампании             | Bearer |
+| `POST` | `/ad-management/wb/auto-budget`   | Сохранение/обновление настроек (UPSERT)          | Bearer |
+
+### Query Parameters (GET)
+
+```
+shop_id: int (required)
+advert_id: int (required)
+```
+
+### Request Body (POST)
+
+```
+{
+  shop_id: int,
+  advert_id: int,
+  enabled: bool,
+  threshold: int,          // ₽ — порог для пополнения (default: 500)
+  amount: int,             // ₽ — сумма пополнения (default: 1000)
+  max_per_day: int         // Макс. пополнений в день (default: 5)
+}
+```
+
+### Response Schema (GET)
+
+```
+{
+  enabled: bool,
+  threshold: int,
+  amount: int,
+  max_per_day: int,
+  deposits_today: int,
+  last_deposit_at: str?    // ISO datetime
+}
+```
+
+### Ключевая логика
+
+- **GET:** если настройки не найдены → дефолт: `enabled=false, threshold=500, amount=1000, max_per_day=5`
+- **POST:** UPSERT через `SELECT ... WHERE advert_id=X` → update или insert. Audit log: `action=auto_budget_config`
+- **Потребитель:** Celery task `sync_wb_budgets` (каждые 15 мин) читает `ad_auto_budget WHERE enabled=true` и автоматически вызывает `deposit_budget()` при `budget < threshold`
+
+---
+
 ## Changelog
 
 ### 2026-02-19
@@ -1157,3 +1210,12 @@ category: "all" | "advertising" | "content" | "commercial"  — фильтр п�
   - Phrases endpoint: если `fact_advert_phrases_daily` пуста для WB → fallback на `fact_normquery_stats_daily`
   - Формулы: `spend = Σ(cpc×clicks)/100`, `cpc = Σ(cpc×clicks)/Σ(clicks)/100`, `avg_pos` взвешенный по показам
   - Валидация данных: CPC в копейках из WB API (подтверждено), расхождение с основной статистикой < 2%
+
+### 2026-04-05
+
+- **Новые endpoints:** `GET/POST /ad-management/wb/auto-budget` — настройки автопополнения бюджета WB-кампаний
+  - GET: возвращает настройки (дефолт: disabled, threshold=500₽, amount=1000₽, max_per_day=5)
+  - POST: UPSERT настроек + audit log (`auto_budget_config`)
+  - Модель: `AdAutoBudget` (PostgreSQL), миграция `abe1a57ab0a1`
+  - Потребитель: Celery `sync_wb_budgets` — проверяет `WHERE enabled=true` каждые 15 мин
+

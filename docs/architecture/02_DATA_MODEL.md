@@ -14,6 +14,7 @@ graph LR
         PG_Users["users"]
         PG_Shops["shops"]
         PG_Auto["autobidder_settings"]
+        PG_AutoBudget["ad_auto_budget"]
         PG_Proxies["proxies"]
         PG_RL["rate_limits"]
         PG_PUL["proxy_usage_log"]
@@ -51,6 +52,7 @@ graph LR
 
     PG_Users -->|"1:N"| PG_Shops
     PG_Shops -->|"1:N"| PG_Auto
+    PG_Shops -->|"1:N"| PG_AutoBudget
     PG_Shops -->|"1:1"| PG_RL
 ```
 
@@ -65,7 +67,7 @@ graph LR
 
 ---
 
-## PostgreSQL — 14 таблиц
+## PostgreSQL — 15 таблиц
 
 ### ER-диаграмма
 
@@ -310,6 +312,26 @@ SQLAlchemy модель: `app/models/dim_ozon_campaigns.py → DimOzonCampaignPr
 
 > **Источник:** Ozon Performance API `GET /api/client/campaign/{id}/v2/products`  
 > **Синхронизация:** `sync_ozon_campaigns_task` → `OzonCampaignsLoader.sync_campaign_products()` (только для активных кампаний)
+
+#### `ad_auto_budget` — настройки автопополнения бюджета WB-кампаний
+
+SQLAlchemy модель: `app/models/ad_auto_budget.py → AdAutoBudget`
+
+| Поле             | Тип            | Описание                                              |
+| ---------------- | -------------- | ----------------------------------------------------- |
+| `shop_id`        | INT FK → shops | Магазин (cascade delete)                              |
+| `advert_id`      | BIGINT UK      | ID рекламной кампании WB (unique)                     |
+| `enabled`        | BOOLEAN        | Включено ли автопополнение                            |
+| `threshold`      | INTEGER        | Порог (₽) — пополнять если бюджет ниже                |
+| `amount`         | INTEGER        | Сумма пополнения (₽)                                   |
+| `budget_type`    | INTEGER        | Источник: 0=Счёт, 1=Баланс, 3=Бонусы                 |
+| `max_per_day`    | INTEGER        | Макс. пополнений в день (safety limit)                |
+| `deposits_today` | INTEGER        | Счётчик пополнений за сегодня                         |
+| `last_deposit_at`| DATETIME       | Время последнего пополнения                           |
+| `last_reset_date`| DATE           | Дата последнего сброса daily counter                  |
+
+> **Источник:** UI настройки → POST `/api/v1/ad-management/wb/auto-budget`  
+> **Потребитель:** Celery task `sync_wb_budgets` (каждые 15 мин) — проверяет `WHERE enabled=true` и вызывает `deposit_budget()`
 
 ---
 
@@ -598,6 +620,7 @@ ORDER BY: (shop_id, nm_id, date, advert_id)
 | `001_initial_stamp`                          | Baseline — помечает существующую схему                   |
 | `002_add_ozon_product_columns`               | 18 расширенных колонок dim_ozon_products (IF NOT EXISTS) |
 | `b81f3ce45f30_add_dim_ozon_campaign`         | Таблицы dim_ozon_campaigns + dim_ozon_campaign_products  |
+| `abe1a57ab0a1_add_ad_auto_budget`            | Таблица ad_auto_budget (автопополнение бюджетов)         |
 
 ### Workflow создания миграций
 
@@ -677,3 +700,13 @@ alembic revision --autogenerate -m "описание"
   - ReplacingMergeTree, ORDER BY (shop_id, marketplace, campaign_id, dt, phrase), TTL 1 год
   - Парсер: `OzonAdsService.parse_phrases_csv_report()` — динамическое определение заголовков CSV
 - Счётчик: PostgreSQL 12 → 14, ClickHouse 20 → 21
+
+### 2026-04-05
+
+- **Новая таблица PostgreSQL:** `ad_auto_budget` — настройки автопополнения бюджета WB-кампаний
+  - Миграция Alembic: `abe1a57ab0a1_add_ad_auto_budget.py`
+  - Модель: `app/models/ad_auto_budget.py` (AdAutoBudget)
+  - Per-campaign настройки: threshold, amount, budget_type, max_per_day
+  - Execution state: deposits_today, last_deposit_at, last_reset_date
+  - FK → shops (cascade), unique index на advert_id
+- Счётчик: PostgreSQL 14 → 15
