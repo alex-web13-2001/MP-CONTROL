@@ -1,3 +1,32 @@
+## 2026-04-05 (v17.38.3)
+
+### fix(budget): Бюджет не обновлялся в таблице после пополнения из модала
+
+**Проблема**: Пополняешь бюджет в модале управления кампанией → модал показывает верную сумму → но в таблице кампаний столбец «Бюджет» по-прежнему показывает «+ Пополнить» или старое значение.
+
+**Корневая причина**: Таблица читает бюджеты из **отдельного state** `budgets[advert_id]`, а `onCampaignUpdate` из unified modal обновлял только `data.campaigns[i].budget_total`. Два разных state — данные рассинхронизированы.
+
+**Фикс (2 уровня):**
+
+1. **AdManagementPage** — `onCampaignUpdate` callback:
+   - Теперь **также обновляет** `setBudgets()` при наличии `budget_total > 0`
+   - **`setRecentDeposit()`** — защита от перезаписи `loadFullData()` стэйлом из Redis (2 мин TTL)
+
+2. **CampaignManagementModal** — `handleDeposit()`:
+   - Использует `response.new_budget_total` из backend (реальный баланс WB API) вместо наивного `currentBudget + amt`
+   - Fallback: оптимистичный расчёт когда backend не вернул `new_budget_total`
+
+**Цепочка после фикса:**
+- Deposit 1000₽ → backend: WB API → `new_budget_total: 2156` → modal `onCampaignUpdate({budget_total: 2156})`
+- AdManagementPage: `setBudgets({[cid]: {total: 2156}})` + `setRecentDeposit(cid, 2156)`
+- Таблица: столбец «Бюджет» → `2 156 ₽` ✅
+
+**Файлы:**
+- `frontend/src/pages/AdManagementPage.tsx` — budgets sync в onCampaignUpdate
+- `frontend/src/components/CampaignManagementModal.tsx` — new_budget_total из response
+
+---
+
 ## 2026-04-05 (v17.38.2)
 
 ### feat(ui): Badge-based campaign column — визуальная иерархия bid/payment types
