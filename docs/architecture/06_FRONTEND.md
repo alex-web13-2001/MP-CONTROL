@@ -1103,3 +1103,14 @@ Bоковая панель с вложенной навигацией (collapse 
 - **CampaignDetailModal** — layout фиксы:
   - Аналогичная hybrid scroll архитектура для таблиц фраз и товаров
 
+### 2026-04-05 (v2)
+
+- **AdManagementPage + AdvertisingAnalyticsPage** — badge-based campaign column:
+  - Трёхстрочная визуальная иерархия: название → бейджи → ID + артикулы
+  - Цветные pill-бейджи для bid type: «Ручная ставка» (amber), «Единая» (blue)
+  - Цветные pill-бейджи для payment type: CPM (violet), CPC (cyan)
+  - Плейсменты (Поиск · Рекомендации) отображаются dot-separated текстом рядом с бейджами
+  - Fallback на CAMPAIGN_TYPE_MAP когда bid_type и payment_type отсутствуют
+  - Консистентный дизайн на обеих страницах (управление + аналитика)
+  - `min-w-[340px]` для стабильности layout sticky-колонки
+
