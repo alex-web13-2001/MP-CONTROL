@@ -14,8 +14,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Search, Play, Pause, ChevronDown, ChevronUp, AlertTriangle,
-  Plus, X, Loader2, Check, ChevronsUpDown, DollarSign, BarChart3,
+  Search, Play, Pause, ChevronDown, AlertTriangle,
+  Plus, X, Loader2, Check, DollarSign, BarChart3,
 } from 'lucide-react'
 import { useAppStore } from '../stores/appStore'
 import { PeriodSelector, type PeriodValue } from '../components/DateRangePicker'
@@ -28,7 +28,7 @@ import {
 import CampaignUnifiedModal from '../components/CampaignUnifiedModal'
 import CreateCampaignModal from '../components/CreateCampaignModal'
 
-// ── Sticky cell styles (matching ProductFinanceTable pattern) ─────
+// ── Sticky cell styles (matching AdvertisingAnalyticsPage pattern) ─────
 const stickyCol: React.CSSProperties = {
   position: 'sticky',
   left: 0,
@@ -36,7 +36,7 @@ const stickyCol: React.CSSProperties = {
   backgroundColor: 'hsl(var(--card))',
 }
 const stickyCol2: React.CSSProperties = { position: 'sticky', left: 40, zIndex: 10, backgroundColor: 'hsl(var(--card))' }
-const stickyCol3: React.CSSProperties = { position: 'sticky', left: 80, zIndex: 10, backgroundColor: 'hsl(var(--card))', boxShadow: '4px 0 12px -2px rgba(0,0,0,0.25)' }
+const stickyCol3: React.CSSProperties = { position: 'sticky', left: 80, zIndex: 10, backgroundColor: 'hsl(var(--card))' }
 
 // ── Types & Constants ────────────────────────────────────────────
 
@@ -408,15 +408,13 @@ function SortHeader({
   const active = currentSort === sortKey
   return (
     <th
-      className={`px-3 py-2.5 text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider cursor-pointer hover:text-[hsl(var(--foreground))] transition-colors select-none whitespace-nowrap ${align === 'left' ? 'text-left' : 'text-right'}`}
+      className={`px-3 py-3 text-[14px] font-medium text-[hsl(var(--muted-foreground))] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors whitespace-nowrap ${align === 'left' ? 'text-left' : 'text-right'}`}
       onClick={() => onSort(sortKey)}
     >
       <div className={`flex items-center gap-1 ${align === 'right' ? 'justify-end' : 'justify-start'}`}>
         <span>{label}</span>
-        {active ? (
-          currentDir === 'asc' ? <ChevronUp className="w-3 h-3 text-violet-500" /> : <ChevronDown className="w-3 h-3 text-violet-500" />
-        ) : (
-          <ChevronsUpDown className="w-3 h-3 opacity-30" />
+        {active && (
+          <span className="ml-0.5 text-[10px]">{currentDir === 'desc' ? '▼' : '▲'}</span>
         )}
       </div>
     </th>
@@ -931,14 +929,14 @@ export default function AdManagementPage() {
 
       {/* ── Table ──────────────────────────────────────────────── */}
       {data && (
-        <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-          <div className="overflow-auto max-h-[75vh] relative">
-            <table className="w-full border-collapse" style={{ minWidth: 1400 }}>
-              <thead className="sticky top-0 z-20">
-                <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+        <>
+          <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-300px)]">
+            <table className="w-full min-w-[1500px]" style={{ borderCollapse: 'collapse' }}>
+              <thead className="sticky top-0 z-20" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+                <tr className="bg-[hsl(var(--card))]">
                   {/* Frozen left block: checkbox + action + name */}
                   <th
-                    className="px-3 py-2.5 w-10"
+                    className="px-3 py-3 w-10"
                     style={{ ...stickyCol, zIndex: 30 }}
                   >
                     <input
@@ -948,19 +946,19 @@ export default function AdManagementPage() {
                       className="rounded accent-violet-600"
                     />
                   </th>
-                  <th className="px-2 py-2.5 text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider text-center w-10" style={{ ...stickyCol2, zIndex: 30 }}></th>
+                  <th className="px-2 py-3 text-[14px] font-medium text-[hsl(var(--muted-foreground))] text-center w-10" style={{ ...stickyCol2, zIndex: 30 }}></th>
                   <th
-                    className="px-3 py-2.5 text-left text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider min-w-[260px] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
+                    className="px-3 py-3 text-left text-[14px] font-medium text-[hsl(var(--muted-foreground))] min-w-[260px] cursor-pointer select-none hover:text-[hsl(var(--foreground))] transition-colors"
                     style={{ ...stickyCol3, zIndex: 30 }}
                     onClick={() => handleSort('name')}
                   >
                     <span className="inline-flex items-center gap-1">
                       Кампания
-                      {sortKey === 'name' && <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>}
+                      {sortKey === 'name' && <span className="ml-0.5 text-[10px]">{sortDir === 'desc' ? '▼' : '▲'}</span>}
                     </span>
                   </th>
                   <SortHeader label="Статус" sortKey="status" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} align="left" />
-                  <th className="px-3 py-2.5 text-xs font-semibold text-[hsl(var(--muted-foreground))] uppercase tracking-wider text-center whitespace-nowrap">Бюджет</th>
+                  <th className="px-3 py-3 text-[14px] font-medium text-[hsl(var(--muted-foreground))] text-center whitespace-nowrap">Бюджет</th>
                   <SortHeader label="Затраты" sortKey="spend" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Продажи" sortKey="revenue" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
                   <SortHeader label="Показы" sortKey="views" currentSort={sortKey} currentDir={sortDir} onSort={handleSort} />
@@ -991,16 +989,19 @@ export default function AdManagementPage() {
                   // Placements
                   const placements: string[] = []
                   if (c.search_enabled) placements.push('Поиск')
-                  if (c.recommendations_enabled) placements.push('Полки')
+                  if (c.recommendations_enabled) placements.push('Рекомендации')
+
+                  // Build labels
+                  const bidTypeLabel = c.bid_type === 'manual' ? 'Ручная ставка' : 'Единая'
 
                   return (
                     <React.Fragment key={c.advert_id}>
                       <tr
-                        className={`group border-b border-[hsl(var(--border))]/40 hover:bg-[hsl(var(--muted)/0.15)] transition-colors ${selected.has(c.advert_id) ? 'bg-violet-600/5' : ''}`}
+                        className={`border-b border-[hsl(var(--border)/0.3)] transition-colors hover:bg-[hsl(var(--muted)/0.1)] ${selected.has(c.advert_id) ? 'bg-violet-600/5' : ''}`}
                       >
                         {/* Checkbox — sticky left */}
                         <td
-                          className="px-3 py-2.5" onClick={e => e.stopPropagation()}
+                          className="px-3 py-3" onClick={e => e.stopPropagation()}
                           style={{ ...stickyCol }}
                         >
                           <input
@@ -1012,7 +1013,7 @@ export default function AdManagementPage() {
                         </td>
 
                         {/* Action button — sticky left */}
-                        <td className="px-2 py-2.5 text-center" style={{ ...stickyCol2 }}>
+                        <td className="px-2 py-3 text-center" style={{ ...stickyCol2 }}>
                           {c.status === 9 ? (
                             <button
                               onClick={() => handleAction(c.advert_id, 'pause')}
@@ -1036,9 +1037,9 @@ export default function AdManagementPage() {
                           )}
                         </td>
 
-                        {/* Campaign name — sticky left with shadow */}
+                        {/* Campaign name — sticky left */}
                         <td
-                          className="px-3 py-2.5 min-w-[260px]"
+                          className="px-3 py-3 min-w-[340px] max-w-[420px]"
                           style={{ ...stickyCol3 }}
                         >
                           <button
@@ -1046,62 +1047,69 @@ export default function AdManagementPage() {
                             className="text-left w-full"
                           >
                             <div className="flex items-center gap-2">
-                              <div className="flex-1 min-w-0">
-                                <div className="text-sm font-semibold text-[hsl(var(--foreground))] leading-tight">
+                              <div className="flex flex-col min-w-0 gap-1 flex-1">
+                                {/* Row 1: Campaign name */}
+                                <span className="font-semibold text-[14px] text-[hsl(var(--foreground))] leading-snug line-clamp-2" title={c.name || `Кампания ${c.advert_id}`}>
                                   {c.name || `Кампания ${c.advert_id}`}
-                                </div>
-                                <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5 flex items-center gap-1.5">
-                                  <span>{c.advert_id}</span>
+                                </span>
+                                {/* Row 2: Badges — bid type + payment type + placements */}
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className={`text-[11px] px-1.5 py-0.5 rounded font-semibold ${
+                                    c.bid_type === 'manual'
+                                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                      : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                                  }`}>
+                                    {bidTypeLabel}
+                                  </span>
+                                  <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-bold ${
+                                    ptLabel === 'CPM' ? 'bg-violet-500/20 text-violet-600 dark:text-violet-400' :
+                                    ptLabel === 'CPC' ? 'bg-cyan-500/20 text-cyan-600 dark:text-cyan-400' :
+                                    'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                                  }`}>
+                                    {ptLabel}
+                                  </span>
                                   {placements.length > 0 && (
-                                    <>
-                                      <span className="opacity-30">·</span>
-                                      {placements.map(p => (
-                                        <span key={p} className="text-[10px]">
-                                          {p === 'Поиск' ? '🔍' : '📦'} {p}
-                                        </span>
-                                      ))}
-                                    </>
+                                    <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.7)]">
+                                      {placements.join(' · ')}
+                                    </span>
                                   )}
                                 </div>
+                                {/* Row 3: ID + article count */}
+                                <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
+                                  ID: {c.advert_id} · {c.nm_settings?.length || 0} арт.
+                                </span>
                               </div>
                               <button
                                 onClick={(e) => { e.stopPropagation(); setUnifiedModal({ campaign: c, tab: 'analytics' }) }}
-                                className="p-1 rounded-md hover:bg-violet-500/15 text-[hsl(var(--muted-foreground))] hover:text-violet-500 transition-colors flex-shrink-0"
+                                className="shrink-0 ml-auto w-8 h-8 flex items-center justify-center rounded-lg bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))] hover:bg-[hsl(var(--primary)/0.25)] transition-colors"
                                 title="Статистика кампании"
                               >
-                                <BarChart3 className="w-4 h-4" />
+                                <BarChart3 className="w-5 h-5" />
                               </button>
-                              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0
-                                ${ptLabel === 'CPM' ? 'bg-violet-500/15 text-violet-600 dark:text-violet-400' :
-                                  ptLabel === 'CPC' ? 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400' :
-                                    'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'}`}
-                              >
-                                {ptLabel}
-                              </span>
                             </div>
                           </button>
                         </td>
 
                         {/* Status */}
-                        <td className="px-3 py-2.5 whitespace-nowrap">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${sc.bg} ${sc.text}`}>
+                        <td className="px-3 py-3 whitespace-nowrap">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[12px] font-semibold ${sc.bg} ${sc.text}`}>
                             <span className={`w-1.5 h-1.5 rounded-full ${sc.dot}`} />
                             {STATUS_LABELS[c.status] || '—'}
                           </span>
                         </td>
 
                         {/* Budget — shows real balance, click to deposit */}
-                        <td className="px-3 py-2.5 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                        <td className="px-3 py-3 text-center whitespace-nowrap" onClick={e => e.stopPropagation()}>
                           {(() => {
                             const b = budgets[c.advert_id]
                             if (b?.loading) {
                               return <Loader2 className="w-3.5 h-3.5 animate-spin text-[hsl(var(--muted-foreground))] mx-auto" />
                             }
-                            if (b && b.total > 0) {
+                            if (b && (b.total > 0 || b.daily > 0)) {
                               return (
                                 <button
                                   onClick={() => setBudgetModal(c)}
-                                  className="text-sm font-medium text-[hsl(var(--foreground))] hover:text-violet-500 transition-colors cursor-pointer"
+                                  className="text-[14px] font-medium text-[hsl(var(--foreground))] hover:text-violet-500 transition-colors cursor-pointer"
                                   title="Нажмите для пополнения"
                                 >
                                   {b.total.toLocaleString('ru-RU')} ₽
@@ -1124,41 +1132,41 @@ export default function AdManagementPage() {
                         </td>
 
                         {/* Stats columns */}
-                        <td className="px-3 py-2.5 text-right text-sm font-medium text-[hsl(var(--foreground))] whitespace-nowrap">
-                          {c.spend > 0 ? formatMoney(c.spend) : <span className="text-[hsl(var(--muted-foreground))]">0 ₽</span>}
+                        <td className="px-3 py-3 text-right text-[14px] font-semibold whitespace-nowrap">
+                          {c.spend > 0 ? formatMoney(c.spend) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0 ₽</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm font-medium text-[hsl(var(--foreground))] whitespace-nowrap">
-                          {c.revenue > 0 ? formatMoney(c.revenue) : <span className="text-[hsl(var(--muted-foreground))]">0 ₽</span>}
+                        <td className="px-3 py-3 text-right text-[14px] font-semibold whitespace-nowrap">
+                          {c.revenue > 0 ? formatMoney(c.revenue) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0 ₽</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.views > 0 ? formatNum(c.views) : <span className="text-[hsl(var(--muted-foreground))]">0</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.views > 0 ? formatNum(c.views) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.clicks > 0 ? formatNum(c.clicks) : <span className="text-[hsl(var(--muted-foreground))]">0</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.clicks > 0 ? formatNum(c.clicks) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.ctr > 0 ? `${c.ctr.toFixed(2)}%` : <span className="text-[hsl(var(--muted-foreground))]">0%</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.ctr > 0 ? `${c.ctr.toFixed(2)}%` : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0%</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cart > 0 ? formatNum(c.cart) : <span className="text-[hsl(var(--muted-foreground))]">0</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.cart > 0 ? formatNum(c.cart) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.orders > 0 ? formatNum(c.orders) : <span className="text-[hsl(var(--muted-foreground))]">0</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.orders > 0 ? formatNum(c.orders) : <span className="text-[hsl(var(--muted-foreground)/0.4)]">0</span>}
                         </td>
-                        <td className={`px-3 py-2.5 text-right text-sm font-semibold whitespace-nowrap ${drrColor}`}>
-                          {c.drr > 0 ? `${c.drr.toFixed(1)}%` : <span className="text-[hsl(var(--muted-foreground))]">0%</span>}
+                        <td className={`px-3 py-3 text-right text-[14px] whitespace-nowrap ${drrColor}`}>
+                          <span className="font-semibold">{c.drr > 0 ? `${c.drr.toFixed(1)}%` : <span className="text-[hsl(var(--muted-foreground)/0.4)] font-normal">0%</span>}</span>
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpc > 0 ? `${Math.round(c.cpc)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.cpc > 0 ? `${Math.round(c.cpc)} ₽` : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpm > 0 ? `${Math.round(c.cpm)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.cpm > 0 ? `${Math.round(c.cpm)} ₽` : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpa_cart > 0 ? `${Math.round(c.cpa_cart)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.cpa_cart > 0 ? `${Math.round(c.cpa_cart)} ₽` : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-sm text-[hsl(var(--foreground))]/70 whitespace-nowrap">
-                          {c.cpo > 0 ? `${Math.round(c.cpo)} ₽` : <span className="text-[hsl(var(--muted-foreground))]">—</span>}
+                        <td className="px-3 py-3 text-right text-[14px] whitespace-nowrap">
+                          {c.cpo > 0 ? `${Math.round(c.cpo)} ₽` : <span className="text-[hsl(var(--muted-foreground)/0.4)]">—</span>}
                         </td>
                       </tr>
 
@@ -1171,7 +1179,7 @@ export default function AdManagementPage() {
           </div>
 
           {/* Footer count */}
-          <div className="px-4 py-2.5 border-t border-[hsl(var(--border))] flex items-center justify-between text-xs text-[hsl(var(--muted-foreground))]">
+          <div className="px-4 py-2.5 flex items-center justify-between text-[12px] text-[hsl(var(--muted-foreground)/0.6)]">
             <span>Показано {filtered.length} из {campaigns.length} кампаний</span>
             {kpi && (
               <span>
@@ -1179,7 +1187,7 @@ export default function AdManagementPage() {
               </span>
             )}
           </div>
-        </div>
+        </>
       )}
 
       {/* ── Budget Modal ───────────────────────────────────────── */}

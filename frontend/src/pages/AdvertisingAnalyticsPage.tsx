@@ -1745,21 +1745,46 @@ export function CampaignsTable({
                     <div className="flex items-center gap-2">
                       <ChevronDown className={`h-4 w-4 shrink-0 text-[hsl(var(--muted-foreground)/0.5)] transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                       <div className="flex flex-col min-w-0 gap-1 flex-1">
+                        {/* Row 1: Campaign name */}
                         {c.title ? (
                           <span className="font-semibold text-[14px] leading-snug line-clamp-2" title={c.title}>{c.title}</span>
                         ) : (
                           <span className="font-semibold text-[14px]">{c.campaign_id}</span>
                         )}
-                        {(c.campaign_type || (c.placements && c.placements.length > 0)) && (
-                          <span className="text-[13px] font-medium text-[hsl(var(--muted-foreground)/0.7)] leading-tight">
-                            {CAMPAIGN_TYPE_MAP[c.campaign_type] || c.campaign_type}
-                            {c.placements && c.placements.length > 0 && (
-                              <span className="text-[hsl(var(--muted-foreground)/0.5)]"> · {c.placements.join(' · ')}</span>
-                            )}
-                          </span>
-                        )}
+                        {/* Row 2: Badges — bid type + payment type + placements */}
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)]">
+                          {c.bid_type && (
+                            <span className={`text-[11px] px-1.5 py-0.5 rounded font-semibold ${
+                              c.bid_type === 'manual'
+                                ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                                : 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                            }`}>
+                              {c.bid_type === 'manual' ? 'Ручная ставка' : 'Единая'}
+                            </span>
+                          )}
+                          {c.payment_type && (
+                            <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-bold ${
+                              c.payment_type === 'cpm' ? 'bg-violet-500/20 text-violet-600 dark:text-violet-400' :
+                              c.payment_type === 'cpc' ? 'bg-cyan-500/20 text-cyan-600 dark:text-cyan-400' :
+                              'bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+                            }`}>
+                              {c.payment_type === 'cpm' ? 'CPM' : c.payment_type === 'cpc' ? 'CPC' : c.payment_type.toUpperCase()}
+                            </span>
+                          )}
+                          {!c.bid_type && !c.payment_type && c.campaign_type && (
+                            <span className="text-[12px] font-medium text-[hsl(var(--muted-foreground)/0.7)]">
+                              {CAMPAIGN_TYPE_MAP[c.campaign_type] || c.campaign_type}
+                            </span>
+                          )}
+                          {c.placements && c.placements.length > 0 && (
+                            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.7)]">
+                              {c.placements.join(' · ')}
+                            </span>
+                          )}
+                        </div>
+                        {/* Row 3: ID + article count + Ozon status */}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.5)]">
                             ID: {c.campaign_id} · {c.sku_count} арт.
                           </span>
                           {c.status && OZON_STATUS_MAP[c.status] && (
