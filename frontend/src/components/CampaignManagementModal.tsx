@@ -125,8 +125,10 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
     if (!amt || amt <= 0) return
     setDepositLoading(true)
     try {
-      await depositBudget(shopId, campaign.advert_id, amt)
-      onCampaignUpdate?.({ ...campaign, budget_total: currentBudget + amt })
+      const response = await depositBudget(shopId, campaign.advert_id, amt)
+      // Use real balance from WB API when available, fallback to optimistic
+      const newTotal = response.new_budget_total ?? (currentBudget + amt)
+      onCampaignUpdate?.({ ...campaign, budget_total: newTotal })
       setToast({ type: 'success', message: `Бюджет пополнен на ${amt.toLocaleString('ru-RU')} ₽` })
       setDepositAmount('')
     } catch (e: any) {

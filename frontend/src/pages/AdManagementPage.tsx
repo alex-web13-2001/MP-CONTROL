@@ -1250,6 +1250,21 @@ export default function AdManagementPage() {
                 ),
               } : prev)
               setUnifiedModal(prev => prev ? { ...prev, campaign: updated } : null)
+              // Sync budget_total into the separate budgets state used by the table column
+              if (updated.budget_total !== undefined && updated.budget_total > 0) {
+                const cid = updated.advert_id
+                const newTotal = updated.budget_total
+                // Protect from loadFullData overwriting with stale Redis
+                setRecentDeposit(cid, newTotal)
+                setBudgets(prev => ({
+                  ...prev,
+                  [cid]: {
+                    total: newTotal,
+                    daily: prev[cid]?.daily || 0,
+                    loading: false,
+                  },
+                }))
+              }
             }}
           />
         )}
