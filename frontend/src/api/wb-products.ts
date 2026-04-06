@@ -29,15 +29,18 @@ export interface WBProduct {
   // Marketplace fees (from fact_finances)
   mp_fees: number
   mp_fees_percent: number
-  mp_fees_commission: number
   mp_fees_logistics: number
   mp_fees_storage: number
-  mp_fees_other: number
+  mp_fees_deductions: number
+  mp_fees_acceptance: number
+  mp_fees_fines: number
   payout: number
   sales_amount: number
   // Profit
   gross_profit: number | null
   margin: number | null
+  // Fee estimation indicator
+  fees_source?: 'actual' | 'estimated'
 }
 
 export interface WBProductsResponse {

@@ -59,11 +59,16 @@ export interface OzonProduct {
   mp_fees_logistics: number
   mp_fees_storage: number
   mp_fees_other: number
+  mp_fees_deductions: number
+  mp_fees_acceptance: number
+  mp_fees_fines: number
   sales_amount: number
   avg_price: number
   period: number
   events: ProductEvent[]
   promotions: string[]
+  // Fee estimation indicator (WB only)
+  fees_source?: 'actual' | 'estimated'
 }
 
 export interface ProductsResponse {

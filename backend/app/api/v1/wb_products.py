@@ -164,32 +164,42 @@ async def get_wb_products(
         logger.warning("CH stocks query failed: %s", e)
         stocks_map = {}
 
-    # ── 4. WB Finance data from fact_finances (single source of truth) ──
-    # Все финансовые данные из единого источника по дате реализации.
-    # Revenue, payout, fees — всё привязано к одним и тем же сделкам.
+    # ── 4. WB Finance data from fact_finances (SOURCE OF TRUTH) ──────
+    # Используем ФАКТИЧЕСКИЕ данные из финансовых отчётов WB.
+    # Поля идентичны /finances/wb/products (finances.py):
+    #   revenue  = retail_price_withdisc_rub (розничная цена)
+    #   payout   = payout_amount (ppvz_for_pay, к перечислению)
+    #   logistics = wb_delivery_rub (доставка)
+    #   storage  = storage_fee (хранение — обычно 0 по товарам, распределяется пропорционально)
+    # NB: ppvz_for_pay = revenue - commission - acquiring. 
+    #     Логистика, хранение, удержания — ОТДЕЛЬНЫЕ расходы, НЕ включены в payout!
     try:
         fees_result = ch.query("""
             SELECT
-                toUInt64(external_id)                        AS nm_id,
-                -- Revenue & payout (current period)
-                sum(retail_amount)                          AS fin_revenue,
-                sum(wb_ppvz_for_pay)                        AS payout,
+                toUInt64(external_id)  AS nm_id,
+                -- Revenue (retail_price_withdisc_rub, как в финотчёте)
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                    operation_type = 'Продажа') AS revenue_rpw,
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                    operation_type = 'Возврат') AS returns_rpw,
+                -- Payout (payout_amount = ppvz_for_pay)
+                sumIf(payout_amount, operation_type = 'Продажа')
+                  - sumIf(payout_amount, operation_type = 'Возврат') AS payout,
+                -- Qty
                 sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) AS qty,
                 -- Fee components
-                sum(commission_amount)                      AS commission,
-                sum(logistics_total)                        AS logistics,
-                sum(storage_fee)                            AS storage,
-                sum(acceptance_fee)                         AS acceptance,
-                sum(penalty_total)                          AS fines,
-                sum(wb_acquiring)                           AS acquiring,
-                sum(JSONExtractFloat(raw_payload, 'deduction')) AS deduction
+                sum(wb_delivery_rub)    AS logistics,
+                sum(storage_fee)        AS storage,
+                sum(acceptance_fee)     AS acceptance,
+                sum(penalty_total)      AS fines,
+                sum(wb_acquiring)       AS acquiring
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
               AND event_date >= {d_start:Date}
               AND event_date <= {d_end:Date}
             GROUP BY nm_id
-            HAVING fin_revenue > 0 OR commission > 0 OR logistics > 0
+            HAVING revenue_rpw > 0 OR payout != 0 OR logistics != 0
         """, parameters={
             "shop_id": shop_id,
             "d_start": d_start,
@@ -198,28 +208,92 @@ async def get_wb_products(
         fees_map = {}
         for r in fees_result.result_rows:
             nm = int(r[0])
+            rev_rpw = float(r[1] or 0)
+            ret_rpw = abs(float(r[2] or 0))
             fees_map[nm] = {
-                "fin_revenue": float(r[1]),
-                "payout": float(r[2]),
-                "qty": int(r[3]),
-                "commission": float(r[4]),
-                "logistics": float(r[5]),
-                "storage": float(r[6]),
-                "acceptance": float(r[7]),
-                "fines": float(r[8]),
-                "acquiring": float(r[9]),
-                "deduction": float(r[10]),
+                "fin_revenue": rev_rpw - ret_rpw,    # net revenue
+                "payout": float(r[3] or 0),
+                "qty": int(r[4] or 0),
+                "logistics": abs(float(r[5] or 0)),
+                "storage": abs(float(r[6] or 0)),
+                "acceptance": abs(float(r[7] or 0)),
+                "fines": abs(float(r[8] or 0)),
+                "acquiring": abs(float(r[9] or 0)),
+                "deductions": 0.0,  # будет заполнено из отдельного запроса
             }
     except Exception as e:
         logger.warning("CH fees query failed: %s", e)
         fees_map = {}
 
-    # ── 4b. Prev period revenue from fact_finances ────────────────────
+    # ── 4b. Non-ad deductions per product (bonus_type_name parsing) ──
+    # Удержания в fact_finances приходят с external_id=0, но nm_id записан
+    # в bonus_type_name: "товар NNNNNN". Парсим и привязываем к товарам.
+    # ИСКЛЮЧАЕМ рекламные удержания (ВБ Продвижение) — ads берём из fact_advert_stats_v3.
+    nm_to_vc_map = {}  # для связки nm_id -> vendor_code
+    unlinked_ded = 0.0
+    try:
+        ded_result = ch.query("""
+            SELECT
+                toUInt64OrZero(extract(
+                    JSONExtractString(raw_payload, 'bonus_type_name'),
+                    'товар\\s+(\\d+)'
+                )) AS parsed_nm_id,
+                sum(abs(JSONExtractFloat(raw_payload, 'deduction'))) AS ded_amount
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d_start:Date}
+              AND event_date <= {d_end:Date}
+              AND abs(JSONExtractFloat(raw_payload, 'deduction')) > 0
+              -- Исключаем рекламные удержания (ВБ Продвижение)
+              AND positionCaseInsensitiveUTF8(
+                    JSONExtractString(raw_payload, 'bonus_type_name'), 'продвижение') = 0
+            GROUP BY parsed_nm_id
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start,
+            "d_end": d_end,
+        })
+        for r in ded_result.result_rows:
+            nm = int(r[0] or 0)
+            ded_val = float(r[1] or 0)
+            if nm and nm in fees_map:
+                fees_map[nm]["deductions"] += ded_val
+            else:
+                unlinked_ded += ded_val
+    except Exception as e:
+        logger.warning("CH deductions by nm_id query failed: %s", e)
+
+    # ── 4c. Proportional distribution: storage + unlinked deductions ──
+    # Storage и непривязанные удержания распределяем пропорционально revenue
+    # (как в финотчёте finances.py:1486-1508)
+    undist_storage = sum(f.get("storage", 0) for f in fees_map.values()
+                         if f.get("fin_revenue", 0) <= 0)  # storage от записей без revenue
+    # Actually, storage from __unknown__ (external_id=0) — берём отдельно
+    unknown_fees = fees_map.pop(0, None)
+    if unknown_fees:
+        undist_storage = unknown_fees.get("storage", 0)
+
+    total_undist = undist_storage + unlinked_ded
+    if total_undist > 0:
+        total_rev = sum(f["fin_revenue"] for f in fees_map.values() if f.get("fin_revenue", 0) > 0)
+        if total_rev > 0:
+            for nm, f in fees_map.items():
+                rev = f.get("fin_revenue", 0)
+                if rev > 0:
+                    share = rev / total_rev
+                    f["storage"] += round(undist_storage * share, 2)
+                    f["deductions"] += round(unlinked_ded * share, 2)
+
+    # ── 4d. Prev period revenue from fact_finances ────────────────────
     try:
         prev_result = ch.query("""
             SELECT
                 toUInt64(external_id) AS nm_id,
-                sum(retail_amount) AS fin_revenue_prev
+                sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                    operation_type = 'Продажа')
+                - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                    operation_type = 'Возврат') AS fin_revenue_prev
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
@@ -241,9 +315,105 @@ async def get_wb_products(
     except Exception as e:
         logger.warning("CH prev period query failed: %s", e)
 
+    # ── 4e. Fallback Chain — estimate fees for products without fact_finances ──
+    # Только для товаров с заказами (fact_orders_raw) но БЕЗ fact_finances
+    estimated_nm_ids: set[int] = set()
+    needs_estimation = set()
+    for nm_id, od in orders_map.items():
+        if od.get("orders_7d", 0) > 0 and (
+            nm_id not in fees_map or fees_map[nm_id].get("payout", 0) == 0
+        ):
+            needs_estimation.add(nm_id)
+
+    if needs_estimation:
+        # Step 1: Per-product historical PER-UNIT rates (last 90 days)
+        try:
+            hist_result = ch.query("""
+                SELECT
+                    toUInt64(external_id)  AS nm_id,
+                    sum(payout_amount) / nullIf(
+                        sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                    ) AS payout_per_unit,
+                    sum(wb_delivery_rub) / nullIf(
+                        sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                    ) AS logistics_per_unit
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND marketplace = 1
+                  AND event_date >= today() - 90
+                  AND toUInt64(external_id) IN {nm_ids:Array(UInt64)}
+                GROUP BY nm_id
+                HAVING sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) > 0
+            """, parameters={
+                "shop_id": shop_id,
+                "nm_ids": list(needs_estimation),
+            })
+            for r in hist_result.result_rows:
+                nm = int(r[0])
+                od = orders_map.get(nm, {})
+                cur_orders = od.get("orders_7d", 0)
+                ppu = float(r[1] or 0)
+                lpu = abs(float(r[2] or 0))
+
+                fees_map[nm] = {
+                    "fin_revenue": od.get("revenue_7d", 0.0),
+                    "payout": round(ppu * cur_orders, 2),
+                    "qty": cur_orders,
+                    "logistics": round(lpu * cur_orders, 2),
+                    "storage": 0.0,
+                    "acceptance": 0.0,
+                    "fines": 0.0,
+                    "acquiring": 0.0,
+                    "deductions": 0.0,
+                }
+                estimated_nm_ids.add(nm)
+                needs_estimation.discard(nm)
+        except Exception as e:
+            logger.warning("CH historical rates query failed: %s", e)
+
+        # Step 2: Shop-wide average PER-UNIT rates (final fallback)
+        if needs_estimation:
+            try:
+                avg_result = ch.query("""
+                    SELECT
+                        sum(payout_amount) / nullIf(
+                            sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                        ),
+                        sum(wb_delivery_rub) / nullIf(
+                            sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                        )
+                    FROM mms_analytics.fact_finances FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND marketplace = 1
+                      AND event_date >= today() - 90
+                """, parameters={"shop_id": shop_id})
+
+                avg_row = avg_result.result_rows[0] if avg_result.result_rows else None
+                if avg_row and avg_row[0] is not None:
+                    avg_ppu = float(avg_row[0] or 0)
+                    avg_lpu = abs(float(avg_row[1] or 0))
+
+                    for nm_id in list(needs_estimation):
+                        od = orders_map.get(nm_id, {})
+                        cur_orders = od.get("orders_7d", 0)
+                        fees_map[nm_id] = {
+                            "fin_revenue": od.get("revenue_7d", 0.0),
+                            "payout": round(avg_ppu * cur_orders, 2),
+                            "qty": cur_orders,
+                            "logistics": round(avg_lpu * cur_orders, 2),
+                            "storage": 0.0,
+                            "acceptance": 0.0,
+                            "fines": 0.0,
+                            "acquiring": 0.0,
+                            "deductions": 0.0,
+                        }
+                        estimated_nm_ids.add(nm_id)
+            except Exception as e:
+                logger.warning("CH shop-wide avg rates query failed: %s", e)
+
     ch.close()
 
-    # ── 4. Product catalog from PostgreSQL (dim_products) ──
+    # ── 5. Product catalog from PostgreSQL (dim_products) ──
     pg_result = await db.execute(
         text("""
             SELECT dp.nm_id,
@@ -261,9 +431,8 @@ async def get_wb_products(
         {"shop_id": shop_id},
     )
 
-    # ── 5. Merge all data ────────────────────────────────────
+    # ── 6. Merge all data ────────────────────────────────────
     all_nm_ids = set(orders_map.keys()) | set(ads_map.keys()) | set(fees_map.keys())
-    # Add catalog products even if no orders in period
     pg_rows = pg_result.fetchall()
     pg_map = {}
     for row in pg_rows:
@@ -291,31 +460,43 @@ async def get_wb_products(
         cost_price = info.get("cost_price", 0.0)
         packaging_cost = info.get("packaging_cost", 0.0)
 
-        # ── WB Finance data (единый источник P&L) ────────
+        # ── Продажи из fact_orders_raw (оперативные данные) ────
+        orders_7d = orders.get("orders_7d", 0)
+        revenue_7d = orders.get("revenue_7d", 0.0)
+        orders_prev_raw = orders.get("orders_prev", 0)
+        revenue_prev_raw = orders.get("revenue_prev", 0.0)
+        avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0
+
+        # ── Финансы из fact_finances (фактические данные) ────
         fees = fees_map.get(nm_id, {})
+        revenue_prev = fees.get("fin_revenue_prev", revenue_prev_raw)
 
-        # P&L водопад: Продажи → К перечислению → Услуги МП → Реклама → Прибыль
-        revenue_7d = fees.get("fin_revenue", 0.0)     # Продажи (retail_amount)
-        revenue_prev = fees.get("fin_revenue_prev", 0.0)
-        orders_7d = fees.get("qty", 0)                 # кол-во реализованных
-        payout = fees.get("payout", 0.0)               # К перечислению (ppvz_for_pay)
-        avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0  # Ср. цена
+        # Если fact_finances покрывает меньше заказов — масштабируем
+        fees_qty = fees.get("qty", 0)
+        if fees_qty > 0 and orders_7d > 0 and fees_qty < orders_7d:
+            scale = orders_7d / fees_qty
+            payout = round(fees.get("payout", 0.0) * scale, 2)
+            fee_logistics = round(fees.get("logistics", 0.0) * scale, 2)
+            fee_storage = round(fees.get("storage", 0.0) * scale, 2)
+            fee_acceptance = round(fees.get("acceptance", 0.0) * scale, 2)
+            fee_deductions = round(fees.get("deductions", 0.0) * scale, 2)
+            fee_fines = round(fees.get("fines", 0.0) * scale, 2)
+            estimated_nm_ids.add(nm_id)
+        else:
+            payout = fees.get("payout", 0.0)
+            fee_logistics = fees.get("logistics", 0.0)
+            fee_storage = fees.get("storage", 0.0)
+            fee_acceptance = fees.get("acceptance", 0.0)
+            fee_deductions = fees.get("deductions", 0.0)
+            fee_fines = fees.get("fines", 0.0)
 
-        # Детализация удержаний
-        fee_commission = fees.get("commission", 0.0)
-        fee_logistics = fees.get("logistics", 0.0)
-        fee_storage = fees.get("storage", 0.0)
-        fee_other = (
-            fees.get("acceptance", 0.0)
-            + fees.get("fines", 0.0)
-            + fees.get("acquiring", 0.0)
-            + fees.get("deduction", 0.0)
-        )
-        mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
+        # mp_fees = все расходы маркетплейса (логистика+хранение+удержания+приёмка+штрафы)
+        # НЕ включает комиссию (она уже в payout) и НЕ включает рекламу (отдельно)
+        mp_fees = round(fee_logistics + fee_storage + fee_deductions + fee_acceptance + fee_fines, 2)
         mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
         current_price = info.get("current_price", 0.0)
-        sales_amount = round(current_price * orders_7d, 2)  # Продажи по цене из админки
+        sales_amount = round(revenue_7d, 2)
 
         # ── DRR ───────────────────────────────────────────
         drr = round(ad_spend_7d / sales_amount * 100, 1) if sales_amount > 0 else 0.0
@@ -328,14 +509,16 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit = payout - COGS - ad_spend ──
-        # NB: payout (ppvz_for_pay) уже за вычетом комиссии/логистики/хранения,
-        #     повторно вычитать mp_fees нельзя — это было бы двойным учётом.
+        # ── Gross profit (формула идентична финотчёту) ─────
+        # profit = payout - logistics - storage - deductions - acceptance - fines - COGS - ads
+        # payout уже за вычетом ТОЛЬКО комиссии и эквайринга.
+        # Логистика, хранение, удержания — ОТДЕЛЬНЫЕ расходы!
+        # Ads берём из fact_advert_stats_v3 (не из удержаний — там исключены).
         gross_profit = None
         margin = None
         if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
-            gross_profit = round(payout - total_cogs - ad_spend_7d, 2)
+            gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
             if sales_amount > 0:
                 margin = round(gross_profit / sales_amount * 100, 1)
 
@@ -356,7 +539,7 @@ async def get_wb_products(
             "revenue_prev": revenue_prev,
             "revenue_delta": revenue_delta,
             "payout": round(payout, 2),
-            # Ads
+            # Ads (from fact_advert_stats_v3)
             "ad_spend_7d": ad_spend_7d,
             "ad_views": ads.get("ad_views", 0),
             "ad_clicks": ads.get("ad_clicks", 0),
@@ -364,16 +547,19 @@ async def get_wb_products(
             # Stocks
             "stock_fbo": stocks.get("stock_fbo", 0),
             "stock_fbs": stocks.get("stock_fbs", 0),
-            # WB Marketplace fees
+            # WB Marketplace fees (logistics+storage+deductions+acceptance+fines)
             "mp_fees": mp_fees,
             "mp_fees_percent": mp_fees_percent,
-            "mp_fees_commission": round(fee_commission, 2),
             "mp_fees_logistics": round(fee_logistics, 2),
             "mp_fees_storage": round(fee_storage, 2),
-            "mp_fees_other": round(fee_other, 2),
+            "mp_fees_deductions": round(fee_deductions, 2),
+            "mp_fees_acceptance": round(fee_acceptance, 2),
+            "mp_fees_fines": round(fee_fines, 2),
             # Profit
             "gross_profit": gross_profit,
             "margin": margin,
+            # Fee source indicator for frontend ≈ badge
+            "fees_source": "estimated" if nm_id in estimated_nm_ids else "actual",
         }
         products.append(p)
 
@@ -440,8 +626,11 @@ async def get_wb_products(
     t_payout = 0.0
     t_ad_spend = 0.0
     t_mp_fees = 0.0
-    t_mp_fees_commission = 0.0
     t_mp_fees_logistics = 0.0
+    t_mp_fees_storage = 0.0
+    t_mp_fees_deductions = 0.0
+    t_mp_fees_acceptance = 0.0
+    t_mp_fees_fines = 0.0
     t_total_cogs = 0.0
     t_profit = 0.0
     t_profit_count = 0
@@ -453,8 +642,11 @@ async def get_wb_products(
         t_payout += p["payout"]
         t_ad_spend += p["ad_spend_7d"]
         t_mp_fees += p["mp_fees"]
-        t_mp_fees_commission += p.get("mp_fees_commission", 0)
-        t_mp_fees_logistics += p.get("mp_fees_logistics", 0) + p.get("mp_fees_storage", 0) + p.get("mp_fees_other", 0)
+        t_mp_fees_logistics += p.get("mp_fees_logistics", 0)
+        t_mp_fees_storage += p.get("mp_fees_storage", 0)
+        t_mp_fees_deductions += p.get("mp_fees_deductions", 0)
+        t_mp_fees_acceptance += p.get("mp_fees_acceptance", 0)
+        t_mp_fees_fines += p.get("mp_fees_fines", 0)
         # COGS для итого-строки
         if p["cost_price"] > 0 and p["orders_7d"] > 0:
             t_total_cogs += (p["cost_price"] + p.get("packaging_cost", 0)) * p["orders_7d"]
@@ -475,8 +667,11 @@ async def get_wb_products(
         "drr": round(t_ad_spend / t_sales * 100, 1) if t_sales > 0 else 0,
         "returns_pct": 0,
         "mp_fees": round(t_mp_fees, 2),
-        "mp_fees_commission": round(t_mp_fees_commission, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
+        "mp_fees_storage": round(t_mp_fees_storage, 2),
+        "mp_fees_deductions": round(t_mp_fees_deductions, 2),
+        "mp_fees_acceptance": round(t_mp_fees_acceptance, 2),
+        "mp_fees_fines": round(t_mp_fees_fines, 2),
         "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
         "profit": round(t_profit, 2),
         "profit_pct": round(t_profit / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,

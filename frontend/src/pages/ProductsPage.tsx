@@ -117,15 +117,19 @@ function wbToOzon(p: WBProduct): OzonProduct {
     gross_profit_delta: null,
     mp_fees: p.mp_fees ?? 0,
     mp_fees_percent: p.mp_fees_percent ?? 0,
-    mp_fees_commission: p.mp_fees_commission ?? 0,
+    mp_fees_commission: 0,
     mp_fees_logistics: p.mp_fees_logistics ?? 0,
     mp_fees_storage: p.mp_fees_storage ?? 0,
-    mp_fees_other: p.mp_fees_other ?? 0,
+    mp_fees_other: 0,
+    mp_fees_deductions: p.mp_fees_deductions ?? 0,
+    mp_fees_acceptance: p.mp_fees_acceptance ?? 0,
+    mp_fees_fines: p.mp_fees_fines ?? 0,
     sales_amount: p.sales_amount ?? 0,
     avg_price: p.avg_price ?? 0,
     period: 7,
     events: [] as ProductEvent[],
     promotions: [] as string[],
+    fees_source: p.fees_source,
   }
 }
 
@@ -502,7 +506,7 @@ export default function ProductsPage() {
                     <span>Выплата</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению на ваш расчётный счёт. Уже за вычетом комиссии, логистики и хранения</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению за вычетом комиссии и эквайринга. Логистика, хранение и удержания вычитаются отдельно</span>
                     </span>
                   </div>
                 </th>
@@ -542,7 +546,7 @@ export default function ProductsPage() {
                     <span>Услуги МП</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Удержания маркетплейса: комиссия + логистика + хранение. Информационный столбец — уже учтено в Выплате</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Логистика + хранение + удержания + приёмка. Вычитаются из выплаты для расчёта прибыли</span>
                     </span>
                   </div>
                 </th>
@@ -553,7 +557,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Чистая прибыль = Выплата − Себестоимость × шт − Реклама. Процент от выплаты</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Прибыль = Выплата − Услуги МП − С/с × шт − Реклама. Процент от продаж</span>
                     </span>
                   </div>
                 </th>
@@ -801,7 +805,10 @@ export default function ProductsPage() {
                     <td className="px-2 py-2.5 text-right">
                       {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
                         <div className="relative group/fees cursor-default">
-                          <p className="text-[13px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">{fmtMoney(p.mp_fees)}</p>
+                          <p className="text-[13px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">
+                            {p.fees_source === 'estimated' && <span className="text-amber-400/70 mr-0.5" title="Оценка по историческим данным">≈</span>}
+                            {fmtMoney(p.mp_fees)}
+                          </p>
                           <p className={cn(
                             'text-[11px] font-semibold',
                             p.mp_fees_percent > 35 ? 'text-orange-400' : 'text-[hsl(var(--muted-foreground)/0.5)]'
@@ -809,13 +816,22 @@ export default function ProductsPage() {
                           {/* Тултип */}
                           <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
                             <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[260px] text-left">
-                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания маркетплейса</p>
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">
+                                Удержания маркетплейса
+                                {p.fees_source === 'estimated' && (
+                                  <span className="ml-1.5 text-[10px] font-medium text-amber-400/80 bg-amber-500/10 rounded px-1.5 py-0.5">≈ оценка</span>
+                                )}
+                              </p>
+                              {p.fees_source === 'estimated' && (
+                                <p className="text-[10px] text-amber-300/60 mb-2 -mt-0.5">Рассчитано по историческим данным товара (90 дней)</p>
+                              )}
                               <div className="space-y-1.5">
                                 {[
-                                  { label: 'Комиссия', val: p.mp_fees_commission },
                                   { label: 'Логистика', val: p.mp_fees_logistics ?? 0 },
                                   { label: 'Хранение', val: p.mp_fees_storage ?? 0 },
-                                  { label: 'Прочее', val: p.mp_fees_other ?? 0 },
+                                  { label: 'Удержания', val: (p as any).mp_fees_deductions ?? 0 },
+                                  { label: 'Приёмка', val: (p as any).mp_fees_acceptance ?? 0 },
+                                  { label: 'Штрафы', val: (p as any).mp_fees_fines ?? 0 },
                                 ].filter(r => r.val !== 0).map(r => (
                                   <div key={r.label} className="flex justify-between gap-4">
                                     <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{r.label}</span>
@@ -856,6 +872,7 @@ export default function ProductsPage() {
                             'text-[14px] font-bold tabular-nums',
                             p.gross_profit > 0 ? 'text-emerald-400' : 'text-red-400',
                           )}>
+                            {p.fees_source === 'estimated' && <span className="text-amber-400/70 mr-0.5" title="Прибыль рассчитана по оценочным комиссиям">≈</span>}
                             {p.gross_profit > 0 ? '+' : ''}{fmtMoney(p.gross_profit)}
                           </p>
                           {p.gross_profit_percent !== null && (
