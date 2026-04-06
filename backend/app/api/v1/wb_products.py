@@ -312,7 +312,7 @@ async def get_wb_products(
             + fees.get("deduction", 0.0)
         )
         mp_fees = round(fee_commission + fee_logistics + fee_storage + fee_other, 2)
-        mp_fees_percent = round(mp_fees / payout * 100, 1) if payout > 0 else 0.0
+        mp_fees_percent = round(mp_fees / revenue_7d * 100, 1) if revenue_7d > 0 else 0.0
 
         current_price = info.get("current_price", 0.0)
         sales_amount = round(current_price * orders_7d, 2)  # Продажи по цене из админки
@@ -328,12 +328,14 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit = payout - mp_fees - COGS - ad_spend ──
+        # ── Gross profit = payout - COGS - ad_spend ──
+        # NB: payout (ppvz_for_pay) уже за вычетом комиссии/логистики/хранения,
+        #     повторно вычитать mp_fees нельзя — это было бы двойным учётом.
         gross_profit = None
         margin = None
         if cost_price > 0 and orders_7d > 0:
             total_cogs = (cost_price + packaging_cost) * orders_7d
-            gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
+            gross_profit = round(payout - total_cogs - ad_spend_7d, 2)
             if sales_amount > 0:
                 margin = round(gross_profit / sales_amount * 100, 1)
 
@@ -396,6 +398,13 @@ async def get_wb_products(
         products = [p for p in products if p["revenue_delta"] < -10]
     elif filter == "problems":
         products = [p for p in products if p["stock_fbo"] + p["stock_fbs"] == 0 and p["revenue_7d"] > 0]
+    elif filter == "in_stock":
+        products = [p for p in products if p["stock_fbo"] + p["stock_fbs"] > 0]
+    elif filter == "no_stock":
+        products = [p for p in products if p["stock_fbo"] + p["stock_fbs"] == 0]
+    elif filter == "archived":
+        # WB API не отдаёт флаг is_archived → показываем пустой список
+        products = []
 
     # ── 7b. Hide ghost products (no catalog entry + no sales) ──
     products = [
@@ -433,6 +442,7 @@ async def get_wb_products(
     t_mp_fees = 0.0
     t_mp_fees_commission = 0.0
     t_mp_fees_logistics = 0.0
+    t_total_cogs = 0.0
     t_profit = 0.0
     t_profit_count = 0
     for p in products:
@@ -445,6 +455,9 @@ async def get_wb_products(
         t_mp_fees += p["mp_fees"]
         t_mp_fees_commission += p.get("mp_fees_commission", 0)
         t_mp_fees_logistics += p.get("mp_fees_logistics", 0) + p.get("mp_fees_storage", 0) + p.get("mp_fees_other", 0)
+        # COGS для итого-строки
+        if p["cost_price"] > 0 and p["orders_7d"] > 0:
+            t_total_cogs += (p["cost_price"] + p.get("packaging_cost", 0)) * p["orders_7d"]
         if p["gross_profit"] is not None:
             t_profit += p["gross_profit"]
             t_profit_count += 1
@@ -456,15 +469,17 @@ async def get_wb_products(
         "sales": round(t_sales, 2),
         "revenue": round(t_revenue, 2),
         "payout": round(t_payout, 2),
+        "avg_price": round(t_payout / t_orders, 2) if t_orders > 0 else 0,
+        "total_cogs": round(t_total_cogs, 2),
         "ad_spend": round(t_ad_spend, 2),
         "drr": round(t_ad_spend / t_sales * 100, 1) if t_sales > 0 else 0,
         "returns_pct": 0,
         "mp_fees": round(t_mp_fees, 2),
         "mp_fees_commission": round(t_mp_fees_commission, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
-        "mp_fees_pct": round(t_mp_fees / t_payout * 100, 1) if t_payout > 0 else 0,
+        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
         "profit": round(t_profit, 2),
-        "profit_pct": round(t_profit / t_payout * 100, 1) if t_payout > 0 and t_profit_count > 0 else 0,
+        "profit_pct": round(t_profit / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,
         "profit_count": t_profit_count,
     }
 

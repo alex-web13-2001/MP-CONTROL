@@ -17,9 +17,7 @@ import {
   Search,
   Package,
   AlertTriangle,
-
   Loader2,
-  Check,
   X,
   Upload,
   Download,
@@ -28,7 +26,6 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
 import {
   getOzonProductsApi,
-  updateOzonCostApi,
   uploadCostExcelApi,
   downloadCostTemplate,
   type OzonProduct,
@@ -36,7 +33,6 @@ import {
 } from '@/api/products'
 import {
   getWBProductsApi,
-  updateWBCostApi,
   uploadWBCostExcelApi,
   downloadWBCostTemplate,
   type WBProduct,
@@ -175,131 +171,6 @@ function ContentRating({ rating }: { rating: number }) {
 /* SortDropdown removed — sorting is in table headers */
 
 /* ═══════════════════════════════════════════════════════════
-   Inline Cost Editor (styled, no native spinner)
-   ═══════════════════════════════════════════════════════════ */
-
-function CostEdit({ product, shopId, onSaved }: {
-  product: OzonProduct; shopId: number; onSaved: (oid: string, cost: number) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState(product.cost_price.toString())
-  const [saving, setSaving] = useState(false)
-  const [closing, setClosing] = useState(false)
-  const wrapRef = useRef<HTMLDivElement>(null)
-
-  const close = useCallback(() => {
-    setClosing(true)
-    setTimeout(() => { setEditing(false); setClosing(false) }, 150)
-  }, [])
-
-  const save = async () => {
-    const n = parseFloat(val)
-    if (isNaN(n) || n < 0) return
-    setSaving(true)
-    try {
-      await updateOzonCostApi({ shop_id: shopId, offer_id: product.offer_id, cost_price: n })
-      onSaved(product.offer_id, n)
-      close()
-    } catch { /* silently */ } finally { setSaving(false) }
-  }
-
-  // Close on outside click
-  useEffect(() => {
-    if (!editing) return
-    const h = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) close()
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [editing, close])
-
-  const openEditor = () => {
-    setVal(product.cost_price > 0 ? product.cost_price.toString() : '')
-    setEditing(true)
-    setClosing(false)
-  }
-
-  return (
-    <div className="relative inline-flex" ref={wrapRef}>
-      {/* Trigger — always visible, preserves table width */}
-      {product.cost_price === 0 ? (
-        <button
-          onClick={openEditor}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold bg-amber-500/12 text-amber-400 hover:bg-amber-500/20 transition-colors border border-amber-500/15"
-        >
-          <AlertTriangle className="h-3 w-3" />
-          Указать
-        </button>
-      ) : (
-        <button
-          onClick={openEditor}
-          className="text-sm font-medium text-[hsl(var(--foreground)/0.8)] hover:text-[hsl(var(--primary))] transition-colors cursor-pointer"
-        >
-          {fmtMoney(product.cost_price)}
-        </button>
-      )}
-
-      {/* Floating popover — positioned absolutely, doesn't shift table */}
-      {editing && (
-        <div
-          className={cn(
-            'absolute right-0 top-full z-50 mt-1.5',
-            'rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl',
-            'px-3 py-2.5',
-            closing
-              ? 'animate-[costPopOut_150ms_ease-in_forwards]'
-              : 'animate-[costPopIn_200ms_ease-out_forwards]',
-          )}
-          style={{ minWidth: '180px' }}
-        >
-          <p className="text-[10px] font-semibold text-[hsl(var(--muted-foreground)/0.6)] uppercase tracking-wide mb-1.5">
-            Себестоимость, ₽
-          </p>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] focus:border-[hsl(var(--primary)/0.5)] transition-all [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              placeholder="0"
-              value={val}
-              onChange={(e) => setVal(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') close() }}
-              autoFocus
-            />
-            <button
-              onClick={save}
-              disabled={saving}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={close}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg hover:bg-white/8 text-[hsl(var(--muted-foreground)/0.5)] hover:text-[hsl(var(--muted-foreground))] transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Popover animation keyframes */}
-      <style>{`
-        @keyframes costPopIn {
-          from { opacity: 0; transform: translateY(-4px) scale(0.96); }
-          to   { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes costPopOut {
-          from { opacity: 1; transform: translateY(0) scale(1); }
-          to   { opacity: 0; transform: translateY(-4px) scale(0.96); }
-        }
-      `}</style>
-    </div>
-  )
-}
-
-
-
-/* ═══════════════════════════════════════════════════════════
    Main Page Component
    ═══════════════════════════════════════════════════════════ */
 
@@ -308,6 +179,7 @@ export default function ProductsPage() {
   const isOzon = currentShop?.marketplace === 'ozon'
   const isWB = currentShop?.marketplace === 'wildberries'
   const shopId = currentShop?.id
+
 
   const [products, setProducts] = useState<OzonProduct[]>([])
   const [total, setTotal] = useState(0)
@@ -463,20 +335,7 @@ export default function ProductsPage() {
     }
   }
 
-  const handleCostSaved = (offerId: string, cost: number) => {
-    setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
-    setCostMissing((c) => Math.max(0, c - 1))
-    fetchProducts()
-  }
 
-  const handleWBCostSaved = async (offerId: string, cost: number) => {
-    if (!shopId) return
-    try {
-      await updateWBCostApi({ shop_id: shopId, vendor_code: offerId, cost_price: cost })
-      setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
-      setCostMissing((c) => Math.max(0, c - 1))
-    } catch { /* silent */ }
-  }
 
 
   /* ── Marketplace not selected ── */
@@ -724,7 +583,16 @@ export default function ProductsPage() {
                         <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtMoney(Math.round(t.avg_price))}</p>
                       )}
                     </td>
-                    <td className="px-2 py-2" />
+                    <td className="px-2 py-2 text-right">
+                      {t.total_cogs > 0 && (
+                        <div>
+                          <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtMoney(t.total_cogs)}</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums">
+                            {fmtNum(t.orders)} шт{t.orders > 0 ? ` × ${fmtMoney(Math.round(t.total_cogs / t.orders))}/шт` : ''}
+                          </p>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.ad_spend)}</p>
                       {t.drr > 0 && <p className={cn('text-[11px] font-semibold', t.drr > 20 ? 'text-red-400' : t.drr > 10 ? 'text-amber-400' : 'text-emerald-400')}>ДРР {t.drr}%</p>}
@@ -809,6 +677,12 @@ export default function ProductsPage() {
                             {p.status === 'active' && (
                               <span className="rounded px-1 py-[1px] text-[10px] font-semibold bg-emerald-500/12 text-emerald-400 leading-tight">Продаётся</span>
                             )}
+                            {p.ad_spend_7d > 0 && (
+                              <span className="inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[10px] font-semibold bg-violet-500/12 text-violet-400 leading-tight">
+                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
+                                Реклама
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -841,7 +715,7 @@ export default function ProductsPage() {
                     <td className="px-2 py-2.5 text-right">
                       {p.orders_7d > 0 ? (
                         <div>
-                          <p className="text-[14px] font-bold tabular-nums">{fmtMoney((p.marketing_price || p.price) * p.orders_7d)}</p>
+                          <p className="text-[14px] font-bold tabular-nums">{fmtMoney(p.sales_amount || (p.marketing_price || p.price) * p.orders_7d)}</p>
                           <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
                             {p.orders_7d} шт{p.revenue_delta !== 0 && <span className={cn('ml-1 font-semibold', p.revenue_delta > 0 ? 'text-emerald-400' : 'text-red-400')}>{p.revenue_delta > 0 ? '+' : ''}{p.revenue_delta}%</span>}
                           </p>
@@ -871,22 +745,36 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 6. С/с + margin% ── */}
+                    {/* ── 6. С/с (read-only: total + шт + за шт) ── */}
                     <td className="px-2 py-2.5 text-right">
-                      <CostEdit
-                        product={p}
-                        shopId={shopId!}
-                        onSaved={isWB ? handleWBCostSaved : handleCostSaved}
-                      />
-                      {p.margin_percent !== null && p.cost_price > 0 && (
-                        <p className={cn(
-                          'text-[11px] font-semibold',
-                          p.margin_percent < 30 ? 'text-emerald-400'
-                            : p.margin_percent < 50 ? 'text-amber-400'
-                            : 'text-red-400',
-                        )}>
-                          {p.margin_percent}%
-                        </p>
+                      {p.cost_price > 0 ? (() => {
+                        const unitCost = p.cost_price + (p.packaging_cost || 0)
+                        const totalCost = unitCost * p.orders_7d
+                        return (
+                          <div>
+                            {p.orders_7d > 0 && (
+                              <p className="text-[13px] font-semibold tabular-nums">{fmtMoney(totalCost)}</p>
+                            )}
+                            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums">
+                              {p.orders_7d > 0 ? `${fmtNum(p.orders_7d)} шт × ` : ''}{fmtMoney(unitCost)}/шт
+                            </p>
+                            {p.margin_percent !== null && (
+                              <p className={cn(
+                                'text-[11px] font-semibold',
+                                p.margin_percent < 30 ? 'text-emerald-400'
+                                  : p.margin_percent < 50 ? 'text-amber-400'
+                                  : 'text-red-400',
+                              )}>
+                                {p.margin_percent}%
+                              </p>
+                            )}
+                          </div>
+                        )
+                      })() : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400/60">
+                          <AlertTriangle className="h-3 w-3" />
+                          Не указана
+                        </span>
                       )}
                     </td>
 
@@ -934,7 +822,7 @@ export default function ProductsPage() {
                                     <div className="flex items-baseline gap-2">
                                       <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(r.val)}</span>
                                       <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums w-[32px] text-right">
-                                        {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(r.val / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                        {p.revenue_7d > 0 ? `${(r.val / p.revenue_7d * 100).toFixed(1)}%` : '—'}
                                       </span>
                                     </div>
                                   </div>
@@ -945,7 +833,7 @@ export default function ProductsPage() {
                                   <div className="flex items-baseline gap-2">
                                     <span className="text-[12px] font-bold tabular-nums">{fmtMoney(p.mp_fees)}</span>
                                     <span className="text-[10px] font-bold tabular-nums w-[32px] text-right">
-                                      {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(p.mp_fees / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                      {p.revenue_7d > 0 ? `${(p.mp_fees / p.revenue_7d * 100).toFixed(1)}%` : '—'}
                                     </span>
                                   </div>
                                 </div>

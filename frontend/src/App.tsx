@@ -25,6 +25,7 @@ import AdvertisingAnalyticsPage from '@/pages/AdvertisingAnalyticsPage'
 import AdvertisingCampaignsPage from '@/pages/AdvertisingCampaignsPage'
 import AdvertisingAutobidderPage from '@/pages/AdvertisingAutobidderPage'
 import AdManagementPage from '@/pages/AdManagementPage'
+import ProductsPricesPage from '@/pages/ProductsPricesPage'
 
 export default function App() {
   return (
@@ -56,6 +57,7 @@ export default function App() {
         >
           <Route path="/" element={<DashboardPage />} />
           <Route path="/products" element={<ProductsPage />} />
+          <Route path="/products/prices" element={<ProductsPricesPage />} />
           <Route path="/sales" element={<SalesPage />} />
           <Route path="/sales/abc-xyz" element={<AbcXyzPage />} />
           <Route path="/sales/forecast" element={<ForecastPage />} />

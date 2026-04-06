@@ -23,6 +23,7 @@ import {
   Settings2,
   Bot,
   List,
+  Tag,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -51,7 +52,10 @@ const navSections: NavSection[] = [
     title: 'Аналитика',
     items: [
       { path: '/', label: 'Обзор', icon: LayoutDashboard },
-      { path: '/products', label: 'Товары', icon: Package },
+      { path: '/products', label: 'Товары', icon: Package, children: [
+          { path: '/products', label: 'Обзор', icon: BarChart3 },
+          { path: '/products/prices', label: 'Цены', icon: Tag },
+        ] },
       {
         path: '/sales',
         label: 'Продажи',
@@ -281,8 +285,8 @@ export function Sidebar() {
                             <div className="ml-4 mt-0.5 space-y-0.5 border-l border-[hsl(var(--sidebar-border))] pl-3">
                               {item.children!.map((child) => {
                                 const childActive =
-                                  child.path === '/sales'
-                                    ? location.pathname === '/sales'
+                                  child.path === '/sales' || child.path === '/products'
+                                    ? location.pathname === child.path
                                     : location.pathname === child.path
 
                                 return (

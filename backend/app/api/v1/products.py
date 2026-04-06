@@ -580,6 +580,7 @@ async def get_ozon_products(
     t_mp_fees = 0.0
     t_mp_fees_commission = 0.0
     t_mp_fees_logistics = 0.0
+    t_total_cogs = 0.0
     t_profit = 0.0
     t_profit_count = 0
     t_returns = 0
@@ -595,6 +596,9 @@ async def get_ozon_products(
         t_mp_fees_logistics += p.get("mp_fees_logistics", 0)
         t_returns += p["returns_30d"]
         t_orders_30d += p.get("orders_30d", 0)
+        # COGS для итого-строки
+        if p["cost_price"] > 0 and p["orders_7d"] > 0:
+            t_total_cogs += (p["cost_price"] + p.get("packaging_cost", 0)) * p["orders_7d"]
         if p["gross_profit"] is not None:
             t_profit += p["gross_profit"]
             t_profit_count += 1
@@ -606,6 +610,7 @@ async def get_ozon_products(
         "revenue": round(t_revenue, 2),
         "payout": round(t_payout, 2),
         "avg_price": round(t_payout / t_orders, 2) if t_orders > 0 and t_payout > 0 else 0,
+        "total_cogs": round(t_total_cogs, 2),
         "ad_spend": round(t_ad_spend, 2),
         "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
         "returns_pct": round(t_returns / t_orders_30d * 100, 1) if t_orders_30d > 0 else 0,

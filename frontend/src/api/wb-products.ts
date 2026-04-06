@@ -107,3 +107,56 @@ export async function downloadWBCostTemplate(shopId: number): Promise<void> {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+// ── WB Prices (live from WB API) ──
+
+export interface WBPriceProduct {
+  nm_id: number
+  vendor_code: string
+  name: string
+  image_url: string
+  // WB prices
+  price: number              // Цена до скидки
+  discount: number           // Скидка %
+  discounted_price: number   // Цена со скидкой
+  club_discount: number      // WB Клуб скидка %
+  club_discounted_price: number  // Цена для WB Клуб
+  tech_size_name: string
+  editable_size_price: boolean
+  is_bad_turnover: boolean
+  // Cost
+  cost_price: number
+  packaging_cost: number
+  // Profit
+  profit_per_unit: number | null
+  // Stocks
+  stock_fbo: number
+  stock_fbs: number
+}
+
+export interface WBPricesResponse {
+  products: WBPriceProduct[]
+  total: number
+  page: number
+  per_page: number
+  cost_missing_count: number
+}
+
+export async function getWBPricesApi(params: {
+  shop_id: number
+  search?: string
+  sort?: string
+  order?: string
+  page?: number
+  per_page?: number
+}): Promise<WBPricesResponse> {
+  const q = new URLSearchParams()
+  q.set('shop_id', String(params.shop_id))
+  if (params.search) q.set('search', params.search)
+  q.set('sort', params.sort ?? 'name')
+  q.set('order', params.order ?? 'asc')
+  q.set('page', String(params.page ?? 1))
+  q.set('per_page', String(params.per_page ?? 50))
+  const resp = await apiClient.get(`/products/wb/prices?${q.toString()}`)
+  return resp.data
+}
