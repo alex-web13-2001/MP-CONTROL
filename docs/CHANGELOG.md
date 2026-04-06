@@ -1,3 +1,94 @@
+## 2026-04-07 (v17.41.1)
+
+### fix(finances): Убрано задвоение рекламы WB в P&L
+
+**Проблема**: Расход на рекламу WB учитывался **дважды** в формуле прибыли:
+1. Через `total_deductions` из `fact_finances` (содержит "ВБ Продвижение" = реклама)
+2. Через MAX-reconciliation блок, который дополнительно добавлял `ad_spend` из `fact_advert_stats_v3`
+
+Это приводило к **занижению прибыли** на сумму рекламного расхода.
+
+**Корневая причина — MAX-reconciliation (строки 860-870):**
+```python
+# БЫЛО (СЛОМАНО): ad_spend добавлялся к deductions
+final_ad = max(total_deductions_ads, ad_spend)
+extra = final_ad - total_deductions_ads
+total_deductions += extra  # ← ДУБЛИРОВАНИЕ!
+```
+
+`fact_finances` уже включает ВБ Промо как `deduction` типа «продвижение». Добавление `ad_spend` сверху = двойной учёт.
+
+**Решение:**
+- Удалён MAX-reconciliation блок из агрегатного расчёта
+- Удалена аналогичная корректировка из daily dynamics (2 места)
+- `fact_finances` = **единственный source of truth** для P&L формулы
+- `fact_advert_stats_v3` → только информационная KPI-карточка (ДРР), **НЕ участвует в формуле**
+
+**Формулы после фикса:**
+```
+operating = logistics + storage + acceptance + total_deductions
+profit = revenue - (commission + operating) - cogs
+ad_spend → KPI-карточка "Реклама" (ДРР%) — не влияет на profit
+```
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — удалён MAX-reconciliation + daily dynamics fix
+
+---
+
+## 2026-04-07 (v17.41.0)
+
+### fix(products): Критический фикс расчёта прибыльности WB — per-unit rates
+
+**Проблема**: P&L товаров WB показывал абсурдные результаты:
+- Период 7 дней: Выплата (52,099₽) **больше** продаж (48,240₽) — физически невозможно
+- Период 30 дней: Прибыль **−14,809₽** при адекватной марже — должна быть +37,000₽
+
+**Корневая причина — 2 бага:**
+
+1. **Ratio-based fallback (payout_ratio = payout/retail_amount):**
+   - `retail_amount` в `fact_finances` ≠ `price_with_disc` в `fact_orders_raw`
+   - У WB `payout_ratio` получается **>100%** (1.08–1.14!) из-за разницы цен
+   - Умножение `payout_ratio × price_with_disc` → выплата > продаж → абсурдная маржа
+
+2. **Partial coverage для 30д:**
+   - `fact_finances` покрывает ~22 из 30 дней (лаг 8+ дней)
+   - Fees считаются за 22 дня, но COGS × 30 дней заказов → искусственный убыток
+
+**Решение — 2 исправления:**
+
+1. **Per-unit rates** в fallback chain (вместо ratio-based):
+   ```sql
+   -- БЫЛО (сломано): payout = revenue × (payout / retail_amount) ← ratio >100%
+   -- СТАЛО (OK):     payout = orders × (payout / sales_qty) ← ~3,250₽/шт
+   ```
+   - `payout_per_unit`, `commission_per_unit`, `logistics_per_unit` — всё делим на количество
+   - Убрана зависимость от `retail_amount` полностью
+
+2. **Temporal scaling** при частичном покрытии:
+   ```python
+   if fees_qty > 0 and orders_7d > 0 and fees_qty < orders_7d:
+       scale = orders_7d / fees_qty  # 26/20 = 1.3x
+       payout = fees.payout * scale
+   ```
+   - Помечаем как `estimated` (≈ badge)
+
+**Результат (товар ОН-КШ-ЧВ-ИНД-10, цена 4500₽):**
+
+| Показатель | 7д (БЫЛО) | 7д (СТАЛО) | 30д (БЫЛО) | 30д (СТАЛО) |
+|---|---|---|---|---|
+| Продажи | 48,240₽ | 48,240₽ | 113,040₽ | 113,040₽ |
+| Выплата | ~~52,099₽~~ | **35,748₽** | ~~32,498₽~~ | **84,495₽** |
+| Прибыль | ~~+32,339₽~~ | **+15,988₽** | ~~−14,809₽~~ | **+37,188₽** |
+| Маржа | ~~+67%~~ | **+33%** | ~~−13%~~ | **+33%** |
+
+Маржа 33% стабильна для обоих периодов ✅
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — fallback chain + merge logic
+
+---
+
 ## 2026-04-06 (v17.40.0)
 
 ### refactor(celery): Модуляризация tasks.py — 8 доменных модулей
