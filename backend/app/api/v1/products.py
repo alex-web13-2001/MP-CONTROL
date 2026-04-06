@@ -751,7 +751,12 @@ async def upload_cost_excel(
             continue
 
         try:
-            cost_price = float(cost_raw)
+            # Handle Russian locale: non-breaking spaces as thousands separator, comma as decimal
+            if isinstance(cost_raw, str):
+                cost_str = cost_raw.replace('\xa0', '').replace(' ', '').replace(',', '.')
+                cost_price = float(cost_str)
+            else:
+                cost_price = float(cost_raw)
             if cost_price < 0:
                 errors.append(f"Строка {row_idx}: отрицательная цена ({cost_price})")
                 continue
