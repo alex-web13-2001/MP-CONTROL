@@ -1219,3 +1219,8 @@ advert_id: int (required)
   - Модель: `AdAutoBudget` (PostgreSQL), миграция `abe1a57ab0a1`
   - Потребитель: Celery `sync_wb_budgets` — проверяет `WHERE enabled=true` каждые 15 мин
 
+### 2026-04-06
+
+- **Создание кампании — retry автозапуска:** `POST /creation/create` теперь выполняет до 3 попыток старта с exponential backoff (3с, 5с, 8с) при ошибке `"Low Budget"` (race condition WB API между deposit и start). Response: `+start_error` при неудачном автозапуске
+- **Рекомендации по запуску рекламы:** `GET /advertising-analytics/ad-launch-recommendations?shop_id=N` — анализ товаров без активных кампаний (3 категории: selling_no_ads, ads_paused, stagnant). Ozon: `dim_ozon_products` + `fact_ozon_ad_daily` + `fact_ozon_orders`. WB: `dim_products` + `fact_advert_stats_v3` + `fact_orders_raw` + `fact_inventory_snapshot`
+

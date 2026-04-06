@@ -201,7 +201,7 @@ export function PeriodSelector({ value, onChange, className, popupAlign = 'right
             onSelect={setDraft}
             locale={ru}
             numberOfMonths={2}
-            showOutsideDays={false}
+            showOutsideDays={true}
             disabled={{ after: new Date() }}
             defaultMonth={
               draft?.from

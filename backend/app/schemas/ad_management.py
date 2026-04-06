@@ -129,6 +129,7 @@ class BalanceResponse(BaseModel):
     """Advertising balance."""
     success: bool
     balance: Optional[float] = None
+    net: Optional[float] = None
     bonus: Optional[float] = None
     message: str = ""
 

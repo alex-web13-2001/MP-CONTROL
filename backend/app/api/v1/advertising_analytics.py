@@ -2191,6 +2191,372 @@ async def _build_wb_analytics(
     }
 
 
+# ══════════════════════════════════════════════════════════════════
+# Ad Launch Recommendations
+# ══════════════════════════════════════════════════════════════════
+
+@router.get("/ad-launch-recommendations")
+async def get_ad_launch_recommendations(
+    shop_id: int = Query(..., description="Shop ID"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Identify products that should have advertising but don't.
+
+    Cross-references product catalog with ad spend data (30d),
+    orders (7d), and current inventory to produce recommendations.
+    """
+    # ── Verify shop ownership ─────────────────────────
+    result = await db.execute(
+        select(Shop).where(Shop.id == shop_id, Shop.user_id == current_user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Магазин не найден")
+
+    marketplace = shop.marketplace
+    today = date.today()
+    d30_ago = today - timedelta(days=30)
+    d7_ago = today - timedelta(days=7)
+
+    from app.core.clickhouse import get_clickhouse_client
+
+    try:
+        ch = get_clickhouse_client()
+
+        if marketplace == "ozon":
+            recs = await _ozon_ad_recommendations(ch, db, shop_id, today, d30_ago, d7_ago)
+        else:
+            recs = await _wb_ad_recommendations(ch, db, shop_id, today, d30_ago, d7_ago)
+
+        ch.close()
+        return {"total": len(recs), "recommendations": recs}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Ad launch recommendations failed for shop %s: %s", shop_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка загрузки рекомендаций: {str(e)}",
+        )
+
+
+async def _ozon_ad_recommendations(
+    ch, db: AsyncSession,
+    shop_id: int, today: date, d30_ago: date, d7_ago: date,
+) -> list[dict]:
+    """Build ad launch recommendations for Ozon shop."""
+
+    # 1. All products from PostgreSQL
+    pg_result = await db.execute(
+        sa_text("""
+            SELECT product_id, sku, offer_id, name,
+                   COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url,
+                   COALESCE(stocks_fbo, 0) + COALESCE(stocks_fbs, 0) AS total_stock,
+                   COALESCE(price, 0) AS price
+            FROM dim_ozon_products
+            WHERE shop_id = :shop_id
+              AND is_archived = false
+        """),
+        {"shop_id": shop_id},
+    )
+    products = {}
+    for row in pg_result:
+        pid = int(row[0])
+        products[pid] = {
+            "nm_id": pid,
+            "sku": int(row[1]) if row[1] else pid,
+            "offer_id": row[2] or "",
+            "name": row[3] or "",
+            "image_url": row[4] or "",
+            "stock": int(row[5]),
+            "price": float(row[6]),
+        }
+
+    if not products:
+        return []
+
+    all_pids = list(products.keys())
+
+    # 2. Ad spend per SKU over last 30 days
+    ad_rows = ch.query("""
+        SELECT
+            sku,
+            sum(money_spent) AS total_spend,
+            max(dt) AS last_ad_date
+        FROM mms_analytics.fact_ozon_ad_daily FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND dt >= {d30_ago:Date}
+          AND dt <= {today:Date}
+        GROUP BY sku
+    """, parameters={"shop_id": shop_id, "d30_ago": d30_ago, "today": today}).result_rows
+
+    ad_spend_map: dict = {}  # sku -> {spend, last_ad_date}
+    for row in ad_rows:
+        sku = int(row[0])
+        ad_spend_map[sku] = {"spend": float(row[1]), "last_ad_date": str(row[2])}
+
+    # 3. Recent ad spend (last 7 days) for detecting paused campaigns
+    recent_ad_rows = ch.query("""
+        SELECT
+            sku,
+            sum(money_spent) AS recent_spend
+        FROM mms_analytics.fact_ozon_ad_daily FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND dt >= {d7_ago:Date}
+          AND dt <= {today:Date}
+        GROUP BY sku
+    """, parameters={"shop_id": shop_id, "d7_ago": d7_ago, "today": today}).result_rows
+
+    recent_ad_map = {int(row[0]): float(row[1]) for row in recent_ad_rows}
+
+    # 4. Orders per product_id over last 7 days
+    order_rows = ch.query("""
+        SELECT
+            product_id,
+            count() AS order_count,
+            sum(price * quantity) AS revenue
+        FROM mms_analytics.fact_ozon_orders FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND toDate(addHours(in_process_at, 3)) >= {d7_ago:Date}
+          AND toDate(addHours(in_process_at, 3)) <= {today:Date}
+          AND status NOT IN ('cancelled')
+        GROUP BY product_id
+    """, parameters={"shop_id": shop_id, "d7_ago": d7_ago, "today": today}).result_rows
+
+    orders_map = {}
+    for row in order_rows:
+        pid = int(row[0])
+        orders_map[pid] = {"orders": int(row[1]), "revenue": float(row[2])}
+
+    # 5. Build recommendations
+    recommendations = []
+    for pid, prod in products.items():
+        sku = prod["sku"]
+        ad_info = ad_spend_map.get(sku) or ad_spend_map.get(pid)
+        recent_spend = recent_ad_map.get(sku, 0) + recent_ad_map.get(pid, 0)
+        order_info = orders_map.get(pid, {"orders": 0, "revenue": 0})
+        total_ad_spend = ad_info["spend"] if ad_info else 0
+
+        orders_7d = order_info["orders"]
+        revenue_7d = round(order_info["revenue"], 2)
+        stock = prod["stock"]
+        out_of_stock = stock <= 0
+
+        # Skip products that have active ads in the last 7 days
+        if recent_spend > 0 and total_ad_spend > 0:
+            continue
+
+        # Categorize
+        if total_ad_spend > 0 and recent_spend == 0:
+            # Had ads but stopped in last 7 days
+            category = "ads_paused"
+            reason = f"Реклама была активна, но остановлена. Последний расход: {ad_info['last_ad_date']}."
+            priority = 2
+            if orders_7d > 0:
+                reason += f" Товар продолжает продаваться ({orders_7d} заказов, {round(revenue_7d):,} ₽)."
+                priority = 1
+        elif orders_7d > 0:
+            category = "selling_no_ads"
+            reason = f"Продаётся органически: {orders_7d} заказов за 7д, выручка {round(revenue_7d):,} ₽. Реклама ускорит рост."
+            priority = 1
+        elif stock > 0:
+            category = "stagnant"
+            reason = f"На складе {stock} шт. без продаж и рекламы за 30 дней. Реклама привлечёт трафик."
+            priority = 4
+        else:
+            # No stock, no sales, no ads
+            category = "stagnant"
+            reason = "Нет остатков и нет рекламы. Сделайте поставку и запустите рекламу."
+            priority = 5
+
+        if out_of_stock and category != "stagnant":
+            reason = "⚠️ Нет остатков — сделайте поставку! " + reason
+
+        recommendations.append({
+            "nm_id": pid,
+            "sku": sku,
+            "offer_id": prod["offer_id"],
+            "name": prod["name"],
+            "image_url": prod["image_url"],
+            "category": category,
+            "reason": reason,
+            "orders_7d": orders_7d,
+            "revenue_7d": revenue_7d,
+            "stock": stock,
+            "out_of_stock": out_of_stock,
+            "price": prod["price"],
+            "last_ad_date": ad_info["last_ad_date"] if ad_info else None,
+            "priority": priority,
+        })
+
+    # Sort: by priority, then by revenue desc
+    recommendations.sort(key=lambda r: (r["priority"], -r["revenue_7d"], -r["stock"]))
+    return recommendations
+
+
+async def _wb_ad_recommendations(
+    ch, db: AsyncSession,
+    shop_id: int, today: date, d30_ago: date, d7_ago: date,
+) -> list[dict]:
+    """Build ad launch recommendations for WB shop."""
+
+    # 1. All products from PostgreSQL
+    pg_result = await db.execute(
+        sa_text("""
+            SELECT nm_id, vendor_code, name, main_image_url,
+                   COALESCE(current_price, 0) AS price
+            FROM dim_products
+            WHERE shop_id = :shop_id
+        """),
+        {"shop_id": shop_id},
+    )
+    products = {}
+    for row in pg_result:
+        nm_id = int(row[0])
+        products[nm_id] = {
+            "nm_id": nm_id,
+            "offer_id": row[1] or "",
+            "name": row[2] or "",
+            "image_url": row[3] or "",
+            "price": float(row[4]),
+        }
+
+    if not products:
+        return []
+
+    # 2. Current inventory from fact_inventory_snapshot (latest)
+    stock_rows = ch.query("""
+        SELECT
+            nm_id,
+            sum(quantity) AS total_stock
+        FROM mms_analytics.fact_inventory_snapshot FINAL
+        WHERE shop_id = {shop_id:UInt32}
+        GROUP BY nm_id
+    """, parameters={"shop_id": shop_id}).result_rows
+
+    stock_map = {int(row[0]): int(row[1]) for row in stock_rows}
+
+    # 3. Ad spend per nm_id over last 30 days
+    ad_rows = ch.query("""
+        SELECT
+            nm_id,
+            sum(spend) AS total_spend,
+            max(date) AS last_ad_date
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {d30_ago:Date}
+          AND date <= {today:Date}
+        GROUP BY nm_id
+    """, parameters={"shop_id": shop_id, "d30_ago": d30_ago, "today": today}).result_rows
+
+    ad_spend_map: dict = {}
+    for row in ad_rows:
+        nm_id = int(row[0])
+        ad_spend_map[nm_id] = {"spend": float(row[1]), "last_ad_date": str(row[2])}
+
+    # 4. Recent ad spend (last 7 days)
+    recent_ad_rows = ch.query("""
+        SELECT
+            nm_id,
+            sum(spend) AS recent_spend
+        FROM mms_analytics.fact_advert_stats_v3 FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND date >= {d7_ago:Date}
+          AND date <= {today:Date}
+        GROUP BY nm_id
+    """, parameters={"shop_id": shop_id, "d7_ago": d7_ago, "today": today}).result_rows
+
+    recent_ad_map = {int(row[0]): float(row[1]) for row in recent_ad_rows}
+
+    # 5. Orders per nm_id last 7 days
+    order_rows = ch.query("""
+        SELECT
+            nm_id,
+            count() AS order_count,
+            sum(price_with_disc) AS revenue
+        FROM mms_analytics.fact_orders_raw FINAL
+        WHERE shop_id = {shop_id:UInt32}
+          AND toDate(addHours(date, 3)) >= {d7_ago:Date}
+          AND toDate(addHours(date, 3)) <= {today:Date}
+          AND is_cancel = 0
+        GROUP BY nm_id
+    """, parameters={"shop_id": shop_id, "d7_ago": d7_ago, "today": today}).result_rows
+
+    orders_map = {}
+    for row in order_rows:
+        nm_id = int(row[0])
+        orders_map[nm_id] = {"orders": int(row[1]), "revenue": float(row[2])}
+
+    # 6. Build recommendations
+    recommendations = []
+    for nm_id, prod in products.items():
+        ad_info = ad_spend_map.get(nm_id)
+        recent_spend = recent_ad_map.get(nm_id, 0)
+        order_info = orders_map.get(nm_id, {"orders": 0, "revenue": 0})
+        total_ad_spend = ad_info["spend"] if ad_info else 0
+        stock = stock_map.get(nm_id, 0)
+
+        orders_7d = order_info["orders"]
+        revenue_7d = round(order_info["revenue"], 2)
+        out_of_stock = stock <= 0
+
+        # Skip products with active ads in last 7 days
+        if recent_spend > 0 and total_ad_spend > 0:
+            continue
+
+        # Generate WB CDN image if missing
+        image_url = prod["image_url"]
+        if not image_url:
+            image_url = _wb_image_url(nm_id)
+
+        # Categorize
+        if total_ad_spend > 0 and recent_spend == 0:
+            category = "ads_paused"
+            reason = f"Реклама была активна, но остановлена. Последний расход: {ad_info['last_ad_date']}."
+            priority = 2
+            if orders_7d > 0:
+                reason += f" Товар продолжает продаваться ({orders_7d} заказов, {round(revenue_7d):,} ₽)."
+                priority = 1
+        elif orders_7d > 0:
+            category = "selling_no_ads"
+            reason = f"Продаётся органически: {orders_7d} заказов за 7д, выручка {round(revenue_7d):,} ₽. Реклама ускорит рост."
+            priority = 1
+        elif stock > 0:
+            category = "stagnant"
+            reason = f"На складе {stock} шт. без продаж и рекламы за 30 дней. Реклама привлечёт трафик."
+            priority = 4
+        else:
+            category = "stagnant"
+            reason = "Нет остатков и нет рекламы. Сделайте поставку и запустите рекламу."
+            priority = 5
+
+        if out_of_stock and category != "stagnant":
+            reason = "⚠️ Нет остатков — сделайте поставку! " + reason
+
+        recommendations.append({
+            "nm_id": nm_id,
+            "sku": nm_id,
+            "offer_id": prod["offer_id"],
+            "name": prod["name"],
+            "image_url": image_url,
+            "category": category,
+            "reason": reason,
+            "orders_7d": orders_7d,
+            "revenue_7d": revenue_7d,
+            "stock": stock,
+            "out_of_stock": out_of_stock,
+            "price": prod["price"],
+            "last_ad_date": ad_info["last_ad_date"] if ad_info else None,
+            "priority": priority,
+        })
+
+    recommendations.sort(key=lambda r: (r["priority"], -r["revenue_7d"], -r["stock"]))
+    return recommendations
+
+
 def _wb_basket_host(vol: int) -> str:
     """Determine WB CDN basket host number from vol."""
     if vol <= 143:

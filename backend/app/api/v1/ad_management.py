@@ -503,6 +503,7 @@ async def get_balance(
         return BalanceResponse(
             success=True,
             balance=data.get("balance"),
+            net=data.get("net"),
             bonus=data.get("bonus"),
         )
 
@@ -2361,12 +2362,32 @@ async def create_campaign(
             )
 
     # Step 4: Auto-start (if requested and budget was deposited)
+    # WB has a race condition: /adv/v0/start may return "Low Budget" if called
+    # too soon after /adv/v1/budget/deposit. Retry with increasing delays.
     if request.auto_start and response["budget_deposited"]:
-        await asyncio.sleep(1)
-        start_result = await mgmt_svc.start_campaign(advert_id)
-        response["campaign_started"] = start_result.get("success", False)
-        if response["campaign_started"]:
-            await _update_campaign_status_in_ch(shop.id, advert_id, 9)
+        start_delays = [3, 5, 8]  # seconds between retries
+        for attempt, delay in enumerate(start_delays):
+            await asyncio.sleep(delay)
+            start_result = await mgmt_svc.start_campaign(advert_id)
+            if start_result.get("success", False):
+                response["campaign_started"] = True
+                await _update_campaign_status_in_ch(shop.id, advert_id, 9)
+                logger.info(
+                    f"[campaign-create] ✅ Campaign {advert_id} started on attempt {attempt + 1}"
+                )
+                break
+            else:
+                error_msg = start_result.get("message", "")
+                is_budget_error = "budget" in error_msg.lower()
+                logger.warning(
+                    f"[campaign-create] Start attempt {attempt + 1}/{len(start_delays)} "
+                    f"failed for {advert_id}: {error_msg}"
+                )
+                # Only retry on budget-related errors (race condition)
+                if not is_budget_error or attempt == len(start_delays) - 1:
+                    response["campaign_started"] = False
+                    response["start_error"] = error_msg
+                    break
 
     # Step 5: Retry bids after start (if pre-start attempt failed)
     # Some WB campaigns may only accept bid changes in status=9 (active)

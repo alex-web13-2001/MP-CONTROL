@@ -21,6 +21,7 @@ import {
   BarChart2,
   Zap,
   Package,
+  PackageX,
   FileText,
   X,
   Clock,
@@ -32,6 +33,10 @@ import {
   Ban,
   Trophy,
   Gauge,
+  Lightbulb,
+  PauseCircle,
+  Flame,
+  Rocket,
 } from 'lucide-react'
 import { DayPicker, type DateRange } from 'react-day-picker'
 import { ru } from 'date-fns/locale/ru'
@@ -51,17 +56,22 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CampaignDetailModal } from '@/components/CampaignDetailModal'
+import CreateCampaignModal, { type QuickLaunchProduct } from '@/components/CreateCampaignModal'
 import { useAppStore } from '@/stores/appStore'
 import {
   getAdvertisingAnalytics,
   getEventsDetail,
+  getAdLaunchRecommendations,
   type AdvertisingAnalyticsResponse,
   type AdvertisingDailyPoint,
   type CampaignRow,
   type CampaignSkuItem,
   type EventDaySummary,
   type EventDetail,
+  type AdRecommendationItem,
+  type AdRecommendationCategory,
 } from '@/api/advertising'
+import { getWBBalance } from '@/api/ad-management'
 
 /* ═══════════════════════════════════════════════════════════
    Constants & Helpers
@@ -346,7 +356,7 @@ export function PeriodSelector({
             onSelect={setDraft}
             locale={ru}
             numberOfMonths={2}
-            showOutsideDays={false}
+            showOutsideDays={true}
             disabled={{ after: new Date() }}
             defaultMonth={
               draft?.from
@@ -1965,7 +1975,416 @@ export function CampaignsTable({
    Loading Skeleton
    ═══════════════════════════════════════════════════════════ */
 
+/* ═══════════════════════════════════════════════════════════
+   Ad Launch Recommendations Section
+   ═══════════════════════════════════════════════════════════ */
+
+const REC_CATEGORIES: {
+  key: AdRecommendationCategory
+  label: string
+  icon: typeof Flame
+  color: string
+  description: string
+}[] = [
+  { key: 'selling_no_ads', label: 'Продаются', icon: Flame, color: '#f97316', description: 'Есть органические продажи, но нет рекламы' },
+  { key: 'ads_paused', label: 'Остановлены', icon: PauseCircle, color: '#8b5cf6', description: 'Реклама была, но остановлена' },
+  { key: 'stagnant', label: 'Без движения', icon: PackageX, color: '#a1a1aa', description: 'На складе, но нет продаж и рекламы' },
+]
+
+function AdLaunchRecommendations({ shopId, marketplace }: { shopId: number; marketplace?: string }) {
+  const [recs, setRecs] = useState<AdRecommendationItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [categoryFilter, setCategoryFilter] = useState<AdRecommendationCategory | null>(null)
+  const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
+  const [sortKey, setSortKey] = useState<'price' | 'orders_7d' | 'revenue_7d' | 'stock' | null>(null)
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [quickLaunchItem, setQuickLaunchItem] = useState<QuickLaunchProduct | undefined>(undefined)
+  const [wbBalance, setWbBalance] = useState(0)
+  const [balanceLoading, setBalanceLoading] = useState(false)
+
+  const isWB = marketplace === 'wildberries'
+
+  // Fetch WB balance on page load (parallel with recommendations)
+  useEffect(() => {
+    if (!isWB) return
+    setBalanceLoading(true)
+    getWBBalance(shopId)
+      .then(res => {
+        // WB returns: balance (ad-specific) + net (main account available for ads)
+        // net is the real usable balance, balance is often 0
+        const available = res.net ?? res.balance ?? 0
+        setWbBalance(available)
+      })
+      .catch(() => {})
+      .finally(() => setBalanceLoading(false))
+  }, [shopId, isWB])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    getAdLaunchRecommendations(shopId)
+      .then(res => {
+        if (!cancelled) setRecs(res.recommendations)
+      })
+      .catch(err => {
+        if (!cancelled) setError(err?.response?.data?.detail || err?.message || 'Ошибка')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [shopId])
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { selling_no_ads: 0, ads_paused: 0, stagnant: 0 }
+    for (const r of recs) c[r.category] = (c[r.category] || 0) + 1
+    return c
+  }, [recs])
+
+  const filtered = useMemo(() => {
+    let items = categoryFilter ? recs.filter(r => r.category === categoryFilter) : [...recs]
+    if (sortKey) {
+      items.sort((a, b) => {
+        const av = a[sortKey] ?? 0
+        const bv = b[sortKey] ?? 0
+        return sortDir === 'asc' ? av - bv : bv - av
+      })
+    }
+    return items
+  }, [recs, categoryFilter, sortKey, sortDir])
+
+  const outOfStockCount = useMemo(() => recs.filter(r => r.out_of_stock).length, [recs])
+
+  const handleSort = (key: 'price' | 'orders_7d' | 'revenue_7d' | 'stock') => {
+    if (sortKey === key) {
+      setSortDir(d => d === 'desc' ? 'asc' : 'desc')
+    } else {
+      setSortKey(key)
+      setSortDir('desc')
+    }
+  }
+
+  const SortIcon = ({ col }: { col: string }) => {
+    if (sortKey !== col) return <ChevronDown className="h-3 w-3 opacity-0 group-hover/sh:opacity-40 transition-opacity" />
+    return sortDir === 'desc'
+      ? <ArrowDownRight className="h-3 w-3 text-[hsl(var(--foreground))]" />
+      : <ArrowUpRight className="h-3 w-3 text-[hsl(var(--foreground))]" />
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="py-5">
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-10 w-10 rounded-xl" />
+            <div className="space-y-1">
+              <Skeleton className="h-5 w-56" />
+              <Skeleton className="h-3.5 w-40" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (error) {
+    return (
+      <Card className="border-red-500/10">
+        <CardContent className="flex items-center gap-3 py-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10">
+            <XCircle className="h-5 w-5 text-red-400" />
+          </div>
+          <div>
+            <p className="text-sm font-medium text-red-400">Не удалось загрузить рекомендации</p>
+            <p className="text-xs text-[hsl(var(--muted-foreground))]">{error}</p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (recs.length === 0) return null
+
+  return (
+    <Card className="overflow-hidden">
+      {/* Header */}
+      <CardContent className="flex items-center justify-between py-4">
+        <div className="flex items-center gap-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: '#f9731615' }}>
+            <Lightbulb className="h-5 w-5" style={{ color: '#f97316' }} />
+          </div>
+          <div>
+            <p className="font-semibold text-[15px]">Рекомендации по запуску рекламы</p>
+            <p className="text-[13px] text-[hsl(var(--muted-foreground))]">
+              {recs.length} товар{recs.length === 1 ? '' : recs.length < 5 ? 'а' : 'ов'} без активных кампаний
+              {outOfStockCount > 0 && (
+                <span className="ml-2 text-amber-500 font-medium">· {outOfStockCount} без остатков</span>
+              )}
+            </p>
+          </div>
+        </div>
+        {/* Mini category badges */}
+        <div className="hidden sm:flex items-center gap-1.5">
+          {REC_CATEGORIES.map(cat => {
+            const count = counts[cat.key] || 0
+            if (count === 0) return null
+            return (
+              <span
+                key={cat.key}
+                className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold"
+                style={{ background: cat.color + '15', color: cat.color }}
+              >
+                {count}
+              </span>
+            )
+          })}
+        </div>
+      </CardContent>
+
+      {/* Content — always visible */}
+      <div className="border-t border-[hsl(var(--border)/0.4)] px-6 pt-3 pb-4">
+        {/* Category filter buttons */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          {REC_CATEGORIES.map(cat => {
+            const count = counts[cat.key] || 0
+            const isActive = categoryFilter === cat.key
+            const CatIcon = cat.icon
+            return (
+              <button
+                key={cat.key}
+                onClick={() => setCategoryFilter(isActive ? null : cat.key)}
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[13px] font-medium transition-all duration-200"
+                style={{
+                  background: isActive ? cat.color + '20' : 'transparent',
+                  border: `1.5px solid ${isActive ? cat.color : 'hsl(var(--border))'}`,
+                  color: isActive ? cat.color : 'hsl(var(--muted-foreground))',
+                  opacity: count === 0 ? 0.35 : 1,
+                }}
+                disabled={count === 0}
+              >
+                <CatIcon className="h-3.5 w-3.5" />
+                {cat.label}
+                <span className="text-[12px] font-bold" style={{ color: isActive ? cat.color : 'hsl(var(--muted-foreground)/0.5)' }}>
+                  {count}
+                </span>
+              </button>
+            )
+          })}
+          {categoryFilter && (
+            <button
+              onClick={() => setCategoryFilter(null)}
+              className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-medium text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] border border-[hsl(var(--border))] hover:bg-[hsl(var(--muted)/0.15)] transition-all"
+            >
+              <X className="h-3 w-3" />
+              Все
+            </button>
+          )}
+        </div>
+
+        {/* Products table with constrained height */}
+        <div className="rounded-xl border border-[hsl(var(--border)/0.5)] overflow-hidden">
+          <div className="overflow-auto max-h-[420px]">
+            <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+              <thead className="sticky top-0 z-[2] bg-[hsl(var(--card))]">
+                <tr className="bg-[hsl(var(--muted)/0.15)]">
+                  <th className="text-left pl-4 pr-2 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap">Товар</th>
+                  <th
+                    className="text-right px-3 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap cursor-pointer select-none group/sh hover:text-[hsl(var(--foreground))] transition-colors"
+                    onClick={() => handleSort('price')}
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">Цена <SortIcon col="price" /></span>
+                  </th>
+                  <th
+                    className="text-right px-3 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap cursor-pointer select-none group/sh hover:text-[hsl(var(--foreground))] transition-colors"
+                    onClick={() => handleSort('orders_7d')}
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">Заказы <SortIcon col="orders_7d" /></span>
+                  </th>
+                  <th
+                    className="text-right px-3 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap cursor-pointer select-none group/sh hover:text-[hsl(var(--foreground))] transition-colors"
+                    onClick={() => handleSort('revenue_7d')}
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">Выручка <SortIcon col="revenue_7d" /></span>
+                  </th>
+                  <th
+                    className="text-right px-3 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap cursor-pointer select-none group/sh hover:text-[hsl(var(--foreground))] transition-colors"
+                    onClick={() => handleSort('stock')}
+                  >
+                    <span className="inline-flex items-center gap-1 justify-end">Остаток <SortIcon col="stock" /></span>
+                  </th>
+                  <th className="text-left px-3 py-2 text-[13px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap" style={{ width: '320px' }}>Рекомендация</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(item => {
+                  const catMeta = REC_CATEGORIES.find(c => c.key === item.category) || REC_CATEGORIES[2]
+                  const CatIcon = catMeta.icon
+                  return (
+                    <tr
+                      key={item.nm_id}
+                      className="border-t border-[hsl(var(--border)/0.25)] hover:bg-[hsl(var(--muted)/0.08)] transition-colors group/row"
+                    >
+                      {/* Product info + Launch button */}
+                      <td className="pl-4 pr-2 py-2">
+                        <div className="flex items-center gap-2.5">
+                          {item.image_url ? (
+                            <img
+                              src={item.image_url}
+                              alt={item.name}
+                              className="h-10 w-8 rounded-lg object-cover shrink-0"
+                              onMouseEnter={(e) => {
+                                const rect = e.currentTarget.getBoundingClientRect()
+                                setHoverImg({ url: item.image_url, x: rect.right + 8, y: rect.top })
+                              }}
+                              onMouseLeave={() => setHoverImg(null)}
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="h-10 w-8 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0" />
+                          )}
+                          <div className="min-w-0">
+                            {item.name && (
+                              <p className="text-[13px] text-[hsl(var(--foreground)/0.85)] leading-tight truncate max-w-[280px]" title={item.name}>
+                                {item.name}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[11px] font-mono font-semibold text-[hsl(var(--foreground)/0.5)] uppercase">
+                                {item.offer_id || `ID: ${item.nm_id}`}
+                              </span>
+                              {item.out_of_stock && (
+                                <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-500 bg-amber-500/10 rounded-full px-1.5 py-px">
+                                  <PackageX className="h-2.5 w-2.5" />
+                                  Нет
+                                </span>
+                              )}
+                              {/* Launch button tight after SKU */}
+                              {isWB && (
+                                <button
+                                  onClick={() => {
+                                    setQuickLaunchItem({
+                                      nm_id: item.nm_id,
+                                      name: item.name,
+                                      vendor_code: item.offer_id,
+                                      image_url: item.image_url,
+                                    })
+                                    setShowCreateModal(true)
+                                  }}
+                                  disabled={item.out_of_stock}
+                                  title={item.out_of_stock ? 'Нет остатков — запуск невозможен' : `Создать кампанию для ${item.name || item.nm_id}`}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all duration-200 ${
+                                    item.out_of_stock
+                                      ? 'bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground)/0.4)] cursor-not-allowed'
+                                      : 'bg-violet-600/10 text-violet-600 dark:text-violet-400 hover:bg-violet-600 hover:text-white hover:shadow-lg hover:shadow-violet-600/20'
+                                  }`}
+                                >
+                                  <Rocket className="h-3 w-3" />
+                                  Запустить
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      {/* Price */}
+                      <td className="text-right px-3 py-2 text-[13px] whitespace-nowrap text-[hsl(var(--foreground)/0.8)]">
+                        {item.price > 0 ? formatMoney(item.price) : '—'}
+                      </td>
+                      {/* Orders */}
+                      <td className="text-right px-3 py-2 whitespace-nowrap">
+                        <span className={`text-[13px] font-semibold ${item.orders_7d > 0 ? 'text-emerald-500' : 'text-[hsl(var(--muted-foreground)/0.4)]'}`}>
+                          {item.orders_7d > 0 ? formatNumber(item.orders_7d) : '—'}
+                        </span>
+                      </td>
+                      {/* Revenue */}
+                      <td className="text-right px-3 py-2 whitespace-nowrap">
+                        <span className={`text-[13px] font-semibold ${item.revenue_7d > 0 ? 'text-[hsl(var(--foreground)/0.85)]' : 'text-[hsl(var(--muted-foreground)/0.4)]'}`}>
+                          {item.revenue_7d > 0 ? formatMoney(item.revenue_7d) : '—'}
+                        </span>
+                      </td>
+                      {/* Stock */}
+                      <td className="text-right px-3 py-2 whitespace-nowrap">
+                        <span className={`text-[13px] font-medium ${
+                          item.out_of_stock
+                            ? 'text-amber-500'
+                            : item.stock < 10
+                              ? 'text-orange-400'
+                              : 'text-[hsl(var(--foreground)/0.7)]'
+                        }`}>
+                          {item.stock > 0 ? `${item.stock} шт.` : '0'}
+                        </span>
+                      </td>
+                      {/* Recommendation reason — compact, 2 lines max */}
+                      <td className="px-3 py-2" style={{ maxWidth: '320px' }}>
+                        <div className="flex items-start gap-1.5">
+                          <CatIcon className="h-3.5 w-3.5 shrink-0 mt-0.5" style={{ color: catMeta.color }} />
+                          <p className="text-[12px] leading-[1.4] text-[hsl(var(--muted-foreground))]" style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }} title={item.reason}>
+                            {item.reason}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Summary */}
+        <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.45)] mt-2">
+          Анализ за последние 30 дней · Продажи за 7 дней · Показаны товары без активных кампаний
+        </p>
+      </div>
+
+      {/* Hover preview portal */}
+      {hoverImg && createPortal(
+        <div
+          className="fixed z-[100] pointer-events-none animate-in fade-in-0 duration-150"
+          style={{ left: hoverImg.x, top: hoverImg.y }}
+        >
+          <div className="rounded-xl shadow-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5">
+            <img src={hoverImg.url} alt="Preview" className="h-52 w-40 rounded-lg object-cover" />
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Create Campaign Modal (WB only) */}
+      <AnimatePresence>
+        {showCreateModal && (
+          <CreateCampaignModal
+            shopId={shopId}
+            balance={wbBalance}
+            balanceLoading={balanceLoading}
+            initialProduct={quickLaunchItem}
+            onClose={() => {
+              setShowCreateModal(false)
+              setQuickLaunchItem(undefined)
+            }}
+            onSuccess={() => {
+              setShowCreateModal(false)
+              setQuickLaunchItem(undefined)
+              // Refresh recommendations list
+              setLoading(true)
+              getAdLaunchRecommendations(shopId)
+                .then(res => setRecs(res.recommendations))
+                .catch(() => {})
+                .finally(() => setLoading(false))
+            }}
+          />
+        )}
+      </AnimatePresence>
+    </Card>
+  )
+}
+
+
 function AnalyticsSkeleton() {
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -2214,6 +2633,15 @@ export default function AdvertisingAnalyticsPage() {
             <AdsChart data={data.chart_daily} eventsByDay={data.events_by_day || {}} shopId={currentShop!.id} />
           </CardContent>
         </Card>
+      </motion.div>
+
+      {/* ── Ad Launch Recommendations ── */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay: 0.35 }}
+      >
+        <AdLaunchRecommendations shopId={currentShop!.id} marketplace={currentShop!.marketplace} />
       </motion.div>
 
       {/* ── Link to Campaigns Page ── */}

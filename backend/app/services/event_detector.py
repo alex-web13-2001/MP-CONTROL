@@ -138,42 +138,29 @@ class EventDetector:
                     })
                     logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
-                # DEBOUNCING: WB API periodically returns empty nm_settings
-                # during "API storms" — all items appear as removed.
-                # Skip ITEM_REMOVE if current list is empty or >50% items vanished.
-                skip_remove = False
-                if len(old_items) > 0 and len(current_items_set) == 0:
-                    logger.warning(
-                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
-                        f"API returned 0 items (was {len(old_items)}), likely API glitch"
+                # ITEM_REMOVE: COMPLETELY DISABLED (V1)
+                # Same rationale as V2 — WB API is unreliable for item composition.
+                if removed_items:
+                    logger.debug(
+                        f"[V1] Ignoring apparent ITEM_REMOVE for advert={advert_id}: "
+                        f"{len(removed_items)} items not in API response "
+                        f"(old={len(old_items)}, current={len(current_items_set)})"
                     )
-                    skip_remove = True
-                elif len(old_items) > 2 and len(removed_items) > len(old_items) * 0.5:
-                    logger.warning(
-                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
-                        f"{len(removed_items)}/{len(old_items)} items vanished, likely API glitch"
-                    )
-                    skip_remove = True
-                
-                if not skip_remove:
-                    for nm_id in removed_items:
-                        events.append({
-                            "shop_id": shop_id,
-                            "advert_id": advert_id,
-                            "nm_id": nm_id,
-                            "event_type": "ITEM_REMOVE",
-                            "old_value": str(nm_id),
-                            "new_value": None,
-                            "event_metadata": None
-                        })
-                        logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
                 
                 # ===== Update Redis state (only with valid values) =====
+                # Only update items when current is a superset of old (items added, not removed)
+                items_to_save = None
+                if current_items:
+                    if not old_items or current_items_set >= old_items:
+                        items_to_save = current_items
+                    else:
+                        items_to_save = list(old_items | current_items_set)
+                
                 self.state_manager.set_state(
                     shop_id, advert_id,
                     cpm=float(current_cpm) if current_cpm is not None else None,
                     status=current_status,
-                    items=current_items if current_items else None,
+                    items=items_to_save,
                     campaign_type=campaign_type
                 )
             
@@ -451,11 +438,21 @@ class EventDetector:
         events = []
         type_map = campaign_type_map or {}
         
+        # DEDUP: WB V2 API sometimes returns the same campaign twice in one response.
+        # Track processed advert_ids to avoid double-processing within the same call.
+        processed_advert_ids: Set[int] = set()
+        
         for advert in adverts_v2:
             try:
                 advert_id = int(advert.get("id") or 0)
                 if not advert_id:
                     continue
+                
+                # Skip duplicates within the same V2 response
+                if advert_id in processed_advert_ids:
+                    logger.debug(f"Skipping duplicate advert_id={advert_id} in V2 response")
+                    continue
+                processed_advert_ids.add(advert_id)
                 
                 # Parse current values
                 status = int(advert.get("status") or 0)
@@ -606,37 +603,22 @@ class EventDetector:
                         })
                         logger.info(f"Detected ITEM_ADD: advert={advert_id} nm={nm_id}")
                 
+                # ITEM_REMOVE: COMPLETELY DISABLED
+                # WB V2 API is fundamentally unreliable for item composition:
+                # - Randomly returns empty nm_settings during API storms
+                # - Sometimes returns partial item lists
+                # - Same campaign can appear twice in one response
+                # Real item removals correlate with campaign status changes
+                # (caught by STATUS_CHANGE) or campaign deletion.
+                # All ITEM_REMOVE events from comparing nm_settings are 100% false positives.
                 removed_items = old_items - current_items_set
-                
-                # DEBOUNCING: WB API periodically returns empty nm_settings
-                # during "API storms" — all items appear as removed.
-                # Skip ITEM_REMOVE if current list is empty or >50% items vanished.
-                skip_remove = False
-                if len(old_items) > 0 and len(current_items_set) == 0:
-                    logger.warning(
-                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
-                        f"API returned 0 items (was {len(old_items)}), likely API glitch"
+                if removed_items:
+                    logger.debug(
+                        f"Ignoring apparent ITEM_REMOVE for advert={advert_id}: "
+                        f"{len(removed_items)} items not in API response "
+                        f"(old={len(old_items)}, current={len(current_items_set)}). "
+                        f"WB API unreliable for item tracking."
                     )
-                    skip_remove = True
-                elif len(old_items) > 2 and len(removed_items) > len(old_items) * 0.5:
-                    logger.warning(
-                        f"Skipping ITEM_REMOVE for advert={advert_id}: "
-                        f"{len(removed_items)}/{len(old_items)} items vanished, likely API glitch"
-                    )
-                    skip_remove = True
-                
-                if not skip_remove:
-                    for nm_id in removed_items:
-                        events.append({
-                            "shop_id": shop_id,
-                            "advert_id": advert_id,
-                            "nm_id": nm_id,
-                            "event_type": "ITEM_REMOVE",
-                            "old_value": str(nm_id),
-                            "new_value": None,
-                            "event_metadata": None
-                        })
-                        logger.info(f"Detected ITEM_REMOVE: advert={advert_id} nm={nm_id}")
                 
                 # ===== Update Redis state =====
                 # Use max bid as CPM equivalent for backward compat
@@ -646,11 +628,29 @@ class EventDetector:
                         b = nm_s.get("bids_kopecks") or {}
                         max_bid = max(max_bid, Decimal(str(int(b.get("search") or 0))))
                 
+                # CRITICAL: Only update items in Redis when current_items is a SUPERSET
+                # of old_items (i.e., items were added, not removed).
+                # If items appear removed, it's an API glitch — preserve old state.
+                items_to_save = None
+                if current_items:
+                    if not old_items or current_items_set >= old_items:
+                        # Safe: new campaign, or items were added (superset)
+                        items_to_save = current_items
+                    else:
+                        # Items appear removed — merge old + current to preserve known items
+                        merged = list(old_items | current_items_set)
+                        items_to_save = merged
+                        logger.debug(
+                            f"Redis items: merging old+current for advert={advert_id} "
+                            f"({len(old_items)} old + {len(current_items_set)} current = {len(merged)} merged)"
+                        )
+                # If current_items is empty, don't touch Redis items at all
+                
                 self.state_manager.set_state(
                     shop_id, advert_id,
                     cpm=float(max_bid) if max_bid > 0 else None,
                     status=status,
-                    items=current_items if current_items else None,
+                    items=items_to_save,
                     campaign_type=campaign_type,
                     campaign_name=campaign_name if campaign_name else None,
                 )

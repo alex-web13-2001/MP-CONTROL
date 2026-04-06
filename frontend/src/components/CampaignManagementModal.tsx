@@ -155,7 +155,7 @@ export default function CampaignManagementModal({ campaign, shopId, onClose, onC
     const end = new Date()
     const start = new Date()
     start.setDate(end.getDate() - (clusterPeriod - 1))
-    const fmt = (d: Date) => d.toISOString().split('T')[0]
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
     return { start: fmt(start), end: fmt(end) }
   }, [clusterPeriod])
 

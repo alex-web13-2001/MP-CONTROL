@@ -1,3 +1,214 @@
+## 2026-04-06 (v17.39.2)
+
+### fix(advertising): Баланс WB с прелоадером + retry автозапуска кампании
+
+**2 фикса UX и надёжности создания рекламных кампаний:**
+
+**1. Предзагрузка баланса WB (Frontend):**
+- **Проблема**: Баланс WB загружался только при открытии `CreateCampaignModal` — 30+ секунд задержки, отображение «0 ₽» без индикации загрузки
+- **Решение**: Баланс фетчится параллельно с рекомендациями при загрузке страницы → к моменту открытия модалки баланс уже готов
+- Добавлен `balanceLoading` state с спиннером (`Loader2`) если баланс ещё не подгрузился
+- Проп `balanceLoading?: boolean` в `CreateCampaignModal`
+
+**2. Retry автозапуска кампании (Backend):**
+- **Проблема**: WB API отклонял `GET /adv/v0/start` с `"Low Budget: not enough budget"` — race condition между `POST /adv/v1/budget/deposit` и стартом
+- **Решение**: Retry с exponential backoff (3с, 5с, 8с) — до 3 попыток
+- Retry только при budget-related ошибках (race condition), прочие ошибки прерывают сразу
+- Логирование каждой попытки: `Start attempt 1/3 failed for {advert_id}`
+
+**3. Уведомление пользователя о неудачном автозапуске (Frontend):**
+- Если `campaign_started === false` при включённом автозапуске → жёлтое предупреждение:
+  `⚠ Автозапуск не сработал: {причина} — запустите кампанию вручную`
+- Новое поле `start_error` в типе `submitResult`
+
+**Файлы:**
+- `frontend/src/pages/AdvertisingAnalyticsPage.tsx` — предзагрузка баланса при mount + `balanceLoading` state
+- `frontend/src/components/CreateCampaignModal.tsx` — `balanceLoading` prop + спиннер + предупреждение автозапуска
+- `backend/app/api/v1/ad_management.py` — retry логика для `start_campaign` (Step 4)
+
+---
+
+
+
+### feat(advertising): Быстрый запуск кампании из рекомендаций
+
+**Новая функция**: кнопка «🚀 Запустить» прямо в таблице рекомендаций по запуску рекламы → открывает визард создания кампании.
+
+**Реализация:**
+- Колонка «Действие» в таблице рекомендаций (только для WB-магазинов)
+- Кнопка disabled для товаров без остатков (tooltip «Нет остатков — запуск невозможен»)
+- Интеграция `CreateCampaignModal` — тот же 3-шаговый визард что на странице Управления
+- Реальный баланс WB загружается через `getWBBalance()` при открытии модала
+- После успешного создания — автоматический refresh списка рекомендаций
+
+**UI/UX:**
+- Стилизация: фиолетовая кнопка с Rocket иконкой, hover→fill, active→scale
+- AnimatePresence для модалки
+- Условный рендеринг: колонка скрыта для Ozon (API создания не поддерживается)
+
+**Файлы:**
+- `frontend/src/pages/AdvertisingAnalyticsPage.tsx` — AdLaunchRecommendations: +marketplace prop, +action column, +CreateCampaignModal integration, +getWBBalance
+
+---
+
+## 2026-04-06 (v17.39.0)
+
+### feat(advertising): Рекомендации по запуску рекламы — товары без активных кампаний
+
+**Новая секция** на странице «Аналитика рекламы» — выявляет товары, которым стоит запустить рекламу.
+
+**Логика**: Перекрёстный анализ каталога товаров × расходы на рекламу (30д) × заказы (7д) × остатки на складе.
+
+**3 категории рекомендаций:**
+- 🔥 **Продаются** (`selling_no_ads`) — органические продажи без рекламы → реклама ускорит рост
+- ⏸ **Остановлены** (`ads_paused`) — реклама была, но остановилась → товар продолжает продаваться
+- 📦 **Без движения** (`stagnant`) — на складе, но нет продаж и рекламы
+
+**Пометка out_of_stock**: товары без остатков показываются во всех категориях с предупреждением «⚠️ Нет остатков — сделайте поставку!»
+
+**UI (Accordion):**
+- Закрытый вид: «22 товаров без активных кампаний · 3 без остатков» + мини-бейджи категорий
+- Раскрытый: фильтры по категориям + таблица (фото, название, артикул, цена, заказы 7д, выручка 7д, остаток, рекомендация)
+- Hover-preview фото товара
+
+**Backend:**
+- `GET /advertising-analytics/ad-launch-recommendations?shop_id=N`
+- Ozon: `dim_ozon_products` + `fact_ozon_ad_daily` + `fact_ozon_orders`
+- WB: `dim_products` + `fact_advert_stats_v3` + `fact_orders_raw` + `fact_inventory_snapshot`
+
+**Файлы:**
+- `backend/app/api/v1/advertising_analytics.py` — endpoint + _ozon_ad_recommendations + _wb_ad_recommendations
+- `frontend/src/api/advertising.ts` — типы + getAdLaunchRecommendations
+- `frontend/src/pages/AdvertisingAnalyticsPage.tsx` — AdLaunchRecommendations компонент
+
+---
+
+## 2026-04-06 (v17.38.7)
+
+### fix(events): Полное отключение ITEM_REMOVE + дедупликация V2 API
+
+**Проблема**: Несмотря на debouncing (v17.38.6), ложные ITEM_REMOVE продолжали генерироваться каждые ~15 минут. За ночь скопилось ещё 172 мусорных события. Debouncing ловил только часть случаев.
+
+**Корневые причины** (3 независимых бага, обнаружены анализом docker logs):
+
+1. **Дубликаты в V2 API ответе**: WB API `/api/advert/v2/adverts` иногда возвращает одну и ту же кампанию **дважды** в одном массиве. Каждый дубль обрабатывался независимо, генерируя 4 ITEM_REMOVE вместо 2 (для 2-item кампании). Первый проход обновлял Redis → второй проход видел уже пустой state.
+
+2. **API storm не вызывает `current_items=[]`**: WB API может вернуть `nm_settings` с товарами, но `bids_kopecks=0`. Items добавлялись в `current_items` (строка 544), но bids=0 → debouncing для bids корректно пропускал их. Проблема в том, что API иногда возвращает **вообще пустой** `nm_settings: []` для активной кампании — debouncing правило #1 ловило это, но **не всегда**: при следующем цикле API мог вернуть partial data.
+
+3. **Redis state corruption при partial API**: Когда debouncing пропускал ITEM_REMOVE (`skip_remove=True`), Redis items сохранялись. Но если затем API возвращал 1 item вместо 2, `current_items=[A]` vs `old_items=[A,B]` → `removed=[B]` → debouncing правило #3 (>50%) → `1/2 > 0.5` = True → skip. НО на **следующий** цикл items обновлялись на `[A]` (partial), и теперь `old=[A]`, `current=[]` → правило #1 → skip. Цикл повторялся бесконечно, иногда с проскоками.
+
+**Решение (3 уровня):**
+
+1. **Дедупликация advert_id** — `Set[int] processed_advert_ids` в `detect_changes_v2()`:
+   ```python
+   if advert_id in processed_advert_ids:
+       continue  # Skip duplicate
+   processed_advert_ids.add(advert_id)
+   ```
+
+2. **ITEM_REMOVE полностью отключён** (V1 + V2):
+   - WB V2 API **фундаментально ненадёжен** для отслеживания состава кампаний
+   - Реальное удаление товара → STATUS_CHANGE или удаление кампании
+   - Все ITEM_REMOVE события из сравнения nm_settings = 100% false positives
+
+3. **Superset/merge стратегия Redis items**:
+   ```python
+   if current_items_set >= old_items:
+       items_to_save = current_items  # Safe: items added
+   else:
+       items_to_save = list(old_items | current_items_set)  # Merge
+   # If current_items empty → don't touch Redis
+   ```
+
+**Очистка**: Удалено 172 ложных ITEM_REMOVE из event_log.
+
+**Файлы:**
+- `backend/app/services/event_detector.py` — V1 строки 141-165, V2 строки 464-484, 614-692
+
+---
+
+
+
+## 2026-04-05 (v17.38.6)
+
+### fix(events): Ложные ITEM_REMOVE события — 2816 мусорных событий за 3 дня
+
+**Проблема**: В разделе «Обзор» рекламной аналитики показывались массовые ложные события «Товар удалён из кампании». За 3-4 апреля было сгенерировано 2816 фейковых ITEM_REMOVE событий. Один и тот же nm_id мог быть «удалён» до 528 раз.
+
+**Корневые причины** (3 дыры в debouncing логике):
+
+1. **`len(old_items) > 2` — слишком строгий фильтр**: кампании с 1-2 товарами (типичный кейс) не попадали в проверку >50%. Любой API glitch генерировал ITEM_REMOVE.
+
+2. **Redis state перезаписывался при API glitch**: когда debouncing пропускал ITEM_REMOVE (skip_remove=True), Redis items всё равно обновлялся на пустой/частичный список от API. При следующем цикле детектор считал «исчезнувшие» items уже реально удалёнными → каскадные ложные события.
+
+3. **Отсутствие проверки «все items сразу»**: реальное удаление товара из кампании происходит по 1 штуке. Если ВСЕ items исчезли одновременно — это API glitch.
+
+**Фикс** (в обоих методах — V1 `detect_changes` и V2 `detect_changes_v2`):
+
+```python
+# Новые правила debouncing:
+# 1. current_items пустой, а были товары → API glitch (skip)
+# 2. ВСЕ items пропали разом (≥2 товаров) → подозрительно (skip)
+# 3. >50% items исчезли → API glitch (skip)  [БЕЗ ограничения old_items > 2]
+
+# КРИТИЧНО: при skip_remove=True, НЕ обновлять items в Redis
+items=current_items if (current_items and not skip_remove) else None
+```
+
+**Очистка**: удалено 2816 ложных ITEM_REMOVE событий из event_log (shop_id=18 — 2288, shop_id=16 — 528).
+
+**Файлы:**
+- `backend/app/services/event_detector.py` — V1 строки 141-178, V2 строки 611-656
+
+---
+
+## 2026-04-05 (v17.38.5)
+
+### fix(dates): UTC-смещение дат — API получал вчерашние данные вместо сегодняшних
+
+**Проблема**: При выборе сегодняшней даты (5 апреля) в date picker API-запрос отправлял `date_from=2026-04-04` вместо `2026-04-05`. Данные показывались за предыдущий день. Баг воспроизводился только в UTC+ часовых поясах (Москва UTC+3).
+
+**Корневая причина**: `d.toISOString().split('T')[0]` конвертирует дату в UTC перед форматированием. Для пользователя в UTC+3 дата `2026-04-05 02:30 MSK` → `2026-04-04T23:30Z` → `"2026-04-04"` — сдвиг на день назад.
+
+**Фикс**: Замена на локальный форматтер:
+```typescript
+// Было (UTC — НЕПРАВИЛЬНО для UTC+ зон):
+const fmt = (d: Date) => d.toISOString().split('T')[0]
+
+// Стало (локальное время — ПРАВИЛЬНО):
+const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+```
+
+**Затронутые места (2):**
+1. `AdManagementPage.tsx` — `getPeriodParams()` для custom date range
+2. `CampaignManagementModal.tsx` — `dateRange` useMemo для периода кластеров
+
+**Проверка**: Полный grep по `toISOString().split` — 0 оставшихся вхождений в src/.
+
+**Файлы:**
+- `frontend/src/pages/AdManagementPage.tsx` — строка 502
+- `frontend/src/components/CampaignManagementModal.tsx` — строка 158
+
+---
+
+## 2026-04-05 (v17.38.4)
+
+### fix(calendar): Сетка календаря показывала дни в неправильные столбцы (weekday alignment)
+
+**Проблема**: В date picker (calendar popup) все дни месяца были сдвинуты влево — 1 апреля стояло под «ПН» вместо «СР», 5 апреля (воскресенье) — под «ПТ». Пользователь видел неправильные дни недели при выборе дат.
+
+**Корневая причина**: `react-day-picker` v9 с `showOutsideDays={false}` **не рендерил** placeholder-ячейки для дней предыдущего месяца. При `display: flex` (CSS), отсутствие этих ячеек приводило к тому, что первый день месяца всегда «прилипал» к первому столбцу (ПН) вне зависимости от реального дня недели.
+
+**CSS-контекст**: Правило `.rdp-outside { opacity: 0; pointer-events: none; }` уже существовало — оно корректно скрывает «внешние» дни визуально. Но при `showOutsideDays={false}` ячейки не создавались в DOM вообще, и CSS-правило не применялось.
+
+**Фикс**: `showOutsideDays={false}` → `showOutsideDays={true}` — ячейки рендерятся (занимают место в grid), но скрыты CSS.
+
+**Файлы:**
+- `frontend/src/components/DateRangePicker.tsx` — основной PeriodSelector
+- `frontend/src/pages/AdvertisingAnalyticsPage.tsx` — PeriodSelector аналитики рекламы
+
+---
+
 ## 2026-04-05 (v17.38.3)
 
 ### fix(budget): Бюджет не обновлялся в таблице после пополнения из модала

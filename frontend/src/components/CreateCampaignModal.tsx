@@ -21,11 +21,21 @@ import {
 
 // ── Types ────────────────────────────────────────────────────────
 
+export interface QuickLaunchProduct {
+  nm_id: number
+  name?: string
+  vendor_code?: string
+  image_url?: string
+}
+
 interface Props {
   shopId: number
   balance: number
+  balanceLoading?: boolean
   onClose: () => void
   onSuccess: (advertId: number, campaignStarted: boolean) => void
+  /** Pre-selected product for quick launch flow (skip Step 2) */
+  initialProduct?: QuickLaunchProduct
 }
 
 type Step = 1 | 2 | 3
@@ -79,11 +89,15 @@ function StepIndicator({ current, steps }: { current: Step; steps: { label: stri
 // Main Modal Component
 // ══════════════════════════════════════════════════════════════════
 
-export default function CreateCampaignModal({ shopId, balance, onClose, onSuccess }: Props) {
+export default function CreateCampaignModal({ shopId, balance, balanceLoading, onClose, onSuccess, initialProduct }: Props) {
+  const isQuickLaunch = !!initialProduct
   const [step, setStep] = useState<Step>(1)
 
-  // Step 1: Settings
-  const [name, setName] = useState('')
+  // Step 1: Settings — auto-generate name for quick launch
+  const defaultName = initialProduct
+    ? `${initialProduct.vendor_code || initialProduct.name || `Товар ${initialProduct.nm_id}`} — Поиск`
+    : ''
+  const [name, setName] = useState(defaultName)
   const [bidType, setBidType] = useState<'unified' | 'manual'>('unified')
   const [paymentType, setPaymentType] = useState<'cpm' | 'cpc'>('cpm')
   const [budget, setBudget] = useState('1000')
@@ -91,13 +105,15 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
   const [placementSearch, setPlacementSearch] = useState(true)
   const [placementReco, setPlacementReco] = useState(true)
 
-  // Step 2: Products
+  // Step 2: Products — pre-select if quick launch
   const [subjects, setSubjects] = useState<SubjectItem[]>([])
   const [loadingSubjects, setLoadingSubjects] = useState(false)
   const [selectedSubject, setSelectedSubject] = useState<number | null>(null)
   const [products, setProducts] = useState<ProductItem[]>([])
   const [loadingProducts, setLoadingProducts] = useState(false)
-  const [selectedNms, setSelectedNms] = useState<Set<number>>(new Set())
+  const [selectedNms, setSelectedNms] = useState<Set<number>>(
+    initialProduct ? new Set([initialProduct.nm_id]) : new Set()
+  )
   const [productSearch, setProductSearch] = useState('')
 
   // Step 2: Bids per product (nm_id → bid in RUBLES, user-facing)
@@ -108,12 +124,13 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [submitResult, setSubmitResult] = useState<{
-    advert_id: number; budget_deposited: boolean; campaign_started: boolean; budget_message?: string; bids_applied?: boolean
+    advert_id: number; budget_deposited: boolean; campaign_started: boolean; budget_message?: string; bids_applied?: boolean; start_error?: string
   } | null>(null)
 
-  // ── Load subjects when modal opens ──────────────────────────────
+  // ── Load subjects when modal opens (skip for quick launch) ─────
 
   useEffect(() => {
+    if (isQuickLaunch) return // Skip subject loading for quick launch
     let cancelled = false
     setLoadingSubjects(true)
     getCreationSubjects(shopId, paymentType)
@@ -125,7 +142,7 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoadingSubjects(false) })
     return () => { cancelled = true }
-  }, [shopId, paymentType])
+  }, [shopId, paymentType, isQuickLaunch])
 
   // ── Load products when subject changes ──────────────────────────
 
@@ -170,6 +187,16 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
   const step1Valid = name.trim().length > 0
   const step2Valid = selectedNms.size > 0
   const numBudget = Number(budget) || 0
+
+  // Quick launch: step navigation skips step 2
+  const nextStep = (current: Step): Step => {
+    if (current === 1 && isQuickLaunch) return 3
+    return (current + 1) as Step
+  }
+  const prevStep = (current: Step): Step => {
+    if (current === 3 && isQuickLaunch) return 1
+    return (current - 1) as Step
+  }
 
   // ── Handlers ───────────────────────────────────────────────────
 
@@ -290,11 +317,16 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
 
   // ── Render ─────────────────────────────────────────────────────
 
-  const stepLabels = [
-    { label: 'Настройки', icon: <Settings className="w-3.5 h-3.5" /> },
-    { label: 'Товары', icon: <Package className="w-3.5 h-3.5" /> },
-    { label: 'Создание', icon: <Zap className="w-3.5 h-3.5" /> },
-  ]
+  const stepLabels = isQuickLaunch
+    ? [
+        { label: 'Настройки', icon: <Settings className="w-3.5 h-3.5" /> },
+        { label: 'Запуск', icon: <Zap className="w-3.5 h-3.5" /> },
+      ]
+    : [
+        { label: 'Настройки', icon: <Settings className="w-3.5 h-3.5" /> },
+        { label: 'Товары', icon: <Package className="w-3.5 h-3.5" /> },
+        { label: 'Создание', icon: <Zap className="w-3.5 h-3.5" /> },
+      ]
 
   return (
     <motion.div
@@ -315,7 +347,9 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 pt-5 pb-1">
-          <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">Создание кампании</h2>
+          <h2 className="text-lg font-bold text-[hsl(var(--foreground))]">
+            {isQuickLaunch ? 'Быстрый запуск кампании' : 'Создание кампании'}
+          </h2>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] transition-colors"
@@ -325,7 +359,10 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
         </div>
 
         {/* Step Indicator */}
-        <StepIndicator current={step} steps={stepLabels} />
+        <StepIndicator
+          current={isQuickLaunch ? (step === 1 ? 1 : 2) as Step : step}
+          steps={stepLabels}
+        />
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
@@ -451,8 +488,16 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
                     <p className="text-xs text-[hsl(var(--muted-foreground))]">
                       Минимум 1 000 ₽ · 0 = без пополнения
                     </p>
-                    <p className="text-xs text-[hsl(var(--muted-foreground))]">
-                      Баланс: <span className="font-semibold text-[hsl(var(--foreground))]">{balance.toLocaleString('ru-RU')} ₽</span>
+                    <p className="text-xs text-[hsl(var(--muted-foreground))] flex items-center gap-1">
+                      Баланс:{' '}
+                      {balanceLoading ? (
+                        <span className="inline-flex items-center gap-1 text-[hsl(var(--muted-foreground))]">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          <span className="text-[10px]">загрузка...</span>
+                        </span>
+                      ) : (
+                        <span className="font-semibold text-[hsl(var(--foreground))]">{balance.toLocaleString('ru-RU')} ₽</span>
+                      )}
                     </p>
                   </div>
                 </div>
@@ -475,6 +520,42 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
                       Запустить кампанию сразу после создания
                     </span>
                   </label>
+                )}
+
+                {/* Quick Launch: Product Card */}
+                {isQuickLaunch && initialProduct && (
+                  <div className="mt-1 p-3 rounded-xl bg-[hsl(var(--secondary))] border border-[hsl(var(--border))]">
+                    <label className="block text-sm font-medium text-[hsl(var(--foreground))] mb-2">
+                      Товар в кампании
+                    </label>
+                    <div className="flex items-center gap-3">
+                      {initialProduct.image_url && (
+                        <img
+                          src={initialProduct.image_url}
+                          alt=""
+                          className="w-12 h-12 rounded-lg object-cover flex-shrink-0 border border-[hsl(var(--border))]"
+                        />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-[hsl(var(--foreground))] truncate">
+                          {initialProduct.name || `Товар ${initialProduct.nm_id}`}
+                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-[hsl(var(--muted-foreground))]">nm: {initialProduct.nm_id}</span>
+                          {initialProduct.vendor_code && (
+                            <span className="px-1.5 py-0.5 rounded bg-[hsl(var(--muted))] text-[10px] font-mono text-[hsl(var(--muted-foreground))]">
+                              {initialProduct.vendor_code}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex-shrink-0">
+                        <div className="px-2 py-1 rounded-lg bg-violet-600/10 text-violet-600 dark:text-violet-400 text-xs font-semibold">
+                          ✓ Выбран
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </motion.div>
             )}
@@ -790,6 +871,12 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
                           Кампания запущена
                         </p>
                       )}
+                      {!submitResult.campaign_started && autoStart && numBudget >= 1000 && (
+                        <p className="text-sm text-amber-500 font-medium">
+                          <AlertTriangle className="w-3.5 h-3.5 inline mr-1" />
+                          Автозапуск не сработал{submitResult.start_error ? `: ${submitResult.start_error}` : ''} — запустите кампанию вручную
+                        </p>
+                      )}
                     </div>
                   </div>
                 ) : (
@@ -880,7 +967,7 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
             {/* Back */}
             {step > 1 ? (
               <button
-                onClick={() => setStep((step - 1) as Step)}
+                onClick={() => setStep(prevStep(step))}
                 disabled={submitting}
                 className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-[hsl(var(--border))] text-[hsl(var(--foreground))] hover:bg-[hsl(var(--muted))] text-sm font-medium transition-colors disabled:opacity-50"
               >
@@ -893,7 +980,7 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
             {/* Next / Submit */}
             {step < 3 ? (
               <button
-                onClick={() => setStep((step + 1) as Step)}
+                onClick={() => setStep(nextStep(step))}
                 disabled={step === 1 ? !step1Valid : !step2Valid}
                 className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -913,7 +1000,7 @@ export default function CreateCampaignModal({ shopId, balance, onClose, onSucces
                 ) : (
                   <>
                     <Zap className="w-4 h-4" />
-                    Создать
+                    {isQuickLaunch ? 'Запустить' : 'Создать'}
                   </>
                 )}
               </button>

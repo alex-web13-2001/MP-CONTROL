@@ -116,6 +116,7 @@ export interface BatchStatusResponse {
 export interface BalanceResponse {
   success: boolean
   balance: number | null
+  net: number | null
   bonus: number | null
   message: string
 }

@@ -237,3 +237,38 @@ export async function getCampaignDailyStats(
   })
   return res.data
 }
+
+// ── Ad Launch Recommendations ────────────────────────────────────
+
+export type AdRecommendationCategory = 'selling_no_ads' | 'demand_no_ads' | 'ads_paused' | 'stagnant'
+
+export interface AdRecommendationItem {
+  nm_id: number
+  sku: number
+  offer_id: string
+  name: string
+  image_url: string
+  category: AdRecommendationCategory
+  reason: string
+  orders_7d: number
+  revenue_7d: number
+  stock: number
+  out_of_stock: boolean
+  price: number
+  last_ad_date: string | null
+  priority: number
+}
+
+export interface AdRecommendationsResponse {
+  total: number
+  recommendations: AdRecommendationItem[]
+}
+
+export async function getAdLaunchRecommendations(
+  shopId: number,
+): Promise<AdRecommendationsResponse> {
+  const res = await apiClient.get<AdRecommendationsResponse>('/advertising-analytics/ad-launch-recommendations', {
+    params: { shop_id: shopId },
+  })
+  return res.data
+}

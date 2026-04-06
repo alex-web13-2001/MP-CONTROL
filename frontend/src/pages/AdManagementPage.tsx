@@ -499,7 +499,7 @@ export default function AdManagementPage() {
     let period = `${periodValue.period}d`
 
     if (periodValue.mode === 'custom' && periodValue.dateRange?.from) {
-      const fmt = (d: Date) => d.toISOString().split('T')[0]
+      const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       dateFrom = fmt(periodValue.dateRange.from)
       dateTo = fmt(periodValue.dateRange.to || periodValue.dateRange.from)
       period = 'custom'
