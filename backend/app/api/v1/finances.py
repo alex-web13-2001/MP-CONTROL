@@ -775,7 +775,7 @@ async def get_wb_finances(
             SELECT
                 sumIf(spend, date >= {d_start:Date} AND date <= {d_end:Date}) AS ads_cur,
                 sumIf(spend, date >= {d_prev_start:Date} AND date <= {d_prev_end:Date}) AS ads_prev
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_prev_start:Date}
               AND date <= {d_end:Date}
@@ -793,7 +793,7 @@ async def get_wb_finances(
     try:
         ads_daily_result = ch.query("""
             SELECT date, sum(spend) AS ad_spend
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND date <= {d_end:Date}
@@ -1327,7 +1327,7 @@ async def get_wb_products_finance(
                 nm_id,
                 sumIf(spend, date >= {d_start:Date} AND date <= {d_end:Date}) AS ads_cur,
                 sumIf(spend, date >= {d_prev_start:Date} AND date <= {d_prev_end:Date}) AS ads_prev
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_prev_start:Date}
               AND date <= {d_end:Date}
@@ -2440,7 +2440,7 @@ async def get_wb_weekly_report(
             SELECT
                 toMonday(date) AS week_start,
                 sum(spend) AS total_spend
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
             GROUP BY week_start
         """, parameters={"shop_id": shop_id})
