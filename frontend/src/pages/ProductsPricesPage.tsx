@@ -331,6 +331,7 @@ export default function ProductsPricesPage() {
   const [total, setTotal] = useState(0)
   const [costMissing, setCostMissing] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [hasMore, setHasMore] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -350,6 +351,7 @@ export default function ProductsPricesPage() {
   const fetchData = useCallback(async () => {
     if (!shopId) return
     setLoading(true)
+    setError(null)
     try {
       if (isWB) {
         const data = await getWBPricesApi({
@@ -371,8 +373,18 @@ export default function ProductsPricesPage() {
       }
       pageRef.current = 1
       setPage(1)
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to fetch prices', e)
+      const detail = e?.response?.data?.detail || ''
+      if (detail.includes('API ключ') || detail.includes('API key') || e?.response?.status === 400) {
+        setError('API ключ не настроен для этого магазина. Добавьте ключ в разделе Настройки → Магазины.')
+      } else if (e?.response?.status === 502) {
+        setError('Ошибка подключения к API маркетплейса. Попробуйте позже.')
+      } else {
+        setError('Не удалось загрузить цены. Попробуйте обновить страницу.')
+      }
+      setRows([])
+      setTotal(0)
     } finally {
       setLoading(false)
     }
@@ -641,6 +653,21 @@ export default function ProductsPricesPage() {
                     <p className="mt-2 text-sm text-[hsl(var(--muted-foreground)/0.5)]">
                       {isWB ? 'Загрузка цен из WB API...' : 'Загрузка цен...'}
                     </p>
+                  </td>
+                </tr>
+              ) : error ? (
+                <tr>
+                  <td colSpan={12} className="py-20 text-center">
+                    <AlertTriangle className="h-10 w-10 mx-auto mb-3 text-amber-400/60" />
+                    <p className="text-sm font-medium text-[hsl(var(--foreground)/0.8)] mb-1">
+                      {error}
+                    </p>
+                    <a
+                      href="/settings"
+                      className="inline-flex items-center gap-1 mt-2 text-xs font-medium text-[hsl(var(--primary))] hover:underline"
+                    >
+                      Перейти в Настройки →
+                    </a>
                   </td>
                 </tr>
               ) : rows.length === 0 ? (

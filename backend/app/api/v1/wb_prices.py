@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.marketplace_client import MarketplaceClient
+from app.core.encryption import decrypt_api_key
 from app.models.shop import Shop
 from app.models.user import User
 
@@ -27,7 +28,7 @@ WB_PRICES_ENDPOINT = "/api/v2/list/goods/filter"
 WB_PRICES_PAGE_SIZE = 1000
 
 
-async def _fetch_wb_prices(db: AsyncSession, shop_id: int, api_key: str) -> list[dict]:
+async def _fetch_wb_prices(db: AsyncSession, shop_id: int, api_key: str, api_key_encrypted: bytes = None) -> list[dict]:
     """Paginate through WB discounts-prices-api and return all goods."""
     all_goods = []
     offset = 0
@@ -37,6 +38,7 @@ async def _fetch_wb_prices(db: AsyncSession, shop_id: int, api_key: str) -> list
         shop_id=shop_id,
         marketplace="wildberries_prices",
         api_key=api_key,
+        api_key_encrypted=api_key_encrypted,
     ) as client:
         while True:
             params = {"limit": WB_PRICES_PAGE_SIZE, "offset": offset}
@@ -116,12 +118,15 @@ async def get_wb_prices(
     if not shop:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WB магазин не найден")
 
-    if not shop.api_key:
+    # Get API key - prefer encrypted, fallback to plain
+    api_key = shop.api_key or ""
+    api_key_encrypted = shop.api_key_encrypted
+    if not api_key and not api_key_encrypted:
         raise HTTPException(status_code=400, detail="API ключ не настроен для этого магазина")
 
     # ── 1. Fetch live prices from WB API ──
     try:
-        wb_prices = await _fetch_wb_prices(db, shop_id, shop.api_key)
+        wb_prices = await _fetch_wb_prices(db, shop_id, api_key, api_key_encrypted)
     except Exception as e:
         logger.error("Failed to fetch WB prices: %s", e)
         raise HTTPException(status_code=502, detail=f"Ошибка получения цен из WB API: {e}")
