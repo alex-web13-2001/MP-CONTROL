@@ -12,7 +12,16 @@ celery_app = Celery(
     "mms_worker",
     broker=settings.get_celery_broker_url(),
     backend=settings.get_celery_result_backend(),
-    include=["celery_app.tasks.tasks"],
+    include=[
+        "celery_app.tasks.helpers",
+        "celery_app.tasks.coordinators",
+        "celery_app.tasks.onboarding",
+        "celery_app.tasks.wb_sync",
+        "celery_app.tasks.wb_advertising",
+        "celery_app.tasks.ozon_sync",
+        "celery_app.tasks.ozon_advertising",
+        "celery_app.tasks.misc",
+    ],
 )
 
 # ===================
@@ -46,54 +55,54 @@ celery_app.conf.task_default_routing_key = "default"
 celery_app.conf.task_routes = {
     # Fast queue - autobidder tasks (critical, every minute)
     "celery_app.tasks.autobidder.*": {"queue": "fast", "routing_key": "fast"},
-    "celery_app.tasks.tasks.update_bids": {"queue": "fast", "routing_key": "fast"},
-    "celery_app.tasks.tasks.check_positions": {"queue": "fast", "routing_key": "fast"},
-    "celery_app.tasks.tasks.monitor_ozon_bids": {"queue": "fast", "routing_key": "fast"},
+    "celery_app.tasks.wb_advertising.update_bids": {"queue": "fast", "routing_key": "fast"},
+    "celery_app.tasks.wb_advertising.check_positions": {"queue": "fast", "routing_key": "fast"},
+    "celery_app.tasks.ozon_advertising.monitor_ozon_bids": {"queue": "fast", "routing_key": "fast"},
     
     # Sync queue - regular periodic sync (high concurrency, multi-shop parallel)
-    "celery_app.tasks.tasks.sync_marketplace_data": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_commercial_data": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_warehouses": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_product_content": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_ad_stats": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_wb_campaign_snapshot": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.misc.sync_marketplace_data": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_commercial_data": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_warehouses": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_product_content": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_advertising.sync_ozon_ad_stats": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_advertising.sync_wb_campaign_snapshot": {"queue": "sync", "routing_key": "sync"},
     # Ozon sync tasks
-    "celery_app.tasks.tasks.sync_ozon_products": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_product_snapshots": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_finance": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_funnel": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_returns": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_seller_rating": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_content_rating": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_content": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_orders": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_warehouse_stocks": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_ozon_prices": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_products": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_product_snapshots": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_finance": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_funnel": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_returns": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_seller_rating": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_content_rating": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_content": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_orders": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_warehouse_stocks": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.ozon_sync.sync_ozon_prices": {"queue": "sync", "routing_key": "sync"},
     # WB sync tasks
-    "celery_app.tasks.tasks.sync_orders": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_sales_funnel": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_wb_advert_history": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_wb_finance_history": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_orders": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_sales_funnel": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_advertising.sync_wb_advert_history": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_sync.sync_wb_finance_history": {"queue": "sync", "routing_key": "sync"},
 
     # Backfill queue - initial historical data loading (isolated from regular sync)
-    "celery_app.tasks.tasks.load_historical_data": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.sync_full_history": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_ozon_ads": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_orders": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_ozon_orders": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_ozon_finance": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_ozon_funnel": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_ozon_returns": {"queue": "backfill", "routing_key": "backfill"},
-    "celery_app.tasks.tasks.backfill_sales_funnel": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.onboarding.load_historical_data": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.onboarding.sync_full_history": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.ozon_advertising.backfill_ozon_ads": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.wb_sync.backfill_orders": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.ozon_sync.backfill_ozon_orders": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.ozon_sync.backfill_ozon_finance": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.ozon_sync.backfill_ozon_funnel": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.ozon_sync.backfill_ozon_returns": {"queue": "backfill", "routing_key": "backfill"},
+    "celery_app.tasks.wb_sync.backfill_sales_funnel": {"queue": "backfill", "routing_key": "backfill"},
 
     # Sync coordinators (lightweight dispatchers, run on sync queue)
-    "celery_app.tasks.tasks.sync_all_daily": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_all_frequent": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_all_ads": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_all_campaign_snapshots": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_wb_budgets": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_all_budgets": {"queue": "sync", "routing_key": "sync"},
-    "celery_app.tasks.tasks.sync_all_placement_cost": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_daily": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_frequent": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_ads": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_campaign_snapshots": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.wb_advertising.sync_wb_budgets": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_budgets": {"queue": "sync", "routing_key": "sync"},
+    "celery_app.tasks.coordinators.sync_all_placement_cost": {"queue": "sync", "routing_key": "sync"},
 }
 
 # ===================
@@ -132,14 +141,14 @@ celery_app.conf.update(
 celery_app.conf.beat_schedule = {
     # Autobidder - runs every minute on FAST queue
     "autobidder-update-bids": {
-        "task": "celery_app.tasks.tasks.update_all_bids",
+        "task": "celery_app.tasks.coordinators.update_all_bids",
         "schedule": 60.0,  # Every 60 seconds
         "options": {"queue": "fast", "priority": 9},
     },
     
     # Position check - runs every 5 minutes on FAST queue
     "check-all-positions": {
-        "task": "celery_app.tasks.tasks.check_all_positions",
+        "task": "celery_app.tasks.coordinators.check_all_positions",
         "schedule": 300.0,  # Every 5 minutes
         "options": {"queue": "fast", "priority": 7},
     },
@@ -151,35 +160,35 @@ celery_app.conf.beat_schedule = {
 
     # Daily sync: products, finance, funnel, returns, ratings, content
     "sync-all-daily": {
-        "task": "celery_app.tasks.tasks.sync_all_daily",
+        "task": "celery_app.tasks.coordinators.sync_all_daily",
         "schedule": crontab(hour=3, minute=0),
         "options": {"queue": "sync", "priority": 4},
     },
 
     # Frequent sync (30 min): orders, stocks, prices
     "sync-all-frequent": {
-        "task": "celery_app.tasks.tasks.sync_all_frequent",
+        "task": "celery_app.tasks.coordinators.sync_all_frequent",
         "schedule": 1800.0,  # Every 30 minutes
         "options": {"queue": "sync", "priority": 6},
     },
 
     # Ads sync (60 min): ad stats, bid monitoring
     "sync-all-ads": {
-        "task": "celery_app.tasks.tasks.sync_all_ads",
+        "task": "celery_app.tasks.coordinators.sync_all_ads",
         "schedule": 3600.0,  # Every 60 minutes
         "options": {"queue": "sync", "priority": 5},
     },
 
     # Campaign snapshots (30 min): bids, names, statuses — lightweight
     "sync-campaign-snapshots": {
-        "task": "celery_app.tasks.tasks.sync_all_campaign_snapshots",
+        "task": "celery_app.tasks.coordinators.sync_all_campaign_snapshots",
         "schedule": 1800.0,  # Every 30 minutes
         "options": {"queue": "sync", "priority": 6},
     },
 
     # Budget sync (15 min): campaign budgets + account balance → Redis
     "sync-all-budgets": {
-        "task": "celery_app.tasks.tasks.sync_all_budgets",
+        "task": "celery_app.tasks.coordinators.sync_all_budgets",
         "schedule": 900.0,  # Every 15 minutes
         "options": {"queue": "sync", "priority": 6},
     },
@@ -187,7 +196,7 @@ celery_app.conf.beat_schedule = {
     # Placement cost sync — separate from daily to avoid Ozon rps rate limit
     # Runs 1 hour after sync_all_daily when other sync tasks are done
     "sync-all-placement-cost": {
-        "task": "celery_app.tasks.tasks.sync_all_placement_cost",
+        "task": "celery_app.tasks.coordinators.sync_all_placement_cost",
         "schedule": crontab(hour=4, minute=0),
         "options": {"queue": "sync", "priority": 3},
     },
