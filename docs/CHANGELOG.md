@@ -1,4 +1,44 @@
-## 2026-04-06 (v17.39.2)
+## 2026-04-06 (v17.40.0)
+
+### refactor(celery): Модуляризация tasks.py — 8 доменных модулей
+
+**Монолитный `tasks.py` (6040 строк, 55 задач) разбит на модульную архитектуру:**
+
+| Модуль | Задач | Описание |
+|--------|-------|----------|
+| `helpers.py` | 0 (utils) | `_dedup_dispatch` (Redis NX dedup), `cleanup_task_lock` signal |
+| `coordinators.py` | 8 | Диспетчеры Beat: `sync_all_daily`, `sync_all_frequent`, `sync_all_ads`, etc. |
+| `onboarding.py` | 2 | `load_historical_data`, `sync_full_history` |
+| `wb_sync.py` | 11 | WB: заказы, финансы, контент, склады, тарифы, хранение |
+| `wb_advertising.py` | 6 | WB: кампании, ставки, бюджеты, normquery |
+| `ozon_sync.py` | 20 | Ozon: товары, заказы, финансы, воронка, возвраты, цены |
+| `ozon_advertising.py` | 4 | Ozon: реклама, ставки, backfill |
+| `misc.py` | 3 | Placeholder задачи |
+
+**Обновлено:**
+- `celery.py`: include list (8 модулей), task_routes (50+ путей), beat_schedule (8 записей)
+- 5 API endpoints обновлены на прямые импорты из новых модулей
+- `tasks.py` → тонкий shim (re-export all) для обратной совместимости
+- `__init__.py` → re-export на уровне пакета
+
+**Верификация:**
+- Docker build ✅
+- 6-point container test: imports, backward compat, task names, beat schedule, task routes ✅
+- Полный аудит: 55/55 задач зарегистрированы, 0 пропущенных, 0 лишних ✅
+- Реальный сбор данных: WB sync, Ozon sync, normquery — всё работает ✅
+
+**Файлы:**
+- `backend/celery_app/tasks/` — 8 новых модулей + обновлённые `__init__.py`, `tasks.py`
+- `backend/celery_app/celery.py` — include, routes, beat
+- `backend/app/api/v1/advertising.py` — import → `wb_advertising`
+- `backend/app/api/v1/commercial.py` — import → `wb_sync`
+- `backend/app/api/v1/finance_reports.py` — import → `wb_sync`
+- `backend/app/api/v1/shops.py` — import → `onboarding`
+- `backend/app/api/v1/warehouses.py` — import → `ozon_sync`
+
+---
+
+
 
 ### fix(advertising): Баланс WB с прелоадером + retry автозапуска кампании
 

@@ -97,7 +97,7 @@ MP-CONTROL/
 │   │   ├── models/          # SQLAlchemy модели (PostgreSQL)
 │   │   ├── schemas/         # Pydantic schemas
 │   │   └── services/        # Бизнес-логика
-│   ├── celery_app/tasks/    # Celery задачи (tasks.py ~4300 строк)
+│   ├── celery_app/tasks/    # 8 доменных модулей (55 задач)
 │   └── alembic/             # Миграции PostgreSQL
 ├── frontend/
 │   └── src/
@@ -127,7 +127,11 @@ MP-CONTROL/
 | Изменить БД ClickHouse  | `docker/clickhouse/init.sql`                                                      |
 | Новый event type        | `backend/app/services/event_detector.py` + `backend/app/api/v1/events.py`         |
 | Event detection логика  | `backend/app/services/event_detector.py` (EventDetector, CommercialEventDetector) |
-| Celery задача           | `backend/celery_app/tasks/tasks.py`                                               |
+| Celery задача (WB)     | `backend/celery_app/tasks/wb_sync.py`, `wb_advertising.py`                        |
+| Celery задача (Ozon)   | `backend/celery_app/tasks/ozon_sync.py`, `ozon_advertising.py`                    |
+| Celery координатор    | `backend/celery_app/tasks/coordinators.py`                                        |
+| Celery helpers        | `backend/celery_app/tasks/helpers.py`                                             |
+| Onboarding pipeline   | `backend/celery_app/tasks/onboarding.py`                                          |
 | Redis state             | `backend/app/core/redis_state.py`                                                 |
 | Frontend страница       | `frontend/src/pages/`                                                             |
 | API клиент фронтенда    | `frontend/src/api/`                                                               |

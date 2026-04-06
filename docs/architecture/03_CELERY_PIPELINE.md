@@ -1,7 +1,43 @@
 # MP-CONTROL — Celery Pipeline
 
 > Полный разбор всех фоновых задач: очереди, координаторы, data flow, backfill стратегии.  
-> Файл-источник: `backend/celery_app/tasks/tasks.py` (~4160 строк, 106 функций)
+> Модульная архитектура: `backend/celery_app/tasks/` — 8 доменных модулей, 55 задач.
+
+---
+
+## Модульная структура задач
+
+Монолитный `tasks.py` (6040 строк) разбит на доменные модули:
+
+| Модуль | Файл | Задач | Описание |
+|--------|------|-------|----------|
+| **Helpers** | `helpers.py` | 0 (utils) | `_dedup_dispatch` (Redis NX dedup), `cleanup_task_lock` signal handler |
+| **Coordinators** | `coordinators.py` | 8 | Диспетчеры Beat: `sync_all_daily`, `sync_all_frequent`, `sync_all_ads`, etc. |
+| **Onboarding** | `onboarding.py` | 2 | `load_historical_data`, `sync_full_history` — первичная загрузка при добавлении магазина |
+| **WB Sync** | `wb_sync.py` | 11 | WB: заказы, финансы, контент, склады, тарифы, платное хранение |
+| **WB Advertising** | `wb_advertising.py` | 6 | WB: кампании, ставки, бюджеты, normquery аналитика |
+| **Ozon Sync** | `ozon_sync.py` | 20 | Ozon: товары, заказы, финансы, воронка, возвраты, цены, контент |
+| **Ozon Advertising** | `ozon_advertising.py` | 4 | Ozon: реклама, мониторинг ставок, backfill |
+| **Misc** | `misc.py` | 3 | Placeholder/utility задачи |
+
+> [!NOTE]
+> **Обратная совместимость:** `tasks.py` сохранён как тонкий shim — re-export всех задач.
+> Внешний код, импортирующий `from celery_app.tasks.tasks import X`, продолжает работать.
+> `__init__.py` также делает re-export на уровне пакета.
+
+```
+backend/celery_app/tasks/
+├── __init__.py           # Re-exports (backward compat)
+├── tasks.py              # Shim: re-exports from all modules
+├── helpers.py            # _dedup_dispatch, signal handlers
+├── coordinators.py       # Beat dispatchers (sync_all_*)
+├── onboarding.py         # load_historical_data, sync_full_history
+├── wb_sync.py            # WB data sync tasks
+├── wb_advertising.py     # WB ad management tasks
+├── ozon_sync.py          # Ozon data sync tasks
+├── ozon_advertising.py   # Ozon ad tasks
+└── misc.py               # Utility tasks
+```
 
 ---
 
@@ -50,14 +86,15 @@ graph TB
 
 ## Дедупликация задач
 
-Все задачи защищены от дублирования через Redis NX-ключи:
+Все задачи защищены от дублирования через Redis NX-ключи (модуль `helpers.py`):
 
 ```python
+# helpers.py — _dedup_dispatch()
 # Перед отправкой:
 key = f"task_lock:{task_name}:{shop_id}"
 SET key 1 NX EX 1800  # Только если не существует, TTL 30 мин
 
-# После завершения (signal task_postrun):
+# После завершения (signal task_postrun → cleanup_task_lock):
 DEL key
 ```
 
@@ -528,3 +565,12 @@ Frontend полит через `GET /api/v1/shops/{id}/sync-status`.
   - **Audit:** `ad_audit_log` запись с `action=auto_budget_deposit`
   - **Error handling:** ошибки отдельных кампаний логируются, не прерывают цикл
   - Источник настроек: PostgreSQL `ad_auto_budget` (UPSERT через API)
+
+### 2026-04-06
+
+- **Модуляризация tasks.py** — разбиение монолита (6040 строк) на 8 доменных модулей:
+  - `helpers.py`, `coordinators.py`, `onboarding.py`, `wb_sync.py`, `wb_advertising.py`, `ozon_sync.py`, `ozon_advertising.py`, `misc.py`
+- Обновлены `celery.py`: include list, task_routes (50+ путей), beat_schedule (8 записей)
+- Обновлены 5 API endpoints: advertising, commercial, finance_reports, shops, warehouses
+- `tasks.py` → backward-compat shim (re-export only)
+- Верификация: 55 задач, 0 пропущенных, Docker build + 6-point test + реальный сбор данных
