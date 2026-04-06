@@ -1,3 +1,44 @@
+## 2026-04-07 (v17.42.0)
+
+### feat(products): Аналитика отмен + рефакторинг UI страницы Цен
+
+**3 изменения:**
+
+**1. Аналитика отмен (Backend + Frontend):**
+- **Ozon**: Запрос отмен из `fact_ozon_orders` с фильтром `status IN ('cancelled', 'canceled')`
+- **WB**: Отмены из `is_cancel = 1` в `fact_orders_raw` (уже было в бэкенде)
+- `cancel_rate = cancels / (orders + cancels) * 100` — процент от общего количества
+- Totals: агрегация `cancels` и `cancel_rate` по всем товарам
+- **ProductsPage**: Новая колонка «Отмены» с цветовой индикацией:
+  - `>10%` → красный (проблема)
+  - `>5%` → жёлтый (внимание)
+  - `≤5%` → обычный цвет
+
+**2. Рефакторинг UI страницы Цен (`ProductsPricesPage.tsx`):**
+- Таблица приведена к стилю ProductsPage: фото 48×64px, `line-clamp-2` для названий, hover-preview фото
+- Vendor code: моноширинный шрифт, tracking-wide
+- Бейдж «Низкая оборач.» для товаров с плохой оборачиваемостью
+- Hover-эффект на строках таблицы
+
+**3. Фикс загрузки фото WB:**
+- **Проблема**: CDN-формула `basket-(vol%17+1)` устарела для новых nm_id WB → 404 ошибки для всех фото
+- **Решение**: `getImageUrl()` теперь приоритизирует `image_url` из PostgreSQL (`dim_products.main_image_url`), CDN → только fallback
+- Все 40 товаров теперь отображаются с фотографиями ✅
+
+**Types:**
+- `OzonProduct`: +`cancels`, `cancel_rate`
+- `WBProduct`: +`cancels`, `cancel_rate`
+
+**Файлы:**
+- `backend/app/api/v1/products.py` — запрос отмен Ozon + totals
+- `backend/app/api/v1/wb_products.py` — totals с отменами
+- `frontend/src/api/products.ts` — типы OzonProduct
+- `frontend/src/api/wb-products.ts` — типы WBProduct
+- `frontend/src/pages/ProductsPage.tsx` — колонка «Отмены»
+- `frontend/src/pages/ProductsPricesPage.tsx` — UI рефакторинг + фикс фото
+
+---
+
 ## 2026-04-07 (v17.41.2)
 
 ### fix(finances): FINAL keyword для fact_advert_stats_v3 — удвоение рекламы
