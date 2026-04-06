@@ -1,3 +1,27 @@
+## 2026-04-07 (v17.41.2)
+
+### fix(finances): FINAL keyword для fact_advert_stats_v3 — удвоение рекламы
+
+**Проблема**: Рекламные расходы WB удваивались во ВСЕХ отчётах (KPI-карточка, daily dynamics, product P&L, weekly report). Например, для товара ОН-КШ-ЧВ-ИНД-10 показывалось 6,214₽ рекламы вместо правильных 3,107₽.
+
+**Корневая причина**: `fact_advert_stats_v3` — таблица типа `ReplacingMergeTree`. Без ключевого слова `FINAL` запросы читали **все версии строк** (дубликаты из повторных INSERT), удваивая `sum(spend)`. В таблице для одного товара вместо 10 строк — 20.
+
+**Фикс — 4 запроса в `finances.py`:**
+
+| Строка | Endpoint / Контекст | До | После |
+|--------|---------------------|-----|-------|
+| 778 | KPI ad_spend (agr.) | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 796 | Daily ad_spend | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 1330 | Product-level P&L | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 2443 | Weekly report marketing | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+
+**Аудит**: Все остальные файлы (`campaign_details.py`, `advertising_analytics.py`, `events_graph.py`, `campaign_ai_analysis.py`, `wb_advertising.py`) уже использовали `FINAL`. Пропуск был только в `finances.py`.
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — добавлен `FINAL` к 4 запросам
+
+---
+
 ## 2026-04-07 (v17.41.1)
 
 ### fix(finances): Убрано задвоение рекламы WB в P&L
