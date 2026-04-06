@@ -858,16 +858,11 @@ async def get_wb_finances(
         logger.warning("WB COGS calculation failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # MAX-reconciliation: if ad spend from fact_advert_stats_v3 exceeds
-    # the ad portion of deductions from fact_finances, adjust total_deductions.
-    # This happens when WB ad balance is topped up manually.
+    # fact_finances is the SINGLE source of truth for P&L.
+    # total_deductions already includes ВБ Продвижение (promo deductions).
+    # fact_advert_stats_v3 ad_spend is shown as informational KPI ONLY
+    # and is NOT added to expenses to avoid double-counting.
     # ══════════════════════════════════════════════════════
-    deductions_ads_raw_cur = max(0, total_deductions_cur - deductions_cur)
-    deductions_ads_raw_prev = max(0, total_deductions_prev - deductions_prev)
-    ads_adj_cur = max(0, ad_spend_cur - deductions_ads_raw_cur)
-    ads_adj_prev = max(0, ad_spend_prev - deductions_ads_raw_prev)
-    total_deductions_cur += ads_adj_cur
-    total_deductions_prev += ads_adj_prev
 
     operating_cur = logistics_cur + storage_cur + acceptance_cur + total_deductions_cur
     operating_prev = logistics_prev + storage_prev + acceptance_prev + total_deductions_prev
@@ -905,20 +900,21 @@ async def get_wb_finances(
 
     # ── Build breakdown ──
     # Split deductions: ads (ВБ Продвижение) vs other (transit, reviews, etc.)
-    deductions_ads_cur = total_deductions_cur - deductions_cur  # ВБ Продвижение portion
-    deductions_ads_prev = total_deductions_prev - deductions_prev
+    # Both come from fact_finances only — no mixing with fact_advert_stats_v3
+    deductions_ads_cur = max(0, total_deductions_cur - deductions_cur)  # ВБ Продвижение portion
+    deductions_ads_prev = max(0, total_deductions_prev - deductions_prev)
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
         "commission": round(commission_cur, 2),
         "logistics": round(logistics_cur, 2),
         "storage": round(storage_cur, 2),
         "acquiring": round(acquiring_cur, 2),
-        "advertising": round(ad_spend_cur, 2),  # from fact_advert_stats (informational KPI)
+        "advertising": round(ad_spend_cur, 2),  # from fact_advert_stats_v3 (informational only, NOT in profit)
         "refunds": round(returns_cur, 2),
         "penalties": 0,
-        "deductions": round(total_deductions_cur, 2),  # Full total for _bank_transfer calc
-        "deductions_ads": round(deductions_ads_cur, 2),  # ВБ Продвижение from deduction
-        "deductions_other": round(deductions_cur, 2),  # non-ad: transit delivery, reviews, etc.
+        "deductions": round(total_deductions_cur, 2),  # Full total deductions from fact_finances
+        "deductions_ads": round(deductions_ads_cur, 2),  # ВБ Продвижение from fact_finances deductions
+        "deductions_other": round(deductions_cur, 2),  # non-promo: transit, reviews, etc.
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
@@ -942,21 +938,15 @@ async def get_wb_finances(
         pen_d = dd.get("penalties", 0)
         acq_d = dd.get("acquiring", 0)
         acc_d = dd.get("acceptance", 0)
-        ded_d = dd.get("deductions", 0)
         tded_d = dd.get("total_deductions", 0)
-        ads_d = ads_daily.get(ds, 0)
-        # MAX-reconciliation for daily ad spend
-        ded_ads_d = max(0, tded_d - ded_d)  # ads portion from fact_finances
-        ads_adj_d = max(0, ads_d - ded_ads_d)  # extra ads not in finances
-        tded_d += ads_adj_d  # adjust total deductions
+        ads_d = ads_daily.get(ds, 0)  # informational only
         cogs_d = cogs_daily.get(ds, 0)
-        op_d = log_d + stor_d + acc_d + tded_d  # logistics + storage + acceptance + total_deductions
+        # fact_finances total_deductions already includes ВБ Промо — no adjustment needed
+        op_d = log_d + stor_d + acc_d + tded_d
         mp_d = comm_d + op_d
 
-        # Payout = ppvz_for_pay (к перечислению за товар)
         bank_trans_d = pay
-
-        profit_d = rev - mp_d - cogs_d  # ads already in tded_d
+        profit_d = rev - mp_d - cogs_d
 
         daily_raw.append({
             "date": ds,
@@ -1012,16 +1002,12 @@ async def get_wb_finances(
             pay = pt["payout"] # This is the bank transfer
             comm = pt["commission"]
             tded = pt.get("total_deductions", 0)
-            ded_noads = pt.get("deductions", 0)
-            ads = ads_daily.get(ds, 0)
-            # MAX-reconciliation for daily ad spend
-            ded_ads_pt = max(0, tded - ded_noads)
-            ads_adj = max(0, ads - ded_ads_pt)
-            tded += ads_adj
+            ads = ads_daily.get(ds, 0)  # informational only
+            # fact_finances total_deductions already includes ВБ Промо
             oper = pt["logistics"] + pt["storage"] + pt["acceptance"] + tded
             mp_fees = comm + oper
             cogs = cogs_daily.get(ds, 0)
-            prof = rev - mp_fees - cogs  # ads already in tded
+            prof = rev - mp_fees - cogs
 
             daily_final.append({
                 "date": ds,
