@@ -41,6 +41,8 @@ export interface OzonProduct {
   ad_spend_7d: number
   drr: number
   returns_30d: number
+  cancels: number
+  cancel_rate: number
   orders_30d: number
   content_rating: number
   commission_percent: number

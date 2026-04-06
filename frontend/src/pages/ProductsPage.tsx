@@ -103,6 +103,8 @@ function wbToOzon(p: WBProduct): OzonProduct {
     ad_spend_7d: p.ad_spend_7d,
     drr: p.drr,
     returns_30d: 0,
+    cancels: p.cancels ?? 0,
+    cancel_rate: p.cancel_rate ?? 0,
     orders_30d: p.orders_7d,
     content_rating: 0,
     commission_percent: 0,
@@ -550,6 +552,15 @@ export default function ProductsPage() {
                     </span>
                   </div>
                 </th>
+                <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <span>Отмены</span>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Отменённые заказы за период. % отмен = отмены / (заказы + отмены) × 100</span>
+                    </span>
+                  </div>
+                </th>
                 <th className="w-[85px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
                   <div className="flex items-center justify-end gap-1">
                     <button onClick={() => toggleSort('gross_profit')} className={cn('inline-flex items-center gap-1 transition-colors', sort === 'gross_profit' ? 'text-[hsl(var(--primary))]' : 'hover:text-[hsl(var(--foreground))]')}>
@@ -606,6 +617,14 @@ export default function ProductsPage() {
                       <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{t.mp_fees_pct}%</p>
                     </td>
                     <td className="px-2 py-2 text-right">
+                      {(t.cancels ?? 0) > 0 ? (
+                        <>
+                          <p className="text-[13px] font-bold tabular-nums">{fmtNum(t.cancels)} шт</p>
+                          <p className={cn('text-[11px] font-semibold', (t.cancel_rate ?? 0) > 10 ? 'text-red-400' : (t.cancel_rate ?? 0) > 5 ? 'text-amber-400' : 'text-[hsl(var(--muted-foreground)/0.5)]')}>{t.cancel_rate}%</p>
+                        </>
+                      ) : <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>}
+                    </td>
+                    <td className="px-2 py-2 text-right">
                       {t.profit_count > 0 ? (
                         <>
                           <p className={cn('text-[13px] font-bold tabular-nums', t.profit > 0 ? 'text-emerald-400' : 'text-red-400')}>
@@ -625,12 +644,12 @@ export default function ProductsPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-[hsl(var(--border)/0.2)]">
-                    <td colSpan={10} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
+                    <td colSpan={11} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
                   </tr>
                 ))
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-16 text-center">
+                  <td colSpan={11} className="px-4 py-16 text-center">
                     <Package className="mx-auto mb-3 h-10 w-10 text-[hsl(var(--muted-foreground)/0.15)]" />
                     <p className="text-[hsl(var(--muted-foreground))]">Товары не найдены</p>
                     {search && <p className="mt-1 text-sm text-[hsl(var(--muted-foreground)/0.5)]">Попробуйте другой запрос</p>}
@@ -856,6 +875,25 @@ export default function ProductsPage() {
                               </div>
                             </div>
                           </div>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 8b. ОТМЕНЫ ── */}
+                    <td className="px-2 py-2.5 text-right">
+                      {(p.cancels ?? 0) > 0 ? (
+                        <div>
+                          <p className="text-[13px] font-semibold tabular-nums">{fmtNum(p.cancels)} шт</p>
+                          <p className={cn(
+                            'text-[11px] font-semibold',
+                            (p.cancel_rate ?? 0) > 10 ? 'text-red-400'
+                              : (p.cancel_rate ?? 0) > 5 ? 'text-amber-400'
+                              : 'text-[hsl(var(--muted-foreground)/0.5)]',
+                          )}>
+                            {p.cancel_rate}%
+                          </p>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>

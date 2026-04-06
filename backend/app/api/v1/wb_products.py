@@ -88,15 +88,15 @@ async def get_wb_products(
             SELECT
                 nm_id,
                 any(supplier_article)  AS vendor_code,
-                countIf(toDate(date) >= {d_start:Date})  AS orders_cur,
-                sumIf(price_with_disc, toDate(date) >= {d_start:Date})  AS revenue_cur,
-                countIf(toDate(date) < {d_start:Date})   AS orders_prev,
-                sumIf(price_with_disc, toDate(date) < {d_start:Date})   AS revenue_prev
+                countIf(toDate(date) >= {d_start:Date} AND is_cancel = 0)  AS orders_cur,
+                sumIf(price_with_disc, toDate(date) >= {d_start:Date} AND is_cancel = 0)  AS revenue_cur,
+                countIf(toDate(date) < {d_start:Date} AND is_cancel = 0)   AS orders_prev,
+                sumIf(price_with_disc, toDate(date) < {d_start:Date} AND is_cancel = 0)   AS revenue_prev,
+                countIf(toDate(date) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(date) >= {d_prev_start:Date}
               AND toDate(date) <= {d_end:Date}
-              AND is_cancel = 0
             GROUP BY nm_id
         """, parameters={
             "shop_id": shop_id,
@@ -107,12 +107,17 @@ async def get_wb_products(
         orders_map = {}
         for r in orders_result.result_rows:
             nm_id = int(r[0])
+            orders_cur = int(r[2])
+            cancels_cur = int(r[6])
+            total_with_cancels = orders_cur + cancels_cur
             orders_map[nm_id] = {
                 "vendor_code": str(r[1] or ""),
-                "orders_7d": int(r[2]),
+                "orders_7d": orders_cur,
                 "revenue_7d": float(r[3]),
                 "orders_prev": int(r[4]),
                 "revenue_prev": float(r[5]),
+                "cancels": cancels_cur,
+                "cancel_rate": round(cancels_cur / total_with_cancels * 100, 1) if total_with_cancels > 0 else 0.0,
             }
     except Exception as e:
         logger.warning("CH orders query failed: %s", e)
@@ -547,6 +552,9 @@ async def get_wb_products(
             # Stocks
             "stock_fbo": stocks.get("stock_fbo", 0),
             "stock_fbs": stocks.get("stock_fbs", 0),
+            # Cancellations
+            "cancels": orders.get("cancels", 0),
+            "cancel_rate": orders.get("cancel_rate", 0.0),
             # WB Marketplace fees (logistics+storage+deductions+acceptance+fines)
             "mp_fees": mp_fees,
             "mp_fees_percent": mp_fees_percent,
@@ -634,6 +642,7 @@ async def get_wb_products(
     t_total_cogs = 0.0
     t_profit = 0.0
     t_profit_count = 0
+    t_cancels = 0
     for p in products:
         t_stocks += p["stock_fbo"] + p["stock_fbs"]
         t_orders += p["orders_7d"]
@@ -647,6 +656,7 @@ async def get_wb_products(
         t_mp_fees_deductions += p.get("mp_fees_deductions", 0)
         t_mp_fees_acceptance += p.get("mp_fees_acceptance", 0)
         t_mp_fees_fines += p.get("mp_fees_fines", 0)
+        t_cancels += p.get("cancels", 0)
         # COGS для итого-строки
         if p["cost_price"] > 0 and p["orders_7d"] > 0:
             t_total_cogs += (p["cost_price"] + p.get("packaging_cost", 0)) * p["orders_7d"]
@@ -666,6 +676,8 @@ async def get_wb_products(
         "ad_spend": round(t_ad_spend, 2),
         "drr": round(t_ad_spend / t_sales * 100, 1) if t_sales > 0 else 0,
         "returns_pct": 0,
+        "cancels": t_cancels,
+        "cancel_rate": round(t_cancels / (t_orders + t_cancels) * 100, 1) if (t_orders + t_cancels) > 0 else 0,
         "mp_fees": round(t_mp_fees, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
         "mp_fees_storage": round(t_mp_fees_storage, 2),

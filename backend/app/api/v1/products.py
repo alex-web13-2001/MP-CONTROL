@@ -171,6 +171,8 @@ async def get_ozon_products(
             "ad_spend_7d": 0.0,
             "drr": 0.0,
             "returns_30d": 0,
+            "cancels": 0,
+            "cancel_rate": 0.0,
             "content_rating": 0.0,
             "commission_percent": 0.0,
             "fbo_logistics": 0.0,
@@ -244,6 +246,36 @@ async def get_ozon_products(
                     products_map[oid]["revenue_delta"] = 100.0
     except Exception as e:
         logger.warning("CH orders query failed: %s", e)
+
+    # ────────────────────────────────────────────────────
+    # 2b. Cancellations (period) from ClickHouse
+    # ────────────────────────────────────────────────────
+    try:
+        cancels_result = ch.query("""
+            SELECT offer_id,
+                   sumIf(quantity, order_date >= {d_start:Date} AND order_date <= {d_end:Date}) AS cancels_period
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d_start:Date}
+              AND order_date <= {d_end:Date}
+              AND status IN ('cancelled', 'canceled')
+            GROUP BY offer_id
+        """, parameters={
+            "shop_id": shop_id,
+            "d_start": d_start,
+            "d_end": d_end,
+        })
+        for r in cancels_result.result_rows:
+            oid = r[0]
+            if oid in products_map:
+                cancels_val = int(r[1] or 0)
+                products_map[oid]["cancels"] = cancels_val
+                orders_val = products_map[oid]["orders_7d"]
+                total_with_cancels = orders_val + cancels_val
+                if total_with_cancels > 0:
+                    products_map[oid]["cancel_rate"] = round(cancels_val / total_with_cancels * 100, 1)
+    except Exception as e:
+        logger.warning("CH cancels query failed: %s", e)
 
     # ────────────────────────────────────────────────────
     # 3. Ads 7d from ClickHouse (keyed by SKU, not offer_id)
@@ -585,6 +617,7 @@ async def get_ozon_products(
     t_profit_count = 0
     t_returns = 0
     t_orders_30d = 0
+    t_cancels = 0
     for p in products_list:
         t_stocks += p["stocks_fbo"] + p["stocks_fbs"]
         t_orders += p["orders_7d"]
@@ -596,6 +629,7 @@ async def get_ozon_products(
         t_mp_fees_logistics += p.get("mp_fees_logistics", 0)
         t_returns += p["returns_30d"]
         t_orders_30d += p.get("orders_30d", 0)
+        t_cancels += p.get("cancels", 0)
         # COGS для итого-строки
         if p["cost_price"] > 0 and p["orders_7d"] > 0:
             t_total_cogs += (p["cost_price"] + p.get("packaging_cost", 0)) * p["orders_7d"]
@@ -614,6 +648,8 @@ async def get_ozon_products(
         "ad_spend": round(t_ad_spend, 2),
         "drr": round(t_ad_spend / t_revenue * 100, 1) if t_revenue > 0 else 0,
         "returns_pct": round(t_returns / t_orders_30d * 100, 1) if t_orders_30d > 0 else 0,
+        "cancels": t_cancels,
+        "cancel_rate": round(t_cancels / (t_orders + t_cancels) * 100, 1) if (t_orders + t_cancels) > 0 else 0,
         "mp_fees": round(t_mp_fees, 2),
         "mp_fees_commission": round(t_mp_fees_commission, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),

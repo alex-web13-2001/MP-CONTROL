@@ -36,6 +36,9 @@ export interface WBProduct {
   mp_fees_fines: number
   payout: number
   sales_amount: number
+  // Cancellations
+  cancels: number
+  cancel_rate: number
   // Profit
   gross_profit: number | null
   margin: number | null

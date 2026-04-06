@@ -498,8 +498,10 @@ export default function ProductsPricesPage() {
 
   // Image URL helper
   const getImageUrl = (row: PriceRow) => {
+    // Prefer API image_url (from dim_products), fall back to CDN
+    if (row.image_url) return row.image_url
     if (row.nm_id) return wbImageUrl(row.nm_id)
-    return row.image_url
+    return ''
   }
 
   // ── Not a valid shop ──
@@ -588,12 +590,12 @@ export default function ProductsPricesPage() {
       </div>
 
       {/* ── Table ────────────────────────────────────── */}
-      <div className="rounded-2xl border border-[hsl(var(--border))] overflow-hidden bg-[hsl(var(--card))]">
+      <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-[hsl(var(--muted)/0.3)] text-[hsl(var(--muted-foreground)/0.7)] border-b border-[hsl(var(--border))]">
-              <tr>
-                <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold w-[260px]">
+          <table className="w-full min-w-[900px]" style={{ borderCollapse: 'collapse' }}>
+            <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+              <tr className="bg-[hsl(var(--card))]">
+                <th className="pl-4 pr-2 py-3 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] w-[300px]">
                   Товар
                 </th>
                 <SortTh
@@ -645,7 +647,7 @@ export default function ProductsPricesPage() {
                 )}
               </tr>
             </thead>
-            <tbody className="divide-y divide-[hsl(var(--border)/0.5)]">
+            <tbody>
               {loading ? (
                 <tr>
                   <td colSpan={12} className="py-20 text-center">
@@ -682,35 +684,44 @@ export default function ProductsPricesPage() {
                   <tr
                     key={row.id}
                     className={cn(
-                      'hover:bg-[hsl(var(--muted)/0.15)] transition-colors group',
+                      'border-b border-[hsl(var(--border)/0.15)] hover:bg-white/[0.025] group transition-colors',
                       row.is_bad_turnover && 'bg-amber-500/[0.03]',
                     )}
                   >
-                    {/* Product cell */}
-                    <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-2.5">
-                        <div
-                          className="relative h-10 w-[30px] shrink-0 cursor-zoom-in"
-                          onMouseEnter={(e) => setHoverImg({ url: getImageUrl(row), x: e.clientX, y: e.clientY })}
-                          onMouseLeave={() => setHoverImg(null)}
-                        >
-                          <img
-                            src={getImageUrl(row)}
-                            alt=""
-                            className="h-10 w-[30px] rounded-md object-cover bg-[hsl(var(--muted)/0.3)]"
-                            loading="lazy"
-                            onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }}
-                          />
-                        </div>
+                    {/* Product cell — стиль как в ProductsPage */}
+                    <td className="pl-4 pr-2 py-3.5">
+                      <div className="flex items-center gap-3">
+                        {getImageUrl(row) ? (
+                          <div
+                            className="relative shrink-0 cursor-pointer"
+                            onMouseEnter={(e) => {
+                              const r = e.currentTarget.getBoundingClientRect()
+                              setHoverImg({ url: getImageUrl(row), x: r.right + 12, y: r.top - 40 })
+                            }}
+                            onMouseLeave={() => setHoverImg(null)}
+                          >
+                            <img
+                              src={getImageUrl(row)}
+                              alt=""
+                              className="h-[64px] w-[48px] rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
+                              loading="lazy"
+                              onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }}
+                            />
+                          </div>
+                        ) : (
+                          <div className="flex h-[64px] w-[48px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
+                            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.2)]" />
+                          </div>
+                        )}
                         <div className="min-w-0">
-                          <p className="font-medium leading-tight truncate max-w-[180px]" title={row.name}>
+                          <p className="text-[13px] font-medium leading-snug line-clamp-2" title={row.name}>
                             {row.name || row.vendor_code}
                           </p>
-                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] font-mono mt-0.5">
+                          <p className="mt-0.5 text-[12px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide">
                             {row.vendor_code}
                           </p>
                           {row.is_bad_turnover && (
-                            <span className="inline-flex items-center gap-0.5 mt-0.5 text-[9px] font-bold text-amber-400">
+                            <span className="inline-flex items-center gap-0.5 mt-1 text-[9px] font-bold text-amber-400">
                               <AlertTriangle className="h-2.5 w-2.5" />
                               Низкая оборач.
                             </span>
@@ -738,8 +749,8 @@ export default function ProductsPricesPage() {
                     </td>
 
                     {/* Price after discount */}
-                    <td className="px-3 py-2.5">
-                      <span className="font-bold text-[hsl(var(--foreground))]">
+                    <td className="px-3 py-3.5">
+                      <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">
                         {fmtMoney(row.price_after_discount)}
                       </span>
                     </td>
@@ -845,16 +856,16 @@ export default function ProductsPricesPage() {
         )}
       </div>
 
-      {/* Image hover preview */}
+      {/* Image hover preview — стиль как в ProductsPage */}
       {hoverImg && (
         <div
-          className="pointer-events-none fixed z-50 rounded-xl overflow-hidden shadow-2xl border border-[hsl(var(--border))]"
-          style={{ left: hoverImg.x + 16, top: hoverImg.y - 80, width: 120, height: 160 }}
+          className="pointer-events-none fixed z-50 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5 shadow-2xl"
+          style={{ left: hoverImg.x, top: hoverImg.y }}
         >
           <img
             src={hoverImg.url}
             alt=""
-            className="w-full h-full object-cover"
+            className="h-[200px] w-[150px] rounded-lg object-cover"
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
         </div>
