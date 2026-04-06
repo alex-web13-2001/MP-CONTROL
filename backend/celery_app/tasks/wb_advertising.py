@@ -44,17 +44,6 @@ def check_positions(self, shop_id: int, sku: str, keywords: list[str]):
         self.retry(exc=exc, countdown=30)
 
 
-@celery_app.task(bind=True)
-def check_all_positions(self):
-    """
-    Periodic task to check positions for all tracked products.
-    
-    Runs every 5 minutes via Celery Beat.
-    """
-    # TODO: Get all products with position tracking enabled
-    # Spawn check_positions tasks
-    return {"status": "dispatched", "products": 0}
-
 
 # ===================
 # HEAVY QUEUE TASKS
