@@ -235,7 +235,7 @@ async def create_shop(
 
     # Trigger background data loading
     try:
-        from celery_app.tasks.tasks import load_historical_data
+        from celery_app.tasks.onboarding import load_historical_data
         load_historical_data.delay(shop_id=shop.id)
         logger.info("Triggered load_historical_data for shop %s", shop.id)
     except Exception as e:

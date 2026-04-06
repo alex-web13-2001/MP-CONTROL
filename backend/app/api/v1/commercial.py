@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from celery.result import AsyncResult
 from typing import Optional
 
-from celery_app.tasks.tasks import (
+from celery_app.tasks.wb_sync import (
     sync_commercial_data,
     sync_warehouses,
     sync_product_content,

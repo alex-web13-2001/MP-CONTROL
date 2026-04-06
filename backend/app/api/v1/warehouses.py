@@ -3034,7 +3034,7 @@ async def trigger_ozon_placement_sync(
 
     Limits: 5 reports per day per seller, max 31-day period.
     """
-    from celery_app.tasks.tasks import sync_ozon_placement_cost
+    from celery_app.tasks.ozon_sync import sync_ozon_placement_cost
     from app.core.encryption import decrypt_api_key
 
     shop = await db.get(Shop, shop_id)
@@ -3082,7 +3082,7 @@ async def trigger_ozon_placement_backfill(
 
     Can take up to 10-15 minutes depending on Ozon API response time.
     """
-    from celery_app.tasks.tasks import backfill_ozon_placement_cost
+    from celery_app.tasks.ozon_sync import backfill_ozon_placement_cost
     from app.core.encryption import decrypt_api_key
 
     shop = await db.get(Shop, shop_id)

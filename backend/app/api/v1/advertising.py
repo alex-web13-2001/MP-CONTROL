@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from celery.result import AsyncResult
 from typing import Optional
 
-from celery_app.tasks.tasks import sync_wb_advert_history
+from celery_app.tasks.wb_advertising import sync_wb_advert_history
 
 router = APIRouter(prefix="/advertising", tags=["Advertising"])
 

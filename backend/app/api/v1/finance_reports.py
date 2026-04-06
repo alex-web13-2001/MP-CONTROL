@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from celery.result import AsyncResult
 
-from celery_app.tasks.tasks import sync_wb_finance_history
+from celery_app.tasks.wb_sync import sync_wb_finance_history
 
 
 # ... (skipping unchanged parts)
