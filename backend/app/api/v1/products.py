@@ -735,14 +735,19 @@ async def upload_cost_excel(
 
     updated = 0
     errors = []
+    total_rows = 0
+    skipped_empty = 0
 
     for row_idx, row in enumerate(ws.iter_rows(min_col=1, max_col=2, values_only=True), start=1):
+        total_rows += 1
         offer_id_raw, cost_raw = row
         if offer_id_raw is None or cost_raw is None:
+            skipped_empty += 1
             continue
 
         offer_id = str(offer_id_raw).strip()
         if not offer_id:
+            skipped_empty += 1
             continue
 
         try:
@@ -767,6 +772,10 @@ async def upload_cost_excel(
         updated += 1
 
     await db.commit()
+    logger.info(
+        "[cost-bulk] shop=%s: total_rows=%d updated=%d skipped_empty=%d errors=%d",
+        shop_id, total_rows, updated, skipped_empty, len(errors),
+    )
 
     # Check for cost > price warnings
     warnings = []
