@@ -19,6 +19,7 @@ import {
   Upload,
   Download,
   Info,
+  Megaphone,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
@@ -62,22 +63,24 @@ function wbImageUrl(nmId: number): string {
    ═══════════════════════════════════════════════════════════ */
 
 function SortTh({
-  label, field, sort, order, onSort, className, info,
+  label, field, sort, order, onSort, className, info, align,
 }: {
   label: string; field: string; sort: string; order: string
-  onSort: (f: string) => void; className?: string; info?: string
+  onSort: (f: string) => void; className?: string; info?: string; align?: 'left' | 'right' | 'center'
 }) {
   const active = sort === field
+  const alignCls = align === 'right' ? 'justify-end text-right' : align === 'center' ? 'justify-center text-center' : 'justify-start text-left'
   return (
     <th
       className={cn(
-        'px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold cursor-pointer select-none whitespace-nowrap hover:text-[hsl(var(--foreground))] transition-colors',
+        'px-1.5 py-2.5 text-[10px] uppercase tracking-wider font-semibold cursor-pointer select-none whitespace-nowrap hover:text-[hsl(var(--foreground))] transition-colors',
+        align === 'right' && 'text-right',
         className,
       )}
       onClick={() => onSort(field)}
       title={info}
     >
-      <span className="flex items-center gap-1">
+      <span className={cn('inline-flex items-center gap-1', alignCls)}>
         {label}
         {info && <Info className="h-2.5 w-2.5 text-[hsl(var(--muted-foreground)/0.3)]" />}
         {active && (
@@ -223,7 +226,7 @@ interface PriceRow {
   price_before_discount: number  // Цена до скидки
   discount_pct: number           // Скидка %
   price_after_discount: number   // Цена со скидкой
-  club_price: number | null      // WB Клуб цена
+  club_price: number | null      // WB Клуб цена (null if club not active)
   club_discount: number | null   // WB Клуб скидка %
   min_price: number | null       // Ozon min_price
   price_index: number | null     // Ozon price_index_value
@@ -232,7 +235,12 @@ interface PriceRow {
   cost_price: number
   packaging_cost: number
   // Profit
-  profit_per_unit: number | null
+  profit_per_unit: number | null     // без рекламы
+  profit_source?: 'finance' | 'estimated' | null
+  // Ads
+  ad_spend_30d: number
+  drr: number | null
+  profit_with_ads: number | null     // с рекламой
   // Stocks
   stock_fbo: number
   stock_fbs: number
@@ -258,6 +266,10 @@ function normalizeWB(p: WBPriceProduct): PriceRow {
     cost_price: p.cost_price,
     packaging_cost: p.packaging_cost,
     profit_per_unit: p.profit_per_unit,
+    profit_source: p.profit_source || null,
+    ad_spend_30d: p.ad_spend_30d ?? 0,
+    drr: p.drr ?? null,
+    profit_with_ads: p.profit_with_ads ?? null,
     stock_fbo: p.stock_fbo,
     stock_fbs: p.stock_fbs,
     is_bad_turnover: p.is_bad_turnover,
@@ -293,6 +305,9 @@ function normalizeOzon(p: OzonProduct): PriceRow {
     cost_price: p.cost_price,
     packaging_cost: p.packaging_cost,
     profit_per_unit: profit,
+    ad_spend_30d: 0,
+    drr: null,
+    profit_with_ads: null,
     stock_fbo: p.stocks_fbo,
     stock_fbs: p.stocks_fbs,
     is_bad_turnover: false,
@@ -332,7 +347,7 @@ export default function ProductsPricesPage() {
   const [costMissing, setCostMissing] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [page, setPage] = useState(1)
+
   const [hasMore, setHasMore] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const perPage = 50
@@ -346,6 +361,11 @@ export default function ProductsPricesPage() {
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadingMoreRef = useRef(false)
   const pageRef = useRef(1)
+
+  // Detect if any row has WB Club active (to show/hide column)
+  const hasClubActive = isWB && rows.some(r => r.club_price !== null && r.club_discount !== null && r.club_discount > 0)
+  // Detect if any row has ads
+  const hasAnyAds = rows.some(r => r.ad_spend_30d > 0)
 
   // ── Fetch data ──
   const fetchData = useCallback(async () => {
@@ -372,7 +392,6 @@ export default function ProductsPricesPage() {
         setHasMore(data.products.length < data.total)
       }
       pageRef.current = 1
-      setPage(1)
     } catch (e: any) {
       console.error('Failed to fetch prices', e)
       const detail = e?.response?.data?.detail || ''
@@ -421,7 +440,6 @@ export default function ProductsPricesPage() {
         setHasMore(data.products.length === perPage)
       }
       pageRef.current = nextPage
-      setPage(nextPage)
     } catch (e) {
       console.error('loadMore error', e)
     } finally {
@@ -498,7 +516,6 @@ export default function ProductsPricesPage() {
 
   // Image URL helper
   const getImageUrl = (row: PriceRow) => {
-    // Prefer API image_url (from dim_products), fall back to CDN
     if (row.image_url) return row.image_url
     if (row.nm_id) return wbImageUrl(row.nm_id)
     return ''
@@ -515,6 +532,8 @@ export default function ProductsPricesPage() {
       </div>
     )
   }
+
+  const colSpan = 8 + (hasClubActive ? 1 : 0) + (isOzon ? 2 : 0) + (hasAnyAds && isWB ? 2 : 0)
 
   return (
     <div className="space-y-4">
@@ -591,30 +610,32 @@ export default function ProductsPricesPage() {
 
       {/* ── Table ────────────────────────────────────── */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px]" style={{ borderCollapse: 'collapse' }}>
-            <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+        <div className="overflow-auto max-h-[calc(100vh-220px)]">
+          <table className="w-full min-w-[860px]" style={{ borderCollapse: 'collapse', tableLayout: 'auto' }}>
+            <thead className="sticky top-0 z-30 bg-[hsl(var(--card))]" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
               <tr className="bg-[hsl(var(--card))]">
-                <th className="pl-4 pr-2 py-3 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))] w-[300px]">
+                <th className="pl-3 pr-1 py-2.5 text-left text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" style={{ width: '35%' }}>
                   Товар
                 </th>
                 <SortTh
-                  label="Цена до скидки"
+                  label="До скидки"
                   field="price"
                   sort={sort} order={order} onSort={toggleSort}
+                  align="right"
                   info="Базовая цена до применения скидок"
                 />
-                <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold">
+                <th className="px-1 py-2.5 text-center text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
                   Скидка
                 </th>
                 <SortTh
-                  label="Цена со скидкой"
+                  label="Со скидкой"
                   field="discounted_price"
                   sort={sort} order={order} onSort={toggleSort}
+                  align="right"
                   info="Фактическая цена для покупателя"
                 />
-                {isWB && (
-                  <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold">
+                {hasClubActive && (
+                  <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
                     WB Клуб
                   </th>
                 )}
@@ -623,6 +644,7 @@ export default function ProductsPricesPage() {
                     label="Мин. цена"
                     field="min_price"
                     sort={sort} order={order} onSort={toggleSort}
+                    align="right"
                     info="Минимальная допустимая цена Ozon"
                   />
                 )}
@@ -630,18 +652,25 @@ export default function ProductsPricesPage() {
                   label="С/с"
                   field="cost_price"
                   sort={sort} order={order} onSort={toggleSort}
+                  align="right"
                   info="Себестоимость + упаковка (редактируемая)"
                 />
+                {hasAnyAds && isWB && (
+                  <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" title="Доля рекламных расходов (30 дней)">
+                    ДРР
+                  </th>
+                )}
                 <SortTh
                   label="Прибыль/шт"
                   field="profit_per_unit"
                   sort={sort} order={order} onSort={toggleSort}
-                  info="Цена − С/с − расч. комиссии МП"
+                  align="right"
+                  info="Прибыль на единицу: без рекламы / с рекламой"
                 />
-                <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold">FBO</th>
-                <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold">FBS</th>
+                <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBO</th>
+                <th className="pl-1.5 pr-3 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBS</th>
                 {isOzon && (
-                  <th className="px-3 py-3 text-left text-[10px] uppercase tracking-wider font-semibold" title="Price Index Ozon">
+                  <th className="px-2 py-2.5 text-center text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" title="Price Index Ozon">
                     PI
                   </th>
                 )}
@@ -650,7 +679,7 @@ export default function ProductsPricesPage() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={12} className="py-20 text-center">
+                  <td colSpan={colSpan} className="py-20 text-center">
                     <Loader2 className="h-6 w-6 animate-spin mx-auto text-[hsl(var(--primary)/0.6)]" />
                     <p className="mt-2 text-sm text-[hsl(var(--muted-foreground)/0.5)]">
                       {isWB ? 'Загрузка цен из WB API...' : 'Загрузка цен...'}
@@ -659,7 +688,7 @@ export default function ProductsPricesPage() {
                 </tr>
               ) : error ? (
                 <tr>
-                  <td colSpan={12} className="py-20 text-center">
+                  <td colSpan={colSpan} className="py-20 text-center">
                     <AlertTriangle className="h-10 w-10 mx-auto mb-3 text-amber-400/60" />
                     <p className="text-sm font-medium text-[hsl(var(--foreground)/0.8)] mb-1">
                       {error}
@@ -674,7 +703,7 @@ export default function ProductsPricesPage() {
                 </tr>
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="py-20 text-center text-[hsl(var(--muted-foreground)/0.5)]">
+                  <td colSpan={colSpan} className="py-20 text-center text-[hsl(var(--muted-foreground)/0.5)]">
                     <Package className="h-8 w-8 mx-auto mb-2 opacity-30" />
                     Нет данных
                   </td>
@@ -688,9 +717,9 @@ export default function ProductsPricesPage() {
                       row.is_bad_turnover && 'bg-amber-500/[0.03]',
                     )}
                   >
-                    {/* Product cell — стиль как в ProductsPage */}
-                    <td className="pl-4 pr-2 py-3.5">
-                      <div className="flex items-center gap-3">
+                    {/* ── Товар (compact) ── */}
+                    <td className="pl-3 pr-1 py-1.5" style={{ maxWidth: '260px' }}>
+                      <div className="flex items-center gap-2">
                         {getImageUrl(row) ? (
                           <div
                             className="relative shrink-0 cursor-pointer"
@@ -703,25 +732,25 @@ export default function ProductsPricesPage() {
                             <img
                               src={getImageUrl(row)}
                               alt=""
-                              className="h-[64px] w-[48px] rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
+                              className="h-10 w-10 rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
                               loading="lazy"
                               onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }}
                             />
                           </div>
                         ) : (
-                          <div className="flex h-[64px] w-[48px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
-                            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.2)]" />
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
+                            <Package className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.2)]" />
                           </div>
                         )}
                         <div className="min-w-0">
-                          <p className="text-[13px] font-medium leading-snug line-clamp-2" title={row.name}>
+                          <p className="text-[12px] font-medium leading-tight line-clamp-2" title={row.name}>
                             {row.name || row.vendor_code}
                           </p>
-                          <p className="mt-0.5 text-[12px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide">
+                          <p className="text-[10px] text-[hsl(var(--foreground)/0.55)] font-mono">
                             {row.vendor_code}
                           </p>
                           {row.is_bad_turnover && (
-                            <span className="inline-flex items-center gap-0.5 mt-1 text-[9px] font-bold text-amber-400">
+                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-400">
                               <AlertTriangle className="h-2.5 w-2.5" />
                               Низкая оборач.
                             </span>
@@ -730,15 +759,15 @@ export default function ProductsPricesPage() {
                       </div>
                     </td>
 
-                    {/* Price before discount */}
-                    <td className="px-3 py-2.5">
-                      <span className="font-medium text-[hsl(var(--muted-foreground)/0.5)] line-through decoration-[hsl(var(--muted-foreground)/0.3)]">
+                    {/* ── Цена до скидки ── */}
+                    <td className="pl-1 pr-0.5 py-1.5 text-right whitespace-nowrap">
+                      <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] line-through decoration-[hsl(var(--muted-foreground)/0.35)]">
                         {fmtMoney(row.price_before_discount)}
                       </span>
                     </td>
 
-                    {/* Discount */}
-                    <td className="px-3 py-2.5">
+                    {/* ── Скидка ── */}
+                    <td className="px-0.5 py-1.5 text-center">
                       {row.discount_pct > 0 ? (
                         <span className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold bg-red-500/12 text-red-400 border border-red-500/15">
                           −{row.discount_pct}%
@@ -748,26 +777,24 @@ export default function ProductsPricesPage() {
                       )}
                     </td>
 
-                    {/* Price after discount */}
-                    <td className="px-3 py-3.5">
+                    {/* ── Цена со скидкой ── */}
+                    <td className="pl-0.5 pr-2 py-1.5 text-right whitespace-nowrap">
                       <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">
                         {fmtMoney(row.price_after_discount)}
                       </span>
                     </td>
 
-                    {/* WB Club price */}
-                    {isWB && (
-                      <td className="px-3 py-2.5">
-                        {row.club_price ? (
-                          <div className="flex flex-col gap-0.5">
-                            <span className="font-medium text-violet-400 text-[13px]">
+                    {/* ── WB Club ── */}
+                    {hasClubActive && (
+                      <td className="px-2 py-1.5 text-right">
+                        {row.club_price && row.club_discount && row.club_discount > 0 ? (
+                          <div className="flex flex-col items-end gap-0">
+                            <span className="text-[13px] font-medium text-violet-400">
                               {fmtMoney(row.club_price)}
                             </span>
-                            {row.club_discount && (
-                              <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">
-                                −{row.club_discount}%
-                              </span>
-                            )}
+                            <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)]">
+                              −{row.club_discount}%
+                            </span>
                           </div>
                         ) : (
                           <span className="text-[hsl(var(--muted-foreground)/0.3)]">—</span>
@@ -775,11 +802,11 @@ export default function ProductsPricesPage() {
                       </td>
                     )}
 
-                    {/* Ozon min price */}
+                    {/* ── Ozon min price ── */}
                     {isOzon && (
-                      <td className="px-3 py-2.5">
+                      <td className="px-2 py-1.5 text-right">
                         {row.min_price ? (
-                          <span className="font-medium text-[hsl(var(--foreground)/0.7)] text-[13px]">
+                          <span className="text-[13px] font-medium text-[hsl(var(--foreground)/0.7)]">
                             {fmtMoney(row.min_price)}
                           </span>
                         ) : (
@@ -788,51 +815,95 @@ export default function ProductsPricesPage() {
                       </td>
                     )}
 
-                    {/* Cost price */}
-                    <td className="px-3 py-2.5">
+                    {/* ── С/с ── */}
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
                       <CostEditor
                         costPrice={row.cost_price}
                         onSave={(cost) => handleCostSave(row, cost)}
                       />
                     </td>
 
-                    {/* Profit per unit */}
-                    <td className="px-3 py-2.5">
+                    {/* ── ДРР (30д) ── */}
+                    {hasAnyAds && isWB && (
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                        {row.drr !== null ? (
+                          <span className={cn(
+                            'text-[14px] font-bold tabular-nums',
+                            row.drr > 30 ? 'text-red-400' : row.drr > 15 ? 'text-amber-400' : 'text-emerald-400'
+                          )}>
+                            {row.drr}%
+                          </span>
+                        ) : (
+                          <span className="text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                        )}
+                      </td>
+                    )}
+
+                    {/* ── Прибыль/шт (с рекламой / без) ── */}
+                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
                       {row.profit_per_unit !== null ? (
-                        <span className={cn(
-                          'font-semibold',
-                          row.profit_per_unit < 0 ? 'text-red-400' : row.profit_per_unit < 50 ? 'text-amber-400' : 'text-emerald-400'
-                        )}>
-                          {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)}
-                        </span>
+                        <div className="flex flex-col items-end gap-0.5">
+                          {/* Прибыль с рекламой (основная) */}
+                          {row.profit_with_ads !== null ? (
+                            <>
+                              <div className="flex items-center gap-1">
+                                <Megaphone className="h-3 w-3 text-violet-400/70" />
+                                <span className={cn(
+                                  'text-[15px] font-bold tabular-nums',
+                                  row.profit_with_ads < 0 ? 'text-red-400' : row.profit_with_ads < 50 ? 'text-amber-400' : 'text-emerald-400'
+                                )}>
+                                  {row.profit_with_ads > 0 ? '+' : ''}{fmtMoney(row.profit_with_ads)}
+                                </span>
+                              </div>
+                              <span className="text-[13px] tabular-nums text-[hsl(var(--foreground)/0.6)]">
+                                б/р {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)} ₽
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className={cn(
+                                'text-[15px] font-bold tabular-nums',
+                                row.profit_per_unit < 0 ? 'text-red-400' : row.profit_per_unit < 50 ? 'text-amber-400' : 'text-emerald-400'
+                              )}>
+                                {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)}
+                              </span>
+                              {row.profit_source === 'finance' && (
+                                <span className="text-[10px] text-[hsl(var(--foreground)/0.4)]">без рекл.</span>
+                              )}
+                              {row.profit_source === 'estimated' && (
+                                <span className="text-[10px] text-[hsl(var(--foreground)/0.4)]">≈ оценка</span>
+                              )}
+                            </>
+                          )}
+                        </div>
                       ) : (
-                        <span className="text-[hsl(var(--muted-foreground)/0.3)]">—</span>
+                        <span className="text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
                     </td>
 
-                    {/* Stock FBO */}
-                    <td className="px-3 py-2.5">
+                    {/* ── FBO ── */}
+                    <td className="px-1.5 py-1.5 text-right">
                       <span className={cn(
-                        'font-medium',
+                        'text-[13px] font-semibold tabular-nums',
                         row.stock_fbo === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground)/0.8)]'
                       )}>
                         {fmtNum(row.stock_fbo)}
                       </span>
                     </td>
 
-                    {/* Stock FBS */}
-                    <td className="px-3 py-2.5">
+                    {/* ── FBS ── */}
+                    <td className="pl-1.5 pr-3 py-1.5 text-right">
                       <span className={cn(
-                        'font-medium',
-                        row.stock_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.4)]' : 'text-[hsl(var(--foreground)/0.8)]'
+                        'text-[13px] font-semibold tabular-nums',
+                        row.stock_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.3)]' : 'text-[hsl(var(--foreground)/0.8)]'
                       )}>
                         {fmtNum(row.stock_fbs)}
                       </span>
                     </td>
 
-                    {/* Ozon Price Index */}
+                    {/* ── Ozon Price Index ── */}
                     {isOzon && (
-                      <td className="px-3 py-2.5">
+                      <td className="px-2 py-2.5 text-center">
                         {row.price_index ? (
                           <PriceIndexBadge value={row.price_index} color={row.price_index_color} />
                         ) : (
@@ -856,7 +927,7 @@ export default function ProductsPricesPage() {
         )}
       </div>
 
-      {/* Image hover preview — стиль как в ProductsPage */}
+      {/* Image hover preview */}
       {hoverImg && (
         <div
           className="pointer-events-none fixed z-50 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-1.5 shadow-2xl"
