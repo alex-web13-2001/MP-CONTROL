@@ -704,18 +704,16 @@ async def get_wb_products(
         "returns_pct": 0,
         "cancels": t_cancels,
         "cancel_rate": round(t_cancels / (t_orders + t_cancels) * 100, 1) if (t_orders + t_cancels) > 0 else 0,
-        # mp_fees includes unlinked_ded (отзывы за баллы, прочие общие удержания)
-        "mp_fees": round(t_mp_fees + unlinked_ded, 2),
+        # Только расходы, привязанные к товарам (без общих удержаний)
+        "mp_fees": round(t_mp_fees, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
         "mp_fees_storage": round(t_mp_fees_storage, 2),
-        "mp_fees_deductions": round(t_mp_fees_deductions + unlinked_ded, 2),
+        "mp_fees_deductions": round(t_mp_fees_deductions, 2),
         "mp_fees_acceptance": round(t_mp_fees_acceptance, 2),
         "mp_fees_fines": round(t_mp_fees_fines, 2),
-        "unlinked_deductions": round(unlinked_ded, 2),
-        "mp_fees_pct": round((t_mp_fees + unlinked_ded) / t_revenue * 100, 1) if t_revenue > 0 else 0,
-        # profit includes unlinked_ded impact
-        "profit": round(t_profit - unlinked_ded, 2),
-        "profit_pct": round((t_profit - unlinked_ded) / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,
+        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        "profit": round(t_profit, 2),
+        "profit_pct": round(t_profit / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,
         "profit_count": t_profit_count,
     }
 
