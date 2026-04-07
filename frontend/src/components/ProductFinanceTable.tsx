@@ -270,7 +270,7 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
           </thead>
 
           <tbody>
-            {sorted.map((product, idx) => {
+            {sorted.map((product) => {
               const rev = product.current.revenue || 0
               const profit = product.current.profit || 0
               const margin = rev > 0 ? (profit / rev * 100) : 0
