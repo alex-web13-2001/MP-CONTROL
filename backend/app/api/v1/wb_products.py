@@ -288,18 +288,15 @@ async def get_wb_products(
     except Exception as e:
         logger.warning("CH deductions by nm_id query failed: %s", e)
 
-    # ── 4c. Proportional distribution: storage + unlinked deductions ──
-    # Storage и непривязанные удержания распределяем пропорционально revenue
-    # (как в финотчёте finances.py:1486-1508)
-    undist_storage = sum(f.get("storage", 0) for f in fees_map.values()
-                         if f.get("fin_revenue", 0) <= 0)  # storage от записей без revenue
-    # Actually, storage from __unknown__ (external_id=0) — берём отдельно
+    # ── 4c. Proportional distribution: ONLY storage (NOT deductions) ──
+    # Storage: WB не привязывает к конкретному товару → распределяем пропорционально
+    # Unlinked deductions (отзывы за баллы, прочие): НЕ распределяем по товарам!
+    #   Они идут только в общий итог P&L, но НЕ в расходы конкретных товаров.
     unknown_fees = fees_map.pop(0, None)
-    if unknown_fees:
-        undist_storage = unknown_fees.get("storage", 0)
+    undist_storage = unknown_fees.get("storage", 0) if unknown_fees else 0
 
-    total_undist = undist_storage + unlinked_ded
-    if total_undist > 0:
+    # Storage → пропорциональное распределение
+    if undist_storage > 0:
         total_rev = sum(f["fin_revenue"] for f in fees_map.values() if f.get("fin_revenue", 0) > 0)
         if total_rev > 0:
             for nm, f in fees_map.items():
@@ -307,7 +304,6 @@ async def get_wb_products(
                 if rev > 0:
                     share = rev / total_rev
                     f["storage"] += round(undist_storage * share, 2)
-                    f["deductions"] += round(unlinked_ded * share, 2)
 
     # ── 4d. Prev period revenue from fact_finances ────────────────────
     try:
@@ -708,15 +704,18 @@ async def get_wb_products(
         "returns_pct": 0,
         "cancels": t_cancels,
         "cancel_rate": round(t_cancels / (t_orders + t_cancels) * 100, 1) if (t_orders + t_cancels) > 0 else 0,
-        "mp_fees": round(t_mp_fees, 2),
+        # mp_fees includes unlinked_ded (отзывы за баллы, прочие общие удержания)
+        "mp_fees": round(t_mp_fees + unlinked_ded, 2),
         "mp_fees_logistics": round(t_mp_fees_logistics, 2),
         "mp_fees_storage": round(t_mp_fees_storage, 2),
-        "mp_fees_deductions": round(t_mp_fees_deductions, 2),
+        "mp_fees_deductions": round(t_mp_fees_deductions + unlinked_ded, 2),
         "mp_fees_acceptance": round(t_mp_fees_acceptance, 2),
         "mp_fees_fines": round(t_mp_fees_fines, 2),
-        "mp_fees_pct": round(t_mp_fees / t_revenue * 100, 1) if t_revenue > 0 else 0,
-        "profit": round(t_profit, 2),
-        "profit_pct": round(t_profit / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,
+        "unlinked_deductions": round(unlinked_ded, 2),
+        "mp_fees_pct": round((t_mp_fees + unlinked_ded) / t_revenue * 100, 1) if t_revenue > 0 else 0,
+        # profit includes unlinked_ded impact
+        "profit": round(t_profit - unlinked_ded, 2),
+        "profit_pct": round((t_profit - unlinked_ded) / t_sales * 100, 1) if t_sales > 0 and t_profit_count > 0 else 0,
         "profit_count": t_profit_count,
     }
 

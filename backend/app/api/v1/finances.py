@@ -1460,7 +1460,10 @@ async def get_wb_products_finance(
         unlinked_ded_cur = unknown_p["cur"]["deductions"] if unknown_p else 0
         unlinked_ded_prev = unknown_p["prev"]["deductions"] if unknown_p else 0
 
-    # ── Proportional distribution: ONLY storage + unlinked deductions ──
+    # ── Proportional distribution: ONLY storage (NOT deductions) ──
+    # Storage: WB не привязывает к конкретному товару → распределяем пропорционально
+    # Unlinked deductions (отзывы за баллы, прочие): НЕ распределяем по товарам!
+    #   Они идут только в общий итог P&L (totals.unlinked_deductions).
     # NOTE: acceptance has vendor_code in WB API → already grouped correctly
     unknown_p = products.get("__unknown__")
     if unknown_p:
@@ -1469,12 +1472,12 @@ async def get_wb_products_finance(
     else:
         undist_storage_cur = undist_storage_prev = 0
 
-    for period_key, u_stor, u_ded in [
-        ("cur", undist_storage_cur, unlinked_ded_cur),
-        ("prev", undist_storage_prev, unlinked_ded_prev),
+    # Storage → пропорциональное распределение
+    for period_key, u_stor in [
+        ("cur", undist_storage_cur),
+        ("prev", undist_storage_prev),
     ]:
-        total_undist = u_stor + u_ded
-        if total_undist == 0:
+        if u_stor == 0:
             continue
         total_rev = sum(
             p[period_key]["revenue"]
@@ -1491,9 +1494,9 @@ async def get_wb_products_finance(
                 continue
             share = rev / total_rev
             p[period_key]["storage"] += round(u_stor * share, 2)
-            p[period_key]["deductions"] += round(u_ded * share, 2)
 
-    # Zero out __unknown__ storage/deductions (redistributed)
+    # Zero out __unknown__ storage (redistributed)
+    # Deductions from __unknown__ are NOT redistributed — they go to totals only
     if unknown_p:
         for pk in ("cur", "prev"):
             unknown_p[pk]["storage"] = 0
@@ -1571,6 +1574,15 @@ async def get_wb_products_finance(
                 "penalties", "returns", "ad_spend", "deductions", "acceptance", "cogs", "profit"):
         total_cur[key] = round(sum(p["current"][key] for p in result_products), 2)
         total_prev[key] = round(sum(p["previous"][key] for p in result_products), 2)
+
+    # Unlinked deductions (отзывы за баллы, прочие) — НЕ привязаны к товарам,
+    # но входят в общий P&L: добавляем в totals.deductions и уменьшаем profit
+    total_cur["unlinked_deductions"] = round(unlinked_ded_cur, 2)
+    total_prev["unlinked_deductions"] = round(unlinked_ded_prev, 2)
+    total_cur["deductions"] = round(total_cur["deductions"] + unlinked_ded_cur, 2)
+    total_prev["deductions"] = round(total_prev["deductions"] + unlinked_ded_prev, 2)
+    total_cur["profit"] = round(total_cur["profit"] - unlinked_ded_cur, 2)
+    total_prev["profit"] = round(total_prev["profit"] - unlinked_ded_prev, 2)
 
     total_delta = {}
     for key in total_cur:
