@@ -1,3 +1,113 @@
+## 2026-04-07 (v17.48.0)
+
+### feat(finances): Единая терминология WB — «Все продажи» и «К выплате»
+
+**Проблема**: На WB «Выручка» (retail_price_withdisc_rub) — это розничная цена покупателя, а не реальный доход продавца. Термин «К перечислению» неоднозначен — непонятно, до или после удержаний.
+
+**Решение — marketplace-adaptive терминология:**
+
+| Метрика | Ozon (без изменений) | WB (новое) |
+|---------|----------------------|------------|
+| Revenue | Выручка | **Все продажи** |
+| Payout | К перечислению | **К выплате (до удержаний)** |
+| Expenses subtitle | от перечисления | **от выплат** |
+
+**Затронутые компоненты:**
+
+1. **KPI-карточки (FinancesPage)** — условные лейблы через `isWb` flag
+2. **Breakdown waterfall chart** — WB-специфичные метки полос
+3. **Comparison table (WB_ROWS)** — обновлённые строки
+4. **Weekly report table (WeeklyReportTable)** — заголовки колонок WB
+5. **PDF отчёт (generatePnlReport)** — marketplace-aware KPI, waterfall, comparison, weekly headers
+
+**Файлы:**
+- `frontend/src/pages/FinancesPage.tsx` — KPI cards, breakdown, comparison
+- `frontend/src/components/WeeklyReportTable.tsx` — WB column labels
+- `frontend/src/utils/generatePnlReport.ts` — PDF: все 4 секции
+
+---
+
+## 2026-04-07 (v17.47.0)
+
+### feat(ui): Редизайн ProductFinanceTable + фикс выручки Ozon
+
+**2 изменения:**
+
+**1. ProductFinanceTable — единый стиль с ProductsPage:**
+- Первый столбец: фото товара (48×64px) + название + артикул + SKU/nm_id
+- Hover-превью фото при наведении (fixed overlay)
+- Строка «Итого» перенесена в header (pattern ProductsPage)
+- Удалён 7-day warning banner со страницы Товаров
+- Backend `/finances/wb/products`: добавлены `name` и `image_url` из `dim_products`
+- Backend `/finances/ozon/products`: добавлены `image_url` и `product_id (nm_id)` из `dim_ozon_products`
+
+**2. Ozon Products — реальная выручка (accruals_for_sale):**
+- **Проблема**: revenue = price × quantity (цена покупателя) завышала выручку ~2.5x из-за скидок Ozon
+- **Решение**: revenue из `fact_ozon_transactions.accruals_for_sale` (реальные начисления продавцу)
+- mp_fees = `sale_commission + services_total` (чёткая детализация вместо `revenue − payout`)
+- Bulk charges (Acquiring, Storage) распределяются пропорционально выручке
+- DRR и gross_profit пересчитаны от реальной выручки
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — enrich WB/Ozon products with names/images
+- `backend/app/api/v1/products.py` — Ozon: accruals_for_sale + bulk charges
+- `backend/app/api/v1/wb_prices.py` — prices page improvements
+- `frontend/src/components/ProductFinanceTable.tsx` — full redesign
+- `frontend/src/pages/ProductsPage.tsx` — remove warning banner
+
+---
+
+## 2026-04-07 (v17.46.0)
+
+### fix(finances): Общие удержания НЕ распределяются по товарам
+
+**Проблема**: Непривязанные удержания (отзывы за баллы, авансы) распределялись пропорционально revenue по всем товарам. Это завышало mp_fees каждого товара и уничтожало маржу.
+
+**Решение:**
+- Per-product `deductions` теперь содержит **только** product-specific удержания (с vendor_code)
+- Unpinned deductions → только `totals.mp_fees` и `totals.profit` (страница Финансов)
+- Страница Товаров: general deductions полностью исключены из totals — показывает только product-only экономику
+- Хранение по-прежнему распределяется пропорционально (складские расходы не имеют product ID)
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — unlinked_ded fix, new field `totals.unlinked_deductions`
+- `backend/app/api/v1/wb_products.py` — remove general deductions from per-product + totals
+
+---
+
+## 2026-04-07 (v17.45.0)
+
+### fix(products): WB P&L товаров — единый источник fact_finances
+
+**Проблема**: Products page использовала `fact_orders_raw` для revenue/qty, но `fact_finances` для fees. Разные даты (заказ vs реализация) создавали расхождение ~39k₽ в прибыли.
+
+**Решение — fact_finances как единый источник:**
+- Revenue: `retail_price_withdisc_rub` из `fact_finances` (не `price_with_disc` из orders)
+- Orders qty: `quantity` из `fact_finances` (для COGS и financial calcs)
+- Удалён scaling logic (строки 500-508), который искусственно завышал payout/fees
+- `fact_orders_raw` → только fallback для товаров без реализации (marked `fees_source='estimated'`)
+- Формула идентична `finances.py`: `profit = payout − mp_fees − COGS − ads`
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — fallback chain refactor
+
+---
+
+## 2026-04-07 (v17.44.2)
+
+### fix(prices): Оптимизация layout таблицы Цен
+
+- Sticky header: `thead` фиксирован при вертикальном скролле (`max-h calc(100vh-220px)`)
+- Ценовые колонки: уменьшены отступы `px-1.5/px-0.5` для компактной группировки
+- б/р прибыль: шрифт 13px с opacity 0.6 для лучшей читаемости
+- ДРР: только процент, убрана дублирующая абсолютная сумма
+- Vendor codes: opacity 0.45→0.55 для видимости
+
+**Файлы:**
+- `frontend/src/pages/ProductsPricesPage.tsx` — table layout optimization
+
+---
+
 ## 2026-04-07 (v17.44.0)
 
 ### feat(prices): ДРР + прибыль с/без рекламы + фикс выравнивания таблицы

@@ -442,16 +442,23 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 - Ozon → `GET /api/v1/finances/ozon` + `GET /api/v1/finances/ozon/products`
 - WB → `GET /api/v1/finances/wb` + `GET /api/v1/finances/wb/products`
 
-**6 KPI-карточек:**
+**6 KPI-карточек** (marketplace-adaptive лейблы):
 
-- Выручка, К перечислению, Расходы МП (% от перечисления), Реклама (ДРР), Себестоимость (% от выручки), Чистая прибыль (% от выручки)
+| KPI | Ozon | WB |
+|-----|------|----|
+| Revenue | Выручка | **Все продажи** |
+| Payout | К перечислению | **К выплате (до удержаний)** |
+| Expenses | Расходы МП (% от перечисления) | Расходы МП (% **от выплат**) |
+| Ads | Реклама (ДРР) | Реклама (ДРР) |
+| COGS | Себестоимость (% от выручки) | Себестоимость (% от выручки) |
+| Profit | Чистая прибыль (% от выручки) | Чистая прибыль (% от выручки) |
 
 **Секции:**
 
 | Секция              | Компонент             | Описание                                                                                                     |
 | ------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------ |
 | Структура расходов  | `BreakdownChart`      | Waterfall: revenue → commission → payout → expenses → profit                                                 |
-| Детализация товаров | `ProductFinanceTable` | P&L по каждому товару — unified table style (см. ниже)                                                       |
+| Детализация товаров | `ProductFinanceTable` | P&L по каждому товару: фото + название + артикул, unified table style                                        |
 | Динамика            | `DynamicsChart`       | ComposedChart: 8 метрик с toggle chips (revenue, profit, payout, operating, mp_fees, ad_spend, cogs, orders) |
 | Сравнение периодов  | `ComparisonTable`     | Текущий vs предыдущий период: 15 показателей с Δ                                                             |
 
@@ -459,7 +466,7 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **Waterfall (BreakdownChart):**
 
-- Подытог «= К перечислению» (после комиссии), «= Прибыль» (финал)
+- WB: «= К выплате» / Ozon: «= К перечислению» (после комиссии), «= Прибыль» (финал)
 - Нулевые строки скрыты автоматически
 - Разделительные линии перед подытогами
 
@@ -663,7 +670,8 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 | `AuthGuard`           | `components/auth/`   | Защита маршрутов                                         |
 | `OnboardingGuard`     | `components/`        | Защита от отсутствия магазинов                           |
 | `ShopWizard`          | `components/shops/`  | Пошаговый мастер подключения                             |
-| `ProductFinanceTable`   | `components/`        | Товарный P&L — unified table style                       |
+| `ProductFinanceTable`   | `components/`        | Товарный P&L: фото + название + артикул, hover-preview, unified style  |
+| `WeeklyReportTable`     | `components/`        | Понедельный P&L отчёт (marketplace-adaptive колонки)                  |
 | `CampaignUnifiedModal`  | `components/`        | Единый модал кампании: управление + аналитика (табы)     |
 | `CampaignManagementModal` | `components/`      | Управление кампанией: кластеры, товары, ставки           |
 | `CampaignDetailModal`   | `components/`        | Аналитика кампании: графики, KPI, фразы, ИИ-анализ      |
@@ -699,6 +707,7 @@ Bоковая панель с вложенной навигацией (collapse 
 |                | └ География      | `/warehouses/geography`    | MapPin          | ✅ Активен     |
 |                | └ Поставки       | `/warehouses/supply`       | TrendingUp      | ✅ Активен     |
 |                | Финансы          | `/finances`                | DollarSign      | ✅ Активен     |
+|                | Цены             | `/products/prices`         | Tag             | ✅ Активен     |
 | **УПРАВЛЕНИЕ** | Реклама ▾        |                            | Megaphone       | ✅ Группа      |
 |                | └ Управление     | `/advertising/campaigns`   | Settings2       | ✅ Активен     |
 |                | └ Автобиддер     | `/advertising/autobidder`  | Bot             | ✅ Активен     |
@@ -1131,4 +1140,22 @@ Bоковая панель с вложенной навигацией (collapse 
 - **advertising.ts** — новые API функции:
   - `getAdLaunchRecommendations(shopId)` — рекомендации по запуску рекламы
   - Типы: `AdLaunchRecommendation`, `AdLaunchRecommendationsResponse`
+
+### 2026-04-07
+
+- **FinancesPage — marketplace-adaptive терминология:**
+  - WB: «Выручка» → «Все продажи», «К перечислению» → «К выплате (до удержаний)»
+  - WB: подпись расходов «от перечисления» → «от выплат»
+  - Ozon лейблы без изменений
+  - `isWb` flag контролирует условный рендеринг лейблов
+- **ProductFinanceTable — редизайн:**
+  - Первый столбец: фото 48×64px + название + артикул + SKU/nm_id
+  - Hover-превью фото (fixed overlay)
+  - Строка «Итого» перенесена в header
+- **WeeklyReportTable** — WB колонки: «Все продажи», «К выплате»
+- **generatePnlReport (PDF):**
+  - KPI-карточки, waterfall, comparison table, weekly headers — marketplace-aware
+  - `drawKpiCards()` принимает `marketplace` параметр
+- **ProductsPage** — удалён 7-day warning banner
+- **Sidebar** — добавлен пункт «Цены» (`/products/prices`, иконка `Tag`)
 
