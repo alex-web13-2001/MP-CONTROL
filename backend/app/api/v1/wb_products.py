@@ -148,6 +148,25 @@ async def get_wb_products(
         logger.warning("CH ads query failed: %s", e)
         ads_map = {}
 
+    # ── 2b. Active ad campaigns (status=9) per nm_id ────────
+    active_ad_nm_ids: set[int] = set()
+    try:
+        active_ads_result = ch.query("""
+            SELECT DISTINCT lb.nm_id
+            FROM mms_analytics.log_wb_bids lb
+            WHERE lb.shop_id = {shop_id:UInt32}
+              AND lb.advert_id IN (
+                  SELECT advert_id
+                  FROM mms_analytics.dim_advert_campaigns FINAL
+                  WHERE shop_id = {shop_id:UInt32} AND status = 9
+              )
+              AND lb.timestamp >= now() - INTERVAL 2 DAY
+        """, parameters={"shop_id": shop_id})
+        for r in active_ads_result.result_rows:
+            active_ad_nm_ids.add(int(r[0]))
+    except Exception as e:
+        logger.warning("CH active ads query failed: %s", e)
+
     # ── 3. Stocks (latest snapshot) ────────────────────────
     try:
         stocks_result = ch.query("""
@@ -465,35 +484,43 @@ async def get_wb_products(
         cost_price = info.get("cost_price", 0.0)
         packaging_cost = info.get("packaging_cost", 0.0)
 
-        # ── Продажи из fact_orders_raw (оперативные данные) ────
-        orders_7d = orders.get("orders_7d", 0)
-        revenue_7d = orders.get("revenue_7d", 0.0)
+        # ── Оперативные данные из fact_orders_raw ────
+        orders_raw = orders.get("orders_7d", 0)
+        revenue_raw = orders.get("revenue_7d", 0.0)
         orders_prev_raw = orders.get("orders_prev", 0)
         revenue_prev_raw = orders.get("revenue_prev", 0.0)
-        avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0
 
-        # ── Финансы из fact_finances (фактические данные) ────
+        # ── Финансовые данные из fact_finances (SOURCE OF TRUTH) ────
+        # fact_finances — единственный источник правды для P&L.
+        # fact_orders_raw — только fallback для свежих заказов без отчёта.
         fees = fees_map.get(nm_id, {})
+        fin_revenue = fees.get("fin_revenue", 0.0)
+        fin_qty = fees.get("qty", 0)
         revenue_prev = fees.get("fin_revenue_prev", revenue_prev_raw)
 
-        # Если fact_finances покрывает меньше заказов — масштабируем
-        fees_qty = fees.get("qty", 0)
-        if fees_qty > 0 and orders_7d > 0 and fees_qty < orders_7d:
-            scale = orders_7d / fees_qty
-            payout = round(fees.get("payout", 0.0) * scale, 2)
-            fee_logistics = round(fees.get("logistics", 0.0) * scale, 2)
-            fee_storage = round(fees.get("storage", 0.0) * scale, 2)
-            fee_acceptance = round(fees.get("acceptance", 0.0) * scale, 2)
-            fee_deductions = round(fees.get("deductions", 0.0) * scale, 2)
-            fee_fines = round(fees.get("fines", 0.0) * scale, 2)
-            estimated_nm_ids.add(nm_id)
+        # Выбираем источник: fact_finances если есть, иначе fact_orders_raw
+        has_finance_data = fin_revenue > 0 or fees.get("payout", 0) != 0
+        if has_finance_data:
+            # fact_finances — фактические данные из отчёта реализации WB
+            orders_7d = fin_qty if fin_qty > 0 else orders_raw
+            revenue_7d = fin_revenue if fin_revenue > 0 else revenue_raw
         else:
-            payout = fees.get("payout", 0.0)
-            fee_logistics = fees.get("logistics", 0.0)
-            fee_storage = fees.get("storage", 0.0)
-            fee_acceptance = fees.get("acceptance", 0.0)
-            fee_deductions = fees.get("deductions", 0.0)
-            fee_fines = fees.get("fines", 0.0)
+            # fallback: свежие заказы, ещё не попавшие в отчёт реализации
+            orders_7d = orders_raw
+            revenue_7d = revenue_raw
+            estimated_nm_ids.add(nm_id)
+
+        avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0
+
+        # ── Fees из fact_finances (БЕЗ масштабирования) ────
+        # Масштабирование удалено — оно создавало расхождение с финотчётом.
+        # Если fact_finances нет — все fees = 0 (до появления отчёта).
+        payout = fees.get("payout", 0.0)
+        fee_logistics = fees.get("logistics", 0.0)
+        fee_storage = fees.get("storage", 0.0)
+        fee_acceptance = fees.get("acceptance", 0.0)
+        fee_deductions = fees.get("deductions", 0.0)
+        fee_fines = fees.get("fines", 0.0)
 
         # mp_fees = все расходы маркетплейса (логистика+хранение+удержания+приёмка+штрафы)
         # НЕ включает комиссию (она уже в payout) и НЕ включает рекламу (отдельно)
@@ -514,15 +541,16 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit (формула идентична финотчёту) ─────
+        # ── Gross profit (формула идентична финотчёту finances.py) ─────
         # profit = payout - logistics - storage - deductions - acceptance - fines - COGS - ads
         # payout уже за вычетом ТОЛЬКО комиссии и эквайринга.
         # Логистика, хранение, удержания — ОТДЕЛЬНЫЕ расходы!
         # Ads берём из fact_advert_stats_v3 (не из удержаний — там исключены).
         gross_profit = None
         margin = None
-        if cost_price > 0 and orders_7d > 0:
-            total_cogs = (cost_price + packaging_cost) * orders_7d
+        effective_qty = orders_7d  # qty для COGS — из того же источника что revenue
+        if cost_price > 0 and effective_qty > 0:
+            total_cogs = (cost_price + packaging_cost) * effective_qty
             gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
             if sales_amount > 0:
                 margin = round(gross_profit / sales_amount * 100, 1)
@@ -568,6 +596,8 @@ async def get_wb_products(
             "margin": margin,
             # Fee source indicator for frontend ≈ badge
             "fees_source": "estimated" if nm_id in estimated_nm_ids else "actual",
+            # Active ad campaigns (status=9) indicator
+            "has_active_ads": nm_id in active_ad_nm_ids,
         }
         products.append(p)
 
