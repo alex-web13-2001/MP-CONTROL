@@ -1,3 +1,75 @@
+## 2026-04-07 (v17.44.0)
+
+### feat(prices): ДРР + прибыль с/без рекламы + фикс выравнивания таблицы
+
+**4 изменения:**
+
+**1. ДРР по товарам (30д):**
+- **Backend**: Новые ClickHouse-запросы `fact_advert_stats_v3` (расход) и `fact_orders_raw` (выручка) за 30 дней
+- **Frontend**: Колонка «ДРР» — % расходов на рекламу + абсолютная сумма, цветовая индикация (зелёный < 15%, жёлтый < 30%, красный > 30%)
+- Колонка показывается только если хотя бы один товар имеет рекламный расход
+
+**2. Прибыль с/без рекламы:**
+- `profit_with_ads = profit_per_unit - (ad_spend_30d / orders_30d)` — вычитание рекламы на единицу
+- В столбце «Прибыль/шт» два значения: основная (с рекламой, иконка рупора) и вспомогательная (без рекламы)
+- Если рекламы нет — отображается только прибыль без рекламы с меткой источника (≈ без рекламы / ≈ оценка)
+
+**3. Фикс выравнивания таблицы:**
+- Убрано `tableLayout: fixed` + `colgroup` — браузер сам распределяет ширину столбцов
+- Все числовые колонки: `text-right` + `whitespace-nowrap` для аккуратного отображения
+- FBO/FBS теперь всегда видны (раньше обрезались за границей экрана)
+
+**4. Auto-hide WB Клуб:**
+- Колонка «WB Клуб» автоматически скрывается когда `clubDiscount = 0` (клуб не подключён)
+- Подтверждено: WB API возвращает `clubDiscountedPrice == discountedPrice` при неактивном клубе
+
+**Файлы:**
+- `backend/app/api/v1/wb_prices.py` — +ad_spend_map, +orders_revenue_map, DRR/profit_with_ads, фильтр club
+- `frontend/src/api/wb-products.ts` — +ad_spend_30d, +drr, +profit_with_ads в WBPriceProduct
+- `frontend/src/pages/ProductsPricesPage.tsx` — полный рефактор таблицы: выравнивание, ДРР, прибыль 2 строки
+
+---
+
+## 2026-04-07 (v17.43.0)
+
+### feat(products): Real-time Ad Badge + Finance-based Profit + Lint Cleanup
+
+**3 изменения:**
+
+**1. Real-time Ad Badge (has_active_ads):**
+- **Проблема**: Бейдж «Реклама» на странице товаров показывался по `ad_spend_7d > 0` — историческим расходам. Товар мог потратить на рекламу 7 дней назад, кампания остановлена, а бейдж горит.
+- **Решение**: Новое поле `has_active_ads` определяет реальный статус:
+  - **WB**: `dim_advert_campaigns.status = 9` (активна) + товар в кампании
+  - **Ozon**: Свежие записи в `log_ozon_bids` за последние 2 дня
+- Frontend: бейдж «● Реклама» (фиолетовый, пульсирующий) теперь отображается только у товаров с **действительно активными** кампаниями
+- Поле проброшено через `wbToOzon` маппер для унификации WB/Ozon
+
+**2. Finance-based Profit per Unit (WB Prices):**
+- **Проблема**: Прибыль/шт на странице «Цены» рассчитывалась через hardcoded оценку комиссий (~35%). Реальные комиссии отличаются на 10-20%.
+- **Решение**: Приоритет данных из `fact_finances` (30 дней):
+  - `payout_per_unit = sum(payout) / count(*)` — средняя выплата за единицу
+  - `profit_per_unit = payout_per_unit - cost_price - packaging_cost`
+  - Fallback: 35% оценка если нет финансовых данных
+- **UI**: Метки источника данных:
+  - **«≈ без рекламы»** — данные из реальных финансовых отчётов (не включают рекламу)
+  - **«≈ оценка»** — нет данных в `fact_finances`, используется расчётный метод
+- Новое поле `profit_source: 'finance' | 'estimated' | null` в `WBPriceProduct` и `PriceRow`
+
+**3. Lint Cleanup:**
+- Удалена неиспользуемая переменная `[page, setPage]` в `ProductsPricesPage.tsx`
+- `pageRef` (useRef) остаётся — используется для infinite scroll
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — has_active_ads query (WB)
+- `backend/app/api/v1/products.py` — has_active_ads query (Ozon)
+- `backend/app/api/v1/wb_prices.py` — fact_finances profit calculation + profit_source
+- `frontend/src/api/wb-products.ts` — +has_active_ads, +profit_source types
+- `frontend/src/api/products.ts` — +has_active_ads type
+- `frontend/src/pages/ProductsPage.tsx` — badge: ad_spend_7d → has_active_ads + wbToOzon
+- `frontend/src/pages/ProductsPricesPage.tsx` — profit_source UI + lint cleanup
+
+---
+
 ## 2026-04-07 (v17.42.0)
 
 ### feat(products): Аналитика отмен + рефакторинг UI страницы Цен

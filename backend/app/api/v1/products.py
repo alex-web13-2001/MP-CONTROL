@@ -311,6 +311,24 @@ async def get_ozon_products(
         logger.warning("CH ads query failed: %s", e)
 
     # ────────────────────────────────────────────────────
+    # 3b. Active ad campaigns per SKU (Ozon)
+    # ────────────────────────────────────────────────────
+    # Ozon has no dim_campaigns table — use log_ozon_bids presence
+    # as a proxy: if bids were logged in the last 2 days, campaign is active.
+    active_ad_skus: set[int] = set()
+    try:
+        active_ads_result = ch.query("""
+            SELECT DISTINCT sku
+            FROM mms_analytics.log_ozon_bids
+            WHERE shop_id = {shop_id:UInt32}
+              AND timestamp >= now() - INTERVAL 2 DAY
+        """, parameters={"shop_id": shop_id})
+        for r in active_ads_result.result_rows:
+            active_ad_skus.add(int(r[0]))
+    except Exception as e:
+        logger.warning("CH active Ozon ads query failed: %s", e)
+
+    # ────────────────────────────────────────────────────
     # 4. Returns 30d from ClickHouse
     # ────────────────────────────────────────────────────
     try:
@@ -545,6 +563,9 @@ async def get_ozon_products(
         # sales_amount = avg_price × orders (payout-based total)
         if p["avg_price"] > 0 and p["orders_7d"] > 0:
             p["sales_amount"] = round(p["avg_price"] * p["orders_7d"], 2)
+
+        # Active ad campaigns indicator
+        p["has_active_ads"] = (p.get("sku") or 0) in active_ad_skus
 
     # ────────────────────────────────────────────────────
     # Apply filter

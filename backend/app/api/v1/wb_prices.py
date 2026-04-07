@@ -186,11 +186,76 @@ async def get_wb_prices(
                 "stock_fbo": int(r[1]),
                 "stock_fbs": int(r[2]),
             }
-        ch.close()
     except Exception as e:
         logger.warning("CH stocks query failed: %s", e)
 
-    # ── 4. Merge WB prices with catalog data ──
+    # ── 4. Profit per unit from fact_finances (30-day average, no ads) ──
+    profit_map: dict[int, float | None] = {}
+    try:
+        from datetime import date, timedelta
+        d30_start = date.today() - timedelta(days=29)
+        finance_result = ch.query("""
+            SELECT
+                toUInt64(external_id)  AS nm_id,
+                sum(payout_amount) / nullIf(
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                ) AS avg_payout_per_unit,
+                sum(wb_delivery_rub) / nullIf(
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                ) AS avg_logistics_per_unit
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= {d30_start:Date}
+            GROUP BY nm_id
+            HAVING sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) > 0
+        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        for r in finance_result.result_rows:
+            nm = int(r[0])
+            avg_payout = float(r[1] or 0)
+            avg_logistics = abs(float(r[2] or 0))
+            profit_map[nm] = (avg_payout, avg_logistics)
+    except Exception as e:
+        logger.warning("CH fact_finances profit query failed: %s", e)
+
+    # ── 4b. Ad spend per product (30d) for DRR + profit with ads ──
+    ad_spend_map: dict[int, float] = {}
+    orders_revenue_map: dict[int, tuple[float, int]] = {}  # nm_id → (revenue_30d, orders_30d)
+    try:
+        from datetime import date, timedelta
+        d30_start = date.today() - timedelta(days=29)
+        ad_result = ch.query("""
+            SELECT
+                nm_id,
+                round(sum(spend), 2) AS ad_spend_30d
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d30_start:Date}
+            GROUP BY nm_id
+        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        for r in ad_result.result_rows:
+            ad_spend_map[int(r[0])] = float(r[1])
+
+        # Revenue for 30d (for DRR calculation)
+        rev_result = ch.query("""
+            SELECT
+                nm_id,
+                round(sum(price_with_disc), 2) AS revenue_30d,
+                count() AS orders_30d
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {d30_start:Date}
+              AND is_cancel = 0
+            GROUP BY nm_id
+        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        for r in rev_result.result_rows:
+            orders_revenue_map[int(r[0])] = (float(r[1]), int(r[2]))
+    except Exception as e:
+        logger.warning("CH ad_spend/revenue query failed: %s", e)
+
+    ch.close()
+
+    # ── 5. Merge WB prices with catalog data ──
     products = []
     for wp in wb_prices:
         nm_id = wp["nm_id"]
@@ -204,13 +269,35 @@ async def get_wb_prices(
         stock_fbo = stocks.get("stock_fbo", 0)
         stock_fbs = stocks.get("stock_fbs", 0)
 
-        # Profit per unit: discountedPrice - unitCost - estimated_fees
-        # (simplified: fees ~40% of discountedPrice for WB)
+        # Profit per unit (без учёта рекламы):
+        # Вариант 1: fact_finances 30d average (точный)
+        # Вариант 2: fallback — estimated_fees ~35% от discountedPrice
         discounted = wp["discounted_price"]
         profit_per_unit = None
-        if cost_price > 0 and discounted > 0:
-            estimated_fees = round(discounted * 0.35, 2)  # ~35% MP fees estimate
+        profit_source = None  # "finance" or "estimated"
+        if cost_price > 0 and nm_id in profit_map:
+            avg_payout, avg_logistics = profit_map[nm_id]
+            profit_per_unit = round(avg_payout - avg_logistics - unit_cost, 2)
+            profit_source = "finance"
+        elif cost_price > 0 and discounted > 0:
+            estimated_fees = round(discounted * 0.35, 2)
             profit_per_unit = round(discounted - unit_cost - estimated_fees, 2)
+            profit_source = "estimated"
+
+        # Ad spend & DRR
+        ad_spend_30d = ad_spend_map.get(nm_id, 0)
+        rev_data = orders_revenue_map.get(nm_id)
+        revenue_30d = rev_data[0] if rev_data else 0
+        orders_30d = rev_data[1] if rev_data else 0
+        drr = round(ad_spend_30d / revenue_30d * 100, 1) if revenue_30d > 0 and ad_spend_30d > 0 else None
+
+        # Profit with ads = profit_per_unit - (ad_spend / orders)
+        ad_per_unit = round(ad_spend_30d / orders_30d, 2) if orders_30d > 0 and ad_spend_30d > 0 else 0
+        profit_with_ads = round(profit_per_unit - ad_per_unit, 2) if profit_per_unit is not None and ad_per_unit > 0 else None
+
+        # WB Club: only include if club discount is actually active
+        club_disc = wp["club_discount"]
+        club_price_val = wp["club_discounted_price"] if club_disc > 0 else None
 
         products.append({
             "nm_id": nm_id,
@@ -221,16 +308,21 @@ async def get_wb_prices(
             "price": wp["price"],                         # Цена до скидки
             "discount": wp["discount"],                   # Скидка %
             "discounted_price": discounted,                # Цена со скидкой
-            "club_discount": wp["club_discount"],          # WB Клуб скидка %
-            "club_discounted_price": wp["club_discounted_price"],  # Цена для WB Клуб
+            "club_discount": club_disc,                    # WB Клуб скидка %
+            "club_discounted_price": club_price_val,       # Цена для WB Клуб (None if not active)
             "tech_size_name": wp["tech_size_name"],
             "editable_size_price": wp["editable_size_price"],
             "is_bad_turnover": wp["is_bad_turnover"],
             # Cost
             "cost_price": cost_price,
             "packaging_cost": packaging_cost,
-            # Profit
+            # Profit (без рекламы)
             "profit_per_unit": profit_per_unit,
+            "profit_source": profit_source,  # "finance" | "estimated" | null
+            # Ads
+            "ad_spend_30d": ad_spend_30d,
+            "drr": drr,
+            "profit_with_ads": profit_with_ads,
             # Stocks
             "stock_fbo": stock_fbo,
             "stock_fbs": stock_fbs,

@@ -44,6 +44,8 @@ export interface WBProduct {
   margin: number | null
   // Fee estimation indicator
   fees_source?: 'actual' | 'estimated'
+  // Active ad campaigns indicator
+  has_active_ads?: boolean
 }
 
 export interface WBProductsResponse {
@@ -135,6 +137,11 @@ export interface WBPriceProduct {
   packaging_cost: number
   // Profit
   profit_per_unit: number | null
+  profit_source: 'finance' | 'estimated' | null
+  // Ads
+  ad_spend_30d: number
+  drr: number | null
+  profit_with_ads: number | null
   // Stocks
   stock_fbo: number
   stock_fbs: number

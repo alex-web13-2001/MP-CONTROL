@@ -71,6 +71,8 @@ export interface OzonProduct {
   promotions: string[]
   // Fee estimation indicator (WB only)
   fees_source?: 'actual' | 'estimated'
+  // Active ad campaigns indicator
+  has_active_ads?: boolean
 }
 
 export interface ProductsResponse {

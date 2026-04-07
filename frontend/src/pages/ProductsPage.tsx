@@ -132,6 +132,7 @@ function wbToOzon(p: WBProduct): OzonProduct {
     events: [] as ProductEvent[],
     promotions: [] as string[],
     fees_source: p.fees_source,
+    has_active_ads: p.has_active_ads,
   }
 }
 
@@ -447,16 +448,7 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* ─── 7-дней предупреждение ─── */}
-      {periodValue.period === 7 && !loading && products.length > 0 && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 mb-3">
-          <svg className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
-          <p className="text-[12px] leading-relaxed text-amber-200/80">
-            <span className="font-semibold text-amber-300">Данные за 7 дней могут быть неполными.</span>{' '}
-            Финансовый отчёт маркетплейса формируется с задержкой 1–3 дня. Итоговые цифры по выплатам и удержаниям могут измениться после закрытия отчётного периода.
-          </p>
-        </div>
-      )}
+
 
       {/* ═══════════════════════════════════════════════════
          Table — Business-priority columns:
@@ -700,7 +692,7 @@ export default function ProductsPage() {
                             {p.status === 'active' && (
                               <span className="rounded px-1 py-[1px] text-[10px] font-semibold bg-emerald-500/12 text-emerald-400 leading-tight">Продаётся</span>
                             )}
-                            {p.ad_spend_7d > 0 && (
+                            {p.has_active_ads && (
                               <span className="inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[10px] font-semibold bg-violet-500/12 text-violet-400 leading-tight">
                                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
                                 Реклама

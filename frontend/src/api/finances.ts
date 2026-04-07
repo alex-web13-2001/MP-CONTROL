@@ -103,6 +103,7 @@ export interface ProductFinanceItem {
   vendor_code: string
   name?: string
   nm_id?: number
+  image_url?: string
   current: Record<string, number>
   previous: Record<string, number>
   delta_pct: Record<string, number>

@@ -1502,7 +1502,32 @@ async def get_wb_products_finance(
             unknown_p[pk]["storage"] = 0
             unknown_p[pk]["deductions"] = 0
     # ══════════════════════════════════════════════════════
-    # 4. Build response
+    # 4. Enrich with names & images from dim_products (PG)
+    # ══════════════════════════════════════════════════════
+    product_info_map: dict = {}  # vendor_code → {name, image_url}
+    try:
+        pg_info = await db.execute(
+            text("""
+                SELECT COALESCE(dp.vendor_code, ''),
+                       dp.name,
+                       COALESCE(dp.main_image_url, '') AS image_url
+                FROM dim_products dp
+                WHERE dp.shop_id = :shop_id
+            """),
+            {"shop_id": shop_id},
+        )
+        for row in pg_info.fetchall():
+            vc_key = str(row[0]).strip().lower()
+            if vc_key:
+                product_info_map[vc_key] = {
+                    "name": row[1] or "",
+                    "image_url": row[2] or "",
+                }
+    except Exception as e:
+        logger.warning("PG dim_products name/image lookup failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 5. Build response
     # ══════════════════════════════════════════════════════
     result_products = []
     for vc, p in products.items():
@@ -1555,9 +1580,14 @@ async def get_wb_products_finance(
             for key in ("logistics", "storage", "deductions", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
+        # Lookup name & image from dim_products
+        info = product_info_map.get(vc.lower(), {})
+
         result_products.append({
             "vendor_code": vc,
             "nm_id": p["nm_id"],
+            "name": info.get("name", ""),
+            "image_url": info.get("image_url", ""),
             "current": current,
             "previous": previous,
             "delta_pct": delta_pct,
