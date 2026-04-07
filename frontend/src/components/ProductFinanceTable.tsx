@@ -312,14 +312,14 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                         <p className="text-[13px] font-medium leading-snug line-clamp-2" title={displayName}>
                           {displayName}
                         </p>
-                        <div className="mt-0.5 flex items-center gap-2">
+                        <div className="mt-0.5 flex items-center gap-1.5 whitespace-nowrap">
                           {product.name && product.name !== product.vendor_code && (
-                            <span className="text-[12px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide">
+                            <span className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide uppercase">
                               {product.vendor_code}
                             </span>
                           )}
                           {product.nm_id && product.nm_id > 0 && (
-                            <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.45)]">
+                            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.45)]">
                               SKU {product.nm_id}
                             </span>
                           )}

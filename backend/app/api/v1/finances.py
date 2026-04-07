@@ -1943,21 +1943,28 @@ async def get_ozon_products_finance(
     except Exception as e:
         logger.warning("Placement cost integration failed: %s", e)
 
-    names_map = {}
+    product_info_map: dict = {}  # offer_id → {name, image_url, product_id}
     try:
-        name_result = await db.execute(
+        ozon_info = await db.execute(
             text("""
-                SELECT offer_id, name
+                SELECT offer_id, name,
+                       COALESCE(main_image_url, '') AS image_url,
+                       product_id
                 FROM dim_ozon_products
                 WHERE shop_id = :shop_id
             """),
             {"shop_id": shop_id},
         )
-        for r in name_result.fetchall():
-            if r[1]:
-                names_map[r[0]] = r[1]
+        for row in ozon_info.fetchall():
+            oid_key = str(row[0]).strip()
+            if oid_key:
+                product_info_map[oid_key] = {
+                    "name": row[1] or "",
+                    "image_url": row[2] or "",
+                    "product_id": row[3] or 0,
+                }
     except Exception as e:
-        logger.warning("PG dim_ozon_products query failed: %s", e)
+        logger.warning("PG dim_ozon_products info lookup failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 5. Build response
@@ -2005,9 +2012,14 @@ async def get_ozon_products_finance(
             for key in ("commission", "logistics", "payout", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
+        # Lookup name, image, product_id from dim_ozon_products
+        info = product_info_map.get(oid, {})
+
         result_products.append({
             "vendor_code": oid,
-            "name": names_map.get(oid, ""),
+            "nm_id": info.get("product_id", 0),
+            "name": info.get("name", ""),
+            "image_url": info.get("image_url", ""),
             "current": current,
             "previous": previous,
             "delta_pct": delta_pct,

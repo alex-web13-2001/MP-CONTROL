@@ -485,20 +485,28 @@ async def get_ozon_products(
         logger.warning("CH price changes query failed: %s", e)
 
     # ────────────────────────────────────────────────────
-    # 10. Net payout from fact_ozon_transactions (current + prev period)
-    #     This is the ACTUAL money received after ALL deductions
-    #     (commission, logistics, storage, acquiring, returns).
+    # 10. Detailed financials from fact_ozon_transactions
+    #     Uses accruals_for_sale (REAL seller revenue) and
+    #     sale_commission / services_total for fee breakdown.
+    #     revenue_7d (price × qty) is LIST PRICE, not seller revenue!
     # ────────────────────────────────────────────────────
     try:
         txn_result = ch.query("""
             SELECT sku,
-                   sum(CASE WHEN operation_date >= {d_start:Date} AND operation_date <= {d_end:Date} THEN amount ELSE 0 END) AS txn_cur,
-                   sum(CASE WHEN operation_date >= {d_prev_start:Date} AND operation_date <= {d_prev_end:Date} THEN amount ELSE 0 END) AS txn_prev
+                   sumIf(accruals_for_sale, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS rev_cur,
+                   sumIf(abs(sale_commission), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS comm_cur,
+                   sumIf(abs(services_total), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS svc_cur,
+                   sumIf(amount, toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS payout_cur,
+                   sumIf(accruals_for_sale, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS rev_prev,
+                   sumIf(abs(sale_commission), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS comm_prev,
+                   sumIf(abs(services_total), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS svc_prev,
+                   sumIf(amount, toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS payout_prev
             FROM mms_analytics.fact_ozon_transactions FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND operation_date >= {d_prev_start:Date}
-              AND operation_date <= {d_end:Date}
+              AND category = 'Revenue'
               AND sku > 0
+              AND toDate(operation_date) >= {d_prev_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
             GROUP BY sku
         """, parameters={
             "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
@@ -507,58 +515,116 @@ async def get_ozon_products(
         for r in txn_result.result_rows:
             oid = sku_to_offer.get(r[0])
             if oid and oid in products_map:
-                products_map[oid]["txn_payout"] = float(r[1])
-                products_map[oid]["txn_payout_prev"] = float(r[2])
+                products_map[oid]["txn_revenue"] = float(r[1])        # accruals_for_sale (real revenue)
+                products_map[oid]["txn_commission"] = float(r[2])     # sale_commission (abs)
+                products_map[oid]["txn_logistics"] = float(r[3])      # services_total (abs) — logistics+processing
+                products_map[oid]["txn_payout"] = float(r[4])         # net amount
+                products_map[oid]["txn_revenue_prev"] = float(r[5])
+                products_map[oid]["txn_commission_prev"] = float(r[6])
+                products_map[oid]["txn_logistics_prev"] = float(r[7])
+                products_map[oid]["txn_payout_prev"] = float(r[8])
     except Exception as e:
         logger.warning("CH transactions query failed: %s", e)
 
+    # ── 10b. Bulk charges (Acquiring, Storage) — not per-product in Ozon ──
+    # Distribute proportionally by txn_revenue share
+    try:
+        bulk_result = ch.query("""
+            SELECT
+                category,
+                sumIf(abs(amount), toDate(operation_date) >= {d_start:Date} AND toDate(operation_date) <= {d_end:Date}) AS total_cur,
+                sumIf(abs(amount), toDate(operation_date) >= {d_prev_start:Date} AND toDate(operation_date) <= {d_prev_end:Date}) AS total_prev
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND toDate(operation_date) >= {d_prev_start:Date}
+              AND toDate(operation_date) <= {d_end:Date}
+              AND category IN ('Acquiring', 'Storage')
+            GROUP BY category
+        """, parameters={
+            "shop_id": shop_id, "d_start": d_start, "d_end": d_end,
+            "d_prev_start": d_prev_start, "d_prev_end": d_prev_end,
+        })
+        bulk_cur = {}
+        bulk_prev = {}
+        for r in bulk_result.result_rows:
+            bulk_cur[r[0]] = float(r[1] or 0)
+            bulk_prev[r[0]] = float(r[2] or 0)
+
+        total_txn_rev = sum(p.get("txn_revenue", 0) for p in products_map.values())
+        total_txn_rev_prev = sum(p.get("txn_revenue_prev", 0) for p in products_map.values())
+
+        for oid, p in products_map.items():
+            for cat in ("Acquiring", "Storage"):
+                key = cat.lower()
+                rev = p.get("txn_revenue", 0)
+                rev_p = p.get("txn_revenue_prev", 0)
+                if cat in bulk_cur and total_txn_rev > 0 and rev > 0:
+                    share = rev / total_txn_rev
+                    p.setdefault("txn_" + key, 0)
+                    p["txn_" + key] = round(bulk_cur[cat] * share, 2)
+                if cat in bulk_prev and total_txn_rev_prev > 0 and rev_p > 0:
+                    share = rev_p / total_txn_rev_prev
+                    p.setdefault("txn_" + key + "_prev", 0)
+                    p["txn_" + key + "_prev"] = round(bulk_prev[cat] * share, 2)
+    except Exception as e:
+        logger.warning("CH bulk charges query failed: %s", e)
+
     # ────────────────────────────────────────────────────
     # Calculate margin & gross profit
+    # Uses REAL revenue from transactions (accruals_for_sale),
+    # NOT the inflated list price (price × quantity).
     # ────────────────────────────────────────────────────
     for p in products_map.values():
         cost = p["cost_price"] + p["packaging_cost"]
         if cost > 0 and p["price"] > 0:
-            # margin_percent = cost as percentage of selling price (from admin)
             p["margin"] = round(cost, 2)
             p["margin_percent"] = round(cost / p["price"] * 100, 1)
 
-        # ── Marketplace fees (compute FIRST, needed for profit) ──
-        txn_payout = p.get("txn_payout", 0)
-        txn_payout_prev = p.get("txn_payout_prev", 0)
-        if p["revenue_7d"] > 0 or txn_payout != 0:
-            total_fees = p["revenue_7d"] - txn_payout
-            commission_part = p["revenue_7d"] - p["payout_period"]
-            logistics_part = p["payout_period"] - txn_payout
-            p["mp_fees"] = round(total_fees, 2)
-            p["mp_fees_commission"] = round(commission_part, 2)
-            p["mp_fees_logistics"] = round(logistics_part, 2)
-            if p["revenue_7d"] > 0:
-                p["mp_fees_percent"] = round(total_fees / p["revenue_7d"] * 100, 1)
-            else:
-                p["mp_fees_percent"] = 0.0
+        # ── Real revenue from transactions ──
+        txn_revenue = p.get("txn_revenue", 0)
+        txn_commission = p.get("txn_commission", 0)
+        txn_logistics = p.get("txn_logistics", 0)
+        txn_acquiring = p.get("txn_acquiring", 0)
+        txn_storage = p.get("txn_storage", 0)
 
-        # ── Gross profit = revenue - COGS - mp_fees - ad_spend ──
-        # NOTE: previously used txn_payout - COGS - ad, but txn_payout is NOT tied
-        # to order period (includes settlements for past orders, refunds, etc.)
-        if cost > 0 and p["orders_7d"] > 0:
+        # ── Marketplace fees = commission + logistics + acquiring + storage ──
+        if txn_revenue > 0:
+            total_fees = txn_commission + txn_logistics + txn_acquiring + txn_storage
+            p["mp_fees"] = round(total_fees, 2)
+            p["mp_fees_commission"] = round(txn_commission, 2)
+            p["mp_fees_logistics"] = round(txn_logistics + txn_acquiring + txn_storage, 2)
+            p["mp_fees_percent"] = round(total_fees / txn_revenue * 100, 1)
+
+            # Override revenue_7d with REAL revenue for display
+            p["revenue_7d"] = round(txn_revenue, 2)
+
+        # ── Gross profit = real_revenue - COGS - total_fees - ad_spend ──
+        if cost > 0 and p["orders_7d"] > 0 and txn_revenue > 0:
             cogs = cost * p["orders_7d"]
-            mp_fees_val = p.get("mp_fees", 0)
-            gp = p["revenue_7d"] - cogs - mp_fees_val - p["ad_spend_7d"]
+            total_fees_val = p.get("mp_fees", 0)
+            gp = txn_revenue - cogs - total_fees_val - p["ad_spend_7d"]
             p["gross_profit"] = round(gp, 2)
-            if p["revenue_7d"] > 0:
-                p["gross_profit_percent"] = round(gp / p["revenue_7d"] * 100, 1)
+            if txn_revenue > 0:
+                p["gross_profit_percent"] = round(gp / txn_revenue * 100, 1)
             # Prev-period gross profit for delta
-            if p.get("orders_prev_7d", 0) > 0:
+            txn_revenue_prev = p.get("txn_revenue_prev", 0)
+            if p.get("orders_prev_7d", 0) > 0 and txn_revenue_prev > 0:
                 cogs_prev = cost * p["orders_prev_7d"]
-                rev_prev = p.get("revenue_prev", 0)
-                mp_pct = p.get("mp_fees_percent", 0) / 100
-                mp_fees_prev = rev_prev * mp_pct
-                gp_prev = rev_prev - cogs_prev - mp_fees_prev - p.get("ad_spend_prev", 0)
+                comm_prev = p.get("txn_commission_prev", 0)
+                log_prev = p.get("txn_logistics_prev", 0)
+                acq_prev = p.get("txn_acquiring_prev", 0)
+                sto_prev = p.get("txn_storage_prev", 0)
+                fees_prev = comm_prev + log_prev + acq_prev + sto_prev
+                gp_prev = txn_revenue_prev - cogs_prev - fees_prev - p.get("ad_spend_prev", 0)
                 p["gross_profit_prev"] = round(gp_prev, 2)
                 if gp_prev != 0:
                     p["gross_profit_delta"] = round((gp - gp_prev) / abs(gp_prev) * 100, 1)
                 elif gp > 0:
                     p["gross_profit_delta"] = 100.0
+
+        # Recalculate DRR with real revenue (revenue_7d now = txn_revenue)
+        if p["ad_spend_7d"] > 0 and p["revenue_7d"] > 0:
+            p["drr"] = round(p["ad_spend_7d"] / p["revenue_7d"] * 100, 1)
 
         # sales_amount = avg_price × orders (payout-based total)
         if p["avg_price"] > 0 and p["orders_7d"] > 0:
