@@ -1,3 +1,341 @@
+## 2026-04-07 (v17.48.0)
+
+### feat(finances): Единая терминология WB — «Все продажи» и «К выплате»
+
+**Проблема**: На WB «Выручка» (retail_price_withdisc_rub) — это розничная цена покупателя, а не реальный доход продавца. Термин «К перечислению» неоднозначен — непонятно, до или после удержаний.
+
+**Решение — marketplace-adaptive терминология:**
+
+| Метрика | Ozon (без изменений) | WB (новое) |
+|---------|----------------------|------------|
+| Revenue | Выручка | **Все продажи** |
+| Payout | К перечислению | **К выплате (до удержаний)** |
+| Expenses subtitle | от перечисления | **от выплат** |
+
+**Затронутые компоненты:**
+
+1. **KPI-карточки (FinancesPage)** — условные лейблы через `isWb` flag
+2. **Breakdown waterfall chart** — WB-специфичные метки полос
+3. **Comparison table (WB_ROWS)** — обновлённые строки
+4. **Weekly report table (WeeklyReportTable)** — заголовки колонок WB
+5. **PDF отчёт (generatePnlReport)** — marketplace-aware KPI, waterfall, comparison, weekly headers
+
+**Файлы:**
+- `frontend/src/pages/FinancesPage.tsx` — KPI cards, breakdown, comparison
+- `frontend/src/components/WeeklyReportTable.tsx` — WB column labels
+- `frontend/src/utils/generatePnlReport.ts` — PDF: все 4 секции
+
+---
+
+## 2026-04-07 (v17.47.0)
+
+### feat(ui): Редизайн ProductFinanceTable + фикс выручки Ozon
+
+**2 изменения:**
+
+**1. ProductFinanceTable — единый стиль с ProductsPage:**
+- Первый столбец: фото товара (48×64px) + название + артикул + SKU/nm_id
+- Hover-превью фото при наведении (fixed overlay)
+- Строка «Итого» перенесена в header (pattern ProductsPage)
+- Удалён 7-day warning banner со страницы Товаров
+- Backend `/finances/wb/products`: добавлены `name` и `image_url` из `dim_products`
+- Backend `/finances/ozon/products`: добавлены `image_url` и `product_id (nm_id)` из `dim_ozon_products`
+
+**2. Ozon Products — реальная выручка (accruals_for_sale):**
+- **Проблема**: revenue = price × quantity (цена покупателя) завышала выручку ~2.5x из-за скидок Ozon
+- **Решение**: revenue из `fact_ozon_transactions.accruals_for_sale` (реальные начисления продавцу)
+- mp_fees = `sale_commission + services_total` (чёткая детализация вместо `revenue − payout`)
+- Bulk charges (Acquiring, Storage) распределяются пропорционально выручке
+- DRR и gross_profit пересчитаны от реальной выручки
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — enrich WB/Ozon products with names/images
+- `backend/app/api/v1/products.py` — Ozon: accruals_for_sale + bulk charges
+- `backend/app/api/v1/wb_prices.py` — prices page improvements
+- `frontend/src/components/ProductFinanceTable.tsx` — full redesign
+- `frontend/src/pages/ProductsPage.tsx` — remove warning banner
+
+---
+
+## 2026-04-07 (v17.46.0)
+
+### fix(finances): Общие удержания НЕ распределяются по товарам
+
+**Проблема**: Непривязанные удержания (отзывы за баллы, авансы) распределялись пропорционально revenue по всем товарам. Это завышало mp_fees каждого товара и уничтожало маржу.
+
+**Решение:**
+- Per-product `deductions` теперь содержит **только** product-specific удержания (с vendor_code)
+- Unpinned deductions → только `totals.mp_fees` и `totals.profit` (страница Финансов)
+- Страница Товаров: general deductions полностью исключены из totals — показывает только product-only экономику
+- Хранение по-прежнему распределяется пропорционально (складские расходы не имеют product ID)
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — unlinked_ded fix, new field `totals.unlinked_deductions`
+- `backend/app/api/v1/wb_products.py` — remove general deductions from per-product + totals
+
+---
+
+## 2026-04-07 (v17.45.0)
+
+### fix(products): WB P&L товаров — единый источник fact_finances
+
+**Проблема**: Products page использовала `fact_orders_raw` для revenue/qty, но `fact_finances` для fees. Разные даты (заказ vs реализация) создавали расхождение ~39k₽ в прибыли.
+
+**Решение — fact_finances как единый источник:**
+- Revenue: `retail_price_withdisc_rub` из `fact_finances` (не `price_with_disc` из orders)
+- Orders qty: `quantity` из `fact_finances` (для COGS и financial calcs)
+- Удалён scaling logic (строки 500-508), который искусственно завышал payout/fees
+- `fact_orders_raw` → только fallback для товаров без реализации (marked `fees_source='estimated'`)
+- Формула идентична `finances.py`: `profit = payout − mp_fees − COGS − ads`
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — fallback chain refactor
+
+---
+
+## 2026-04-07 (v17.44.2)
+
+### fix(prices): Оптимизация layout таблицы Цен
+
+- Sticky header: `thead` фиксирован при вертикальном скролле (`max-h calc(100vh-220px)`)
+- Ценовые колонки: уменьшены отступы `px-1.5/px-0.5` для компактной группировки
+- б/р прибыль: шрифт 13px с opacity 0.6 для лучшей читаемости
+- ДРР: только процент, убрана дублирующая абсолютная сумма
+- Vendor codes: opacity 0.45→0.55 для видимости
+
+**Файлы:**
+- `frontend/src/pages/ProductsPricesPage.tsx` — table layout optimization
+
+---
+
+## 2026-04-07 (v17.44.0)
+
+### feat(prices): ДРР + прибыль с/без рекламы + фикс выравнивания таблицы
+
+**4 изменения:**
+
+**1. ДРР по товарам (30д):**
+- **Backend**: Новые ClickHouse-запросы `fact_advert_stats_v3` (расход) и `fact_orders_raw` (выручка) за 30 дней
+- **Frontend**: Колонка «ДРР» — % расходов на рекламу + абсолютная сумма, цветовая индикация (зелёный < 15%, жёлтый < 30%, красный > 30%)
+- Колонка показывается только если хотя бы один товар имеет рекламный расход
+
+**2. Прибыль с/без рекламы:**
+- `profit_with_ads = profit_per_unit - (ad_spend_30d / orders_30d)` — вычитание рекламы на единицу
+- В столбце «Прибыль/шт» два значения: основная (с рекламой, иконка рупора) и вспомогательная (без рекламы)
+- Если рекламы нет — отображается только прибыль без рекламы с меткой источника (≈ без рекламы / ≈ оценка)
+
+**3. Фикс выравнивания таблицы:**
+- Убрано `tableLayout: fixed` + `colgroup` — браузер сам распределяет ширину столбцов
+- Все числовые колонки: `text-right` + `whitespace-nowrap` для аккуратного отображения
+- FBO/FBS теперь всегда видны (раньше обрезались за границей экрана)
+
+**4. Auto-hide WB Клуб:**
+- Колонка «WB Клуб» автоматически скрывается когда `clubDiscount = 0` (клуб не подключён)
+- Подтверждено: WB API возвращает `clubDiscountedPrice == discountedPrice` при неактивном клубе
+
+**Файлы:**
+- `backend/app/api/v1/wb_prices.py` — +ad_spend_map, +orders_revenue_map, DRR/profit_with_ads, фильтр club
+- `frontend/src/api/wb-products.ts` — +ad_spend_30d, +drr, +profit_with_ads в WBPriceProduct
+- `frontend/src/pages/ProductsPricesPage.tsx` — полный рефактор таблицы: выравнивание, ДРР, прибыль 2 строки
+
+---
+
+## 2026-04-07 (v17.43.0)
+
+### feat(products): Real-time Ad Badge + Finance-based Profit + Lint Cleanup
+
+**3 изменения:**
+
+**1. Real-time Ad Badge (has_active_ads):**
+- **Проблема**: Бейдж «Реклама» на странице товаров показывался по `ad_spend_7d > 0` — историческим расходам. Товар мог потратить на рекламу 7 дней назад, кампания остановлена, а бейдж горит.
+- **Решение**: Новое поле `has_active_ads` определяет реальный статус:
+  - **WB**: `dim_advert_campaigns.status = 9` (активна) + товар в кампании
+  - **Ozon**: Свежие записи в `log_ozon_bids` за последние 2 дня
+- Frontend: бейдж «● Реклама» (фиолетовый, пульсирующий) теперь отображается только у товаров с **действительно активными** кампаниями
+- Поле проброшено через `wbToOzon` маппер для унификации WB/Ozon
+
+**2. Finance-based Profit per Unit (WB Prices):**
+- **Проблема**: Прибыль/шт на странице «Цены» рассчитывалась через hardcoded оценку комиссий (~35%). Реальные комиссии отличаются на 10-20%.
+- **Решение**: Приоритет данных из `fact_finances` (30 дней):
+  - `payout_per_unit = sum(payout) / count(*)` — средняя выплата за единицу
+  - `profit_per_unit = payout_per_unit - cost_price - packaging_cost`
+  - Fallback: 35% оценка если нет финансовых данных
+- **UI**: Метки источника данных:
+  - **«≈ без рекламы»** — данные из реальных финансовых отчётов (не включают рекламу)
+  - **«≈ оценка»** — нет данных в `fact_finances`, используется расчётный метод
+- Новое поле `profit_source: 'finance' | 'estimated' | null` в `WBPriceProduct` и `PriceRow`
+
+**3. Lint Cleanup:**
+- Удалена неиспользуемая переменная `[page, setPage]` в `ProductsPricesPage.tsx`
+- `pageRef` (useRef) остаётся — используется для infinite scroll
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — has_active_ads query (WB)
+- `backend/app/api/v1/products.py` — has_active_ads query (Ozon)
+- `backend/app/api/v1/wb_prices.py` — fact_finances profit calculation + profit_source
+- `frontend/src/api/wb-products.ts` — +has_active_ads, +profit_source types
+- `frontend/src/api/products.ts` — +has_active_ads type
+- `frontend/src/pages/ProductsPage.tsx` — badge: ad_spend_7d → has_active_ads + wbToOzon
+- `frontend/src/pages/ProductsPricesPage.tsx` — profit_source UI + lint cleanup
+
+---
+
+## 2026-04-07 (v17.42.0)
+
+### feat(products): Аналитика отмен + рефакторинг UI страницы Цен
+
+**3 изменения:**
+
+**1. Аналитика отмен (Backend + Frontend):**
+- **Ozon**: Запрос отмен из `fact_ozon_orders` с фильтром `status IN ('cancelled', 'canceled')`
+- **WB**: Отмены из `is_cancel = 1` в `fact_orders_raw` (уже было в бэкенде)
+- `cancel_rate = cancels / (orders + cancels) * 100` — процент от общего количества
+- Totals: агрегация `cancels` и `cancel_rate` по всем товарам
+- **ProductsPage**: Новая колонка «Отмены» с цветовой индикацией:
+  - `>10%` → красный (проблема)
+  - `>5%` → жёлтый (внимание)
+  - `≤5%` → обычный цвет
+
+**2. Рефакторинг UI страницы Цен (`ProductsPricesPage.tsx`):**
+- Таблица приведена к стилю ProductsPage: фото 48×64px, `line-clamp-2` для названий, hover-preview фото
+- Vendor code: моноширинный шрифт, tracking-wide
+- Бейдж «Низкая оборач.» для товаров с плохой оборачиваемостью
+- Hover-эффект на строках таблицы
+
+**3. Фикс загрузки фото WB:**
+- **Проблема**: CDN-формула `basket-(vol%17+1)` устарела для новых nm_id WB → 404 ошибки для всех фото
+- **Решение**: `getImageUrl()` теперь приоритизирует `image_url` из PostgreSQL (`dim_products.main_image_url`), CDN → только fallback
+- Все 40 товаров теперь отображаются с фотографиями ✅
+
+**Types:**
+- `OzonProduct`: +`cancels`, `cancel_rate`
+- `WBProduct`: +`cancels`, `cancel_rate`
+
+**Файлы:**
+- `backend/app/api/v1/products.py` — запрос отмен Ozon + totals
+- `backend/app/api/v1/wb_products.py` — totals с отменами
+- `frontend/src/api/products.ts` — типы OzonProduct
+- `frontend/src/api/wb-products.ts` — типы WBProduct
+- `frontend/src/pages/ProductsPage.tsx` — колонка «Отмены»
+- `frontend/src/pages/ProductsPricesPage.tsx` — UI рефакторинг + фикс фото
+
+---
+
+## 2026-04-07 (v17.41.2)
+
+### fix(finances): FINAL keyword для fact_advert_stats_v3 — удвоение рекламы
+
+**Проблема**: Рекламные расходы WB удваивались во ВСЕХ отчётах (KPI-карточка, daily dynamics, product P&L, weekly report). Например, для товара ОН-КШ-ЧВ-ИНД-10 показывалось 6,214₽ рекламы вместо правильных 3,107₽.
+
+**Корневая причина**: `fact_advert_stats_v3` — таблица типа `ReplacingMergeTree`. Без ключевого слова `FINAL` запросы читали **все версии строк** (дубликаты из повторных INSERT), удваивая `sum(spend)`. В таблице для одного товара вместо 10 строк — 20.
+
+**Фикс — 4 запроса в `finances.py`:**
+
+| Строка | Endpoint / Контекст | До | После |
+|--------|---------------------|-----|-------|
+| 778 | KPI ad_spend (agr.) | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 796 | Daily ad_spend | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 1330 | Product-level P&L | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+| 2443 | Weekly report marketing | `FROM fact_advert_stats_v3` | `FROM fact_advert_stats_v3 FINAL` |
+
+**Аудит**: Все остальные файлы (`campaign_details.py`, `advertising_analytics.py`, `events_graph.py`, `campaign_ai_analysis.py`, `wb_advertising.py`) уже использовали `FINAL`. Пропуск был только в `finances.py`.
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — добавлен `FINAL` к 4 запросам
+
+---
+
+## 2026-04-07 (v17.41.1)
+
+### fix(finances): Убрано задвоение рекламы WB в P&L
+
+**Проблема**: Расход на рекламу WB учитывался **дважды** в формуле прибыли:
+1. Через `total_deductions` из `fact_finances` (содержит "ВБ Продвижение" = реклама)
+2. Через MAX-reconciliation блок, который дополнительно добавлял `ad_spend` из `fact_advert_stats_v3`
+
+Это приводило к **занижению прибыли** на сумму рекламного расхода.
+
+**Корневая причина — MAX-reconciliation (строки 860-870):**
+```python
+# БЫЛО (СЛОМАНО): ad_spend добавлялся к deductions
+final_ad = max(total_deductions_ads, ad_spend)
+extra = final_ad - total_deductions_ads
+total_deductions += extra  # ← ДУБЛИРОВАНИЕ!
+```
+
+`fact_finances` уже включает ВБ Промо как `deduction` типа «продвижение». Добавление `ad_spend` сверху = двойной учёт.
+
+**Решение:**
+- Удалён MAX-reconciliation блок из агрегатного расчёта
+- Удалена аналогичная корректировка из daily dynamics (2 места)
+- `fact_finances` = **единственный source of truth** для P&L формулы
+- `fact_advert_stats_v3` → только информационная KPI-карточка (ДРР), **НЕ участвует в формуле**
+
+**Формулы после фикса:**
+```
+operating = logistics + storage + acceptance + total_deductions
+profit = revenue - (commission + operating) - cogs
+ad_spend → KPI-карточка "Реклама" (ДРР%) — не влияет на profit
+```
+
+**Файлы:**
+- `backend/app/api/v1/finances.py` — удалён MAX-reconciliation + daily dynamics fix
+
+---
+
+## 2026-04-07 (v17.41.0)
+
+### fix(products): Критический фикс расчёта прибыльности WB — per-unit rates
+
+**Проблема**: P&L товаров WB показывал абсурдные результаты:
+- Период 7 дней: Выплата (52,099₽) **больше** продаж (48,240₽) — физически невозможно
+- Период 30 дней: Прибыль **−14,809₽** при адекватной марже — должна быть +37,000₽
+
+**Корневая причина — 2 бага:**
+
+1. **Ratio-based fallback (payout_ratio = payout/retail_amount):**
+   - `retail_amount` в `fact_finances` ≠ `price_with_disc` в `fact_orders_raw`
+   - У WB `payout_ratio` получается **>100%** (1.08–1.14!) из-за разницы цен
+   - Умножение `payout_ratio × price_with_disc` → выплата > продаж → абсурдная маржа
+
+2. **Partial coverage для 30д:**
+   - `fact_finances` покрывает ~22 из 30 дней (лаг 8+ дней)
+   - Fees считаются за 22 дня, но COGS × 30 дней заказов → искусственный убыток
+
+**Решение — 2 исправления:**
+
+1. **Per-unit rates** в fallback chain (вместо ratio-based):
+   ```sql
+   -- БЫЛО (сломано): payout = revenue × (payout / retail_amount) ← ratio >100%
+   -- СТАЛО (OK):     payout = orders × (payout / sales_qty) ← ~3,250₽/шт
+   ```
+   - `payout_per_unit`, `commission_per_unit`, `logistics_per_unit` — всё делим на количество
+   - Убрана зависимость от `retail_amount` полностью
+
+2. **Temporal scaling** при частичном покрытии:
+   ```python
+   if fees_qty > 0 and orders_7d > 0 and fees_qty < orders_7d:
+       scale = orders_7d / fees_qty  # 26/20 = 1.3x
+       payout = fees.payout * scale
+   ```
+   - Помечаем как `estimated` (≈ badge)
+
+**Результат (товар ОН-КШ-ЧВ-ИНД-10, цена 4500₽):**
+
+| Показатель | 7д (БЫЛО) | 7д (СТАЛО) | 30д (БЫЛО) | 30д (СТАЛО) |
+|---|---|---|---|---|
+| Продажи | 48,240₽ | 48,240₽ | 113,040₽ | 113,040₽ |
+| Выплата | ~~52,099₽~~ | **35,748₽** | ~~32,498₽~~ | **84,495₽** |
+| Прибыль | ~~+32,339₽~~ | **+15,988₽** | ~~−14,809₽~~ | **+37,188₽** |
+| Маржа | ~~+67%~~ | **+33%** | ~~−13%~~ | **+33%** |
+
+Маржа 33% стабильна для обоих периодов ✅
+
+**Файлы:**
+- `backend/app/api/v1/wb_products.py` — fallback chain + merge logic
+
+---
+
 ## 2026-04-06 (v17.40.0)
 
 ### refactor(celery): Модуляризация tasks.py — 8 доменных модулей

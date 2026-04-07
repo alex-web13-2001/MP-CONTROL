@@ -17,9 +17,7 @@ import {
   Search,
   Package,
   AlertTriangle,
-
   Loader2,
-  Check,
   X,
   Upload,
   Download,
@@ -28,7 +26,6 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
 import {
   getOzonProductsApi,
-  updateOzonCostApi,
   uploadCostExcelApi,
   downloadCostTemplate,
   type OzonProduct,
@@ -36,7 +33,6 @@ import {
 } from '@/api/products'
 import {
   getWBProductsApi,
-  updateWBCostApi,
   uploadWBCostExcelApi,
   downloadWBCostTemplate,
   type WBProduct,
@@ -107,6 +103,8 @@ function wbToOzon(p: WBProduct): OzonProduct {
     ad_spend_7d: p.ad_spend_7d,
     drr: p.drr,
     returns_30d: 0,
+    cancels: p.cancels ?? 0,
+    cancel_rate: p.cancel_rate ?? 0,
     orders_30d: p.orders_7d,
     content_rating: 0,
     commission_percent: 0,
@@ -121,15 +119,20 @@ function wbToOzon(p: WBProduct): OzonProduct {
     gross_profit_delta: null,
     mp_fees: p.mp_fees ?? 0,
     mp_fees_percent: p.mp_fees_percent ?? 0,
-    mp_fees_commission: p.mp_fees_commission ?? 0,
+    mp_fees_commission: 0,
     mp_fees_logistics: p.mp_fees_logistics ?? 0,
     mp_fees_storage: p.mp_fees_storage ?? 0,
-    mp_fees_other: p.mp_fees_other ?? 0,
+    mp_fees_other: 0,
+    mp_fees_deductions: p.mp_fees_deductions ?? 0,
+    mp_fees_acceptance: p.mp_fees_acceptance ?? 0,
+    mp_fees_fines: p.mp_fees_fines ?? 0,
     sales_amount: p.sales_amount ?? 0,
     avg_price: p.avg_price ?? 0,
     period: 7,
     events: [] as ProductEvent[],
     promotions: [] as string[],
+    fees_source: p.fees_source,
+    has_active_ads: p.has_active_ads,
   }
 }
 
@@ -175,131 +178,6 @@ function ContentRating({ rating }: { rating: number }) {
 /* SortDropdown removed — sorting is in table headers */
 
 /* ═══════════════════════════════════════════════════════════
-   Inline Cost Editor (styled, no native spinner)
-   ═══════════════════════════════════════════════════════════ */
-
-function CostEdit({ product, shopId, onSaved }: {
-  product: OzonProduct; shopId: number; onSaved: (oid: string, cost: number) => void
-}) {
-  const [editing, setEditing] = useState(false)
-  const [val, setVal] = useState(product.cost_price.toString())
-  const [saving, setSaving] = useState(false)
-  const [closing, setClosing] = useState(false)
-  const wrapRef = useRef<HTMLDivElement>(null)
-
-  const close = useCallback(() => {
-    setClosing(true)
-    setTimeout(() => { setEditing(false); setClosing(false) }, 150)
-  }, [])
-
-  const save = async () => {
-    const n = parseFloat(val)
-    if (isNaN(n) || n < 0) return
-    setSaving(true)
-    try {
-      await updateOzonCostApi({ shop_id: shopId, offer_id: product.offer_id, cost_price: n })
-      onSaved(product.offer_id, n)
-      close()
-    } catch { /* silently */ } finally { setSaving(false) }
-  }
-
-  // Close on outside click
-  useEffect(() => {
-    if (!editing) return
-    const h = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) close()
-    }
-    document.addEventListener('mousedown', h)
-    return () => document.removeEventListener('mousedown', h)
-  }, [editing, close])
-
-  const openEditor = () => {
-    setVal(product.cost_price > 0 ? product.cost_price.toString() : '')
-    setEditing(true)
-    setClosing(false)
-  }
-
-  return (
-    <div className="relative inline-flex" ref={wrapRef}>
-      {/* Trigger — always visible, preserves table width */}
-      {product.cost_price === 0 ? (
-        <button
-          onClick={openEditor}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold bg-amber-500/12 text-amber-400 hover:bg-amber-500/20 transition-colors border border-amber-500/15"
-        >
-          <AlertTriangle className="h-3 w-3" />
-          Указать
-        </button>
-      ) : (
-        <button
-          onClick={openEditor}
-          className="text-sm font-medium text-[hsl(var(--foreground)/0.8)] hover:text-[hsl(var(--primary))] transition-colors cursor-pointer"
-        >
-          {fmtMoney(product.cost_price)}
-        </button>
-      )}
-
-      {/* Floating popover — positioned absolutely, doesn't shift table */}
-      {editing && (
-        <div
-          className={cn(
-            'absolute right-0 top-full z-50 mt-1.5',
-            'rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl',
-            'px-3 py-2.5',
-            closing
-              ? 'animate-[costPopOut_150ms_ease-in_forwards]'
-              : 'animate-[costPopIn_200ms_ease-out_forwards]',
-          )}
-          style={{ minWidth: '180px' }}
-        >
-          <p className="text-[10px] font-semibold text-[hsl(var(--muted-foreground)/0.6)] uppercase tracking-wide mb-1.5">
-            Себестоимость, ₽
-          </p>
-          <div className="flex items-center gap-1.5">
-            <input
-              type="number"
-              className="w-full rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[hsl(var(--primary)/0.3)] focus:border-[hsl(var(--primary)/0.5)] transition-all [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              placeholder="0"
-              value={val}
-              onChange={(e) => setVal(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') close() }}
-              autoFocus
-            />
-            <button
-              onClick={save}
-              disabled={saving}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 transition-colors"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-            </button>
-            <button
-              onClick={close}
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg hover:bg-white/8 text-[hsl(var(--muted-foreground)/0.5)] hover:text-[hsl(var(--muted-foreground))] transition-colors"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Popover animation keyframes */}
-      <style>{`
-        @keyframes costPopIn {
-          from { opacity: 0; transform: translateY(-4px) scale(0.96); }
-          to   { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes costPopOut {
-          from { opacity: 1; transform: translateY(0) scale(1); }
-          to   { opacity: 0; transform: translateY(-4px) scale(0.96); }
-        }
-      `}</style>
-    </div>
-  )
-}
-
-
-
-/* ═══════════════════════════════════════════════════════════
    Main Page Component
    ═══════════════════════════════════════════════════════════ */
 
@@ -308,6 +186,7 @@ export default function ProductsPage() {
   const isOzon = currentShop?.marketplace === 'ozon'
   const isWB = currentShop?.marketplace === 'wildberries'
   const shopId = currentShop?.id
+
 
   const [products, setProducts] = useState<OzonProduct[]>([])
   const [total, setTotal] = useState(0)
@@ -463,20 +342,7 @@ export default function ProductsPage() {
     }
   }
 
-  const handleCostSaved = (offerId: string, cost: number) => {
-    setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
-    setCostMissing((c) => Math.max(0, c - 1))
-    fetchProducts()
-  }
 
-  const handleWBCostSaved = async (offerId: string, cost: number) => {
-    if (!shopId) return
-    try {
-      await updateWBCostApi({ shop_id: shopId, vendor_code: offerId, cost_price: cost })
-      setProducts((prev) => prev.map((p) => (p.offer_id === offerId ? { ...p, cost_price: cost } : p)))
-      setCostMissing((c) => Math.max(0, c - 1))
-    } catch { /* silent */ }
-  }
 
 
   /* ── Marketplace not selected ── */
@@ -582,16 +448,7 @@ export default function ProductsPage() {
         </div>
       )}
 
-      {/* ─── 7-дней предупреждение ─── */}
-      {periodValue.period === 7 && !loading && products.length > 0 && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 mb-3">
-          <svg className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" /></svg>
-          <p className="text-[12px] leading-relaxed text-amber-200/80">
-            <span className="font-semibold text-amber-300">Данные за 7 дней могут быть неполными.</span>{' '}
-            Финансовый отчёт маркетплейса формируется с задержкой 1–3 дня. Итоговые цифры по выплатам и удержаниям могут измениться после закрытия отчётного периода.
-          </p>
-        </div>
-      )}
+
 
       {/* ═══════════════════════════════════════════════════
          Table — Business-priority columns:
@@ -643,7 +500,7 @@ export default function ProductsPage() {
                     <span>Выплата</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению на ваш расчётный счёт. Уже за вычетом комиссии, логистики и хранения</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Сумма к перечислению за вычетом комиссии и эквайринга. Логистика, хранение и удержания вычитаются отдельно</span>
                     </span>
                   </div>
                 </th>
@@ -683,7 +540,16 @@ export default function ProductsPage() {
                     <span>Услуги МП</span>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Удержания маркетплейса: комиссия + логистика + хранение. Информационный столбец — уже учтено в Выплате</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Логистика + хранение + удержания + приёмка. Вычитаются из выплаты для расчёта прибыли</span>
+                    </span>
+                  </div>
+                </th>
+                <th className="w-[70px] px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))]">
+                  <div className="flex items-center justify-end gap-1">
+                    <span>Отмены</span>
+                    <span className="relative group/tip">
+                      <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Отменённые заказы за период. % отмен = отмены / (заказы + отмены) × 100</span>
                     </span>
                   </div>
                 </th>
@@ -694,7 +560,7 @@ export default function ProductsPage() {
                     </button>
                     <span className="relative group/tip">
                       <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
-                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[220px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Чистая прибыль = Выплата − Себестоимость × шт − Реклама. Процент от выплаты</span>
+                      <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[240px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">Прибыль = Выплата − Услуги МП − С/с × шт − Реклама. Процент от продаж</span>
                     </span>
                   </div>
                 </th>
@@ -724,7 +590,16 @@ export default function ProductsPage() {
                         <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtMoney(Math.round(t.avg_price))}</p>
                       )}
                     </td>
-                    <td className="px-2 py-2" />
+                    <td className="px-2 py-2 text-right">
+                      {t.total_cogs > 0 && (
+                        <div>
+                          <p className="text-[13px] font-bold tabular-nums text-[hsl(var(--foreground)/0.7)]">{fmtMoney(t.total_cogs)}</p>
+                          <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums">
+                            {fmtNum(t.orders)} шт{t.orders > 0 ? ` × ${fmtMoney(Math.round(t.total_cogs / t.orders))}/шт` : ''}
+                          </p>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.ad_spend)}</p>
                       {t.drr > 0 && <p className={cn('text-[11px] font-semibold', t.drr > 20 ? 'text-red-400' : t.drr > 10 ? 'text-amber-400' : 'text-emerald-400')}>ДРР {t.drr}%</p>}
@@ -732,6 +607,14 @@ export default function ProductsPage() {
                     <td className="px-2 py-2 text-right">
                       <p className="text-[13px] font-bold tabular-nums">{fmtMoney(t.mp_fees)}</p>
                       <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{t.mp_fees_pct}%</p>
+                    </td>
+                    <td className="px-2 py-2 text-right">
+                      {(t.cancels ?? 0) > 0 ? (
+                        <>
+                          <p className="text-[13px] font-bold tabular-nums">{fmtNum(t.cancels)} шт</p>
+                          <p className={cn('text-[11px] font-semibold', (t.cancel_rate ?? 0) > 10 ? 'text-red-400' : (t.cancel_rate ?? 0) > 5 ? 'text-amber-400' : 'text-[hsl(var(--muted-foreground)/0.5)]')}>{t.cancel_rate}%</p>
+                        </>
+                      ) : <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>}
                     </td>
                     <td className="px-2 py-2 text-right">
                       {t.profit_count > 0 ? (
@@ -753,12 +636,12 @@ export default function ProductsPage() {
               {loading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="border-b border-[hsl(var(--border)/0.2)]">
-                    <td colSpan={10} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
+                    <td colSpan={11} className="px-4 py-4"><div className="h-12 animate-pulse rounded-lg bg-[hsl(var(--muted)/0.1)]" /></td>
                   </tr>
                 ))
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-16 text-center">
+                  <td colSpan={11} className="px-4 py-16 text-center">
                     <Package className="mx-auto mb-3 h-10 w-10 text-[hsl(var(--muted-foreground)/0.15)]" />
                     <p className="text-[hsl(var(--muted-foreground))]">Товары не найдены</p>
                     {search && <p className="mt-1 text-sm text-[hsl(var(--muted-foreground)/0.5)]">Попробуйте другой запрос</p>}
@@ -809,6 +692,12 @@ export default function ProductsPage() {
                             {p.status === 'active' && (
                               <span className="rounded px-1 py-[1px] text-[10px] font-semibold bg-emerald-500/12 text-emerald-400 leading-tight">Продаётся</span>
                             )}
+                            {p.has_active_ads && (
+                              <span className="inline-flex items-center gap-1 rounded px-1.5 py-[1px] text-[10px] font-semibold bg-violet-500/12 text-violet-400 leading-tight">
+                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-400 animate-pulse" />
+                                Реклама
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -841,7 +730,7 @@ export default function ProductsPage() {
                     <td className="px-2 py-2.5 text-right">
                       {p.orders_7d > 0 ? (
                         <div>
-                          <p className="text-[14px] font-bold tabular-nums">{fmtMoney((p.marketing_price || p.price) * p.orders_7d)}</p>
+                          <p className="text-[14px] font-bold tabular-nums">{fmtMoney(p.sales_amount || (p.marketing_price || p.price) * p.orders_7d)}</p>
                           <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">
                             {p.orders_7d} шт{p.revenue_delta !== 0 && <span className={cn('ml-1 font-semibold', p.revenue_delta > 0 ? 'text-emerald-400' : 'text-red-400')}>{p.revenue_delta > 0 ? '+' : ''}{p.revenue_delta}%</span>}
                           </p>
@@ -871,22 +760,36 @@ export default function ProductsPage() {
                       )}
                     </td>
 
-                    {/* ── 6. С/с + margin% ── */}
+                    {/* ── 6. С/с (read-only: total + шт + за шт) ── */}
                     <td className="px-2 py-2.5 text-right">
-                      <CostEdit
-                        product={p}
-                        shopId={shopId!}
-                        onSaved={isWB ? handleWBCostSaved : handleCostSaved}
-                      />
-                      {p.margin_percent !== null && p.cost_price > 0 && (
-                        <p className={cn(
-                          'text-[11px] font-semibold',
-                          p.margin_percent < 30 ? 'text-emerald-400'
-                            : p.margin_percent < 50 ? 'text-amber-400'
-                            : 'text-red-400',
-                        )}>
-                          {p.margin_percent}%
-                        </p>
+                      {p.cost_price > 0 ? (() => {
+                        const unitCost = p.cost_price + (p.packaging_cost || 0)
+                        const totalCost = unitCost * p.orders_7d
+                        return (
+                          <div>
+                            {p.orders_7d > 0 && (
+                              <p className="text-[13px] font-semibold tabular-nums">{fmtMoney(totalCost)}</p>
+                            )}
+                            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums">
+                              {p.orders_7d > 0 ? `${fmtNum(p.orders_7d)} шт × ` : ''}{fmtMoney(unitCost)}/шт
+                            </p>
+                            {p.margin_percent !== null && (
+                              <p className={cn(
+                                'text-[11px] font-semibold',
+                                p.margin_percent < 30 ? 'text-emerald-400'
+                                  : p.margin_percent < 50 ? 'text-amber-400'
+                                  : 'text-red-400',
+                              )}>
+                                {p.margin_percent}%
+                              </p>
+                            )}
+                          </div>
+                        )
+                      })() : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400/60">
+                          <AlertTriangle className="h-3 w-3" />
+                          Не указана
+                        </span>
                       )}
                     </td>
 
@@ -913,7 +816,10 @@ export default function ProductsPage() {
                     <td className="px-2 py-2.5 text-right">
                       {typeof p.mp_fees === 'number' && (p.revenue_7d > 0 || p.mp_fees !== 0) ? (
                         <div className="relative group/fees cursor-default">
-                          <p className="text-[13px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">{fmtMoney(p.mp_fees)}</p>
+                          <p className="text-[13px] font-semibold tabular-nums text-[hsl(var(--foreground)/0.85)]">
+                            {p.fees_source === 'estimated' && <span className="text-amber-400/70 mr-0.5" title="Оценка по историческим данным">≈</span>}
+                            {fmtMoney(p.mp_fees)}
+                          </p>
                           <p className={cn(
                             'text-[11px] font-semibold',
                             p.mp_fees_percent > 35 ? 'text-orange-400' : 'text-[hsl(var(--muted-foreground)/0.5)]'
@@ -921,20 +827,29 @@ export default function ProductsPage() {
                           {/* Тултип */}
                           <div className="absolute right-0 bottom-full mb-2 z-50 hidden group-hover/fees:block">
                             <div className="bg-[hsl(var(--popover))] border border-[hsl(var(--border))] rounded-lg shadow-xl px-4 py-3 min-w-[260px] text-left">
-                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">Удержания маркетплейса</p>
+                              <p className="text-[12px] font-bold text-[hsl(var(--foreground)/0.9)] mb-2">
+                                Удержания маркетплейса
+                                {p.fees_source === 'estimated' && (
+                                  <span className="ml-1.5 text-[10px] font-medium text-amber-400/80 bg-amber-500/10 rounded px-1.5 py-0.5">≈ оценка</span>
+                                )}
+                              </p>
+                              {p.fees_source === 'estimated' && (
+                                <p className="text-[10px] text-amber-300/60 mb-2 -mt-0.5">Рассчитано по историческим данным товара (90 дней)</p>
+                              )}
                               <div className="space-y-1.5">
                                 {[
-                                  { label: 'Комиссия', val: p.mp_fees_commission },
                                   { label: 'Логистика', val: p.mp_fees_logistics ?? 0 },
                                   { label: 'Хранение', val: p.mp_fees_storage ?? 0 },
-                                  { label: 'Прочее', val: p.mp_fees_other ?? 0 },
+                                  { label: 'Удержания', val: (p as any).mp_fees_deductions ?? 0 },
+                                  { label: 'Приёмка', val: (p as any).mp_fees_acceptance ?? 0 },
+                                  { label: 'Штрафы', val: (p as any).mp_fees_fines ?? 0 },
                                 ].filter(r => r.val !== 0).map(r => (
                                   <div key={r.label} className="flex justify-between gap-4">
                                     <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{r.label}</span>
                                     <div className="flex items-baseline gap-2">
                                       <span className="text-[12px] font-semibold tabular-nums">{fmtMoney(r.val)}</span>
                                       <span className="text-[10px] text-[hsl(var(--muted-foreground)/0.5)] tabular-nums w-[32px] text-right">
-                                        {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(r.val / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                        {p.revenue_7d > 0 ? `${(r.val / p.revenue_7d * 100).toFixed(1)}%` : '—'}
                                       </span>
                                     </div>
                                   </div>
@@ -945,13 +860,32 @@ export default function ProductsPage() {
                                   <div className="flex items-baseline gap-2">
                                     <span className="text-[12px] font-bold tabular-nums">{fmtMoney(p.mp_fees)}</span>
                                     <span className="text-[10px] font-bold tabular-nums w-[32px] text-right">
-                                      {(p.sales_amount ?? p.revenue_7d) > 0 ? `${(p.mp_fees / (p.sales_amount ?? p.revenue_7d) * 100).toFixed(1)}%` : '—'}
+                                      {p.revenue_7d > 0 ? `${(p.mp_fees / p.revenue_7d * 100).toFixed(1)}%` : '—'}
                                     </span>
                                   </div>
                                 </div>
                               </div>
                             </div>
                           </div>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
+
+                    {/* ── 8b. ОТМЕНЫ ── */}
+                    <td className="px-2 py-2.5 text-right">
+                      {(p.cancels ?? 0) > 0 ? (
+                        <div>
+                          <p className="text-[13px] font-semibold tabular-nums">{fmtNum(p.cancels)} шт</p>
+                          <p className={cn(
+                            'text-[11px] font-semibold',
+                            (p.cancel_rate ?? 0) > 10 ? 'text-red-400'
+                              : (p.cancel_rate ?? 0) > 5 ? 'text-amber-400'
+                              : 'text-[hsl(var(--muted-foreground)/0.5)]',
+                          )}>
+                            {p.cancel_rate}%
+                          </p>
                         </div>
                       ) : (
                         <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.25)]">—</span>
@@ -968,6 +902,7 @@ export default function ProductsPage() {
                             'text-[14px] font-bold tabular-nums',
                             p.gross_profit > 0 ? 'text-emerald-400' : 'text-red-400',
                           )}>
+                            {p.fees_source === 'estimated' && <span className="text-amber-400/70 mr-0.5" title="Прибыль рассчитана по оценочным комиссиям">≈</span>}
                             {p.gross_profit > 0 ? '+' : ''}{fmtMoney(p.gross_profit)}
                           </p>
                           {p.gross_profit_percent !== null && (

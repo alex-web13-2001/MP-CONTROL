@@ -84,10 +84,10 @@ const OZON_PCT_COLS: Col[] = [
 
 const WB_VALUE_COLS: Col[] = [
   { key: 'qty',               label: 'Кол-во',         width: 72,  type: 'count',  section: 'values' },
-  { key: 'revenue',           label: 'Выручка',        width: 110, type: 'money',  section: 'values', accent: true },
+  { key: 'revenue',           label: 'Все продажи',    width: 110, type: 'money',  section: 'values', accent: true },
   { key: 'commission',        label: 'Комиссия+СПП',   width: 115, type: 'money',  section: 'values' },
   { key: 'acquiring',         label: 'Эквайринг',      width: 95,  type: 'money',  section: 'values' },
-  { key: 'payout',            label: 'К перечисл.',    width: 120, type: 'money',  section: 'values', accent: true },
+  { key: 'payout',            label: 'К выплате',      width: 120, type: 'money',  section: 'values', accent: true },
   { key: 'logistics',         label: 'Логистика',      width: 100, type: 'money',  section: 'values' },
   { key: 'storage',           label: 'Хранение',       width: 95,  type: 'money',  section: 'values' },
   { key: 'wb_promo',          label: 'ВБ Продвиж.',    width: 110, type: 'money',  section: 'values' },

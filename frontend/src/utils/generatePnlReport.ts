@@ -210,16 +210,17 @@ function drawCover(doc: jsPDF, shopName: string, dateFrom: string, dateTo: strin
 
 // ── KPI Cards ─────────────────────────────────────────────────
 
-function drawKpiCards(doc: jsPDF, data: FinancesResponse, startY: number): number {
+function drawKpiCards(doc: jsPDF, data: FinancesResponse, startY: number, marketplace?: string): number {
   const kpi = data.kpi
+  const isWb = marketplace === 'wildberries' || marketplace === 'wb'
 
   const cards: Array<{
     title: string; value: string; subtitle: string
     delta: number; color: RGB
   }> = [
-    { title: 'Выручка', value: fmtMoney(kpi.revenue), subtitle: `${fmtNum(kpi.orders)} заказов`, delta: kpi.revenue_delta, color: C.green },
-    { title: 'К перечислению', value: fmtMoney(kpi.payout), subtitle: '', delta: kpi.payout_delta, color: C.primary },
-    { title: 'Расходы МП', value: fmtMoney(kpi.operating), subtitle: kpi.payout > 0 ? `${(kpi.operating / kpi.payout * 100).toFixed(1)}% от перечисл.` : '', delta: kpi.operating_delta ?? kpi.mp_fees_delta, color: C.orange },
+    { title: isWb ? 'Все продажи' : 'Выручка', value: fmtMoney(kpi.revenue), subtitle: `${fmtNum(kpi.orders)} заказов`, delta: kpi.revenue_delta, color: C.green },
+    { title: isWb ? 'К выплате (до удерж.)' : 'К перечислению', value: fmtMoney(kpi.payout), subtitle: '', delta: kpi.payout_delta, color: C.primary },
+    { title: 'Расходы МП', value: fmtMoney(kpi.operating), subtitle: kpi.payout > 0 ? `${(kpi.operating / kpi.payout * 100).toFixed(1)}% от ${isWb ? 'выплат' : 'перечисл.'}` : '', delta: kpi.operating_delta ?? kpi.mp_fees_delta, color: C.orange },
     { title: 'Реклама', value: fmtMoney(kpi.ad_spend), subtitle: kpi.revenue > 0 ? `ДРР ${(kpi.ad_spend / kpi.revenue * 100).toFixed(1)}%` : '', delta: kpi.ad_spend_delta, color: C.red },
     { title: 'Себестоимость', value: fmtMoney(kpi.cogs), subtitle: kpi.revenue > 0 ? `${(kpi.cogs / kpi.revenue * 100).toFixed(1)}% от выручки` : '', delta: kpi.cogs_delta, color: C.purple },
     { title: 'Чистая прибыль', value: fmtMoney(kpi.profit), subtitle: `${kpi.profit_pct.toFixed(1)}% от выручки`, delta: kpi.profit_delta, color: kpi.profit >= 0 ? C.green : C.red },
@@ -301,10 +302,10 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
   // Build waterfall bars from breakdown object (matches BreakdownChart on UI)
   type WBar = { label: string; value: number; pct: number; color: RGB; isBold: boolean }
   const allBars: WBar[] = [
-    { label: 'Выручка', value: bd.revenue, pct: 100, color: C.green, isBold: true },
+    { label: 'Все продажи', value: bd.revenue, pct: 100, color: C.green, isBold: true },
     { label: 'Комиссия + скидки', value: commissionNet, pct: Math.abs(commissionNet) / revenue * 100, color: C.orange, isBold: false },
     { label: 'Эквайринг', value: bd.acquiring || 0, pct: Math.abs(bd.acquiring || 0) / revenue * 100, color: C.pink, isBold: false },
-    { label: 'К перечислению', value: payoutVal, pct: payoutVal / revenue * 100, color: C.primary, isBold: true },
+    { label: 'К выплате (до удерж.)', value: payoutVal, pct: payoutVal / revenue * 100, color: C.primary, isBold: true },
     { label: 'Логистика', value: bd.logistics || 0, pct: (bd.logistics || 0) / revenue * 100, color: C.red, isBold: false },
     { label: 'Хранение', value: bd.storage || 0, pct: (bd.storage || 0) / revenue * 100, color: C.amber, isBold: false },
     { label: 'ВБ Продвижение', value: bdAny.deductions_ads || 0, pct: (bdAny.deductions_ads || 0) / revenue * 100, color: C.purple, isBold: false },
@@ -356,7 +357,7 @@ function drawWaterfallChart(doc: jsPDF, data: FinancesResponse, startY: number):
     if (item.pct > 0.05) {
       doc.setFont('Roboto', 'normal')
       doc.setFontSize(7)
-      const isGreen = item.label === 'Выручка' || item.label === 'К перечислению' || item.label === 'Прибыль'
+      const isGreen = item.label === 'Все продажи' || item.label === 'Выручка' || item.label === 'К выплате (до удерж.)' || item.label === 'К перечислению' || item.label === 'Прибыль'
       doc.setTextColor(...(isGreen ? C.green : C.red))
       doc.text(`${item.pct.toFixed(1)}%`, doc.internal.pageSize.getWidth() - 18, y + barH - 2, { align: 'right' })
     }
@@ -509,7 +510,7 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: st
   ]
 
   const wbRows: CRow[] = [
-    { key: 'revenue', label: 'Выручка', bold: true },
+    { key: 'revenue', label: 'Все продажи', bold: true },
     { key: 'orders', label: 'Заказы', isMoney: false },
     { key: '_sep_expenses', label: 'РАСХОДЫ', separator: true },
     { key: 'commission', label: 'Комиссия + СПП' },
@@ -522,7 +523,7 @@ function drawComparisonTable(doc: jsPDF, data: FinancesResponse, marketplace: st
     { key: 'refunds', label: 'Возвраты' },
     { key: 'cogs', label: 'Себестоимость' },
     { key: '_sep_totals', label: 'ИТОГО', separator: true },
-    { key: 'payout', label: 'К перечислению' },
+    { key: 'payout', label: 'К выплате (до удержаний)' },
     { key: 'profit', label: 'Чистая прибыль', bold: true },
   ]
 
@@ -729,7 +730,7 @@ function drawWeeklyTable(doc: jsPDF, weeklyData: WeeklyReportResponse, marketpla
   let body: string[][]
 
   if (isWb) {
-    head = ['Нед', 'Период', 'Кол-во', 'Выручка', 'К перечисл.', 'Комиссия', 'Логистика', 'Хранение', 'Удержания', 'ВБ Продв.', 'Приёмка', 'С/С', 'Прибыль', 'Маржа']
+    head = ['Нед', 'Период', 'Кол-во', 'Все продажи', 'К выплате', 'Комиссия', 'Логистика', 'Хранение', 'Удержания', 'ВБ Продв.', 'Приёмка', 'С/С', 'Прибыль', 'Маржа']
     body = weeks.map(w => {
       const wk = w as WBWeeklyReportRow
       const rev = wk.revenue || 1
@@ -892,7 +893,7 @@ export async function generatePnlReport(opts: PnlReportOptions): Promise<void> {
   doc.addPage()
   drawPageBg(doc)
   let y = drawSectionHeader(doc, 'Ключевые показатели', 25, `${fmtDate(data.date_from)} — ${fmtDate(data.date_to)}`)
-  drawKpiCards(doc, data, y)
+  drawKpiCards(doc, data, y, marketplace)
 
   // ── Page 3: Waterfall ──
   doc.addPage()

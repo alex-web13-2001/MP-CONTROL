@@ -41,6 +41,8 @@ export interface OzonProduct {
   ad_spend_7d: number
   drr: number
   returns_30d: number
+  cancels: number
+  cancel_rate: number
   orders_30d: number
   content_rating: number
   commission_percent: number
@@ -59,11 +61,18 @@ export interface OzonProduct {
   mp_fees_logistics: number
   mp_fees_storage: number
   mp_fees_other: number
+  mp_fees_deductions: number
+  mp_fees_acceptance: number
+  mp_fees_fines: number
   sales_amount: number
   avg_price: number
   period: number
   events: ProductEvent[]
   promotions: string[]
+  // Fee estimation indicator (WB only)
+  fees_source?: 'actual' | 'estimated'
+  // Active ad campaigns indicator
+  has_active_ads?: boolean
 }
 
 export interface ProductsResponse {

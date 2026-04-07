@@ -775,7 +775,7 @@ async def get_wb_finances(
             SELECT
                 sumIf(spend, date >= {d_start:Date} AND date <= {d_end:Date}) AS ads_cur,
                 sumIf(spend, date >= {d_prev_start:Date} AND date <= {d_prev_end:Date}) AS ads_prev
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_prev_start:Date}
               AND date <= {d_end:Date}
@@ -793,7 +793,7 @@ async def get_wb_finances(
     try:
         ads_daily_result = ch.query("""
             SELECT date, sum(spend) AS ad_spend
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_start:Date}
               AND date <= {d_end:Date}
@@ -858,16 +858,11 @@ async def get_wb_finances(
         logger.warning("WB COGS calculation failed: %s", e)
 
     # ══════════════════════════════════════════════════════
-    # MAX-reconciliation: if ad spend from fact_advert_stats_v3 exceeds
-    # the ad portion of deductions from fact_finances, adjust total_deductions.
-    # This happens when WB ad balance is topped up manually.
+    # fact_finances is the SINGLE source of truth for P&L.
+    # total_deductions already includes ВБ Продвижение (promo deductions).
+    # fact_advert_stats_v3 ad_spend is shown as informational KPI ONLY
+    # and is NOT added to expenses to avoid double-counting.
     # ══════════════════════════════════════════════════════
-    deductions_ads_raw_cur = max(0, total_deductions_cur - deductions_cur)
-    deductions_ads_raw_prev = max(0, total_deductions_prev - deductions_prev)
-    ads_adj_cur = max(0, ad_spend_cur - deductions_ads_raw_cur)
-    ads_adj_prev = max(0, ad_spend_prev - deductions_ads_raw_prev)
-    total_deductions_cur += ads_adj_cur
-    total_deductions_prev += ads_adj_prev
 
     operating_cur = logistics_cur + storage_cur + acceptance_cur + total_deductions_cur
     operating_prev = logistics_prev + storage_prev + acceptance_prev + total_deductions_prev
@@ -905,20 +900,21 @@ async def get_wb_finances(
 
     # ── Build breakdown ──
     # Split deductions: ads (ВБ Продвижение) vs other (transit, reviews, etc.)
-    deductions_ads_cur = total_deductions_cur - deductions_cur  # ВБ Продвижение portion
-    deductions_ads_prev = total_deductions_prev - deductions_prev
+    # Both come from fact_finances only — no mixing with fact_advert_stats_v3
+    deductions_ads_cur = max(0, total_deductions_cur - deductions_cur)  # ВБ Продвижение portion
+    deductions_ads_prev = max(0, total_deductions_prev - deductions_prev)
     breakdown_resp = {
         "revenue": round(revenue_cur, 2),
         "commission": round(commission_cur, 2),
         "logistics": round(logistics_cur, 2),
         "storage": round(storage_cur, 2),
         "acquiring": round(acquiring_cur, 2),
-        "advertising": round(ad_spend_cur, 2),  # from fact_advert_stats (informational KPI)
+        "advertising": round(ad_spend_cur, 2),  # from fact_advert_stats_v3 (informational only, NOT in profit)
         "refunds": round(returns_cur, 2),
         "penalties": 0,
-        "deductions": round(total_deductions_cur, 2),  # Full total for _bank_transfer calc
-        "deductions_ads": round(deductions_ads_cur, 2),  # ВБ Продвижение from deduction
-        "deductions_other": round(deductions_cur, 2),  # non-ad: transit delivery, reviews, etc.
+        "deductions": round(total_deductions_cur, 2),  # Full total deductions from fact_finances
+        "deductions_ads": round(deductions_ads_cur, 2),  # ВБ Продвижение from fact_finances deductions
+        "deductions_other": round(deductions_cur, 2),  # non-promo: transit, reviews, etc.
         "compensation": round(acceptance_cur, 2),
         "cogs": round(cogs_cur, 2),
         "profit": round(profit_cur, 2),
@@ -942,21 +938,15 @@ async def get_wb_finances(
         pen_d = dd.get("penalties", 0)
         acq_d = dd.get("acquiring", 0)
         acc_d = dd.get("acceptance", 0)
-        ded_d = dd.get("deductions", 0)
         tded_d = dd.get("total_deductions", 0)
-        ads_d = ads_daily.get(ds, 0)
-        # MAX-reconciliation for daily ad spend
-        ded_ads_d = max(0, tded_d - ded_d)  # ads portion from fact_finances
-        ads_adj_d = max(0, ads_d - ded_ads_d)  # extra ads not in finances
-        tded_d += ads_adj_d  # adjust total deductions
+        ads_d = ads_daily.get(ds, 0)  # informational only
         cogs_d = cogs_daily.get(ds, 0)
-        op_d = log_d + stor_d + acc_d + tded_d  # logistics + storage + acceptance + total_deductions
+        # fact_finances total_deductions already includes ВБ Промо — no adjustment needed
+        op_d = log_d + stor_d + acc_d + tded_d
         mp_d = comm_d + op_d
 
-        # Payout = ppvz_for_pay (к перечислению за товар)
         bank_trans_d = pay
-
-        profit_d = rev - mp_d - cogs_d  # ads already in tded_d
+        profit_d = rev - mp_d - cogs_d
 
         daily_raw.append({
             "date": ds,
@@ -1012,16 +1002,12 @@ async def get_wb_finances(
             pay = pt["payout"] # This is the bank transfer
             comm = pt["commission"]
             tded = pt.get("total_deductions", 0)
-            ded_noads = pt.get("deductions", 0)
-            ads = ads_daily.get(ds, 0)
-            # MAX-reconciliation for daily ad spend
-            ded_ads_pt = max(0, tded - ded_noads)
-            ads_adj = max(0, ads - ded_ads_pt)
-            tded += ads_adj
+            ads = ads_daily.get(ds, 0)  # informational only
+            # fact_finances total_deductions already includes ВБ Промо
             oper = pt["logistics"] + pt["storage"] + pt["acceptance"] + tded
             mp_fees = comm + oper
             cogs = cogs_daily.get(ds, 0)
-            prof = rev - mp_fees - cogs  # ads already in tded
+            prof = rev - mp_fees - cogs
 
             daily_final.append({
                 "date": ds,
@@ -1341,7 +1327,7 @@ async def get_wb_products_finance(
                 nm_id,
                 sumIf(spend, date >= {d_start:Date} AND date <= {d_end:Date}) AS ads_cur,
                 sumIf(spend, date >= {d_prev_start:Date} AND date <= {d_prev_end:Date}) AS ads_prev
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND date >= {d_prev_start:Date}
               AND date <= {d_end:Date}
@@ -1474,7 +1460,10 @@ async def get_wb_products_finance(
         unlinked_ded_cur = unknown_p["cur"]["deductions"] if unknown_p else 0
         unlinked_ded_prev = unknown_p["prev"]["deductions"] if unknown_p else 0
 
-    # ── Proportional distribution: ONLY storage + unlinked deductions ──
+    # ── Proportional distribution: ONLY storage (NOT deductions) ──
+    # Storage: WB не привязывает к конкретному товару → распределяем пропорционально
+    # Unlinked deductions (отзывы за баллы, прочие): НЕ распределяем по товарам!
+    #   Они идут только в общий итог P&L (totals.unlinked_deductions).
     # NOTE: acceptance has vendor_code in WB API → already grouped correctly
     unknown_p = products.get("__unknown__")
     if unknown_p:
@@ -1483,12 +1472,12 @@ async def get_wb_products_finance(
     else:
         undist_storage_cur = undist_storage_prev = 0
 
-    for period_key, u_stor, u_ded in [
-        ("cur", undist_storage_cur, unlinked_ded_cur),
-        ("prev", undist_storage_prev, unlinked_ded_prev),
+    # Storage → пропорциональное распределение
+    for period_key, u_stor in [
+        ("cur", undist_storage_cur),
+        ("prev", undist_storage_prev),
     ]:
-        total_undist = u_stor + u_ded
-        if total_undist == 0:
+        if u_stor == 0:
             continue
         total_rev = sum(
             p[period_key]["revenue"]
@@ -1505,15 +1494,40 @@ async def get_wb_products_finance(
                 continue
             share = rev / total_rev
             p[period_key]["storage"] += round(u_stor * share, 2)
-            p[period_key]["deductions"] += round(u_ded * share, 2)
 
-    # Zero out __unknown__ storage/deductions (redistributed)
+    # Zero out __unknown__ storage (redistributed)
+    # Deductions from __unknown__ are NOT redistributed — they go to totals only
     if unknown_p:
         for pk in ("cur", "prev"):
             unknown_p[pk]["storage"] = 0
             unknown_p[pk]["deductions"] = 0
     # ══════════════════════════════════════════════════════
-    # 4. Build response
+    # 4. Enrich with names & images from dim_products (PG)
+    # ══════════════════════════════════════════════════════
+    product_info_map: dict = {}  # vendor_code → {name, image_url}
+    try:
+        pg_info = await db.execute(
+            text("""
+                SELECT COALESCE(dp.vendor_code, ''),
+                       dp.name,
+                       COALESCE(dp.main_image_url, '') AS image_url
+                FROM dim_products dp
+                WHERE dp.shop_id = :shop_id
+            """),
+            {"shop_id": shop_id},
+        )
+        for row in pg_info.fetchall():
+            vc_key = str(row[0]).strip().lower()
+            if vc_key:
+                product_info_map[vc_key] = {
+                    "name": row[1] or "",
+                    "image_url": row[2] or "",
+                }
+    except Exception as e:
+        logger.warning("PG dim_products name/image lookup failed: %s", e)
+
+    # ══════════════════════════════════════════════════════
+    # 5. Build response
     # ══════════════════════════════════════════════════════
     result_products = []
     for vc, p in products.items():
@@ -1566,9 +1580,14 @@ async def get_wb_products_finance(
             for key in ("logistics", "storage", "deductions", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
+        # Lookup name & image from dim_products
+        info = product_info_map.get(vc.lower(), {})
+
         result_products.append({
             "vendor_code": vc,
             "nm_id": p["nm_id"],
+            "name": info.get("name", ""),
+            "image_url": info.get("image_url", ""),
             "current": current,
             "previous": previous,
             "delta_pct": delta_pct,
@@ -1585,6 +1604,15 @@ async def get_wb_products_finance(
                 "penalties", "returns", "ad_spend", "deductions", "acceptance", "cogs", "profit"):
         total_cur[key] = round(sum(p["current"][key] for p in result_products), 2)
         total_prev[key] = round(sum(p["previous"][key] for p in result_products), 2)
+
+    # Unlinked deductions (отзывы за баллы, прочие) — НЕ привязаны к товарам,
+    # но входят в общий P&L: добавляем в totals.deductions и уменьшаем profit
+    total_cur["unlinked_deductions"] = round(unlinked_ded_cur, 2)
+    total_prev["unlinked_deductions"] = round(unlinked_ded_prev, 2)
+    total_cur["deductions"] = round(total_cur["deductions"] + unlinked_ded_cur, 2)
+    total_prev["deductions"] = round(total_prev["deductions"] + unlinked_ded_prev, 2)
+    total_cur["profit"] = round(total_cur["profit"] - unlinked_ded_cur, 2)
+    total_prev["profit"] = round(total_prev["profit"] - unlinked_ded_prev, 2)
 
     total_delta = {}
     for key in total_cur:
@@ -1915,21 +1943,28 @@ async def get_ozon_products_finance(
     except Exception as e:
         logger.warning("Placement cost integration failed: %s", e)
 
-    names_map = {}
+    product_info_map: dict = {}  # offer_id → {name, image_url, product_id}
     try:
-        name_result = await db.execute(
+        ozon_info = await db.execute(
             text("""
-                SELECT offer_id, name
+                SELECT offer_id, name,
+                       COALESCE(main_image_url, '') AS image_url,
+                       product_id
                 FROM dim_ozon_products
                 WHERE shop_id = :shop_id
             """),
             {"shop_id": shop_id},
         )
-        for r in name_result.fetchall():
-            if r[1]:
-                names_map[r[0]] = r[1]
+        for row in ozon_info.fetchall():
+            oid_key = str(row[0]).strip()
+            if oid_key:
+                product_info_map[oid_key] = {
+                    "name": row[1] or "",
+                    "image_url": row[2] or "",
+                    "product_id": row[3] or 0,
+                }
     except Exception as e:
-        logger.warning("PG dim_ozon_products query failed: %s", e)
+        logger.warning("PG dim_ozon_products info lookup failed: %s", e)
 
     # ══════════════════════════════════════════════════════
     # 5. Build response
@@ -1977,9 +2012,14 @@ async def get_ozon_products_finance(
             for key in ("commission", "logistics", "payout", "ad_spend", "cogs", "profit"):
                 pct_of_rev[key] = round(current[key] / rev * 100, 1)
 
+        # Lookup name, image, product_id from dim_ozon_products
+        info = product_info_map.get(oid, {})
+
         result_products.append({
             "vendor_code": oid,
-            "name": names_map.get(oid, ""),
+            "nm_id": info.get("product_id", 0),
+            "name": info.get("name", ""),
+            "image_url": info.get("image_url", ""),
             "current": current,
             "previous": previous,
             "delta_pct": delta_pct,
@@ -2454,7 +2494,7 @@ async def get_wb_weekly_report(
             SELECT
                 toMonday(date) AS week_start,
                 sum(spend) AS total_spend
-            FROM mms_analytics.fact_advert_stats_v3
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
             GROUP BY week_start
         """, parameters={"shop_id": shop_id})

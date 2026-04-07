@@ -262,11 +262,11 @@ function GroupBySelector({
    ═══════════════════════════════════════════════════════════ */
 
 const WB_BREAKDOWN_ITEMS: Array<{ key: string; label: string; color: string; type?: 'revenue' | 'expense' | 'subtotal' | 'result' }> = [
-  { key: 'revenue', label: 'Выручка', color: '#10b981', type: 'revenue' },
+  { key: 'revenue', label: 'Все продажи', color: '#10b981', type: 'revenue' },
   // Items ABOVE payout — already inside ppvz_for_pay
   { key: '_commission_net', label: 'Комиссия + скидки', color: '#f97316', type: 'expense' },
   { key: 'acquiring', label: 'Эквайринг', color: '#ec4899', type: 'expense' },
-  { key: '_payout', label: 'К перечислению', color: '#3b82f6', type: 'subtotal' },
+  { key: '_payout', label: 'К выплате (до удержаний)', color: '#3b82f6', type: 'subtotal' },
   // Items BELOW payout — external WB expenses
   { key: 'logistics', label: 'Логистика', color: '#ef4444', type: 'expense' },
   { key: 'storage', label: 'Хранение', color: '#f59e0b', type: 'expense' },
@@ -756,7 +756,7 @@ const OZON_ROWS: ComparisonRow[] = [
 ]
 
 const WB_ROWS: ComparisonRow[] = [
-  { key: 'revenue', label: 'Выручка', isMoney: true, bold: true },
+  { key: 'revenue', label: 'Все продажи', isMoney: true, bold: true },
   { key: 'orders', label: 'Заказы', isMoney: false },
   { key: '_sep_expenses', label: 'РАСХОДЫ', isMoney: false, section: 'separator' },
   { key: 'commission', label: 'Комиссия + СПП', isMoney: true, invert: true },
@@ -769,7 +769,7 @@ const WB_ROWS: ComparisonRow[] = [
   { key: 'refunds', label: 'Возвраты', isMoney: true, invert: true },
   { key: 'cogs', label: 'Себестоимость', isMoney: true, invert: true },
   { key: '_sep_totals', label: 'ИТОГО', isMoney: false, section: 'separator' },
-  { key: 'payout', label: 'К перечислению', isMoney: true },
+  { key: 'payout', label: 'К выплате (до удержаний)', isMoney: true },
   { key: 'profit', label: 'Чистая прибыль', isMoney: true, bold: true },
 ]
 
@@ -1186,7 +1186,7 @@ export default function FinancesPage() {
           {/* ── KPI Cards ── */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             <KpiCard
-              title="Выручка"
+              title={isWb ? 'Все продажи' : 'Выручка'}
               value={formatMoney(kpi.revenue)}
               subtitle={`${formatNumber(kpi.orders)} заказов`}
               delta={kpi.revenue_delta}
@@ -1195,7 +1195,7 @@ export default function FinancesPage() {
               delay={0}
             />
             <KpiCard
-              title="К перечислению"
+              title={isWb ? 'К выплате (до удержаний)' : 'К перечислению'}
               value={formatMoney(kpi.payout)}
               delta={kpi.payout_delta}
               icon={Wallet}
@@ -1209,7 +1209,7 @@ export default function FinancesPage() {
                 <KpiCard
                   title="Расходы МП"
                   value={formatMoney(operating)}
-                  subtitle={`${operatingPct}% от перечисления`}
+                  subtitle={`${operatingPct}% от ${isWb ? 'выплат' : 'перечисления'}`}
                   delta={kpi.operating_delta ?? kpi.mp_fees_delta}
                   invertDelta
                   icon={Building2}

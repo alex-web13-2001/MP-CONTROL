@@ -247,16 +247,16 @@ period: "7d" | "14d" | "30d" (default: "7d")
 
 ### Ключевая логика
 
-- 9 источников данных: PG каталог + product_costs → CH заказы/транзакции/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
+- 9 источников данных: PG каталог + product_costs → CH транзакции/реклама/возвраты/комиссии/контент-рейтинг/промоакции → PG events
 - **Стабильная сортировка**: composite key `(primary_value, offer_id)` — гарантирует детерминированную пагинацию
-- **Формула прибыли Ozon** (revenue-based, привязана к дате заказа):
-  - `revenue_7d` = `sum(price × quantity)` из `fact_ozon_orders` — выручка по цене из ЛК
-  - `txn_payout` = `sum(amount)` из `fact_ozon_transactions` — для расчёта удержаний
-  - `mp_fees` = `revenue_7d − txn_payout` — ВСЕ удержания Ozon (SPP + комиссия + логистика + хранение)
-  - `gross_profit` = `revenue_7d − COGS − mp_fees − ad_spend` — чистая прибыль
-  - `gross_profit_percent` = `gross_profit / revenue_7d × 100` — % от выручки
-  - ⚠ Ранее: `gross_profit = txn_payout − COGS − ad` — некорректно, т.к. `txn_payout` не привязан к периоду заказов (включает расчёты за старые заказы)
-  - Детализация `mp_fees`: `mp_fees_commission` (скидки+комиссия+эквайринг), `mp_fees_logistics` (логистика+хранение+возвраты)
+- **Формула прибыли Ozon** (revenue = accruals_for_sale из transactions):
+  - `revenue` = `sum(accruals_for_sale)` из `fact_ozon_transactions` — реальные начисления продавцу (НЕ цена покупателя)
+  - `mp_fees` = `sale_commission + services_total` из `fact_ozon_transactions` — чёткая детализация удержаний
+  - Bulk charges (Acquiring, Storage, etc.) — распределяются пропорционально revenue по товарам
+  - `gross_profit` = `revenue − COGS − mp_fees − bulk_charges − ad_spend`
+  - `gross_profit_percent` = `gross_profit / revenue × 100` — % от реальной выручки
+  - ⚠ Ранее: `revenue = price × quantity` (цена покупателя) — завышала выручку ~2.5x из-за скидок Ozon
+  - ⚠ Ранее: `mp_fees = revenue − txn_payout` — неинформативно, смешивало комиссию и логистику
 - **`margin_percent`** = `cost / price × 100` — доля себестоимости в цене из ЛК (всегда положительный)
 - **marketing_price**: реальная «Ваша цена» из `/v5/product/info/prices` (с учётом скидок Ozon)
 - **Серверные `totals`**: итоги по ВСЕМ товарам до пагинации, включают `payout`, `avg_price`, `profit`, `mp_fees` и их детализацию
@@ -301,10 +301,17 @@ date_from / date_to: date (optional) — кастомный диапазон
 
 ### Ключевая логика
 
-- 8 источников: PG каталог + product_costs → CH заказы/остатки/реклама/финансы
-- Формула прибыли: `payout - COGS - ads`, где `payout = revenue - mp_fees`
+- 8 источников: PG каталог + product_costs → CH финансы (primary) / заказы (fallback) / остатки / реклама
+- **Формула прибыли WB** (единый источник `fact_finances FINAL`):
+  - `revenue` = `sum(retail_price_withdisc_rub)` — розничная цена (source of truth)
+  - `payout` = `sum(ppvz_for_pay)` — к выплате
+  - `mp_fees` = `revenue − payout` — все удержания
+  - `profit` = `payout − COGS − ads` — чистая прибыль
+  - Удержания: только product-specific (с vendor_code). Общие (отзывы за баллы, авансы) — исключены
+  - Хранение: распределяется пропорционально revenue (нет product ID)
+  - `fact_orders_raw` → только fallback для товаров без реализации (`fees_source='estimated'`)
 - WB CDN: `wb_image_url(nm_id)` — динамическая генерация URL фото
-- Серверные `totals`: итоги по всем товарам до пагинации
+- Серверные `totals`: итоги по всем товарам до пагинации (product-only экономика, без general deductions)
 - Фильтры: `with_ads` (ad_spend > 0), `leaders` (top 20% revenue), `falling` (delta < -20%), `problems` (stock = 0)
 
 ---
@@ -1223,4 +1230,11 @@ advert_id: int (required)
 
 - **Создание кампании — retry автозапуска:** `POST /creation/create` теперь выполняет до 3 попыток старта с exponential backoff (3с, 5с, 8с) при ошибке `"Low Budget"` (race condition WB API между deposit и start). Response: `+start_error` при неудачном автозапуске
 - **Рекомендации по запуску рекламы:** `GET /advertising-analytics/ad-launch-recommendations?shop_id=N` — анализ товаров без активных кампаний (3 категории: selling_no_ads, ads_paused, stagnant). Ozon: `dim_ozon_products` + `fact_ozon_ad_daily` + `fact_ozon_orders`. WB: `dim_products` + `fact_advert_stats_v3` + `fact_orders_raw` + `fact_inventory_snapshot`
+
+### 2026-04-07
+
+- **WB Products P&L refactor** (`wb_products.py`): единый источник `fact_finances FINAL` вместо смешения `fact_orders_raw` + `fact_finances`. Fallback на orders только для товаров без реализации (`fees_source='estimated'`)
+- **General deductions fix** (`finances.py`, `wb_products.py`): непривязанные удержания (отзывы за баллы, авансы) больше не распределяются по товарам. Products page показывает только product-only экономику
+- **Ozon revenue fix** (`products.py`): `accruals_for_sale` из transactions вместо `price × quantity` (завышение ~2.5x). `mp_fees = sale_commission + services_total`. Bulk charges (Acquiring, Storage) пропорционально revenue
+- **Finance products enrichment** (`finances.py`): WB products — `name` + `image_url` из `dim_products`; Ozon products — `image_url` + `product_id` из `dim_ozon_products`
 

@@ -1,28 +1,15 @@
 /**
  * ProductFinanceTable — Product-level P&L breakdown.
  *
- * Sortable table showing per-product financials:
- * revenue, logistics, storage, ads, COGS, profit —
- * with delta % vs previous period and % of revenue.
- *
- * Unified style matching ABC/XYZ and Sales tables:
- * - rounded-2xl card container with title bar
- * - max-h-[600px] scrollable area
- * - sticky header (vertical) + sticky first column (horizontal)
- * - sticky ИТОГО footer
- * - zebra striping
+ * Redesigned to match the Products page style:
+ * - Product photo (3:4), name, vendor_code, SKU in first column
+ * - Sticky header + sticky first column + sticky ИТОГО footer
+ * - Clean rounded card with scrollable area
  */
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { TrendingUp, TrendingDown, Package } from 'lucide-react'
 import type { ProductFinanceItem } from '@/api/finances'
-
-// ── Sticky cell styles ────────────────────────────────────────
-const stickyCol: React.CSSProperties = {
-  position: 'sticky',
-  left: 0,
-  boxShadow: '2px 0 8px -2px rgba(0,0,0,0.15)',
-}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -36,25 +23,40 @@ function cn(...classes: (string | false | undefined)[]): string {
   return classes.filter(Boolean).join(' ')
 }
 
+/** WB image URL from nm_id */
+function wbImageUrl(nmId: number): string {
+  if (!nmId) return ''
+  const t = Math.floor(nmId / 100000)
+  const basket =
+    t <= 143 ? '01' : t <= 287 ? '02' : t <= 431 ? '03' : t <= 719 ? '04' :
+    t <= 1007 ? '05' : t <= 1061 ? '06' : t <= 1115 ? '07' : t <= 1169 ? '08' :
+    t <= 1313 ? '09' : t <= 1601 ? '10' : t <= 1655 ? '11' : t <= 1919 ? '12' :
+    t <= 2045 ? '13' : t <= 2189 ? '14' : t <= 2405 ? '15' : t <= 2621 ? '16' : '17'
+  const vol = Math.floor(nmId / 100000)
+  const part = Math.floor(nmId / 1000)
+  return `https://basket-${basket}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
+}
+
 // ── Column config ────────────────────────────────────────────
 
 interface Column {
   key: string
   label: string
   shortLabel?: string
+  tooltip?: string
   invert?: boolean  // true = lower is better (costs)
   isCount?: boolean
 }
 
 const WB_COLUMNS: Column[] = [
-  { key: 'sales', label: 'Продажи', isCount: true },
-  { key: 'revenue', label: 'Выручка' },
-  { key: 'logistics', label: 'Логистика', invert: true },
-  { key: 'storage', label: 'Хранение', invert: true },
-  { key: 'deductions', label: 'Удержания', invert: true },
-  { key: 'ad_spend', label: 'Реклама', invert: true },
-  { key: 'cogs', label: 'Себестоимость', shortLabel: 'С/с', invert: true },
-  { key: 'profit', label: 'Прибыль' },
+  { key: 'sales', label: 'Продажи', isCount: true, tooltip: 'Количество проданных единиц за период' },
+  { key: 'revenue', label: 'Выручка', tooltip: 'Цена из ЛК × кол-во проданных штук' },
+  { key: 'logistics', label: 'Логистика', invert: true, tooltip: 'Расходы на доставку товаров' },
+  { key: 'storage', label: 'Хранение', invert: true, tooltip: 'Расходы на хранение на складе МП' },
+  { key: 'deductions', label: 'Удержания', invert: true, tooltip: 'Удержания маркетплейса (привязанные к товару)' },
+  { key: 'ad_spend', label: 'Реклама', invert: true, tooltip: 'Рекламные расходы за период' },
+  { key: 'cogs', label: 'С/с', shortLabel: 'С/с', invert: true, tooltip: 'Себестоимость + упаковка × кол-во' },
+  { key: 'profit', label: 'Прибыль', tooltip: 'Выплата − Услуги МП − С/с − Реклама' },
 ]
 
 const OZON_COLUMNS: Column[] = [
@@ -62,9 +64,9 @@ const OZON_COLUMNS: Column[] = [
   { key: 'revenue', label: 'Выручка' },
   { key: 'commission', label: 'Комиссия', invert: true },
   { key: 'logistics', label: 'Логистика', invert: true },
-  { key: 'payout', label: 'Нетто к.п.', shortLabel: 'Нетто' },
+  { key: 'payout', label: 'Нетто', shortLabel: 'Нетто' },
   { key: 'ad_spend', label: 'Реклама', invert: true },
-  { key: 'cogs', label: 'Себестоимость', shortLabel: 'С/с', invert: true },
+  { key: 'cogs', label: 'С/с', shortLabel: 'С/с', invert: true },
   { key: 'profit', label: 'Прибыль' },
 ]
 
@@ -73,7 +75,6 @@ const OZON_COLUMNS: Column[] = [
 function DeltaBadge({ value, invert }: { value: number; invert?: boolean }) {
   if (value === 0) return null
   const isPositive = value > 0
-  // For costs: positive delta = bad (red), negative = good (green)
   const isGood = invert ? !isPositive : isPositive
   const Icon = isPositive ? TrendingUp : TrendingDown
 
@@ -105,8 +106,10 @@ type SortDir = 'asc' | 'desc'
 export default function ProductFinanceTable({ products, totals, marketplace }: Props) {
   const [sortKey, setSortKey] = useState('revenue')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
 
-  const columns = marketplace === 'wildberries' ? WB_COLUMNS : OZON_COLUMNS
+  const isWB = marketplace === 'wildberries'
+  const columns = isWB ? WB_COLUMNS : OZON_COLUMNS
 
   const sorted = useMemo(() => {
     return [...products]
@@ -118,7 +121,7 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
       })
   }, [products, sortKey, sortDir])
 
-  // "Без привязки" row — aggregate of __unknown__ and __unmatched_ads__
+  // "Без привязки" row
   const unmatchedRow = useMemo(() => {
     const specials = products.filter(p => p.vendor_code.startsWith('__'))
     if (specials.length === 0) return null
@@ -149,7 +152,6 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
     )
   }
 
-  // Margin color helper
   const marginColor = (profit: number, revenue: number) => {
     if (revenue <= 0) return 'text-[hsl(var(--muted-foreground))]'
     const pct = (profit / revenue) * 100
@@ -158,35 +160,42 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
     return 'text-red-400'
   }
 
-  const thCls = "px-4 py-3.5 text-right text-[13px] font-semibold whitespace-nowrap select-none cursor-pointer transition-colors"
-  const tdCls = "px-4 py-3 text-right whitespace-nowrap"
+  /** Get image for product */
+  const getProductImage = (product: ProductFinanceItem): string => {
+    if (product.image_url) return product.image_url
+    if (isWB && product.nm_id) return wbImageUrl(product.nm_id)
+    return ''
+  }
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: 0.2 }}
-      className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden"
+      className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden"
     >
-      {/* Title bar */}
-      <div className="flex items-center justify-between px-6 py-5 border-b border-[hsl(var(--border))]">
-        <div>
-          <h3 className="text-xl font-bold text-[hsl(var(--foreground))]">Детализация по товарам</h3>
-          <p className="text-sm text-[hsl(var(--muted-foreground))] mt-0.5">P&L по каждому товару за выбранный период</p>
+      {/* Hover image preview */}
+      {hoverImg && (
+        <div
+          className="fixed z-[9999] pointer-events-none"
+          style={{ left: hoverImg.x, top: hoverImg.y }}
+        >
+          <img
+            src={hoverImg.url}
+            alt=""
+            className="h-[240px] w-[180px] rounded-xl object-cover shadow-2xl border border-[hsl(var(--border))]"
+          />
         </div>
-        <span className="text-sm text-[hsl(var(--muted-foreground))] font-medium">
-          {sorted.length} {sorted.length === 1 ? 'товар' : sorted.length < 5 ? 'товара' : 'товаров'}
-        </span>
-      </div>
+      )}
 
-      {/* Scrollable table — sticky header (vertical) + sticky first column (horizontal) + sticky footer */}
-      <div className="overflow-auto max-h-[600px] relative">
-        <table className="w-full border-collapse" style={{ minWidth: 900 }}>
-          <thead className="sticky top-0 z-20">
-            <tr className="border-b border-[hsl(var(--border))] bg-[hsl(var(--card))]">
+      {/* Scrollable table */}
+      <div className="overflow-x-auto overflow-y-auto max-h-[calc(100vh-360px)]">
+        <table className="w-full" style={{ borderCollapse: 'collapse', minWidth: 960 }}>
+          <thead className="sticky top-0 z-30" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
+            <tr className="bg-[hsl(var(--card))]">
+              {/* Product column header */}
               <th
-                className="px-4 py-3.5 text-left text-[13px] font-semibold text-[hsl(var(--muted-foreground))] w-[250px] min-w-[250px] max-w-[250px] bg-[hsl(var(--card))]"
-                style={{ ...stickyCol, zIndex: 30 }}
+                className="sticky left-0 z-40 w-[280px] bg-[hsl(var(--card))] pl-4 pr-2 py-2.5 text-left text-[12px] font-medium text-[hsl(var(--muted-foreground))]"
               >
                 Товар
               </th>
@@ -194,58 +203,127 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                 <th
                   key={col.key}
                   className={cn(
-                    thCls,
+                    'px-2 py-2.5 text-right text-[12px] font-medium whitespace-nowrap cursor-pointer transition-colors',
                     sortKey === col.key
-                      ? 'text-[hsl(var(--foreground))]'
+                      ? 'text-[hsl(var(--primary))]'
                       : 'text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]'
                   )}
                   onClick={() => handleSort(col.key)}
                 >
-                  <span className="inline-flex items-center gap-1 justify-end">
-                    {col.shortLabel || col.label}
+                  <div className="flex items-center justify-end gap-1">
+                    <span>{col.shortLabel || col.label}</span>
                     {sortKey === col.key && (
-                      <span className="text-[11px] text-[hsl(var(--primary))]">{sortDir === 'desc' ? '▼' : '▲'}</span>
+                      <span className="text-[11px]">{sortDir === 'desc' ? '↓' : '↑'}</span>
                     )}
-                  </span>
+                    {col.tooltip && (
+                      <span className="relative group/tip">
+                        <span className="text-[10px] cursor-help text-[hsl(var(--muted-foreground)/0.4)] hover:text-[hsl(var(--muted-foreground))]">?</span>
+                        <span className="absolute right-0 top-full mt-1 z-50 hidden group-hover/tip:block w-[200px] p-2 text-[11px] font-normal text-left rounded-lg bg-[hsl(var(--popover))] border border-[hsl(var(--border))] shadow-xl">
+                          {col.tooltip}
+                        </span>
+                      </span>
+                    )}
+                  </div>
                 </th>
               ))}
-              <th className="px-4 py-3.5 text-right text-[13px] font-semibold text-[hsl(var(--muted-foreground))] whitespace-nowrap">
+              <th className="px-2 py-2.5 text-right text-[12px] font-medium text-[hsl(var(--muted-foreground))] whitespace-nowrap">
                 Маржа
               </th>
             </tr>
+
+            {/* ── ИТОГО row in header (matching Products page) ── */}
+            {(() => {
+              const t = totals
+              const tRev = t.current.revenue || 1
+              const tProfit = t.current.profit ?? 0
+              const tMargin = t.current.revenue > 0 ? (tProfit / t.current.revenue * 100) : 0
+              return (
+                <tr className="border-b border-[hsl(var(--border)/0.5)] bg-[hsl(var(--card))]">
+                  <td className="sticky left-0 z-40 bg-[hsl(var(--card))] pl-4 pr-2 py-2">
+                    <span className="text-[12px] font-bold text-[hsl(var(--foreground)/0.6)]">
+                      Σ {sorted.length} товаров
+                    </span>
+                  </td>
+                  {columns.map(col => {
+                    const val = t.current[col.key] ?? 0
+                    const delta = t.delta_pct[col.key] ?? 0
+                    return (
+                      <td key={col.key} className="px-2 py-2 text-right">
+                        <p className={cn(
+                          'text-[13px] font-bold tabular-nums',
+                          col.key === 'profit' ? marginColor(val, tRev) : '',
+                        )}>
+                          {col.isCount ? val : formatMoney(val)}
+                        </p>
+                        {delta !== 0 && <DeltaBadge value={delta} invert={col.invert} />}
+                      </td>
+                    )
+                  })}
+                  <td className="px-2 py-2 text-right">
+                    <p className={cn('text-[13px] font-bold tabular-nums', marginColor(tProfit, t.current.revenue || 0))}>
+                      {tMargin.toFixed(1)}%
+                    </p>
+                  </td>
+                </tr>
+              )
+            })()}
           </thead>
+
           <tbody>
             {sorted.map((product, idx) => {
               const rev = product.current.revenue || 0
               const profit = product.current.profit || 0
               const margin = rev > 0 ? (profit / rev * 100) : 0
-              const rowBg = idx % 2 === 0 ? 'bg-[hsl(var(--card))]' : 'bg-[hsl(var(--muted)/0.06)]'
+              const imgUrl = getProductImage(product)
+              const displayName = product.name || product.vendor_code
 
               return (
                 <tr
                   key={product.vendor_code}
-                  className={`border-b border-[hsl(var(--border)/0.2)] transition-colors ${rowBg} hover:bg-[hsl(var(--muted)/0.2)] group`}
+                  className="border-b border-[hsl(var(--border)/0.15)] hover:bg-white/[0.025] group transition-colors"
                 >
-                  {/* Product name — sticky left */}
-                  <td
-                    className={`px-4 py-3 w-[250px] min-w-[250px] max-w-[250px] ${rowBg} group-hover:bg-[hsl(var(--muted)/0.2)]`}
-                    style={{ ...stickyCol, zIndex: 10 }}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-9 h-9 rounded-lg bg-[hsl(var(--muted)/0.3)] shrink-0 flex items-center justify-center text-sm">📦</div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-medium text-[hsl(var(--foreground))] truncate" title={product.name || product.vendor_code}>
-                          {product.name || product.vendor_code}
+                  {/* ── Product cell (photo + name + vendor_code + SKU) ── */}
+                  <td className="sticky left-0 z-10 bg-[hsl(var(--card))] group-hover:bg-[hsl(var(--card))] pl-4 pr-2 py-3.5 transition-colors">
+                    <div className="flex items-center gap-3">
+                      {/* Photo 3:4 */}
+                      {imgUrl ? (
+                        <div
+                          className="relative shrink-0 cursor-pointer"
+                          onMouseEnter={(e) => {
+                            const r = e.currentTarget.getBoundingClientRect()
+                            setHoverImg({ url: imgUrl, x: r.right + 12, y: r.top - 40 })
+                          }}
+                          onMouseLeave={() => setHoverImg(null)}
+                        >
+                          <img
+                            src={imgUrl}
+                            alt=""
+                            className="h-[56px] w-[42px] rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
+                            loading="lazy"
+                          />
                         </div>
-                        {product.name && product.name !== product.vendor_code ? (
-                          <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate" title={product.vendor_code}>
-                            {product.vendor_code}
-                          </div>
-                        ) : product.nm_id ? (
-                          <div className="text-[11px] text-[hsl(var(--muted-foreground))] opacity-60 truncate" title={product.nm_id.toString()}>
-                            {product.nm_id}
-                          </div>
-                        ) : null}
+                      ) : (
+                        <div className="flex h-[56px] w-[42px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
+                          <Package className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.2)]" />
+                        </div>
+                      )}
+                      {/* Info */}
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-medium leading-snug line-clamp-2" title={displayName}>
+                          {displayName}
+                        </p>
+                        <div className="mt-0.5 flex items-center gap-1.5 whitespace-nowrap">
+                          {product.name && product.name !== product.vendor_code && (
+                            <span className="text-[13px] font-semibold text-[hsl(var(--foreground)/0.75)] font-mono tracking-wide uppercase">
+                              {product.vendor_code}
+                            </span>
+                          )}
+                          {product.nm_id && product.nm_id > 0 && (
+                            <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.45)]">
+                              SKU {product.nm_id}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </td>
@@ -257,7 +335,7 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                     const pctRev = product.pct_of_revenue[col.key]
 
                     return (
-                      <td key={col.key} className={tdCls}>
+                      <td key={col.key} className="px-2 py-3 text-right whitespace-nowrap">
                         <div className={cn(
                           'text-[13px] font-medium tabular-nums',
                           col.key === 'profit' ? marginColor(val, rev) : 'text-[hsl(var(--foreground))]',
@@ -275,7 +353,7 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
                   })}
 
                   {/* Margin */}
-                  <td className={tdCls}>
+                  <td className="px-2 py-3 text-right whitespace-nowrap">
                     <div className={cn('text-[13px] font-semibold tabular-nums', marginColor(profit, rev))}>
                       {margin.toFixed(1)}%
                     </div>
@@ -288,68 +366,28 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
             {unmatchedRow && (
               <tr className="border-b border-[hsl(var(--border)/0.2)] bg-[hsl(var(--muted)/0.04)]">
                 <td
-                  className="px-4 py-3 bg-[hsl(var(--muted)/0.04)] w-[250px] min-w-[250px] max-w-[250px]"
-                  style={{ ...stickyCol, zIndex: 10 }}
+                  className="sticky left-0 z-10 bg-[hsl(var(--muted)/0.04)] pl-4 pr-2 py-3"
                 >
-                  <div className="text-[13px] text-[hsl(var(--muted-foreground))] italic">Без привязки к товару</div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-[56px] w-[42px] shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.08)]">
+                      <Package className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.2)]" />
+                    </div>
+                    <div className="text-[13px] text-[hsl(var(--muted-foreground))] italic">
+                      Без привязки к товару
+                    </div>
+                  </div>
                 </td>
                 {columns.map(col => (
-                  <td key={col.key} className={tdCls}>
+                  <td key={col.key} className="px-2 py-3 text-right whitespace-nowrap">
                     <div className="text-[13px] text-[hsl(var(--muted-foreground))] tabular-nums">
                       {col.isCount ? (unmatchedRow.cur[col.key] ?? 0) : formatMoney(unmatchedRow.cur[col.key] ?? 0)}
                     </div>
                   </td>
                 ))}
-                <td className={tdCls} />
+                <td className="px-2 py-3" />
               </tr>
             )}
           </tbody>
-
-          {/* Sticky ИТОГО footer */}
-          <tfoot className="sticky bottom-0 z-20">
-            <tr className="border-t-2 border-[hsl(var(--border))] bg-[hsl(var(--card))]">
-              <td
-                className="px-4 py-4 bg-[hsl(var(--card))] w-[250px] min-w-[250px] max-w-[250px]"
-                style={{ ...stickyCol, zIndex: 30 }}
-              >
-                <div className="text-[14px] font-bold text-[hsl(var(--foreground))]">Итого</div>
-              </td>
-              {columns.map(col => {
-                const val = totals.current[col.key] ?? 0
-                const delta = totals.delta_pct[col.key] ?? 0
-                const rev = totals.current.revenue || 1
-                const pctRev = col.key !== 'revenue' && !col.isCount
-                  ? (val / rev * 100).toFixed(1) : undefined
-
-                return (
-                  <td key={col.key} className="px-4 py-4 text-right whitespace-nowrap">
-                    <div className={cn(
-                      'text-[13px] font-bold tabular-nums',
-                      col.key === 'profit'
-                        ? marginColor(val, totals.current.revenue || 0)
-                        : 'text-[hsl(var(--foreground))]',
-                    )}>
-                      {col.isCount ? val : formatMoney(val)}
-                    </div>
-                    <div className="flex items-center justify-end gap-1 mt-0.5">
-                      {pctRev && <span className="text-[10px] text-[hsl(var(--muted-foreground))] opacity-50">{pctRev}%</span>}
-                      <DeltaBadge value={delta} invert={col.invert} />
-                    </div>
-                  </td>
-                )
-              })}
-              <td className="px-4 py-4 text-right whitespace-nowrap">
-                <div className={cn(
-                  'text-[13px] font-bold tabular-nums',
-                  marginColor(totals.current.profit ?? 0, totals.current.revenue ?? 0)
-                )}>
-                  {totals.current.revenue
-                    ? ((totals.current.profit ?? 0) / totals.current.revenue * 100).toFixed(1)
-                    : '0.0'}%
-                </div>
-              </td>
-            </tr>
-          </tfoot>
         </table>
       </div>
     </motion.div>

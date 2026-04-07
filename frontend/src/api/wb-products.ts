@@ -29,15 +29,23 @@ export interface WBProduct {
   // Marketplace fees (from fact_finances)
   mp_fees: number
   mp_fees_percent: number
-  mp_fees_commission: number
   mp_fees_logistics: number
   mp_fees_storage: number
-  mp_fees_other: number
+  mp_fees_deductions: number
+  mp_fees_acceptance: number
+  mp_fees_fines: number
   payout: number
   sales_amount: number
+  // Cancellations
+  cancels: number
+  cancel_rate: number
   // Profit
   gross_profit: number | null
   margin: number | null
+  // Fee estimation indicator
+  fees_source?: 'actual' | 'estimated'
+  // Active ad campaigns indicator
+  has_active_ads?: boolean
 }
 
 export interface WBProductsResponse {
@@ -106,4 +114,62 @@ export async function downloadWBCostTemplate(shopId: number): Promise<void> {
   a.download = `wb_cost_template_${shopId}.xlsx`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+// ── WB Prices (live from WB API) ──
+
+export interface WBPriceProduct {
+  nm_id: number
+  vendor_code: string
+  name: string
+  image_url: string
+  // WB prices
+  price: number              // Цена до скидки
+  discount: number           // Скидка %
+  discounted_price: number   // Цена со скидкой
+  club_discount: number      // WB Клуб скидка %
+  club_discounted_price: number  // Цена для WB Клуб
+  tech_size_name: string
+  editable_size_price: boolean
+  is_bad_turnover: boolean
+  // Cost
+  cost_price: number
+  packaging_cost: number
+  // Profit
+  profit_per_unit: number | null
+  profit_source: 'finance' | 'estimated' | null
+  // Ads
+  ad_spend_30d: number
+  drr: number | null
+  profit_with_ads: number | null
+  // Stocks
+  stock_fbo: number
+  stock_fbs: number
+}
+
+export interface WBPricesResponse {
+  products: WBPriceProduct[]
+  total: number
+  page: number
+  per_page: number
+  cost_missing_count: number
+}
+
+export async function getWBPricesApi(params: {
+  shop_id: number
+  search?: string
+  sort?: string
+  order?: string
+  page?: number
+  per_page?: number
+}): Promise<WBPricesResponse> {
+  const q = new URLSearchParams()
+  q.set('shop_id', String(params.shop_id))
+  if (params.search) q.set('search', params.search)
+  q.set('sort', params.sort ?? 'name')
+  q.set('order', params.order ?? 'asc')
+  q.set('page', String(params.page ?? 1))
+  q.set('per_page', String(params.per_page ?? 50))
+  const resp = await apiClient.get(`/products/wb/prices?${q.toString()}`)
+  return resp.data
 }
