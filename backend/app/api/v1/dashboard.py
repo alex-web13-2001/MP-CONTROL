@@ -5,7 +5,7 @@ GET /dashboard/ozon?shop_id=X&period=7d  — Aggregated Ozon dashboard data
 GET /dashboard/wb?shop_id=X&period=7d    — Aggregated Wildberries dashboard data
 """
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -74,8 +74,30 @@ def _wb_basket_host(vol: int) -> str:
         return "25"
     elif vol <= 4781:
         return "26"
-    else:
+    elif vol <= 4997:
         return "27"
+    elif vol <= 5213:
+        return "28"
+    elif vol <= 5429:
+        return "29"
+    elif vol <= 5645:
+        return "30"
+    elif vol <= 5861:
+        return "31"
+    elif vol <= 6077:
+        return "32"
+    elif vol <= 6293:
+        return "33"
+    elif vol <= 6509:
+        return "34"
+    elif vol <= 6725:
+        return "35"
+    elif vol <= 6941:
+        return "36"
+    elif vol <= 7157:
+        return "37"
+    else:
+        return "38"
 
 
 def wb_image_url(nm_id: int) -> str:
@@ -94,10 +116,13 @@ PERIOD_DAYS = {
 }
 
 
+MSK = timezone(timedelta(hours=3))
+
+
 def _parse_period(period: str) -> tuple[date, date, date, date]:
-    """Return (current_start, current_end, prev_start, prev_end) dates."""
+    """Return (current_start, current_end, prev_start, prev_end) dates in Moscow time."""
     days = PERIOD_DAYS.get(period, 7)
-    today = date.today()
+    today = datetime.now(MSK).date()
     if period == "today":
         current_start = today
         current_end = today
@@ -496,7 +521,7 @@ async def get_ozon_dashboard(
 
 
 # ══════════════════════════════════════════════════════════════════
-# Wildberries Dashboard
+# Wildberries Dashboard — Full Analytics
 # ══════════════════════════════════════════════════════════════════
 
 @router.get("/wb")
@@ -507,12 +532,10 @@ async def get_wb_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get aggregated Wildberries dashboard data.
+    Full WB analytics dashboard.
 
-    Returns KPIs (orders, revenue, ad spend, views, clicks, DRR),
-    sales chart, ads chart, top products — all in one call.
-
-    Uses the same response format as /dashboard/ozon for frontend reuse.
+    Returns: KPI cards, multi-metric chart, alerts (5 tabs),
+    orders feed, weekly finance summary — all in one call.
     """
     # ── Verify shop ownership ─────────────────────────
     result = await db.execute(
@@ -531,28 +554,36 @@ async def get_wb_dashboard(
 
     # ── Dates ─────────────────────────────────────────
     cur_start, cur_end, prev_start, prev_end = _parse_period(period)
+    chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
 
     from app.core.clickhouse import get_clickhouse_client
 
     try:
         ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
 
+    cost_map: dict[str, float] = {}
+
+    try:
         # ══════════════════════════════════════════════
-        # 1. KPI — Orders (fact_orders_raw)
+        # 1. KPI — Sales (fact_orders_raw) + Cancellations
         # ══════════════════════════════════════════════
         orders_kpi = ch.query("""
             SELECT
                 period,
-                count() AS orders_count,
-                sum(price_with_disc) AS revenue,
-                sum(price_with_disc) / nullIf(count(), 0) AS avg_check
+                countIf(is_cancel = 0) AS orders_count,
+                sumIf(price_with_disc, is_cancel = 0) AS revenue,
+                sumIf(price_with_disc, is_cancel = 0) / nullIf(countIf(is_cancel = 0), 0) AS avg_check,
+                countIf(is_cancel = 1) AS cancels
             FROM (
                 SELECT
                     CASE
                         WHEN toDate(addHours(date, 3)) >= {cur_start:Date} AND toDate(addHours(date, 3)) <= {cur_end:Date} THEN 'current'
                         WHEN toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} THEN 'previous'
                     END AS period,
-                    price_with_disc
+                    price_with_disc, is_cancel
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND toDate(addHours(date, 3)) >= {prev_start:Date}
@@ -562,35 +593,36 @@ async def get_wb_dashboard(
             GROUP BY period
         """, parameters={
             "shop_id": shop_id,
-            "cur_start": cur_start,
-            "cur_end": cur_end,
-            "prev_start": prev_start,
-            "prev_end": prev_end,
+            "cur_start": cur_start, "cur_end": cur_end,
+            "prev_start": prev_start, "prev_end": prev_end,
         }).result_rows
 
         orders_map = {
-            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0)}
+            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0), "cancels": int(row[4])}
             for row in orders_kpi
         }
-        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0})
-        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0})
+        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
+        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
 
         # ══════════════════════════════════════════════
-        # 2. KPI — Advertising (fact_advert_stats_v3)
+        # 2. KPI — Advertising / Funnel
         # ══════════════════════════════════════════════
         ads_kpi = ch.query("""
             SELECT
                 period,
                 sum(spend) AS total_spend,
                 sum(views) AS total_views,
-                sum(clicks) AS total_clicks
+                sum(clicks) AS total_clicks,
+                sum(atbs) AS total_cart,
+                sum(orders) AS total_orders,
+                sum(revenue) AS total_ad_revenue
             FROM (
                 SELECT
                     CASE
                         WHEN date >= {cur_start:Date} AND date <= {cur_end:Date} THEN 'current'
                         WHEN date >= {prev_start:Date} AND date <= {prev_end:Date} THEN 'previous'
                     END AS period,
-                    spend, views, clicks
+                    spend, views, clicks, atbs, orders, revenue
                 FROM mms_analytics.fact_advert_stats_v3 FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND date >= {prev_start:Date}
@@ -607,265 +639,876 @@ async def get_wb_dashboard(
         ads_map = {}
         for row in ads_kpi:
             ads_map[row[0]] = {
-                "spend": float(row[1]),
-                "views": int(row[2]),
-                "clicks": int(row[3]),
+                "spend": float(row[1]), "views": int(row[2]),
+                "clicks": int(row[3]), "cart": int(row[4]),
+                "orders": int(row[5]), "ad_revenue": float(row[6]),
             }
-        cur_ads = ads_map.get("current", {"spend": 0, "views": 0, "clicks": 0})
-        prev_ads = ads_map.get("previous", {"spend": 0, "views": 0, "clicks": 0})
+        _zero_ads = {"spend": 0, "views": 0, "clicks": 0, "cart": 0, "orders": 0, "ad_revenue": 0}
+        cur_ads = ads_map.get("current", _zero_ads)
+        prev_ads = ads_map.get("previous", _zero_ads)
 
-        # DRR = ad_spend / orders_revenue * 100
-        cur_drr = round(cur_ads["spend"] / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
-        prev_drr = round(prev_ads["spend"] / prev_orders["revenue"] * 100, 1) if prev_orders["revenue"] > 0 else 0
+        # DRR / CTR / Conversion / Cancel rate
+        cur_drr_total = round(cur_ads["spend"] / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
+        prev_drr_total = round(prev_ads["spend"] / prev_orders["revenue"] * 100, 1) if prev_orders["revenue"] > 0 else 0
+        cur_drr_ad = round(cur_ads["spend"] / cur_ads["ad_revenue"] * 100, 1) if cur_ads["ad_revenue"] > 0 else 0
+        prev_drr_ad = round(prev_ads["spend"] / prev_ads["ad_revenue"] * 100, 1) if prev_ads["ad_revenue"] > 0 else 0
+        cur_ctr = round(cur_ads["clicks"] / cur_ads["views"] * 100, 1) if cur_ads["views"] > 0 else 0
+        prev_ctr = round(prev_ads["clicks"] / prev_ads["views"] * 100, 1) if prev_ads["views"] > 0 else 0
+        cur_conv = round(cur_ads["orders"] / cur_ads["clicks"] * 100, 1) if cur_ads["clicks"] > 0 else 0
+        prev_conv = round(prev_ads["orders"] / prev_ads["clicks"] * 100, 1) if prev_ads["clicks"] > 0 else 0
+        # click → cart conversion
+        cur_click_to_cart = round(cur_ads["cart"] / cur_ads["clicks"] * 100, 1) if cur_ads["clicks"] > 0 else 0
+        prev_click_to_cart = round(prev_ads["cart"] / prev_ads["clicks"] * 100, 1) if prev_ads["clicks"] > 0 else 0
+        # cancel rate
+        cur_cancel_rate = round(cur_orders["cancels"] / (cur_orders["count"] + cur_orders["cancels"]) * 100, 1) if (cur_orders["count"] + cur_orders["cancels"]) > 0 else 0
+        prev_cancel_rate = round(prev_orders["cancels"] / (prev_orders["count"] + prev_orders["cancels"]) * 100, 1) if (prev_orders["count"] + prev_orders["cancels"]) > 0 else 0
 
         # ══════════════════════════════════════════════
-        # 3. Charts — Sales daily (fact_orders_raw)
+        # 3. Profit via unit economics (orders × unit profit)
+        #    Unit profit = avg_payout_per_unit - avg_logistics_per_unit - COGS
+        #    Same approach as wb_prices.py — accurate per-product economics
         # ══════════════════════════════════════════════
-        chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
+        profit_cur = 0.0
+        profit_prev = 0.0
+        profit_pct = 0.0
+        finance_week_start = None
+        finance_week_end = None
+        # finance_week_start/end initialized below
+
+        # 3a. Load COGS from PostgreSQL
+        try:
+            cost_result = await db.execute(
+                text("SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost FROM product_costs WHERE shop_id = :sid AND (cost_price > 0 OR packaging_cost > 0)"),
+                {"sid": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception as e:
+            logger.warning("WB COGS load failed: %s", e)
+
+        # 3b. Get per-nm_id avg payout/logistics from fact_finances (30d rolling)
+        unit_profit_map: dict[int, float] = {}  # nm_id → profit_per_unit (payout - logistics - COGS)
+        try:
+            finance_unit_data = ch.query("""
+                SELECT
+                    toUInt64(external_id) AS nm_id,
+                    sum(payout_amount) / nullIf(
+                        sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                    ) AS avg_payout_per_unit,
+                    sum(wb_delivery_rub) / nullIf(
+                        sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                    ) AS avg_logistics_per_unit
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND marketplace = 1
+                  AND event_date >= today() - 30
+                GROUP BY nm_id
+                HAVING sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) > 0
+            """, parameters={"shop_id": shop_id}).result_rows
+
+            # Map nm_id → vendor_code for COGS lookup
+            nm_ids_finance = [int(r[0]) for r in finance_unit_data]
+            vc_by_nm: dict[int, str] = {}
+            if nm_ids_finance:
+                try:
+                    vc_result = await db.execute(
+                        text("SELECT nm_id, COALESCE(vendor_code, '') FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)"),
+                        {"sid": shop_id, "ids": nm_ids_finance},
+                    )
+                    vc_by_nm = {int(r[0]): str(r[1]).lower() for r in vc_result.fetchall()}
+                except Exception:
+                    pass
+
+            for r in finance_unit_data:
+                nm = int(r[0])
+                avg_payout = float(r[1] or 0)
+                avg_logistics = abs(float(r[2] or 0))
+                vc = vc_by_nm.get(nm, "")
+                cogs = cost_map.get(vc, 0)
+                unit_profit = avg_payout - avg_logistics - cogs
+                unit_profit_map[nm] = round(unit_profit, 2)
+        except Exception as e:
+            logger.warning("WB unit profit map failed: %s", e)
+
+        # 3c. Calculate total profit for current and previous periods
+        #     profit = sum(unit_profit[nm_id] * qty) for each ordered nm_id
+        try:
+            orders_by_nm = ch.query("""
+                SELECT
+                    period, nm_id, count() AS qty
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN toDate(addHours(date, 3)) >= {cur_start:Date} AND toDate(addHours(date, 3)) <= {cur_end:Date} THEN 'current'
+                            WHEN toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} THEN 'previous'
+                        END AS period,
+                        nm_id
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(date, 3)) >= {prev_start:Date}
+                      AND toDate(addHours(date, 3)) <= {cur_end:Date}
+                )
+                WHERE period != ''
+                GROUP BY period, nm_id
+            """, parameters={
+                "shop_id": shop_id,
+                "cur_start": cur_start, "cur_end": cur_end,
+                "prev_start": prev_start, "prev_end": prev_end,
+            }).result_rows
+
+            for row in orders_by_nm:
+                period_name = row[0]
+                nm = int(row[1])
+                qty = int(row[2])
+                up = unit_profit_map.get(nm)
+                if up is not None:
+                    if period_name == "current":
+                        profit_cur += up * qty
+                    else:
+                        profit_prev += up * qty
+
+            profit_cur = round(profit_cur, 2)
+            profit_prev = round(profit_prev, 2)
+            profit_pct = round(profit_cur / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
+        except Exception as e:
+            logger.warning("WB unit-economics profit failed: %s", e)
+
+        # 3d. finance_week_start/end — still needed for finance_summary P&L card
+        try:
+            week_range = ch.query("""
+                SELECT min(event_date), max(event_date)
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
+                  AND event_date >= today() - 14
+            """, parameters={"shop_id": shop_id}).result_rows
+            if week_range and week_range[0][0] and str(week_range[0][0]) != '1970-01-01':
+                finance_week_end = week_range[0][1]
+                finance_week_start = finance_week_end - timedelta(days=6)
+        except Exception as e:
+            logger.warning("WB finance week range failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 4. Chart data (daily)
+        # ══════════════════════════════════════════════
         sales_daily = ch.query("""
-            SELECT
-                toDate(addHours(date, 3)) AS day,
-                count() AS orders_count,
-                sum(price_with_disc) AS revenue
+            SELECT toDate(addHours(date, 3)) AS day,
+                   count() AS orders_count,
+                   sum(price_with_disc) AS revenue
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(date, 3)) >= {start:Date}
               AND toDate(addHours(date, 3)) <= {end:Date}
-            GROUP BY day
-            ORDER BY day
-        """, parameters={
-            "shop_id": shop_id,
-            "start": chart_start,
-            "end": cur_end,
-        }).result_rows
+            GROUP BY day ORDER BY day
+        """, parameters={"shop_id": shop_id, "start": chart_start, "end": cur_end}).result_rows
+        sales_by_day = {str(r[0]): {"orders": int(r[1]), "revenue": float(r[2])} for r in sales_daily}
 
-        charts_sales = [
-            {"date": str(row[0]), "orders": int(row[1]), "revenue": float(row[2])}
-            for row in sales_daily
-        ]
-
-        # ══════════════════════════════════════════════
-        # 4. Charts — Ads daily (fact_advert_stats_v3 + fact_orders_raw)
-        # ══════════════════════════════════════════════
         ads_daily = ch.query("""
-            WITH ads AS (
-                SELECT
-                    date AS day,
-                    sum(spend) AS spend,
-                    sum(views) AS total_views,
-                    sum(clicks) AS total_clicks,
-                    sum(atbs) AS cart,
-                    sum(orders) AS total_orders,
-                    sum(revenue) AS ad_revenue
-                FROM mms_analytics.fact_advert_stats_v3 FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND date >= {start:Date}
-                  AND date <= {end:Date}
-                GROUP BY day
-            ),
-            daily_orders AS (
-                SELECT
-                    toDate(addHours(date, 3)) AS day,
-                    sum(price_with_disc) AS total_revenue
-                FROM mms_analytics.fact_orders_raw FINAL
-                WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(addHours(date, 3)) >= {start:Date}
-                  AND toDate(addHours(date, 3)) <= {end:Date}
-                GROUP BY day
-            )
-            SELECT
-                a.day,
-                a.spend,
-                a.total_views,
-                a.total_clicks,
-                a.cart,
-                a.total_orders,
-                CASE WHEN a.ad_revenue > 0
-                    THEN round(a.spend / a.ad_revenue * 100, 1) ELSE 0
-                END AS drr_ad,
-                CASE WHEN o.total_revenue > 0
-                    THEN round(a.spend / o.total_revenue * 100, 1) ELSE 0
-                END AS drr_total
-            FROM ads a
-            LEFT JOIN daily_orders o ON a.day = o.day
-            ORDER BY a.day
-        """, parameters={
-            "shop_id": shop_id,
-            "start": chart_start,
-            "end": cur_end,
-        }).result_rows
+            SELECT date AS day,
+                   sum(spend) AS spend, sum(views) AS views,
+                   sum(clicks) AS clicks, sum(atbs) AS cart,
+                   sum(orders) AS orders, sum(revenue) AS ad_revenue
+            FROM mms_analytics.fact_advert_stats_v3 FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND date >= {start:Date} AND date <= {end:Date}
+            GROUP BY day ORDER BY day
+        """, parameters={"shop_id": shop_id, "start": chart_start, "end": cur_end}).result_rows
+        ads_by_day = {str(r[0]): {"spend": float(r[1]), "views": int(r[2]), "clicks": int(r[3]),
+                                   "cart": int(r[4]), "orders": int(r[5]), "ad_revenue": float(r[6])} for r in ads_daily}
 
-        charts_ads = [
-            {
-                "date": str(row[0]),
-                "spend": round(float(row[1]), 2),
-                "views": int(row[2]),
-                "clicks": int(row[3]),
-                "cart": int(row[4]),
-                "orders": int(row[5]),
-                "drr_ad": float(row[6]),
-                "drr_total": float(row[7]),
-            }
-            for row in ads_daily
-        ]
+        all_days = sorted(set(list(sales_by_day.keys()) + list(ads_by_day.keys())))
+        chart_data = []
+        for day in all_days:
+            s = sales_by_day.get(day, {"orders": 0, "revenue": 0})
+            a = ads_by_day.get(day, {"spend": 0, "views": 0, "clicks": 0, "cart": 0, "orders": 0, "ad_revenue": 0})
+            chart_data.append({
+                "date": day,
+                "revenue": round(s["revenue"], 2),
+                "orders": s["orders"],
+                "ad_spend": round(a["spend"], 2),
+                "views": a["views"],
+                "clicks": a["clicks"],
+                "cart": a["cart"],
+                "ad_orders": a["orders"],
+                "drr_ad": round(a["spend"] / a["ad_revenue"] * 100, 1) if a["ad_revenue"] > 0 else 0,
+                "drr_total": round(a["spend"] / s["revenue"] * 100, 1) if s["revenue"] > 0 else 0,
+                "ctr": round(a["clicks"] / a["views"] * 100, 1) if a["views"] > 0 else 0,
+            })
 
         # ══════════════════════════════════════════════
-        # 5. Top products (with ad spend joined in CH)
+        # 5. ALERTS — Warehouses
         # ══════════════════════════════════════════════
-        top_products_rows = ch.query("""
-            WITH
-                orders_cur AS (
-                    SELECT
-                        nm_id,
-                        supplier_article,
-                        count() AS orders_count,
-                        sum(price_with_disc) AS revenue
-                    FROM mms_analytics.fact_orders_raw FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(addHours(date, 3)) >= {cur_start:Date}
-                      AND toDate(addHours(date, 3)) <= {cur_end:Date}
-                    GROUP BY nm_id, supplier_article
-                ),
-                orders_prev AS (
-                    SELECT
-                        nm_id,
-                        count() AS orders_count
-                    FROM mms_analytics.fact_orders_raw FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(addHours(date, 3)) >= {prev_start:Date}
-                      AND toDate(addHours(date, 3)) <= {prev_end:Date}
-                    GROUP BY nm_id
-                ),
-                latest_stocks AS (
-                    SELECT
-                        nm_id,
-                        sum(CASE WHEN NOT startsWith(warehouse_name, 'FBS:') THEN quantity ELSE 0 END) AS stock_fbo,
-                        sum(CASE WHEN startsWith(warehouse_name, 'FBS:') THEN quantity ELSE 0 END) AS stock_fbs
+        alerts_warehouses = []
+        try:
+            wh_alerts = ch.query("""
+                WITH latest AS (
+                    SELECT nm_id, sum(quantity) AS stock
                     FROM mms_analytics.fact_inventory_snapshot FINAL
                     WHERE shop_id = {shop_id:UInt32}
                     GROUP BY nm_id
                 ),
-                ad_per_nm AS (
-                    SELECT
-                        nm_id,
-                        sum(spend) AS ad_spend
-                    FROM mms_analytics.fact_advert_stats_v3 FINAL
+                avg_sales AS (
+                    SELECT nm_id, count() / 14.0 AS avg_daily
+                    FROM mms_analytics.fact_orders_raw FINAL
                     WHERE shop_id = {shop_id:UInt32}
-                      AND date >= {cur_start:Date}
-                      AND date <= {cur_end:Date}
+                      AND toDate(addHours(date, 3)) >= today() - 14
                     GROUP BY nm_id
                 )
-            SELECT
-                oc.nm_id,
-                oc.supplier_article,
-                oc.orders_count,
-                oc.revenue,
-                CASE WHEN op.orders_count > 0
-                    THEN round((oc.orders_count - op.orders_count) / op.orders_count * 100, 1)
-                    ELSE 0
-                END AS delta_pct,
-                coalesce(ls.stock_fbo, 0) AS stock_fbo,
-                coalesce(ls.stock_fbs, 0) AS stock_fbs,
-                coalesce(apn.ad_spend, 0) AS ad_spend,
-                CASE WHEN oc.revenue > 0
-                    THEN round(coalesce(apn.ad_spend, 0) / oc.revenue * 100, 1)
-                    ELSE 0
-                END AS drr
-            FROM orders_cur oc
-            LEFT JOIN orders_prev op ON oc.nm_id = op.nm_id
-            LEFT JOIN latest_stocks ls ON oc.nm_id = ls.nm_id
-            LEFT JOIN ad_per_nm apn ON oc.nm_id = apn.nm_id
-            ORDER BY oc.revenue DESC
-            LIMIT 50
-        """, parameters={
-            "shop_id": shop_id,
-            "cur_start": cur_start, "cur_end": cur_end,
-            "prev_start": prev_start, "prev_end": prev_end,
-        }).result_rows
+                SELECT l.nm_id, l.stock,
+                       coalesce(a.avg_daily, 0) AS avg_daily,
+                       CASE WHEN a.avg_daily > 0 THEN round(l.stock / a.avg_daily, 1) ELSE 999 END AS days_left
+                FROM latest l
+                LEFT JOIN avg_sales a ON l.nm_id = a.nm_id
+                WHERE l.stock <= 0 OR (a.avg_daily > 0 AND l.stock / a.avg_daily <= 10)
+                ORDER BY days_left ASC
+                LIMIT 30
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in wh_alerts:
+                alerts_warehouses.append({
+                    "nm_id": int(r[0]), "stock": int(r[1]),
+                    "avg_daily_sales": round(float(r[2]), 1),
+                    "days_left": round(float(r[3]), 1) if float(r[3]) < 999 else None,
+                    "severity": "critical" if int(r[1]) <= 0 else "warning",
+                })
+        except Exception as e:
+            logger.warning("WB warehouse alerts failed: %s", e)
 
-        top_products = []
-        for row in top_products_rows:
-            top_products.append({
-                "offer_id": str(int(row[0])),  # nm_id as offer_id for unified format
-                "supplier_article": str(row[1] or ""),
-                "name": "",
-                "image_url": "",
-                "orders": int(row[2]),
-                "revenue": float(row[3]),
-                "delta_pct": float(row[4]),
-                "stock_fbo": int(row[5]),
-                "stock_fbs": int(row[6]),
-                "price": 0.0,
-                "ad_spend": float(row[7]),
-                "drr": float(row[8]),
-            })
+        # ══════════════════════════════════════════════
+        # 6. ALERTS — Sales (no sales 7d)
+        # ══════════════════════════════════════════════
+        alerts_sales = []
+        try:
+            no_sales = ch.query("""
+                WITH stocked AS (
+                    SELECT nm_id, sum(quantity) AS stock
+                    FROM mms_analytics.fact_inventory_snapshot FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                    GROUP BY nm_id HAVING stock > 0
+                ),
+                recent_sales AS (
+                    SELECT nm_id, max(toDate(addHours(date, 3))) AS last_sale
+                    FROM mms_analytics.fact_orders_raw FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(date, 3)) >= toDate('2020-01-01')
+                    GROUP BY nm_id
+                )
+                SELECT s.nm_id, s.stock,
+                       r.last_sale,
+                       dateDiff('day', coalesce(r.last_sale, today() - 9999), today()) AS days_without
+                FROM stocked s
+                LEFT JOIN recent_sales r ON s.nm_id = r.nm_id
+                WHERE coalesce(r.last_sale, toDate('2000-01-01')) < today() - 6
+                ORDER BY days_without DESC
+                LIMIT 30
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in no_sales:
+                last_sale = str(r[2]) if r[2] and str(r[2]) > '2020-01-01' else None
+                days_w = int(r[3])
+                alerts_sales.append({
+                    "nm_id": int(r[0]), "stock": int(r[1]),
+                    "last_sale_date": last_sale,
+                    "days_without_sales": min(days_w, 9999),
+                })
+        except Exception as e:
+            logger.warning("WB sales alerts failed: %s", e)
 
-        # Enrich with product names, images & prices from PostgreSQL
-        if top_products:
-            nm_ids = [int(p["offer_id"]) for p in top_products]
-            pg_result = await db.execute(
-                text("""
-                    SELECT nm_id, name,
-                           COALESCE(main_image_url, '') AS image_url,
-                           COALESCE(current_price, 0) AS price,
-                           COALESCE(vendor_code, '') AS vendor_code
-                    FROM dim_products
-                    WHERE shop_id = :shop_id
-                      AND nm_id = ANY(:nm_ids)
-                """),
-                {"shop_id": shop_id, "nm_ids": nm_ids},
-            )
-            pg_map = {}
-            for row in pg_result:
-                pg_map[int(row[0])] = {
-                    "name": row[1] or "",
-                    "image_url": row[2],
-                    "price": float(row[3]),
-                    "vendor_code": row[4],
+        # ══════════════════════════════════════════════
+        # 7. ALERTS — Paid Storage
+        # ══════════════════════════════════════════════
+        alerts_storage = []
+        storage_total_cost = 0.0
+        try:
+            storage_data = ch.query("""
+                SELECT nm_id, vendor_code, warehouse,
+                       sum(warehouse_price) AS total_cost,
+                       avg(volume_liters) AS avg_volume
+                FROM mms_analytics.fact_wb_paid_storage
+                WHERE shop_id = {shop_id:UInt32} AND dt >= today() - 7
+                GROUP BY nm_id, vendor_code, warehouse
+                HAVING total_cost > 0
+                ORDER BY total_cost DESC
+                LIMIT 20
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in storage_data:
+                cost = float(r[3])
+                storage_total_cost += cost
+                alerts_storage.append({
+                    "nm_id": int(r[0]), "vendor_code": str(r[1] or ""),
+                    "warehouse": str(r[2] or ""),
+                    "cost_7d": round(cost, 2),
+                    "volume_liters": round(float(r[4] or 0), 2),
+                })
+        except Exception as e:
+            logger.warning("WB storage alerts failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 8. ALERTS — Advertising (Budget-aware, 7 problem types)
+        # ══════════════════════════════════════════════
+        alerts_advertising = []
+        try:
+            # ── 1. Grab all campaigns + statuses ──
+            all_campaigns_rows = ch.query("""
+                SELECT advert_id, name, status
+                FROM mms_analytics.dim_advert_campaigns FINAL
+                WHERE shop_id = {shop_id:UInt32}
+            """, parameters={"shop_id": shop_id}).result_rows
+            camp_map: dict[int, dict] = {}
+            for cr in all_campaigns_rows:
+                camp_map[int(cr[0])] = {"name": str(cr[1] or ""), "status": int(cr[2])}
+
+            # ── 2. Grab budgets from Redis ──
+            import redis as _redis, json as _json, os as _os
+            budgets: dict[int, int] = {}
+            try:
+                _redis_url = _os.environ.get("REDIS_URL", "redis://redis:6379/0")
+                _r = _redis.from_url(_redis_url)
+                _pipe = _r.pipeline()
+                for aid in camp_map:
+                    _pipe.get(f"budget:{shop_id}:{aid}")
+                results = _pipe.execute()
+                for aid_key, raw in zip(camp_map.keys(), results):
+                    if raw:
+                        budgets[aid_key] = _json.loads(raw).get("total", -1)
+                    else:
+                        budgets[aid_key] = -1  # No data in Redis
+                _r.close()
+            except Exception as e:
+                logger.warning("Redis budget read failed: %s", e)
+
+            # ── 3. Compute real_status: budget=0 on "active" → budget_depleted ──
+            for aid, info in camp_map.items():
+                b = budgets.get(aid, -1)
+                if info["status"] in (9, 11) and b == 0:
+                    info["real_status"] = "budget_depleted"
+                elif info["status"] in (9, 11) and b > 0:
+                    info["real_status"] = "active"
+                elif info["status"] in (9, 11) and b == -1:
+                    info["real_status"] = "active"  # No budget data — assume active
+                elif info["status"] == 7:
+                    info["real_status"] = "paused"
+                else:
+                    info["real_status"] = "stopped"
+
+            # ── 4. 7-day stats ──
+            stats_7d_rows = ch.query("""
+                SELECT advert_id,
+                       sum(views) AS s_views, sum(clicks) AS s_clicks,
+                       sum(spend) AS s_spend, sum(revenue) AS s_rev,
+                       sum(orders) AS s_orders,
+                       max(date) AS last_date
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32} AND date >= today() - 7
+                GROUP BY advert_id
+            """, parameters={"shop_id": shop_id}).result_rows
+            stats_7d: dict[int, dict] = {}
+            for sr in stats_7d_rows:
+                stats_7d[int(sr[0])] = {
+                    "views": int(sr[1]), "clicks": int(sr[2]),
+                    "spend": float(sr[3]), "revenue": float(sr[4]),
+                    "orders": int(sr[5]), "last_date": str(sr[6]),
                 }
 
-            for p in top_products:
-                nm_id = int(p["offer_id"])
-                info = pg_map.get(nm_id, {})
-                pg_name = info.get("name") or ""
-                # Fallback: use vendor_code or supplier_article if name is empty
-                if not pg_name:
-                    pg_name = info.get("vendor_code") or p.get("supplier_article") or p["offer_id"]
-                p["name"] = pg_name
-                p["image_url"] = wb_image_url(nm_id)
-                p["price"] = info.get("price", 0.0)
-                # Use PG vendor_code as canonical supplier_article if available
-                if info.get("vendor_code"):
-                    p["supplier_article"] = info["vendor_code"]
+            # ── 5. 14-day stats (for paused/budget analysis) ──
+            stats_14d_rows = ch.query("""
+                SELECT advert_id,
+                       sum(spend) AS s_spend, sum(revenue) AS s_rev,
+                       sum(orders) AS s_orders, max(date) AS last_date
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32} AND date >= today() - 14
+                GROUP BY advert_id
+            """, parameters={"shop_id": shop_id}).result_rows
+            stats_14d: dict[int, dict] = {}
+            for sr in stats_14d_rows:
+                stats_14d[int(sr[0])] = {
+                    "spend": float(sr[1]), "revenue": float(sr[2]),
+                    "orders": int(sr[3]), "last_date": str(sr[4]),
+                }
+
+            # ── 6. 3-day views (for no_views / low_views) ──
+            stats_3d_rows = ch.query("""
+                SELECT advert_id, sum(views) AS s_views, sum(clicks) AS s_clicks
+                FROM mms_analytics.fact_advert_stats_v3 FINAL
+                WHERE shop_id = {shop_id:UInt32} AND date >= today() - 3
+                GROUP BY advert_id
+            """, parameters={"shop_id": shop_id}).result_rows
+            views_3d: dict[int, dict] = {}
+            for r in stats_3d_rows:
+                views_3d[int(r[0])] = {"views": int(r[1]), "clicks": int(r[2])}
+
+            # Shop avg DRR (for context)
+            drr_values = []
+            for s in stats_7d.values():
+                if s["revenue"] > 0 and s["spend"] > 0:
+                    d = s["spend"] / s["revenue"] * 100
+                    if d < 200:
+                        drr_values.append(d)
+            shop_avg_drr = round(sum(drr_values) / len(drr_values), 1) if drr_values else 0
+
+            seen_ids: set[int] = set()
+
+            def _status_label(info):
+                rs = info.get("real_status", "active")
+                if rs == "budget_depleted":
+                    return "no_budget"
+                elif rs == "paused":
+                    return "paused"
+                return "active"
+
+            def _budget_val(aid):
+                b = budgets.get(aid, -1)
+                return b if b >= 0 else None
+
+            # ═══════════════════════════════════════════
+            # P1: Budget depleted — was working, now stopped
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if info.get("real_status") != "budget_depleted":
+                    continue
+                s14 = stats_14d.get(aid)
+                if not s14 or s14["orders"] == 0:
+                    continue  # Never had orders — not interesting
+                drr_val = round(s14["spend"] / s14["revenue"] * 100, 1) if s14["revenue"] > 0 else None
+                seen_ids.add(aid)
+                alerts_advertising.append({
+                    "advert_id": aid, "name": info["name"],
+                    "problem": "budget_depleted", "priority": 1,
+                    "status": _status_label(info), "budget_total": 0,
+                    "reason": f"Бюджет 0 ₽ — было {s14['orders']} заказов, пополните бюджет",
+                    "spend": round(s14["spend"], 2), "revenue": round(s14["revenue"], 2),
+                    "orders": s14["orders"], "views": 0, "clicks": 0,
+                    "drr": drr_val,
+                })
+
+            # ═══════════════════════════════════════════
+            # P2: Active, spending money with ZERO revenue
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(aid)
+                if not s or s["spend"] < 300:
+                    continue
+                if s["revenue"] == 0 and s["views"] > 0:
+                    seen_ids.add(aid)
+                    alerts_advertising.append({
+                        "advert_id": aid, "name": info["name"],
+                        "problem": "spending_no_revenue", "priority": 2,
+                        "status": _status_label(info), "budget_total": _budget_val(aid),
+                        "reason": f"Потрачено {round(s['spend']):,} ₽, 0 заказов за 7 дн.".replace(",", " "),
+                        "spend": round(s["spend"], 2), "revenue": 0,
+                        "orders": 0, "views": s["views"], "clicks": s["clicks"],
+                        "drr": None,
+                    })
+
+            # ═══════════════════════════════════════════
+            # P3: Active, high DRR (> 30%, spend > 200₽)
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(aid)
+                if not s or s["spend"] < 200:
+                    continue
+                if s["revenue"] > 0:
+                    drr_val = round(s["spend"] / s["revenue"] * 100, 1)
+                else:
+                    continue
+                if drr_val > 30:
+                    seen_ids.add(aid)
+                    alerts_advertising.append({
+                        "advert_id": aid, "name": info["name"],
+                        "problem": "high_drr", "priority": 3,
+                        "status": _status_label(info), "budget_total": _budget_val(aid),
+                        "reason": f"Расход {round(s['spend']):,} ₽ → выручка {round(s['revenue']):,} ₽".replace(",", " "),
+                        "spend": round(s["spend"], 2), "revenue": round(s["revenue"], 2),
+                        "orders": s["orders"], "views": s["views"], "clicks": s["clicks"],
+                        "drr": drr_val, "avg_drr": shop_avg_drr,
+                    })
+
+            # ═══════════════════════════════════════════
+            # P4: Active, low views — need to raise bid
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "active":
+                    continue
+                v3 = views_3d.get(aid)
+                s7 = stats_7d.get(aid)
+                if not v3 or not s7:
+                    continue
+                # Low views: < 200 views in 3 days but has spent money or had meaningful views before
+                views_3 = v3["views"]
+                if views_3 == 0:
+                    continue  # Handled separately below (no_views)
+                # Only flag if views are genuinely low AND campaign was running
+                if views_3 < 200 and s7["spend"] > 50:
+                    seen_ids.add(aid)
+                    drr_val = round(s7["spend"] / s7["revenue"] * 100, 1) if s7["revenue"] > 0 else None
+                    alerts_advertising.append({
+                        "advert_id": aid, "name": info["name"],
+                        "problem": "low_views", "priority": 4,
+                        "status": _status_label(info), "budget_total": _budget_val(aid),
+                        "reason": f"{views_3} показов за 3 дн. — повысьте ставку",
+                        "spend": round(s7["spend"], 2), "revenue": round(s7["revenue"], 2),
+                        "orders": s7["orders"], "views": views_3, "clicks": v3["clicks"],
+                        "drr": drr_val,
+                    })
+
+            # ═══════════════════════════════════════════
+            # P5: Active, no views 3 days (only real fresh campaigns)
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "active":
+                    continue
+                v3 = views_3d.get(aid, {})
+                if v3.get("views", 0) > 0:
+                    continue
+                s7 = stats_7d.get(aid)
+                s14 = stats_14d.get(aid)
+                if not s7 and not s14:
+                    continue  # Dead campaign
+                if s14 and s14["last_date"] < str(cur_start):
+                    continue  # Old campaign
+                seen_ids.add(aid)
+                alerts_advertising.append({
+                    "advert_id": aid, "name": info["name"],
+                    "problem": "no_views", "priority": 5,
+                    "status": _status_label(info), "budget_total": _budget_val(aid),
+                    "reason": "0 показов за 3 дня — проверьте ставку и бюджет",
+                    "spend": round(s7["spend"], 2) if s7 else 0,
+                    "revenue": round(s7["revenue"], 2) if s7 else 0,
+                    "orders": s7["orders"] if s7 else 0,
+                    "views": 0, "clicks": 0, "drr": None,
+                })
+
+            # ═══════════════════════════════════════════
+            # P6: Paused profitable campaigns (worth restarting)
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "paused":
+                    continue
+                s14 = stats_14d.get(aid)
+                if not s14 or s14["orders"] == 0:
+                    continue
+                if s14["last_date"] < str(cur_start):
+                    continue
+                drr_val = round(s14["spend"] / s14["revenue"] * 100, 1) if s14["revenue"] > 0 else 999
+                if drr_val < 30:
+                    seen_ids.add(aid)
+                    from datetime import datetime as _dt
+                    try:
+                        days_ago = (cur_end - _dt.strptime(s14["last_date"], "%Y-%m-%d").date()).days
+                    except Exception:
+                        days_ago = 0
+                    alerts_advertising.append({
+                        "advert_id": aid, "name": info["name"],
+                        "problem": "stopped_profitable", "priority": 6,
+                        "status": _status_label(info), "budget_total": _budget_val(aid),
+                        "reason": f"ДРР {drr_val}%, {s14['orders']} заказов — стоит запустить",
+                        "spend": round(s14["spend"], 2), "revenue": round(s14["revenue"], 2),
+                        "orders": s14["orders"], "views": 0, "clicks": 0,
+                        "drr": drr_val,
+                    })
+
+            # ═══════════════════════════════════════════
+            # P7: Active, clicks but zero orders
+            # ═══════════════════════════════════════════
+            for aid, info in camp_map.items():
+                if aid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(aid)
+                if not s or s["clicks"] < 50:
+                    continue
+                if s["orders"] == 0 and s["revenue"] == 0:
+                    seen_ids.add(aid)
+                    alerts_advertising.append({
+                        "advert_id": aid, "name": info["name"],
+                        "problem": "clicks_no_orders", "priority": 7,
+                        "status": _status_label(info), "budget_total": _budget_val(aid),
+                        "reason": f"{s['clicks']} кликов, 0 заказов — проверьте карточку",
+                        "spend": round(s["spend"], 2), "revenue": 0,
+                        "orders": 0, "views": s["views"], "clicks": s["clicks"],
+                        "drr": None,
+                    })
+
+            # Sort by priority, then by spend desc
+            alerts_advertising.sort(key=lambda x: (x.get("priority", 9), -(x.get("spend") or 0)))
+        except Exception as e:
+            logger.warning("WB advertising alerts failed: %s", e)
+            import traceback
+            logger.warning(traceback.format_exc())
+
+        # ══════════════════════════════════════════════
+        # 9. ALERTS — Finances (loss-making SKUs)
+        # ══════════════════════════════════════════════
+        alerts_finances = []
+        try:
+            if finance_week_start:
+                loss_skus = ch.query("""
+                    SELECT vendor_code,
+                           sum(CASE WHEN operation_type = 'Продажа' THEN JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub') ELSE 0 END)
+                           - sum(CASE WHEN operation_type = 'Возврат' THEN JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub') ELSE 0 END) AS revenue,
+                           sum(payout_amount) AS payout,
+                           sum(abs(wb_delivery_rub)) AS logistics,
+                           sum(abs(storage_fee)) AS storage,
+                           sum(abs(JSONExtractFloat(raw_payload, 'deduction'))) AS deductions,
+                           sumIf(quantity, operation_type = 'Продажа') AS qty
+                    FROM mms_analytics.fact_finances FINAL
+                    WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
+                      AND event_date >= {ws:Date} AND event_date <= {we:Date}
+                    GROUP BY vendor_code HAVING qty > 0
+                """, parameters={"shop_id": shop_id, "ws": finance_week_start, "we": finance_week_end}).result_rows
+
+                for r in loss_skus:
+                    rev = float(r[1] or 0)
+                    pay = float(r[2] or 0)
+                    comm = max(rev - pay, 0)
+                    log_v = float(r[3] or 0)
+                    stor_v = float(r[4] or 0)
+                    ded_v = float(r[5] or 0)
+                    qty = int(r[6] or 0)
+                    vc = str(r[0] or "")
+                    cogs_v = cost_map.get(vc.lower(), 0) * qty
+                    profit_v = rev - comm - log_v - stor_v - ded_v - cogs_v
+
+                    if profit_v < 0:
+                        # Determine reason
+                        reason = "Совокупные расходы превышают выручку"
+                        if rev > 0:
+                            if log_v > rev * 0.35:
+                                reason = f"Логистика {round(log_v/rev*100)}% от выручки"
+                            elif ded_v > rev * 0.2:
+                                reason = f"Высокие удержания ({round(ded_v):,} ₽)".replace(",", " ")
+                            elif cogs_v > 0 and (rev - cogs_v) < 0:
+                                reason = "Себестоимость выше выручки"
+                            elif stor_v > abs(profit_v) * 0.3:
+                                reason = f"Хранение съедает маржу ({round(stor_v):,} ₽)".replace(",", " ")
+                        alerts_finances.append({
+                            "vendor_code": vc,
+                            "revenue": round(rev, 2),
+                            "expenses": round(comm + log_v + stor_v + ded_v + cogs_v, 2),
+                            "profit": round(profit_v, 2),
+                            "profit_pct": round(profit_v / rev * 100, 1) if rev > 0 else 0,
+                            "qty": qty,
+                            "reason": reason,
+                        })
+                alerts_finances.sort(key=lambda x: x["profit"])
+                alerts_finances = alerts_finances[:20]
+        except Exception as e:
+            logger.warning("WB finance alerts failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 10. Orders Feed
+        # ══════════════════════════════════════════════
+        orders_feed = []
+        try:
+            feed_rows = ch.query("""
+                SELECT nm_id, anyLast(supplier_article) AS article,
+                       count() AS orders, sum(price_with_disc) AS revenue,
+                       max(toDate(addHours(date, 3))) AS last_order
+                FROM mms_analytics.fact_orders_raw FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(addHours(date, 3)) >= {start:Date}
+                  AND toDate(addHours(date, 3)) <= {end:Date}
+                GROUP BY nm_id
+                ORDER BY orders DESC
+                LIMIT 50
+            """, parameters={"shop_id": shop_id, "start": cur_start, "end": cur_end}).result_rows
+            for r in feed_rows:
+                orders_feed.append({
+                    "nm_id": int(r[0]), "supplier_article": str(r[1] or ""),
+                    "orders": int(r[2]), "revenue": round(float(r[3]), 2),
+                    "last_order": str(r[4]), "image_url": "",
+                })
+        except Exception as e:
+            logger.warning("WB orders feed failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 11. Finance Summary (P&L waterfall for the last available financial week)
+        # ══════════════════════════════════════════════
+        finance_summary = None
+        try:
+            if finance_week_start and finance_week_end:
+                prev_fw_end = finance_week_start - timedelta(days=1)
+                prev_fw_start = prev_fw_end - timedelta(days=6)
+
+                fs_data = ch.query("""
+                    SELECT
+                        sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Продажа' AND event_date >= {ws:Date} AND event_date <= {we:Date})
+                         - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS rev_cur,
+                        sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {ws:Date} AND event_date <= {we:Date})
+                         - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS pay_cur,
+                        sumIf(wb_delivery_rub, event_date >= {ws:Date} AND event_date <= {we:Date}) AS log_cur,
+                        sumIf(storage_fee, event_date >= {ws:Date} AND event_date <= {we:Date}) AS stor_cur,
+                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {ws:Date} AND event_date <= {we:Date}) AS ded_cur,
+                        sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Продажа' AND event_date >= {pws:Date} AND event_date <= {pwe:Date})
+                         - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Возврат' AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS rev_prev
+                    FROM mms_analytics.fact_finances FINAL
+                    WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
+                      AND event_date >= {pws:Date} AND event_date <= {we:Date}
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": finance_week_start, "we": finance_week_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                if fs_data:
+                    r = fs_data[0]
+                    rev_c = float(r[0] or 0)
+                    pay_c = float(r[1] or 0)
+                    comm_c = max(rev_c - pay_c, 0)
+                    log_c = abs(float(r[2] or 0))
+                    stor_c = abs(float(r[3] or 0))
+                    ded_c = abs(float(r[4] or 0))
+                    rev_p = float(r[5] or 0)
+
+                    finance_summary = {
+                        "week_start": str(finance_week_start),
+                        "week_end": str(finance_week_end),
+                        "revenue": round(rev_c, 2),
+                        "commission": round(comm_c, 2),
+                        "logistics": round(log_c, 2),
+                        "storage": round(stor_c, 2),
+                        "deductions": round(ded_c, 2),
+                        "ad_spend": round(cur_ads["spend"], 2),
+                        "profit": round(profit_cur, 2),
+                        "profit_pct": profit_pct,
+                        "prev_revenue": round(rev_p, 2),
+                        "prev_profit": round(profit_prev, 2),
+                        "revenue_delta": _safe_delta(rev_c, rev_p),
+                        "profit_delta": _safe_delta(profit_cur, profit_prev),
+                    }
+        except Exception as e:
+            logger.warning("WB finance summary failed: %s", e)
+
+        # ── Enrich alerts with product names ──
+        all_nm_ids: set[int] = set()
+        for item in alerts_warehouses + alerts_sales + orders_feed:
+            all_nm_ids.add(item.get("nm_id", 0))
+        for item in alerts_storage:
+            all_nm_ids.add(item.get("nm_id", 0))
+
+        vc_to_nm: dict[str, dict] = {}
+        if alerts_finances:
+            vcs = [a["vendor_code"] for a in alerts_finances]
+            vcs_lower = [v.lower() for v in vcs]
+            try:
+                vc_nm = await db.execute(
+                    text("SELECT vendor_code, nm_id, name, COALESCE(main_image_url, '') FROM dim_products WHERE shop_id = :sid AND lower(vendor_code) = ANY(:vcs)"),
+                    {"sid": shop_id, "vcs": vcs_lower},
+                )
+                for row in vc_nm:
+                    vc_to_nm[row[0].lower()] = {"nm_id": row[1], "name": row[2] or row[0], "vendor_code": row[0], "image_url": row[3]}
+                    all_nm_ids.add(row[1])
+            except Exception as e:
+                logger.warning("Finance alerts enrichment failed: %s", e)
+
+        for a in alerts_finances:
+            info = vc_to_nm.get(a["vendor_code"].lower(), {})
+            a["nm_id"] = info.get("nm_id", 0)
+            a["name"] = info.get("name", a["vendor_code"])
+            a["vendor_code"] = info.get("vendor_code", a["vendor_code"])
+            a["image_url"] = info.get("image_url", "")
+
+        nm_names: dict[int, str] = {}
+        nm_vcodes: dict[int, str] = {}
+        nm_images: dict[int, str] = {}
+        nm_list = [n for n in all_nm_ids if n > 0]
+        if nm_list:
+            try:
+                pg_result = await db.execute(
+                    text("SELECT nm_id, COALESCE(name, vendor_code, '') AS name, COALESCE(vendor_code, '') AS vc, COALESCE(main_image_url, '') AS img FROM dim_products WHERE shop_id = :sid AND nm_id = ANY(:ids)"),
+                    {"sid": shop_id, "ids": nm_list},
+                )
+                for row in pg_result:
+                    nm_names[int(row[0])] = row[1]
+                    nm_vcodes[int(row[0])] = row[2]
+                    nm_images[int(row[0])] = row[3]
+            except Exception:
+                pass
+
+        for item in alerts_warehouses + alerts_sales:
+            nm = item.get("nm_id", 0)
+            item["name"] = nm_names.get(nm, str(nm))
+            item["vendor_code"] = nm_vcodes.get(nm, "")
+            item["image_url"] = nm_images.get(nm, "")
+
+        for item in orders_feed:
+            nm = item.get("nm_id", 0)
+            item["name"] = nm_names.get(nm, item.get("supplier_article", str(nm)))
+            item["image_url"] = nm_images.get(nm, "")
+            item["vendor_code"] = nm_vcodes.get(nm, item.get("supplier_article", ""))
+
+        for item in alerts_storage:
+            nm = item.get("nm_id", 0)
+            item["name"] = nm_names.get(nm, item.get("vendor_code", str(nm)))
+            item["vendor_code"] = nm_vcodes.get(nm, item.get("vendor_code", ""))
+            item["image_url"] = nm_images.get(nm, "")
 
         ch.close()
 
         # ══════════════════════════════════════════════
-        # Build response (same format as Ozon)
+        # Build response
         # ══════════════════════════════════════════════
         return {
             "shop_id": shop_id,
             "period": period,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
             "kpi": {
-                "orders_count": cur_orders["count"],
-                "orders_delta": _safe_delta(cur_orders["count"], prev_orders["count"]),
-                "revenue": cur_orders["revenue"],
-                "revenue_delta": _safe_delta(cur_orders["revenue"], prev_orders["revenue"]),
-                "avg_check": round(cur_orders["avg_check"], 0),
-                "ad_spend": cur_ads["spend"],
-                "ad_spend_delta": _safe_delta(cur_ads["spend"], prev_ads["spend"]),
-                "views": cur_ads["views"],
-                "views_delta": _safe_delta(cur_ads["views"], prev_ads["views"]),
-                "clicks": cur_ads["clicks"],
-                "clicks_delta": _safe_delta(cur_ads["clicks"], prev_ads["clicks"]),
-                "drr": cur_drr,
-                "drr_delta": round(cur_drr - prev_drr, 1),
+                "sales": {
+                    "revenue": round(cur_orders["revenue"], 2),
+                    "revenue_delta": _safe_delta(cur_orders["revenue"], prev_orders["revenue"]),
+                    "profit": round(profit_cur, 2),
+                    "profit_delta": _safe_delta(profit_cur, profit_prev),
+                    "profit_pct": profit_pct,
+                    "orders": cur_orders["count"],
+                    "orders_delta": _safe_delta(cur_orders["count"], prev_orders["count"]),
+                    "cancels": cur_orders["cancels"],
+                    "cancels_delta": _safe_delta(cur_orders["cancels"], prev_orders["cancels"]),
+                    "cancel_rate": cur_cancel_rate,
+                    "cancel_rate_delta": round(cur_cancel_rate - prev_cancel_rate, 1),
+                },
+                "advertising": {
+                    "ad_spend": round(cur_ads["spend"], 2),
+                    "ad_spend_delta": _safe_delta(cur_ads["spend"], prev_ads["spend"]),
+                    "drr_total": cur_drr_total,
+                    "drr_total_delta": round(cur_drr_total - prev_drr_total, 1),
+                    "drr_ad": cur_drr_ad,
+                    "drr_ad_delta": round(cur_drr_ad - prev_drr_ad, 1),
+                },
+                "funnel": {
+                    "views": cur_ads["views"],
+                    "views_delta": _safe_delta(cur_ads["views"], prev_ads["views"]),
+                    "clicks": cur_ads["clicks"],
+                    "clicks_delta": _safe_delta(cur_ads["clicks"], prev_ads["clicks"]),
+                    "ctr": cur_ctr,
+                    "ctr_delta": round(cur_ctr - prev_ctr, 1),
+                    "cart": cur_ads["cart"],
+                    "cart_delta": _safe_delta(cur_ads["cart"], prev_ads["cart"]),
+                    "click_to_cart": cur_click_to_cart,
+                    "click_to_cart_delta": round(cur_click_to_cart - prev_click_to_cart, 1),
+                    "cart_conversion": round(cur_ads["orders"] / cur_ads["cart"] * 100, 1) if cur_ads["cart"] > 0 else 0,
+                    "cart_conversion_delta": round(
+                        (round(cur_ads["orders"] / cur_ads["cart"] * 100, 1) if cur_ads["cart"] > 0 else 0) -
+                        (round(prev_ads["orders"] / prev_ads["cart"] * 100, 1) if prev_ads["cart"] > 0 else 0), 1),
+                    "orders": cur_ads["orders"],
+                    "orders_delta": _safe_delta(cur_ads["orders"], prev_ads["orders"]),
+                    "conversion": cur_conv,
+                    "conversion_delta": round(cur_conv - prev_conv, 1),
+                },
             },
-            "charts": {
-                "sales_daily": charts_sales,
-                "ads_daily": charts_ads,
+            "chart": chart_data,
+            "alerts": {
+                "warehouses": {"count": len(alerts_warehouses), "items": alerts_warehouses},
+                "sales": {"count": len(alerts_sales), "items": alerts_sales},
+                "storage": {"count": len(alerts_storage), "total_cost": round(storage_total_cost, 2), "items": alerts_storage},
+                "advertising": {"count": len(alerts_advertising), "items": alerts_advertising},
+                "finances": {"count": len(alerts_finances), "items": alerts_finances},
             },
-            "top_products": top_products,
+            "orders_feed": orders_feed,
+            "finance_summary": finance_summary,
         }
 
     except HTTPException:
@@ -876,3 +1519,4 @@ async def get_wb_dashboard(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка загрузки дашборда WB: {str(e)}",
         )
+

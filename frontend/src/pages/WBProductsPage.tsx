@@ -46,12 +46,7 @@ function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString('ru-RU')
 }
 
-/* WB product image via CDN */
-function wbImageUrl(nmId: number): string {
-  const vol = Math.floor(nmId / 100000)
-  const part = Math.floor(nmId / 1000)
-  return `https://basket-${String(vol % 17 + 1).padStart(2, '0')}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
-}
+
 
 const FILTERS = [
   { key: 'all', label: 'Все' },
@@ -510,11 +505,11 @@ export default function WBProductsPage() {
                         {/* Photo */}
                         <div
                           className="relative h-10 w-[30px] shrink-0 cursor-zoom-in"
-                          onMouseEnter={(e) => setHoverImg({ url: wbImageUrl(p.nm_id), x: e.clientX, y: e.clientY })}
+                          onMouseEnter={(e) => setHoverImg({ url: p.image_url, x: e.clientX, y: e.clientY })}
                           onMouseLeave={() => setHoverImg(null)}
                         >
                           <img
-                            src={wbImageUrl(p.nm_id)}
+                            src={p.image_url}
                             alt=""
                             className="h-10 w-[30px] rounded-md object-cover bg-[hsl(var(--muted)/0.3)]"
                             loading="lazy"

@@ -51,12 +51,7 @@ function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString('ru-RU')
 }
 
-/* WB product image via CDN */
-function wbImageUrl(nmId: number): string {
-  const vol = Math.floor(nmId / 100000)
-  const part = Math.floor(nmId / 1000)
-  return `https://basket-${String(vol % 17 + 1).padStart(2, '0')}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
-}
+
 
 /* ═══════════════════════════════════════════════════════════
    Sort Header
@@ -517,7 +512,6 @@ export default function ProductsPricesPage() {
   // Image URL helper
   const getImageUrl = (row: PriceRow) => {
     if (row.image_url) return row.image_url
-    if (row.nm_id) return wbImageUrl(row.nm_id)
     return ''
   }
 

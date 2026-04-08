@@ -53,13 +53,7 @@ function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString('ru-RU')
 }
 
-/** WB CDN image URL by nm_id */
-function wbImageUrl(nmId: number): string {
-  const vol = Math.floor(nmId / 100000)
-  const part = Math.floor(nmId / 1000)
-  const basket = String((vol % 17) + 1).padStart(2, '0')
-  return `https://basket-${basket}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
-}
+
 
 /** Convert WBProduct → OzonProduct shape for unified table rendering */
 function wbToOzon(p: WBProduct): OzonProduct {
@@ -78,7 +72,7 @@ function wbToOzon(p: WBProduct): OzonProduct {
     sku: p.nm_id,
     name: p.name || p.vendor_code,
     barcode: null,
-    image_url: p.image_url || wbImageUrl(p.nm_id),
+    image_url: p.image_url || '',
     price: p.current_price,
     old_price: 0,
     min_price: 0,

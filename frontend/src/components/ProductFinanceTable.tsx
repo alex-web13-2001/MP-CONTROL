@@ -23,19 +23,7 @@ function cn(...classes: (string | false | undefined)[]): string {
   return classes.filter(Boolean).join(' ')
 }
 
-/** WB image URL from nm_id */
-function wbImageUrl(nmId: number): string {
-  if (!nmId) return ''
-  const t = Math.floor(nmId / 100000)
-  const basket =
-    t <= 143 ? '01' : t <= 287 ? '02' : t <= 431 ? '03' : t <= 719 ? '04' :
-    t <= 1007 ? '05' : t <= 1061 ? '06' : t <= 1115 ? '07' : t <= 1169 ? '08' :
-    t <= 1313 ? '09' : t <= 1601 ? '10' : t <= 1655 ? '11' : t <= 1919 ? '12' :
-    t <= 2045 ? '13' : t <= 2189 ? '14' : t <= 2405 ? '15' : t <= 2621 ? '16' : '17'
-  const vol = Math.floor(nmId / 100000)
-  const part = Math.floor(nmId / 1000)
-  return `https://basket-${basket}.wbbasket.ru/vol${vol}/part${part}/${nmId}/images/small/1.webp`
-}
+
 
 // ── Column config ────────────────────────────────────────────
 
@@ -163,7 +151,6 @@ export default function ProductFinanceTable({ products, totals, marketplace }: P
   /** Get image for product */
   const getProductImage = (product: ProductFinanceItem): string => {
     if (product.image_url) return product.image_url
-    if (isWB && product.nm_id) return wbImageUrl(product.nm_id)
     return ''
   }
 
