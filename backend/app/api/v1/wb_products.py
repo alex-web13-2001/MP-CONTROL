@@ -8,7 +8,7 @@ GET  /products/wb/cost/template — download Excel template
 """
 import io
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -68,7 +68,8 @@ async def get_wb_products(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="WB магазин не найден")
 
     # ── Dates ─────────────────────────────────────────────
-    today = date.today()
+    MSK = timezone(timedelta(hours=3))
+    today = datetime.now(MSK).date()
     if date_from and date_to:
         d_start = date_from
         d_end = date_to
@@ -88,15 +89,15 @@ async def get_wb_products(
             SELECT
                 nm_id,
                 any(supplier_article)  AS vendor_code,
-                countIf(toDate(date) >= {d_start:Date} AND is_cancel = 0)  AS orders_cur,
-                sumIf(price_with_disc, toDate(date) >= {d_start:Date} AND is_cancel = 0)  AS revenue_cur,
-                countIf(toDate(date) < {d_start:Date} AND is_cancel = 0)   AS orders_prev,
-                sumIf(price_with_disc, toDate(date) < {d_start:Date} AND is_cancel = 0)   AS revenue_prev,
-                countIf(toDate(date) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur
+                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 0)  AS orders_cur,
+                sumIf(price_with_disc, toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 0)  AS revenue_cur,
+                countIf(toDate(addHours(date, 3)) < {d_start:Date} AND is_cancel = 0)   AS orders_prev,
+                sumIf(price_with_disc, toDate(addHours(date, 3)) < {d_start:Date} AND is_cancel = 0)   AS revenue_prev,
+                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {d_prev_start:Date}
-              AND toDate(date) <= {d_end:Date}
+              AND toDate(addHours(date, 3)) >= {d_prev_start:Date}
+              AND toDate(addHours(date, 3)) <= {d_end:Date}
             GROUP BY nm_id
         """, parameters={
             "shop_id": shop_id,
@@ -431,6 +432,33 @@ async def get_wb_products(
             except Exception as e:
                 logger.warning("CH shop-wide avg rates query failed: %s", e)
 
+    # ── Unit economics from fact_finances (rolling 30d) for estimated profit ──
+    unit_rate_map: dict[int, dict] = {}  # nm_id → {avg_payout, avg_logistics}
+    try:
+        unit_econ_data = ch.query("""
+            SELECT
+                toUInt64(external_id) AS nm_id,
+                sum(payout_amount) / nullIf(
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                ) AS avg_payout_per_unit,
+                sum(wb_delivery_rub) / nullIf(
+                    sumIf(quantity, operation_type = 'Продажа' AND quantity > 0), 0
+                ) AS avg_logistics_per_unit
+            FROM mms_analytics.fact_finances FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND marketplace = 1
+              AND event_date >= today() - 30
+            GROUP BY nm_id
+            HAVING sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) > 0
+        """, parameters={"shop_id": shop_id}).result_rows
+        for r in unit_econ_data:
+            unit_rate_map[int(r[0])] = {
+                "avg_payout": float(r[1] or 0),
+                "avg_logistics": abs(float(r[2] or 0)),
+            }
+    except Exception as e:
+        logger.warning("CH unit economics query failed: %s", e)
+
     ch.close()
 
     # ── 5. Product catalog from PostgreSQL (dim_products) ──
@@ -486,25 +514,14 @@ async def get_wb_products(
         orders_prev_raw = orders.get("orders_prev", 0)
         revenue_prev_raw = orders.get("revenue_prev", 0.0)
 
-        # ── Финансовые данные из fact_finances (SOURCE OF TRUTH) ────
-        # fact_finances — единственный источник правды для P&L.
-        # fact_orders_raw — только fallback для свежих заказов без отчёта.
+        # ── Данные из fact_finances (информационные — для fee breakdown) ────
         fees = fees_map.get(nm_id, {})
-        fin_revenue = fees.get("fin_revenue", 0.0)
-        fin_qty = fees.get("qty", 0)
-        revenue_prev = fees.get("fin_revenue_prev", revenue_prev_raw)
+        revenue_prev = revenue_prev_raw
 
-        # Выбираем источник: fact_finances если есть, иначе fact_orders_raw
-        has_finance_data = fin_revenue > 0 or fees.get("payout", 0) != 0
-        if has_finance_data:
-            # fact_finances — фактические данные из отчёта реализации WB
-            orders_7d = fin_qty if fin_qty > 0 else orders_raw
-            revenue_7d = fin_revenue if fin_revenue > 0 else revenue_raw
-        else:
-            # fallback: свежие заказы, ещё не попавшие в отчёт реализации
-            orders_7d = orders_raw
-            revenue_7d = revenue_raw
-            estimated_nm_ids.add(nm_id)
+        # Всегда используем fact_orders_raw для revenue и orders
+        # (fact_finances отстаёт на неделю, расхождение с Dashboard/Sales)
+        orders_7d = orders_raw
+        revenue_7d = revenue_raw
 
         avg_price = round(revenue_7d / orders_7d, 2) if orders_7d > 0 else 0.0
 
@@ -537,17 +554,19 @@ async def get_wb_products(
         else:
             revenue_delta = 0.0
 
-        # ── Gross profit (формула идентична финотчёту finances.py) ─────
-        # profit = payout - logistics - storage - deductions - acceptance - fines - COGS - ads
-        # payout уже за вычетом ТОЛЬКО комиссии и эквайринга.
-        # Логистика, хранение, удержания — ОТДЕЛЬНЫЕ расходы!
-        # Ads берём из fact_advert_stats_v3 (не из удержаний — там исключены).
+        # ── Расчётная прибыль (unit economics из fact_finances 30d) ─────
+        # unit_profit = avg_payout_per_unit - avg_logistics_per_unit - COGS
+        # gross_profit = unit_profit × orders - ad_spend
+        # Аналогичная формула используется на Dashboard для единообразия.
         gross_profit = None
         margin = None
-        effective_qty = orders_7d  # qty для COGS — из того же источника что revenue
-        if cost_price > 0 and effective_qty > 0:
-            total_cogs = (cost_price + packaging_cost) * effective_qty
-            gross_profit = round(payout - mp_fees - total_cogs - ad_spend_7d, 2)
+        unit_rates = unit_rate_map.get(nm_id, {})
+        avg_payout_pu = unit_rates.get("avg_payout", 0)
+        avg_logistics_pu = unit_rates.get("avg_logistics", 0)
+        if orders_7d > 0 and avg_payout_pu > 0:
+            unit_cogs = cost_price + packaging_cost
+            unit_profit = avg_payout_pu - avg_logistics_pu - unit_cogs
+            gross_profit = round(unit_profit * orders_7d - ad_spend_7d, 2)
             if sales_amount > 0:
                 margin = round(gross_profit / sales_amount * 100, 1)
 

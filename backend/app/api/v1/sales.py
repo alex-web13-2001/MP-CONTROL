@@ -4,7 +4,7 @@ Sales API endpoints.
 GET /sales/ozon?shop_id=X&period=7  — Ozon sales analytics
 """
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -37,7 +37,8 @@ def _parse_dates(
     date_to: Optional[date],
 ) -> tuple[date, date, date, date]:
     """Return (cur_start, cur_end, prev_start, prev_end)."""
-    today = date.today()
+    MSK = timezone(timedelta(hours=3))
+    today = datetime.now(MSK).date()
     if date_from and date_to:
         cur_start = date_from
         cur_end = date_to
@@ -662,14 +663,14 @@ async def get_wb_sales(
             FROM (
                 SELECT
                     CASE
-                        WHEN toDate(date) >= {cur_start:Date} AND toDate(date) <= {cur_end:Date} THEN 'current'
-                        WHEN toDate(date) >= {prev_start:Date} AND toDate(date) <= {prev_end:Date} THEN 'previous'
+                        WHEN toDate(addHours(date, 3)) >= {cur_start:Date} AND toDate(addHours(date, 3)) <= {cur_end:Date} THEN 'current'
+                        WHEN toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} THEN 'previous'
                     END AS period,
                     price_with_disc, is_cancel
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) >= {prev_start:Date}
-                  AND toDate(date) <= {cur_end:Date}
+                  AND toDate(addHours(date, 3)) >= {prev_start:Date}
+                  AND toDate(addHours(date, 3)) <= {cur_end:Date}
             )
             WHERE period != ''
             GROUP BY period
@@ -705,14 +706,14 @@ async def get_wb_sales(
         # ══════════════════════════════════════════════
         daily_rows = ch.query("""
             SELECT
-                toDate(date) AS dt,
+                toDate(addHours(date, 3)) AS dt,
                 count() AS orders,
                 sum(price_with_disc) AS revenue,
                 countIf(is_cancel = 1) AS cancels
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {cur_start:Date}
-              AND toDate(date) <= {cur_end:Date}
+              AND toDate(addHours(date, 3)) >= {cur_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
             GROUP BY dt
             ORDER BY dt
         """, parameters=params).result_rows
@@ -737,8 +738,8 @@ async def get_wb_sales(
                 sum(price_with_disc) / nullIf(count(), 0) AS avg_check
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {cur_start:Date}
-              AND toDate(date) <= {cur_end:Date}
+              AND toDate(addHours(date, 3)) >= {cur_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
               AND region_name != ''
               AND is_cancel = 0
             GROUP BY region_name
@@ -771,8 +772,8 @@ async def get_wb_sales(
                 countIf(is_cancel = 1) AS cancels
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {cur_start:Date}
-              AND toDate(date) <= {cur_end:Date}
+              AND toDate(addHours(date, 3)) >= {cur_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
             GROUP BY nm_id
             ORDER BY revenue DESC
             LIMIT 20
@@ -817,8 +818,8 @@ async def get_wb_sales(
                        round(avg(price_with_disc), 0) AS avg_price
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {{shop_id:UInt32}}
-                  AND toDate(date) >= {{prev_start:Date}}
-                  AND toDate(date) <= {{prev_end:Date}}
+                  AND toDate(addHours(date, 3)) >= {{prev_start:Date}}
+                  AND toDate(addHours(date, 3)) <= {{prev_end:Date}}
                   AND nm_id IN ({nm_str})
                 GROUP BY nm_id
             """, parameters=params).result_rows
@@ -1016,13 +1017,13 @@ async def get_wb_product_daily(
         rows = ch.query(f"""
             SELECT
                 nm_id,
-                toDate(date) AS dt,
+                toDate(addHours(date, 3)) AS dt,
                 count() AS orders,
                 sum(price_with_disc) AS revenue
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {{shop_id:UInt32}}
-              AND toDate(date) >= {{cur_start:Date}}
-              AND toDate(date) <= {{cur_end:Date}}
+              AND toDate(addHours(date, 3)) >= {{cur_start:Date}}
+              AND toDate(addHours(date, 3)) <= {{cur_end:Date}}
               AND nm_id IN ({nm_csv})
             GROUP BY nm_id, dt
             ORDER BY nm_id, dt
@@ -1108,7 +1109,7 @@ async def get_ozon_abc_xyz(
 
         ch = get_clickhouse_client()
 
-        cur_end = date.today()
+        cur_end = datetime.now(timezone(timedelta(hours=3))).date()
         cur_start = cur_end - timedelta(days=period)
 
         params = {
@@ -1453,7 +1454,7 @@ async def get_wb_abc_xyz(
 
         ch = get_clickhouse_client()
 
-        cur_end = date.today()
+        cur_end = datetime.now(timezone(timedelta(hours=3))).date()
         cur_start = cur_end - timedelta(days=period)
 
         params = {
@@ -1607,12 +1608,12 @@ async def get_wb_abc_xyz(
             weekly_rows = ch.query("""
                 SELECT
                     nm_id,
-                    toStartOfWeek(toDate(date), 1) AS week,
+                    toStartOfWeek(toDate(addHours(date, 3)), 1) AS week,
                     sum(price_with_disc) AS revenue
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(date) >= {cur_start:Date}
-                  AND toDate(date) <= {cur_end:Date}
+                  AND toDate(addHours(date, 3)) >= {cur_start:Date}
+                  AND toDate(addHours(date, 3)) <= {cur_end:Date}
                   AND is_cancel = 0
                 GROUP BY nm_id, week
                 ORDER BY nm_id, week
@@ -2160,7 +2161,7 @@ def _lightgbm_forecast(
     # ── Fallback for insufficient data ──
     if len(dates) < 14:
         mean_val = sum(values) / len(values) if values else 0
-        last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
+        last_dt = date.fromisoformat(dates[-1]) if dates else datetime.now(timezone(timedelta(hours=3))).date()
         forecast_pts = []
         for d in range(1, forecast_days + 1):
             fd = last_dt + timedelta(days=d)
@@ -2350,7 +2351,7 @@ def _lightgbm_forecast(
         logger.warning("LightGBM forecast failed, fallback to moving average: %s", e)
         window = values[-7:] if len(values) >= 7 else values
         mean_val = sum(window) / len(window) if window else 0
-        last_dt = date.fromisoformat(dates[-1]) if dates else date.today()
+        last_dt = date.fromisoformat(dates[-1]) if dates else datetime.now(timezone(timedelta(hours=3))).date()
         forecast_pts = []
         for d in range(1, forecast_days + 1):
             fd = last_dt + timedelta(days=d)
@@ -2400,7 +2401,7 @@ async def get_wb_forecast(
 
         ch = get_clickhouse_client()
 
-        cur_end = date.today() - timedelta(days=1)
+        cur_end = datetime.now(timezone(timedelta(hours=3))).date() - timedelta(days=1)
         cur_start = cur_end - timedelta(days=period - 1)
 
         params = {
@@ -2417,13 +2418,13 @@ async def get_wb_forecast(
         # WB: use fact_orders_raw (price_with_disc = actual paid price)
         daily_rows = ch.query("""
             SELECT
-                toDate(date) AS dt,
+                toDate(addHours(date, 3)) AS dt,
                 sum(price_with_disc) AS revenue,
                 count() AS orders
             FROM mms_analytics.fact_orders_raw_latest
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {cur_start:Date}
-              AND toDate(date) <= {cur_end:Date}
+              AND toDate(addHours(date, 3)) >= {cur_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
               AND is_cancel = 0
             GROUP BY dt
             ORDER BY dt
@@ -2442,8 +2443,8 @@ async def get_wb_forecast(
             SELECT nm_id, sum(price_with_disc) AS revenue
             FROM mms_analytics.fact_orders_raw_latest
             WHERE shop_id = {shop_id:UInt32}
-              AND toDate(date) >= {cur_start:Date}
-              AND toDate(date) <= {cur_end:Date}
+              AND toDate(addHours(date, 3)) >= {cur_start:Date}
+              AND toDate(addHours(date, 3)) <= {cur_end:Date}
               AND is_cancel = 0
             GROUP BY nm_id
             ORDER BY revenue DESC
@@ -2466,13 +2467,13 @@ async def get_wb_forecast(
         orders_rows = ch.query(f"""
             SELECT
                 nm_id,
-                toDate(date) AS dt,
+                toDate(addHours(date, 3)) AS dt,
                 sum(price_with_disc) AS revenue,
                 count() AS orders
             FROM mms_analytics.fact_orders_raw_latest
             WHERE shop_id = {{shop_id:UInt32}}
-              AND toDate(date) >= {{cur_start:Date}}
-              AND toDate(date) <= {{cur_end:Date}}
+              AND toDate(addHours(date, 3)) >= {{cur_start:Date}}
+              AND toDate(addHours(date, 3)) <= {{cur_end:Date}}
               AND is_cancel = 0
               AND nm_id IN ({sku_str})
             GROUP BY nm_id, dt
@@ -2889,7 +2890,7 @@ async def get_ozon_forecast(
 
         ch = get_clickhouse_client()
 
-        cur_end = date.today() - timedelta(days=1)  # exclude incomplete today
+        cur_end = datetime.now(timezone(timedelta(hours=3))).date() - timedelta(days=1)  # exclude incomplete today
         cur_start = cur_end - timedelta(days=period - 1)
 
         params = {
@@ -3667,7 +3668,7 @@ async def get_ozon_sku_forecast(
         from app.core.clickhouse import get_clickhouse_client
         ch = get_clickhouse_client()
 
-        cur_end = date.today() - timedelta(days=1)
+        cur_end = datetime.now(timezone(timedelta(hours=3))).date() - timedelta(days=1)
         cur_start = cur_end - timedelta(days=period - 1)
 
         params = {
