@@ -681,55 +681,57 @@ function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
         <CardTitle className="text-lg">📦 Заказы за период</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="overflow-x-auto -mx-5">
-          {/* Fixed header */}
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-[hsl(var(--border)/0.5)]">
-              <th className="px-5 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
-              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
-              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
-              <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Посл. заказ</th>
-            </tr></thead>
-          </table>
-          {/* Scrollable body */}
-          <div className="max-h-[480px] overflow-y-auto">
-            <table className="w-full text-sm">
-              <tbody>
-                {items.slice(0, 30).map((item) => (
-                  <tr key={item.nm_id} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
-                    <td className="px-5 py-3">
-                      <div className="flex items-center gap-3">
-                        {item.image_url ? (
-                          <img src={item.image_url} className="h-14 w-[42px] rounded-lg object-cover shrink-0" />
-                        ) : (
-                          <div className="h-14 w-[42px] rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0 flex items-center justify-center">
-                            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate max-w-[260px] leading-tight">{item.name}</p>
-                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
-                            {(item.vendor_code || item.supplier_article) && (
-                              <CopyBtn text={item.vendor_code || item.supplier_article} />
-                            )}
-                            {item.nm_id > 0 && <CopyBtn text={item.nm_id} />}
-                          </div>
+        <div className="max-h-[520px] overflow-y-auto -mx-5">
+          <table className="w-full text-sm table-fixed">
+            <colgroup>
+              <col />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 100 }} />
+            </colgroup>
+            <thead className="sticky top-0 bg-[hsl(var(--card))] z-10">
+              <tr className="border-b border-[hsl(var(--border)/0.5)]">
+                <th className="px-5 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
+                <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Заказы</th>
+                <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
+                <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Посл. заказ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.slice(0, 30).map((item) => (
+                <tr key={item.nm_id} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
+                  <td className="px-5 py-3">
+                    <div className="flex items-center gap-3">
+                      {item.image_url ? (
+                        <img src={item.image_url} className="h-14 w-[42px] rounded-lg object-cover shrink-0" />
+                      ) : (
+                        <div className="h-14 w-[42px] rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0 flex items-center justify-center">
+                          <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate max-w-[260px] leading-tight">{item.name}</p>
+                        <div className="flex items-center gap-2.5 mt-1 flex-wrap">
+                          {(item.vendor_code || item.supplier_article) && (
+                            <CopyBtn text={item.vendor_code || item.supplier_article} />
+                          )}
+                          {item.nm_id > 0 && <CopyBtn text={item.nm_id} />}
                         </div>
                       </div>
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <span className="font-semibold text-base">{fmtN(item.orders)}</span>
-                        {item.orders_prev > 0 && <DeltaBadge value={pctDelta(item.orders, item.orders_prev)} />}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 text-right font-semibold text-base">{fmt(item.revenue)}</td>
-                    <td className="px-3 py-3 text-right text-sm text-[hsl(var(--muted-foreground))]">{fmtOrderDate(item.last_order)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle">
+                    <span className="font-semibold text-base tabular-nums">{fmtN(item.orders)}</span>
+                    {item.orders_prev > 0 && (
+                      <div className="mt-0.5"><DeltaBadge value={pctDelta(item.orders, item.orders_prev)} /></div>
+                    )}
+                  </td>
+                  <td className="px-3 py-3 text-right align-middle font-semibold text-base tabular-nums">{fmt(item.revenue)}</td>
+                  <td className="px-3 py-3 text-right align-middle text-sm text-[hsl(var(--muted-foreground))]">{fmtOrderDate(item.last_order)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </CardContent>
     </Card>
