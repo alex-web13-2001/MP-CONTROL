@@ -1,3 +1,37 @@
+## 2026-04-09 (v17.54.0)
+
+### fix(analytics): Унификация фильтра is_cancel=0 — одинаковые данные на Dashboard/Sales/Products
+
+**Проблема**: Страницы показывали разные суммы за один период:
+- **Дашборд/Продажи**: 4 017 ₽ (3 заказа) — считали ВСЕ заказы включая отменённые
+- **Товары**: 1 617 ₽ (2 заказа) — фильтровали `is_cancel = 0`
+- Разница = 2 400 ₽ (1 отменённый заказ)
+
+**Корневая причина**: Dashboard и Sales использовали `count()` / `sum(price_with_disc)` без фильтра отмен.
+
+**Решение — единая семантика:**
+- `revenue` = `sumIf(price_with_disc, is_cancel = 0)` — только реальные продажи
+- `orders_count` = `countIf(is_cancel = 0)` — только успешные заказы
+- `cancel_rate` = `countIf(is_cancel = 1) / count()` × 100 — от ВСЕХ заказов
+- `avg_check` = revenue / orders_count — без отмен
+
+**Исправлены 6 SQL-запросов:**
+
+| Файл | Запрос | Что изменено |
+|------|--------|--------------|
+| `dashboard.py` | KPI (строка 573) | `count()` → `countIf(is_cancel = 0)`, revenue без отмен |
+| `dashboard.py` | Chart daily (строка 794) | `count()` → `countIf(is_cancel = 0)` + cancels отдельно |
+| `dashboard.py` | Orders Feed (строка 1309) | Добавлен `AND is_cancel = 0` во все countIf/sumIf |
+| `sales.py` | KPI (строка 659) | `count()` → `countIf(is_cancel = 0)`, revenue без отмен |
+| `sales.py` | Daily chart (строка 710) | `count()` → `countIf(is_cancel = 0)` |
+| `sales.py` | Top Products (строка 776) | Добавлен `AND is_cancel = 0` в WHERE |
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — KPI + Chart + Orders Feed
+- `backend/app/api/v1/sales.py` — KPI + Daily chart + Top Products
+
+---
+
 ## 2026-04-09 (v17.53.0)
 
 ### feat(dashboard): P&L за неделю (ПН→ПН) + стабильная таблица заказов
