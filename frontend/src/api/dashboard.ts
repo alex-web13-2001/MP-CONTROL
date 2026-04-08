@@ -201,6 +201,8 @@ export interface WbOrderFeedItem {
   vendor_code?: string
   orders: number
   revenue: number
+  orders_prev: number
+  revenue_prev: number
   last_order: string
   image_url: string
 }

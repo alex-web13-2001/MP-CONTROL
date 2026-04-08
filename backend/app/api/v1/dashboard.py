@@ -1295,27 +1295,38 @@ async def get_wb_dashboard(
             logger.warning("WB finance alerts failed: %s", e)
 
         # ══════════════════════════════════════════════
-        # 10. Orders Feed
+        # 10. Orders Feed (with previous period comparison)
         # ══════════════════════════════════════════════
         orders_feed = []
         try:
             feed_rows = ch.query("""
-                SELECT nm_id, anyLast(supplier_article) AS article,
-                       count() AS orders, sum(price_with_disc) AS revenue,
-                       max(toDate(addHours(date, 3))) AS last_order
+                SELECT
+                    nm_id,
+                    anyLast(supplier_article) AS article,
+                    countIf(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}) AS orders_cur,
+                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}) AS revenue_cur,
+                    max(if(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}, toDate(addHours(date, 3)), toDate('1970-01-01'))) AS last_order,
+                    countIf(toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date}) AS orders_prev,
+                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date}) AS revenue_prev
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(addHours(date, 3)) >= {start:Date}
+                  AND toDate(addHours(date, 3)) >= {prev_start:Date}
                   AND toDate(addHours(date, 3)) <= {end:Date}
                 GROUP BY nm_id
-                ORDER BY orders DESC
+                HAVING orders_cur > 0
+                ORDER BY orders_cur DESC
                 LIMIT 50
-            """, parameters={"shop_id": shop_id, "start": cur_start, "end": cur_end}).result_rows
+            """, parameters={
+                "shop_id": shop_id,
+                "start": cur_start, "end": cur_end,
+                "prev_start": prev_start, "prev_end": prev_end,
+            }).result_rows
             for r in feed_rows:
                 orders_feed.append({
                     "nm_id": int(r[0]), "supplier_article": str(r[1] or ""),
                     "orders": int(r[2]), "revenue": round(float(r[3]), 2),
                     "last_order": str(r[4]), "image_url": "",
+                    "orders_prev": int(r[5]), "revenue_prev": round(float(r[6]), 2),
                 })
         except Exception as e:
             logger.warning("WB orders feed failed: %s", e)
@@ -1340,17 +1351,17 @@ async def get_wb_dashboard(
                 if isinstance(last_monday, str):
                     last_monday = date_type.fromisoformat(last_monday)
 
-                # Current week: Monday → Sunday
+                # Current week: Monday → next Monday (Mon-Mon, 8 days inclusive)
                 fw_start = last_monday
-                fw_end = last_monday + timedelta(days=6)
+                fw_end = last_monday + timedelta(days=7)  # next Monday
 
-                # If the week is not yet complete (today is within it), use previous complete week
+                # If the week is not yet complete (end Monday hasn't passed), use previous week
                 today_d = date_type.today()
                 if fw_end >= today_d:
                     fw_start = fw_start - timedelta(days=7)
                     fw_end = fw_end - timedelta(days=7)
 
-                # Previous week (same length, for comparison)
+                # Previous week (same length Mon-Mon, for comparison)
                 prev_fw_start = fw_start - timedelta(days=7)
                 prev_fw_end = fw_end - timedelta(days=7)
 

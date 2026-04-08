@@ -717,7 +717,12 @@ function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-3 text-right font-semibold text-base">{fmtN(item.orders)}</td>
+                    <td className="px-3 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <span className="font-semibold text-base">{fmtN(item.orders)}</span>
+                        {item.orders_prev > 0 && <DeltaBadge value={pctDelta(item.orders, item.orders_prev)} />}
+                      </div>
+                    </td>
                     <td className="px-3 py-3 text-right font-semibold text-base">{fmt(item.revenue)}</td>
                     <td className="px-3 py-3 text-right text-sm text-[hsl(var(--muted-foreground))]">{fmtOrderDate(item.last_order)}</td>
                   </tr>
