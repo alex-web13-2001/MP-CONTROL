@@ -208,17 +208,34 @@ export interface WbOrderFeedItem {
 export interface WbFinanceSummary {
   week_start: string
   week_end: string
+  // Revenue
   revenue: number
-  commission: number
-  logistics: number
-  storage: number
-  deductions: number
-  ad_spend: number
-  profit: number
-  profit_pct: number
-  prev_revenue: number
-  prev_profit: number
+  revenue_prev: number
   revenue_delta: number
+  // Expenses
+  commission: number
+  commission_prev: number
+  logistics: number
+  logistics_prev: number
+  storage: number
+  storage_prev: number
+  ad_spend: number
+  ad_spend_prev: number
+  deductions: number
+  deductions_prev: number
+  acceptance: number
+  acceptance_prev: number
+  penalties: number
+  penalties_prev: number
+  returns: number
+  returns_prev: number
+  // Orders
+  orders: number
+  orders_prev: number
+  // Profit
+  profit: number
+  profit_prev: number
+  profit_pct: number
   profit_delta: number
 }
 

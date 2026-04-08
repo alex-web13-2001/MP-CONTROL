@@ -527,45 +527,131 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Finance Summary
+   Finance Summary — full P&L breakdown (Mon-Sun week)
    ═══════════════════════════════════════════════════════════ */
 
+/** Format ISO date → "6 апреля" */
+function fmtHumanDate(d: string) {
+  const p = d.split('-')
+  if (p.length >= 3) return `${+p[2]} ${MONTHS_FULL[+p[1] - 1] || p[1]}`
+  return d
+}
+
+/** Percentage delta between current and previous */
+function pctDelta(cur: number, prev: number): number {
+  if (!prev || prev === 0) return cur > 0 ? 100 : 0
+  return ((cur - prev) / Math.abs(prev)) * 100
+}
+
 function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
-  const rows = [
-    { label: 'Выручка', value: data.revenue, icon: Banknote, color: '#10b981' },
-    { label: 'Комиссия', value: -data.commission, icon: Receipt, color: '#f97316' },
-    { label: 'Логистика', value: -data.logistics, icon: Truck, color: '#3b82f6' },
-    { label: 'Хранение', value: -data.storage, icon: Archive, color: '#8b5cf6' },
-    { label: 'Удержания', value: -data.deductions, icon: AlertTriangle, color: '#ef4444' },
-    { label: 'Реклама', value: -data.ad_spend, icon: Megaphone, color: '#ec4899' },
+  const expenseRows: {
+    label: string; value: number; prev: number; icon: React.ElementType; color: string; invert?: boolean
+  }[] = [
+    { label: 'Комиссия WB', value: data.commission, prev: data.commission_prev, icon: Receipt, color: '#f97316', invert: true },
+    { label: 'Логистика', value: data.logistics, prev: data.logistics_prev, icon: Truck, color: '#3b82f6', invert: true },
+    { label: 'Хранение', value: data.storage, prev: data.storage_prev, icon: Archive, color: '#8b5cf6', invert: true },
+    { label: 'Реклама', value: data.ad_spend, prev: data.ad_spend_prev, icon: Megaphone, color: '#ec4899', invert: true },
+    { label: 'Удержания', value: data.deductions, prev: data.deductions_prev, icon: AlertTriangle, color: '#ef4444', invert: true },
   ]
+
+  // Only show non-zero optional rows
+  if (data.acceptance > 0 || data.acceptance_prev > 0) {
+    expenseRows.push({ label: 'Приёмка', value: data.acceptance, prev: data.acceptance_prev, icon: Truck, color: '#06b6d4', invert: true })
+  }
+  if (data.penalties > 0 || data.penalties_prev > 0) {
+    expenseRows.push({ label: 'Штрафы', value: data.penalties, prev: data.penalties_prev, icon: AlertTriangle, color: '#dc2626', invert: true })
+  }
+
+  const totalExpenses = expenseRows.reduce((s, r) => s + r.value, 0)
+  const totalExpensesPrev = expenseRows.reduce((s, r) => s + r.prev, 0)
 
   return (
     <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <Receipt className="h-5 w-5 text-emerald-400" /> P&L за неделю
-          <span className="text-xs font-normal text-[hsl(var(--muted-foreground)/0.6)]">{data.week_start} — {data.week_end}</span>
-        </CardTitle>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Banknote className="h-5 w-5 text-emerald-400" /> Финансы за неделю
+          </CardTitle>
+          <span className="rounded-lg bg-[hsl(var(--muted)/0.3)] px-3 py-1.5 text-sm font-semibold text-[hsl(var(--foreground))]">
+            {fmtHumanDate(data.week_start)} — {fmtHumanDate(data.week_end)}
+          </span>
+        </div>
       </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          {rows.map(r => (
-            <div key={r.label} className="flex items-center justify-between py-1.5 border-b border-[hsl(var(--border)/0.3)] last:border-0">
-              <div className="flex items-center gap-2">
+      <CardContent className="space-y-1">
+        {/* Revenue row — highlighted */}
+        <div className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-emerald-500/5">
+          <div className="flex items-center gap-2.5">
+            <Banknote className="h-4.5 w-4.5 text-emerald-400" />
+            <span className="text-sm font-semibold">Выручка</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-base font-bold text-emerald-400">{fmt(data.revenue)}</span>
+            <DeltaBadge value={data.revenue_delta} />
+          </div>
+        </div>
+
+        {/* Returns row — if non-zero */}
+        {(data.returns > 0 || data.returns_prev > 0) && (
+          <div className="flex items-center justify-between py-2 px-3">
+            <div className="flex items-center gap-2.5">
+              <ShoppingCart className="h-4 w-4 text-orange-400" />
+              <span className="text-sm text-[hsl(var(--muted-foreground))]">Возвраты</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-orange-400">{fmt(data.returns)}</span>
+              <DeltaBadge value={pctDelta(data.returns, data.returns_prev)} invert />
+            </div>
+          </div>
+        )}
+
+        {/* Divider */}
+        <div className="border-t border-[hsl(var(--border)/0.4)] my-1" />
+
+        {/* Expense rows */}
+        {expenseRows.map(r => {
+          const delta = pctDelta(r.value, r.prev)
+          return (
+            <div key={r.label} className="flex items-center justify-between py-2 px-3 rounded-md hover:bg-[hsl(var(--muted)/0.1)] transition-colors">
+              <div className="flex items-center gap-2.5">
                 <r.icon className="h-4 w-4" style={{ color: r.color }} />
                 <span className="text-sm">{r.label}</span>
               </div>
-              <span className={`text-sm font-semibold ${r.value < 0 ? 'text-red-400' : ''}`}>{fmt(Math.abs(r.value))}</span>
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold">{fmt(r.value)}</span>
+                {(delta !== 0 && (r.value > 0 || r.prev > 0)) && <DeltaBadge value={delta} invert={r.invert} />}
+              </div>
             </div>
-          ))}
-          <div className="flex items-center justify-between pt-2 border-t-2 border-[hsl(var(--border))]">
-            <span className="text-sm font-bold">Прибыль</span>
-            <div className="flex items-center gap-2">
-              <span className={`text-lg font-bold ${data.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmt(data.profit)}</span>
-              <DeltaBadge value={data.profit_delta} />
-              <span className="text-xs text-[hsl(var(--muted-foreground)/0.6)]">{data.profit_pct}%</span>
-            </div>
+          )
+        })}
+
+        {/* Total expenses */}
+        <div className="flex items-center justify-between py-2 px-3 border-t border-[hsl(var(--border)/0.4)]">
+          <span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">Итого расходы</span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-bold text-red-400">{fmt(totalExpenses)}</span>
+            <DeltaBadge value={pctDelta(totalExpenses, totalExpensesPrev)} invert />
+          </div>
+        </div>
+
+        {/* Profit — prominent */}
+        <div className="flex items-center justify-between pt-3 pb-1 px-3 border-t-2 border-[hsl(var(--border))]">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-5 w-5" style={{ color: data.profit >= 0 ? '#10b981' : '#ef4444' }} />
+            <span className="text-base font-bold">Прибыль</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className={`text-xl font-bold ${data.profit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{fmt(data.profit)}</span>
+            <DeltaBadge value={data.profit_delta} />
+            <span className="text-sm text-[hsl(var(--muted-foreground)/0.6)] font-medium">{data.profit_pct}%</span>
+          </div>
+        </div>
+
+        {/* Orders count */}
+        <div className="flex items-center justify-between py-1.5 px-3">
+          <span className="text-xs text-[hsl(var(--muted-foreground)/0.5)]">Продажи (шт)</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-[hsl(var(--muted-foreground))]">{fmtN(data.orders)}</span>
+            {data.orders_prev > 0 && <DeltaBadge value={pctDelta(data.orders, data.orders_prev)} />}
           </div>
         </div>
       </CardContent>
@@ -574,7 +660,7 @@ function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Orders Feed
+   Orders Feed — fixed height, 3:4 images
    ═══════════════════════════════════════════════════════════ */
 
 function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
@@ -596,6 +682,7 @@ function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
       </CardHeader>
       <CardContent>
         <div className="overflow-x-auto -mx-5">
+          {/* Fixed header */}
           <table className="w-full text-sm">
             <thead><tr className="border-b border-[hsl(var(--border)/0.5)]">
               <th className="px-5 py-2.5 text-left text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Товар</th>
@@ -603,36 +690,41 @@ function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
               <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Продажи</th>
               <th className="px-3 py-2.5 text-right text-[13px] font-medium text-[hsl(var(--muted-foreground))]">Посл. заказ</th>
             </tr></thead>
-            <tbody>
-              {items.slice(0, 20).map((item) => (
-                <tr key={item.nm_id} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-3">
-                      {item.image_url ? (
-                        <img src={item.image_url} className="h-12 w-12 rounded-lg object-cover shrink-0" />
-                      ) : (
-                        <div className="h-12 w-12 rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0 flex items-center justify-center">
-                          <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate max-w-[260px] leading-tight">{item.name}</p>
-                        <div className="flex items-center gap-2.5 mt-1 flex-wrap">
-                          {(item.vendor_code || item.supplier_article) && (
-                            <CopyBtn text={item.vendor_code || item.supplier_article} />
-                          )}
-                          {item.nm_id > 0 && <CopyBtn text={item.nm_id} />}
+          </table>
+          {/* Scrollable body */}
+          <div className="max-h-[480px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {items.slice(0, 30).map((item) => (
+                  <tr key={item.nm_id} className="border-b border-[hsl(var(--border)/0.3)] hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-3">
+                        {item.image_url ? (
+                          <img src={item.image_url} className="h-14 w-[42px] rounded-lg object-cover shrink-0" />
+                        ) : (
+                          <div className="h-14 w-[42px] rounded-lg bg-[hsl(var(--muted)/0.4)] shrink-0 flex items-center justify-center">
+                            <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate max-w-[260px] leading-tight">{item.name}</p>
+                          <div className="flex items-center gap-2.5 mt-1 flex-wrap">
+                            {(item.vendor_code || item.supplier_article) && (
+                              <CopyBtn text={item.vendor_code || item.supplier_article} />
+                            )}
+                            {item.nm_id > 0 && <CopyBtn text={item.nm_id} />}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-3 py-3 text-right font-semibold text-base">{fmtN(item.orders)}</td>
-                  <td className="px-3 py-3 text-right font-semibold text-base">{fmt(item.revenue)}</td>
-                  <td className="px-3 py-3 text-right text-sm text-[hsl(var(--muted-foreground))]">{fmtOrderDate(item.last_order)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </td>
+                    <td className="px-3 py-3 text-right font-semibold text-base">{fmtN(item.orders)}</td>
+                    <td className="px-3 py-3 text-right font-semibold text-base">{fmt(item.revenue)}</td>
+                    <td className="px-3 py-3 text-right text-sm text-[hsl(var(--muted-foreground))]">{fmtOrderDate(item.last_order)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </CardContent>
     </Card>

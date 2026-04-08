@@ -1321,63 +1321,190 @@ async def get_wb_dashboard(
             logger.warning("WB orders feed failed: %s", e)
 
         # ══════════════════════════════════════════════
-        # 11. Finance Summary (P&L waterfall for the last available financial week)
+        # 11. Finance Summary (P&L — full breakdown, Mon-Sun week)
         # ══════════════════════════════════════════════
         finance_summary = None
         try:
-            if finance_week_start and finance_week_end:
-                prev_fw_end = finance_week_start - timedelta(days=1)
-                prev_fw_start = prev_fw_end - timedelta(days=6)
+            # Determine the last *complete* Monday-Sunday week with data
+            # toMonday() in ClickHouse gives the Monday of that ISO week
+            fw_range = ch.query("""
+                SELECT toMonday(max(event_date)) AS last_monday
+                FROM mms_analytics.fact_finances FINAL
+                WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
+                  AND event_date >= today() - 21
+            """, parameters={"shop_id": shop_id}).result_rows
+
+            if fw_range and fw_range[0][0] and str(fw_range[0][0]) != '1970-01-01':
+                from datetime import date as date_type
+                last_monday = fw_range[0][0]
+                if isinstance(last_monday, str):
+                    last_monday = date_type.fromisoformat(last_monday)
+
+                # Current week: Monday → Sunday
+                fw_start = last_monday
+                fw_end = last_monday + timedelta(days=6)
+
+                # If the week is not yet complete (today is within it), use previous complete week
+                today_d = date_type.today()
+                if fw_end >= today_d:
+                    fw_start = fw_start - timedelta(days=7)
+                    fw_end = fw_end - timedelta(days=7)
+
+                # Previous week (same length, for comparison)
+                prev_fw_start = fw_start - timedelta(days=7)
+                prev_fw_end = fw_end - timedelta(days=7)
 
                 fs_data = ch.query("""
                     SELECT
+                        -- Revenue (sales - returns)
                         sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                               operation_type = 'Продажа' AND event_date >= {ws:Date} AND event_date <= {we:Date})
                          - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                               operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS rev_cur,
-                        sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {ws:Date} AND event_date <= {we:Date})
-                         - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS pay_cur,
-                        sumIf(wb_delivery_rub, event_date >= {ws:Date} AND event_date <= {we:Date}) AS log_cur,
-                        sumIf(storage_fee, event_date >= {ws:Date} AND event_date <= {we:Date}) AS stor_cur,
-                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {ws:Date} AND event_date <= {we:Date}) AS ded_cur,
                         sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
                               operation_type = 'Продажа' AND event_date >= {pws:Date} AND event_date <= {pwe:Date})
                          - sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
-                              operation_type = 'Возврат' AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS rev_prev
+                              operation_type = 'Возврат' AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS rev_prev,
+
+                        -- Payout
+                        sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {ws:Date} AND event_date <= {we:Date})
+                         - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS pay_cur,
+                        sumIf(payout_amount, operation_type = 'Продажа' AND event_date >= {pws:Date} AND event_date <= {pwe:Date})
+                         - sumIf(payout_amount, operation_type = 'Возврат' AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS pay_prev,
+
+                        -- Logistics
+                        sumIf(wb_delivery_rub, event_date >= {ws:Date} AND event_date <= {we:Date}) AS log_cur,
+                        sumIf(wb_delivery_rub, event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS log_prev,
+
+                        -- Storage
+                        sumIf(storage_fee, event_date >= {ws:Date} AND event_date <= {we:Date}) AS stor_cur,
+                        sumIf(storage_fee, event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS stor_prev,
+
+                        -- Deductions (excluding ads promo)
+                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {ws:Date} AND event_date <= {we:Date}
+                            AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded_cur,
+                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {pws:Date} AND event_date <= {pwe:Date}
+                            AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')=0) AS ded_prev,
+
+                        -- Ad deductions (ВБ Промо)
+                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {ws:Date} AND event_date <= {we:Date}
+                            AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads_cur,
+                        sumIf(JSONExtractFloat(raw_payload, 'deduction'), event_date >= {pws:Date} AND event_date <= {pwe:Date}
+                            AND positionCaseInsensitiveUTF8(JSONExtractString(raw_payload,'bonus_type_name'),'продвижение')>0) AS ded_ads_prev,
+
+                        -- Acceptance
+                        sumIf(acceptance_fee, event_date >= {ws:Date} AND event_date <= {we:Date}) AS acc_cur,
+                        sumIf(acceptance_fee, event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS acc_prev,
+
+                        -- Penalties (excluding 'Удержание' duplicates)
+                        sumIf(penalty_total, event_date >= {ws:Date} AND event_date <= {we:Date}
+                            AND operation_type != 'Удержание') AS pen_cur,
+                        sumIf(penalty_total, event_date >= {pws:Date} AND event_date <= {pwe:Date}
+                            AND operation_type != 'Удержание') AS pen_prev,
+
+                        -- Returns (absolute)
+                        sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Возврат' AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS ret_cur,
+                        sumIf(JSONExtractFloat(raw_payload, 'retail_price_withdisc_rub'),
+                              operation_type = 'Возврат' AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS ret_prev,
+
+                        -- Orders count
+                        sumIf(quantity, operation_type='Продажа' AND quantity>0
+                            AND event_date >= {ws:Date} AND event_date <= {we:Date}) AS ord_cur,
+                        sumIf(quantity, operation_type='Продажа' AND quantity>0
+                            AND event_date >= {pws:Date} AND event_date <= {pwe:Date}) AS ord_prev
+
                     FROM mms_analytics.fact_finances FINAL
                     WHERE shop_id = {shop_id:UInt32} AND marketplace = 1
                       AND event_date >= {pws:Date} AND event_date <= {we:Date}
                 """, parameters={
                     "shop_id": shop_id,
-                    "ws": finance_week_start, "we": finance_week_end,
+                    "ws": fw_start, "we": fw_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                # Ad spend from fact_advert_stats_v3 (separate source, MAX-reconciliation)
+                ads_week = ch.query("""
+                    SELECT
+                        sumIf(spend, date >= {ws:Date} AND date <= {we:Date}) AS ads_cur,
+                        sumIf(spend, date >= {pws:Date} AND date <= {pwe:Date}) AS ads_prev
+                    FROM mms_analytics.fact_advert_stats_v3 FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND date >= {pws:Date} AND date <= {we:Date}
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": fw_start, "we": fw_end,
                     "pws": prev_fw_start, "pwe": prev_fw_end,
                 }).result_rows
 
                 if fs_data:
                     r = fs_data[0]
                     rev_c = float(r[0] or 0)
-                    pay_c = float(r[1] or 0)
+                    rev_p = float(r[1] or 0)
+                    pay_c = float(r[2] or 0)
+                    pay_p = float(r[3] or 0)
+                    log_c = abs(float(r[4] or 0))
+                    log_p = abs(float(r[5] or 0))
+                    stor_c = abs(float(r[6] or 0))
+                    stor_p = abs(float(r[7] or 0))
+                    ded_c = abs(float(r[8] or 0))
+                    ded_p = abs(float(r[9] or 0))
+                    ded_ads_c = abs(float(r[10] or 0))
+                    ded_ads_p = abs(float(r[11] or 0))
+                    acc_c = abs(float(r[12] or 0))
+                    acc_p = abs(float(r[13] or 0))
+                    pen_c = abs(float(r[14] or 0))
+                    pen_p = abs(float(r[15] or 0))
+                    ret_c = abs(float(r[16] or 0))
+                    ret_p = abs(float(r[17] or 0))
+                    ord_c = int(r[18] or 0)
+                    ord_p = int(r[19] or 0)
+
                     comm_c = max(rev_c - pay_c, 0)
-                    log_c = abs(float(r[2] or 0))
-                    stor_c = abs(float(r[3] or 0))
-                    ded_c = abs(float(r[4] or 0))
-                    rev_p = float(r[5] or 0)
+                    comm_p = max(rev_p - pay_p, 0)
+
+                    # Ad spend: MAX(fact_finances promo deduction, fact_advert_stats)
+                    ext_ads_c = float(ads_week[0][0] or 0) if ads_week else 0
+                    ext_ads_p = float(ads_week[0][1] or 0) if ads_week else 0
+                    ad_c = max(ded_ads_c, ext_ads_c)
+                    ad_p = max(ded_ads_p, ext_ads_p)
+
+                    # Profit = payout - logistics - storage - acceptance - deductions - ads - penalties
+                    profit_c = pay_c - log_c - stor_c - acc_c - ded_c - ad_c - pen_c
+                    profit_p = pay_p - log_p - stor_p - acc_p - ded_p - ad_p - pen_p
+                    margin_c = round(profit_c / rev_c * 100, 1) if rev_c > 0 else 0
 
                     finance_summary = {
-                        "week_start": str(finance_week_start),
-                        "week_end": str(finance_week_end),
+                        "week_start": str(fw_start),
+                        "week_end": str(fw_end),
+                        # Main rows with cur/prev for delta calculation
                         "revenue": round(rev_c, 2),
+                        "revenue_prev": round(rev_p, 2),
                         "commission": round(comm_c, 2),
+                        "commission_prev": round(comm_p, 2),
                         "logistics": round(log_c, 2),
+                        "logistics_prev": round(log_p, 2),
                         "storage": round(stor_c, 2),
+                        "storage_prev": round(stor_p, 2),
+                        "ad_spend": round(ad_c, 2),
+                        "ad_spend_prev": round(ad_p, 2),
                         "deductions": round(ded_c, 2),
-                        "ad_spend": round(cur_ads["spend"], 2),
-                        "profit": round(profit_cur, 2),
-                        "profit_pct": profit_pct,
-                        "prev_revenue": round(rev_p, 2),
-                        "prev_profit": round(profit_prev, 2),
+                        "deductions_prev": round(ded_p, 2),
+                        "acceptance": round(acc_c, 2),
+                        "acceptance_prev": round(acc_p, 2),
+                        "penalties": round(pen_c, 2),
+                        "penalties_prev": round(pen_p, 2),
+                        "returns": round(ret_c, 2),
+                        "returns_prev": round(ret_p, 2),
+                        "orders": ord_c,
+                        "orders_prev": ord_p,
+                        # Profit
+                        "profit": round(profit_c, 2),
+                        "profit_prev": round(profit_p, 2),
+                        "profit_pct": margin_c,
+                        # Deltas
                         "revenue_delta": _safe_delta(rev_c, rev_p),
-                        "profit_delta": _safe_delta(profit_cur, profit_prev),
+                        "profit_delta": _safe_delta(profit_c, profit_p),
                     }
         except Exception as e:
             logger.warning("WB finance summary failed: %s", e)
