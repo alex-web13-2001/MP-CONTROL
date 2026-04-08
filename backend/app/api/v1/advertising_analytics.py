@@ -2613,16 +2613,28 @@ def _wb_basket_host(vol: int) -> str:
         return "26"
     elif vol <= 4997:
         return "27"
-    elif vol <= 5489:
+    elif vol <= 5213:
         return "28"
-    elif vol <= 5842:
+    elif vol <= 5429:
         return "29"
-    elif vol <= 6199:
+    elif vol <= 5645:
         return "30"
-    elif vol <= 6492:
+    elif vol <= 5861:
         return "31"
-    else:
+    elif vol <= 6077:
         return "32"
+    elif vol <= 6293:
+        return "33"
+    elif vol <= 6509:
+        return "34"
+    elif vol <= 6725:
+        return "35"
+    elif vol <= 6941:
+        return "36"
+    elif vol <= 7157:
+        return "37"
+    else:
+        return "38"
 
 
 def _wb_image_url(nm_id: int) -> str:

@@ -1,3 +1,159 @@
+## 2026-04-08 (v17.52.0)
+
+### feat(dashboard): Рекламные алерты v2 — бюджеты, мало показов, крупные метрики
+
+**3 ключевых улучшения блока рекламных алертов в «Важное»:**
+
+**1. Budget-aware статусы из Redis:**
+- Бюджеты кампаний читаются из Redis (`budget:{shop_id}:{aid}`) — те же данные что синхронизирует Celery
+- Если WB API говорит status=9 (active), но budget=0 → реальный статус = `budget_depleted`
+- 3 статуса: `active` (▶ зелёный), `paused` (⏸ серый), `no_budget` (🔋 красный «0₽»)
+- Результат: 62 из 78 «активных» кампаний ПФ ВБ на самом деле с budget=0
+
+**2. Новая система 7 приоритетов (вместо 5):**
+
+| P | Тип | Бейдж | Логика |
+|---|-----|-------|--------|
+| P1 | `budget_depleted` | 🔴 0₽ бюджет | Budget=0, были заказы за 14д — **пополните!** |
+| P2 | `spending_no_revenue` | 🔴 Слив бюджета | Тратит >300₽/7д, 0 заказов |
+| P3 | `high_drr` | 🟠 Высокий ДРР | ДРР >30%, расход >200₽ |
+| P4 | `low_views` | 🟡 Мало показов | **NEW**: <200 показов/3д — повысьте ставку |
+| P5 | `no_views` | 🟡 Нет показов | 0 показов 3д, свежая кампания |
+| P6 | `stopped_profitable` | 🔵 На паузе | Была прибыльна — стоит запустить |
+| P7 | `clicks_no_orders` | 🟣 Нет конверсии | >50 кликов, 0 заказов |
+
+**3. UI: крупные ключевые метрики (16px):**
+- Каждый тип алерта имеет **крупное** выделенное значение: `ДРР 31%` (orange, 16px bold), `−330 ₽` (red), `4 показов` (amber), `Бюджет 0₽` (red)
+- Метрики «Расход» и «Выручка» — bold, не 11px серым, а 12px с контрастом
+- Выручка зелёная, расход обычный — легко считать визуально
+
+**Backend:**
+- Redis pipeline read для бюджетов (один round-trip на все кампании)
+- `real_status` computed field: `active` / `budget_depleted` / `paused` / `stopped`
+- Фильтрация `budget_depleted` кампаний без заказов (не интересны)
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — Redis budgets + 7-level priority + real_status
+- `frontend/src/pages/WbDashboardContent.tsx` — крупные key metrics + 3 status badges + 7 icon/color/label maps
+- `frontend/src/api/dashboard.ts` — budget_total, low_views, budget_depleted, no_budget types
+
+---
+
+## 2026-04-08 (v17.51.0)
+
+### feat(dashboard): Блок «Важное» — редизайн оповещений + график
+
+**Полная переработка блока оповещений и графика:**
+
+**1. График «Динамика»:**
+- `Расход ₽` → `Расход рекл.` — ясно, что это расход рекламы
+
+**2. Блок «Оповещения» → «⚡ Важное»:**
+- Переименование + иконка Zap вместо AlertTriangle
+- Перемещён сразу после графика (до P&L)
+- Фикс. высота 420px + внутренний скролл — не растягивает страницу
+
+**3. Унифицированная карточка `AlertProductRow` (все 5 табов):**
+- Фото товара (12×10px) с `onError` fallback — нет битых картинок
+- Название (truncate)
+- Артикул продавца (`vendor_code`) + SKU ID (`nm_id`) — кликабельные 📋 с копированием
+- Backend enrichment: `vendor_code` добавлен во все алерты через `dim_products`
+
+**4. Таб «Продажи» — fix бага 1970 года:**
+- Фильтр `>= 2020-01-01` в ClickHouse запросе: исключает артефакты epoch
+- Товары без продаж: `last_sale_date = null`, бейдж «Нет продаж» вместо дат 70-х
+- `days_without_sales` capped at 9999
+
+**5. Таб «Реклама» — умная фильтрация (3 приоритета):**
+- **P1 — Остановленные прибыльные**: были заказы за 14 дн., ДРР < 30%, но статус ≠ active
+- **P2 — Нет показов**: статус active, но 0 views за 3 дня
+- **P3 — Высокий ДРР**: ДРР > среднего × 2 и > 15%
+- Старые кампании без показателей — НЕ показываются
+- Каждый алерт с `reason` (пояснение) + цветная иконка по типу
+
+**6. Таб «Финансы» — причины убыточности:**
+- Каждый убыточный SKU теперь с `reason`:
+  - «Логистика N% от выручки» / «Высокие удержания» / «Себестоимость выше выручки» / «Хранение съедает маржу»
+- Унифицированный вид через AlertProductRow
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — vendor_code enrichment, sales date fix, ad priorities, finance reasons
+- `frontend/src/pages/WbDashboardContent.tsx` — AlertProductRow, CopyBtn, fixed scroll, block reorder
+- `frontend/src/api/dashboard.ts` — vendor_code, reason, priority в типах
+
+---
+
+## 2026-04-08 (v17.50.0)
+
+### feat(dashboard): KPI Redesign v2 — Отмены, компактный ДРР, крупные конверсии
+
+**Полный редизайн секции KPI по фидбеку пользователя:**
+
+**1. Отмены — новая карточка в блоке «Продажи»:**
+- Карточка «Отмены» (4-я в ряду): количество отмен + % отмен от общего числа заказов
+- Backend: `countIf(is_cancel = 1)` в `fact_orders_raw`, `cancel_rate = cancels / (orders + cancels) × 100`
+- Дельта отмен (invert=true: рост = плохо)
+- Заказы и выручка теперь фильтруется по `is_cancel = 0` — отменённые не считаются
+
+**2. Компактный ДРР — 3 карточки вместо одной растянутой:**
+- ДРР общий: значение + **Δ п.п. РЯДОМ** (не на другом конце карточки)
+- Расход: отдельная карточка MetricCard
+- ДРР рекл.: отдельная карточка с п.п. дельтой
+- Новый компонент `PPDelta` — бейдж для процентных пунктов (п.п.)
+
+**3. Конверсии — крупные, не мелкие sub-тексты:**
+- **Клики**: CTR выделен крупно (18px, cyan) с п.п. дельтой, отделён border-top
+- **Корзины**: конверсия клик → корзина выделена крупно (новая метрика `click_to_cart`)
+- **Заказы**: корз. → заказ + клик → заказ — обе крупно видны
+- Все конверсии 18px font вместо 11px sub-text
+
+**4. Прибыль — подтверждена формула с себестоимостью:**
+- `profit = avg_payout_per_unit - avg_logistics_per_unit - COGS` × qty
+- COGS = `cost_price + packaging_cost` из `product_costs` (PostgreSQL)
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — cancels + click_to_cart + cancel_rate
+- `frontend/src/pages/WbDashboardContent.tsx` — полный редизайн KPI секции + PPDelta
+- `frontend/src/api/dashboard.ts` — новые поля в WbKpiSales / WbKpiFunnel
+
+---
+
+## 2026-04-07 (v17.49.0)
+
+### feat(dashboard): WB Dashboard KPI — Unit Economics + DRR Card + Conversion Funnel
+
+**4 изменения в секции KPI дашборда Wildberries:**
+
+**1. Unit Economics Profit (Backend):**
+- **Проблема**: Прибыль на дашборде рассчитывалась через огромный P&L запрос к `fact_finances` (~100 строк SQL), что было избыточно и медленно
+- **Решение**: Прибыль теперь считается по unit economics: `profit = payout - logistics - storage - deductions - COGS - ad_spend`
+- COGS загружается из PostgreSQL (`dim_products.cost_price + packaging_cost`)
+- Payout/logistics/storage/deductions из `fact_finances` (агрегированные per-period)
+- Ad spend из `fact_advert_stats_v3 FINAL`
+- Маржа: `profit_pct = profit / revenue × 100`
+
+**2. DRR Prominent Card (Frontend):**
+- ДРР общий (`ad_spend / revenue × 100`) выделен в отдельную крупную карточку
+- Оранжевая рамка `border-2 border-orange-500/20` + градиент сверху
+- Дополнительные метрики в карточке: Расход (₽), ДРР рекл. (%), Δ общий (п.п.)
+- Цветовая логика: рост ДРР = красный (плохо), снижение = зелёный (хорошо)
+
+**3. Conversion Funnel Metrics (Frontend + Backend):**
+- **Корзины**: `конв. в заказ = orders / cart × 100` — процент корзин, завершившихся заказом
+- **Заказы**: `конв. клик→заказ = orders / clicks × 100` — сквозная конверсия рекламы
+- Backend: `cart_conversion` и `cart_conversion_delta` вычисляются в endpoint
+
+**4. Finance Summary Refactor (Backend):**
+- **Проблема**: `finance_summary` зависел от удалённой переменной `profit_data`
+- **Решение**: Отдельный CH-запрос для P&L waterfall карточки (revenue, payout, logistics, storage, deductions — current + prev week)
+- Удалена неиспользуемая переменная `profit_data`
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — unit economics profit, finance_summary standalone query
+- `frontend/src/pages/WbDashboardContent.tsx` — DRR card, conversion metrics, icon cleanup
+
+---
+
 ## 2026-04-07 (v17.48.0)
 
 ### feat(finances): Единая терминология WB — «Все продажи» и «К выплате»
