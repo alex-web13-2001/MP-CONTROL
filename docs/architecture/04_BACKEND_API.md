@@ -180,36 +180,51 @@ shop_id: int (required)  — ID магазина
 period: "today" | "7d" | "30d"  — период (default: "7d")
 ```
 
-### Response Schema
+### Response Schema (WB — `/dashboard/wb`)
 
 ```
 {
   shop_id: int,
   period: str,
   kpi: {
-    orders_count, orders_delta,         // Заказы
-    revenue, revenue_delta, avg_check,  // Продажи (сумма заказов × цена)
-    views, views_delta,                 // Показы рекламы
-    clicks, clicks_delta,               // Клики рекламы
-    ad_spend, ad_spend_delta,           // Расход рекламы
-    drr, drr_delta                      // DRR = ad_spend / revenue × 100
+    sales: { orders, orders_delta, revenue, revenue_delta, avg_check, cancels, cancel_rate, cancel_delta },
+    funnel: { views, views_delta, clicks, clicks_delta, ctr, ctr_delta,
+              carts, carts_delta, cart_conversion, cart_conversion_delta,
+              ad_orders, click_to_cart },
+    ads: { ad_spend, ad_spend_delta, drr, drr_delta, drr_ad, drr_ad_delta },
+    profit: { profit, profit_delta, profit_pct }
   },
   charts: {
     sales_daily: [{ date, orders, revenue }],
     ads_daily: [{ date, spend, views, clicks, cart, orders, drr_ad, drr_total }]
   },
-  top_products: [{
-    offer_id, supplier_article, name, image_url,
-    orders, revenue, delta_pct,
-    stock_fbo, stock_fbs, price,
-    ad_spend, drr
-  }]
+  top_products: [{ ... }],
+  alerts: { ... },
+  orders_feed: [{
+    nm_id, supplier_article, orders, revenue,
+    orders_prev, revenue_prev,        // ← предыдущий период для дельт
+    last_order, image_url
+  }],
+  finance_summary: {
+    week_start, week_end,             // ISO dates (Mon→Mon)
+    revenue, revenue_prev, revenue_delta,
+    commission, commission_prev,
+    logistics, logistics_prev,
+    storage, storage_prev,
+    ad_spend, ad_spend_prev,
+    deductions, deductions_prev,
+    acceptance, acceptance_prev,
+    penalties, penalties_prev,
+    returns, returns_prev,
+    orders, orders_prev,
+    profit, profit_prev, profit_pct, profit_delta
+  }
 }
 ```
 
 ### Ключевая логика
 
-- 5 SQL-запросов к ClickHouse: заказы, реклама, график продаж, график рекламы, ТОП товаров
+- 10+ SQL-запросов к ClickHouse: KPI (заказы/реклама), графики, ТОП товаров, алерты, заказы за период, финансы за неделю
 - **Все заказы:** фильтры на cancelled/is_cancel убраны — учитываются все статусы (совпадение с ЛК)
 - **Timezone:** группировка по дате в МСК (UTC+3): `toDate(addHours(in_process_at, 3))` (Ozon), `toDate(addHours(date, 3))` (WB)
 - **DRR** = `ad_spend / orders_revenue × 100` (НЕ ad_revenue)
@@ -218,6 +233,23 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 - **Ozon images:** `COALESCE(NULLIF(primary_image_url, ''), main_image_url, '')` — приоритет primary_image
 - **WB images:** динамическая генерация CDN URL через `wb_image_url(nm_id)`
 - Проверка ownership магазина через `get_current_user`
+
+#### Finance Summary (WB)
+
+- **Период:** Понедельник → Понедельник (Mon-Mon, 8 дней включительно)
+- `toMonday(max(event_date))` → если текущая неделя не завершена → предыдущая полная
+- **Источник:** `fact_finances FINAL` (WB) — единственный source of truth
+- **Revenue:** `retail_price_withdisc_rub` по `operation_type = 'Продажа'` минус возвраты
+- **Ad spend:** MAX-reconciliation: `max(promo_deductions, fact_advert_stats_v3.spend)` — берётся бо́льшее из финансового отчёта и рекламной статистики
+- **Profit:** `payout − all_expenses` (commission, logistics, storage, deductions, acceptance, penalties, ad_extra)
+- Каждая строка P&L содержит текущее значение + значение за предыдущую неделю для расчёта процентных дельт
+
+#### Orders Feed (WB)
+
+- **Источник:** `fact_orders_raw FINAL` — заказы за текущий и предыдущий период
+- **Два периода в одном запросе:** `countIf` / `sumIf` с CASE по датам — `orders_cur`, `orders_prev`, `revenue_cur`, `revenue_prev`
+- Сортировка по `orders_cur DESC`, лимит 50
+- Обогащение `name`, `vendor_code`, `image_url` из PostgreSQL `dim_products`
 
 ---
 
@@ -1238,3 +1270,8 @@ advert_id: int (required)
 - **Ozon revenue fix** (`products.py`): `accruals_for_sale` из transactions вместо `price × quantity` (завышение ~2.5x). `mp_fees = sale_commission + services_total`. Bulk charges (Acquiring, Storage) пропорционально revenue
 - **Finance products enrichment** (`finances.py`): WB products — `name` + `image_url` из `dim_products`; Ozon products — `image_url` + `product_id` из `dim_ozon_products`
 
+### 2026-04-09
+
+- **Dashboard WB** (`dashboard.py`): `finance_summary` — P&L за неделю (Mon→Mon, 8 дней), 10+ строк расходов с % дельтами. Revenue из `fact_finances FINAL`, ad spend из MAX-reconciliation
+- **Dashboard WB** (`dashboard.py`): `orders_feed` — два периода в одном ClickHouse запросе через `countIf/sumIf`, обогащение из `dim_products`
+- Response schema `/dashboard/wb` обновлена: `+finance_summary`, `+orders_feed`, `+alerts`, KPI разбит на 4 группы (sales, funnel, ads, profit)

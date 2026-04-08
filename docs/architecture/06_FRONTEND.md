@@ -204,14 +204,42 @@ getSyncStatusApi(shopId)         → GET /shops/{id}/sync-status
 
 **Компоненты:**
 
-| Компонент           | Описание                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------ |
-| `KpiCard`           | Универсальная карточка: value, delta badge, icon, accent                             |
-| `PeriodSelector`    | Сегодня / 7д / 30д + календарь произвольного диапазона (2 месяца, `popupAlign` проп) |
-| `SalesChart`        | ComposedChart (bar заказы + line выручка, 2 оси Y, Legend)                           |
-| `AdsChart`          | ComposedChart рекламной аналитики: 8 метрик, toggle chips, 3 оси Y                   |
-| `TopProductsTable`  | 3 вкладки: Лидеры / Падающие / Проблемные. Фото 3:4, hover preview, артикул          |
-| `DashboardSkeleton` | Skeleton loader                                                                      |
+| Компонент              | Описание                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| `KpiCard`              | Универсальная карточка: value, delta badge, icon, accent                             |
+| `PeriodSelector`       | Сегодня / 7д / 30д + календарь произвольного диапазона (2 месяца, `popupAlign` проп) |
+| `SalesChart`           | ComposedChart (bar заказы + line выручка, 2 оси Y, Legend)                           |
+| `AdsChart`             | ComposedChart рекламной аналитики: 8 метрик, toggle chips, 3 оси Y                   |
+| `TopProductsTable`     | 3 вкладки: Лидеры / Падающие / Проблемные. Фото 3:4, hover preview, артикул          |
+| `WbFinanceSummaryCard` | Полный P&L за неделю (ПН→ПН): выручка, 7+ статей расходов, итого, прибыль с % дельтами |
+| `WbOrdersFeed`         | Таблица заказов за период: sticky thead, фиксированная высота, дельта заказов по товарам |
+| `AlertsTabbedBlock`    | Блок «⚡ Важное»: 5 табов (продажи, реклама, финансы, контент, остатки)               |
+| `DashboardSkeleton`    | Skeleton loader                                                                      |
+
+**WbFinanceSummaryCard — строки P&L:**
+
+| Строка | Источник ClickHouse | Цвет/стиль |
+| --- | --- | --- |
+| Выручка | `retail_price_withdisc_rub` (Продажа − Возвраты) | 🟢 выделено зелёным |
+| Возвраты | `retail_price_withdisc_rub` (operation_type=Возврат) | 🟠 опционально |
+| Комиссия WB | `commission_sum` | оранжевый |
+| Логистика | `delivery_rub` | синий |
+| Хранение | `storage_fee + deduction(Хранение)` | фиолетовый |
+| Реклама | MAX(promo, advert_stats) | розовый |
+| Удержания | `deduction` (тип ≠ Хранение/Продвижение) | красный |
+| Приёмка | `acceptance` | опционально |
+| Штрафы | `penalty` (тип ≠ Удержание) | опционально |
+| Итого расходы | Σ всех строк выше | 🔴 красный bold |
+| **Прибыль** | `payout − expenses` | 🟢/🔴 + маржа % |
+| Продажи (шт) | `count()` из fact_orders_raw | мелко, серый |
+
+**WbOrdersFeed — дизайн таблицы:**
+
+- `table-fixed` + `colgroup` с фиксированными ширинами (100/120/100px) — стабильная вёрстка
+- `sticky thead` — заголовки зафиксированы при скролле
+- `tabular-nums` — все числа одинаковой ширины
+- `DeltaBadge` под числом заказов (не рядом) — предотвращает горизонтальные сдвиги
+- `max-h-[520px]` — фиксированная высота с overflow-y
 
 **Рекламная аналитика (AdsChart) — метрики:**
 
@@ -769,6 +797,13 @@ Bоковая панель с вложенной навигацией (collapse 
 ```
 
 ---
+
+### 2026-04-09
+
+- **WbFinanceSummaryCard** — полный P&L за неделю (ПН→ПН, 8 дней): 10+ строк расходов с % дельтами к прошлой неделе
+- **WbOrdersFeed** — стабильная таблица: `table-fixed` + `colgroup`, `sticky thead`, `tabular-nums`, `DeltaBadge` под числом
+- Компоненты `AlertsTabbedBlock`, `AlertProductRow` в таблице компонентов DashboardPage
+- Обновлены API типы: `WbFinanceSummary`, `WbOrderFeedItem` (orders_prev, revenue_prev)
 
 ### 2026-02-19
 

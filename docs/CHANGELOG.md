@@ -1,3 +1,34 @@
+## 2026-04-09 (v17.53.0)
+
+### feat(dashboard): P&L за неделю (ПН→ПН) + стабильная таблица заказов
+
+**3 ключевых улучшения блока дашборда WB:**
+
+**1. Financial Summary — P&L за неделю (Mon→Mon):**
+- **Период:** строго Понедельник → Понедельник (8 дней включительно) — совпадает с финансовым циклом маркетплейса
+- **10+ строк P&L:** Выручка, Возвраты, Комиссия, Логистика, Хранение, Реклама, Удержания, Приёмка, Штрафы, Итого расходы, Прибыль
+- **% дельты:** каждая строка имеет сравнение с предыдущей неделей (зелёный ▲ / красный ▼)
+- **Backend:** `fact_finances FINAL` + MAX-reconciliation для рекламы (max(promo, advert_stats))
+
+**2. Orders Feed — per-product дельты:**
+- **Два периода в одном запросе:** `countIf(date BETWEEN cur)` / `countIf(date BETWEEN prev)` — single ClickHouse query
+- `DeltaBadge` для каждого товара: процентное изменение заказов относительно прошлого периода
+- Сортировка по текущим заказам DESC, лимит 30 товаров
+
+**3. Стабильная вёрстка таблицы заказов — fix jitter:**
+- **Проблема:** две отдельные `<table>` (header + body) → колонки разъезжались, числа «скакали»
+- **Решение:** единая `<table>` с `table-fixed` + `<colgroup>` (фиксированные ширины: 100/120/100px)
+- `sticky thead` — заголовки зафиксированы при скролле внутри `max-h-[520px]`
+- `tabular-nums` — все цифры одинаковой ширины (Font feature settings)
+- `DeltaBadge` под числом заказов (`<div>` ниже `<span>`) — не рядом, чтобы число не сдвигалось
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — Mon→Mon finance query, orders_feed two-period query
+- `frontend/src/pages/WbDashboardContent.tsx` — WbFinanceSummaryCard, WbOrdersFeed (single table layout)
+- `frontend/src/api/dashboard.ts` — WbFinanceSummary, WbOrderFeedItem (orders_prev, revenue_prev)
+
+---
+
 ## 2026-04-08 (v17.52.0)
 
 ### feat(dashboard): Рекламные алерты v2 — бюджеты, мало показов, крупные метрики
