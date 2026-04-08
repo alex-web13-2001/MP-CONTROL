@@ -341,7 +341,7 @@ export async function depositBudget(
   shopId: number,
   advertId: number,
   amount: number,
-  budgetType: number = 1,
+  budgetType: number = 0,
 ): Promise<{ success: boolean; message: string; new_budget_total?: number | null }> {
   const res = await apiClient.post(
     `${PREFIX}/budget/deposit`,

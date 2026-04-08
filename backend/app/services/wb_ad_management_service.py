@@ -526,7 +526,7 @@ class WBAdManagementService:
             }
 
     async def deposit_budget(
-        self, advert_id: int, amount: int, budget_type: int = 1
+        self, advert_id: int, amount: int, budget_type: int = 0
     ) -> Dict[str, Any]:
         """
         Deposit (top-up) budget for a campaign.
