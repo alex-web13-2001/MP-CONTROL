@@ -656,10 +656,9 @@ async def get_wb_sales(
         orders_kpi = ch.query("""
             SELECT
                 period,
-                countIf(is_cancel = 0) AS orders_count,
-                sumIf(price_with_disc, is_cancel = 0) AS revenue,
-                sumIf(price_with_disc, is_cancel = 0) / nullIf(countIf(is_cancel = 0), 0) AS avg_check,
-                count() AS total_all,
+                count() AS orders_count,
+                sum(price_with_disc) AS revenue,
+                sum(price_with_disc) / nullIf(count(), 0) AS avg_check,
                 countIf(is_cancel = 1) AS cancel_count
             FROM (
                 SELECT
@@ -682,15 +681,14 @@ async def get_wb_sales(
                 "count": int(row[1]),
                 "revenue": float(row[2]),
                 "avg_check": float(row[3] or 0),
-                "total_all": int(row[4]),
-                "cancels": int(row[5]),
+                "cancels": int(row[4]),
             }
             for row in orders_kpi
         }
-        cur_o = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0, "total_all": 0, "cancels": 0})
-        prev_o = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0, "total_all": 0, "cancels": 0})
+        cur_o = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
+        prev_o = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0, "cancels": 0})
 
-        cancel_pct = round(cur_o["cancels"] / cur_o["total_all"] * 100, 1) if cur_o["total_all"] > 0 else 0
+        cancel_pct = round(cur_o["cancels"] / cur_o["count"] * 100, 1) if cur_o["count"] > 0 else 0
 
         kpi = {
             "orders_count": cur_o["count"],
@@ -709,8 +707,8 @@ async def get_wb_sales(
         daily_rows = ch.query("""
             SELECT
                 toDate(addHours(date, 3)) AS dt,
-                countIf(is_cancel = 0) AS orders,
-                sumIf(price_with_disc, is_cancel = 0) AS revenue,
+                count() AS orders,
+                sum(price_with_disc) AS revenue,
                 countIf(is_cancel = 1) AS cancels
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
@@ -776,7 +774,6 @@ async def get_wb_sales(
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(date, 3)) >= {cur_start:Date}
               AND toDate(addHours(date, 3)) <= {cur_end:Date}
-              AND is_cancel = 0
             GROUP BY nm_id
             ORDER BY revenue DESC
             LIMIT 20

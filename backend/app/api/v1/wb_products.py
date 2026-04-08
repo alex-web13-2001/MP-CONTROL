@@ -89,10 +89,10 @@ async def get_wb_products(
             SELECT
                 nm_id,
                 any(supplier_article)  AS vendor_code,
-                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 0)  AS orders_cur,
-                sumIf(price_with_disc, toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 0)  AS revenue_cur,
-                countIf(toDate(addHours(date, 3)) < {d_start:Date} AND is_cancel = 0)   AS orders_prev,
-                sumIf(price_with_disc, toDate(addHours(date, 3)) < {d_start:Date} AND is_cancel = 0)   AS revenue_prev,
+                countIf(toDate(addHours(date, 3)) >= {d_start:Date})  AS orders_cur,
+                sumIf(price_with_disc, toDate(addHours(date, 3)) >= {d_start:Date})  AS revenue_cur,
+                countIf(toDate(addHours(date, 3)) < {d_start:Date})   AS orders_prev,
+                sumIf(price_with_disc, toDate(addHours(date, 3)) < {d_start:Date})   AS revenue_prev,
                 countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
@@ -110,7 +110,6 @@ async def get_wb_products(
             nm_id = int(r[0])
             orders_cur = int(r[2])
             cancels_cur = int(r[6])
-            total_with_cancels = orders_cur + cancels_cur
             orders_map[nm_id] = {
                 "vendor_code": str(r[1] or ""),
                 "orders_7d": orders_cur,
@@ -118,7 +117,7 @@ async def get_wb_products(
                 "orders_prev": int(r[4]),
                 "revenue_prev": float(r[5]),
                 "cancels": cancels_cur,
-                "cancel_rate": round(cancels_cur / total_with_cancels * 100, 1) if total_with_cancels > 0 else 0.0,
+                "cancel_rate": round(cancels_cur / orders_cur * 100, 1) if orders_cur > 0 else 0.0,
             }
     except Exception as e:
         logger.warning("CH orders query failed: %s", e)
