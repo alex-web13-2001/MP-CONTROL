@@ -573,10 +573,10 @@ async def get_wb_dashboard(
         orders_kpi = ch.query("""
             SELECT
                 period,
-                count() AS orders_count,
-                sum(price_with_disc) AS revenue,
-                sumIf(price_with_disc, is_cancel = 0) AS revenue_clean,
-                sum(price_with_disc) / nullIf(count(), 0) AS avg_check,
+                countIf(is_cancel = 0) AS orders_count,
+                sumIf(price_with_disc, is_cancel = 0) AS revenue,
+                sumIf(price_with_disc, is_cancel = 0) / nullIf(countIf(is_cancel = 0), 0) AS avg_check,
+                count() AS total_all,
                 countIf(is_cancel = 1) AS cancels
             FROM (
                 SELECT
@@ -599,11 +599,11 @@ async def get_wb_dashboard(
         }).result_rows
 
         orders_map = {
-            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "revenue_clean": float(row[3]), "avg_check": float(row[4] or 0), "cancels": int(row[5])}
+            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0), "total_all": int(row[4]), "cancels": int(row[5])}
             for row in orders_kpi
         }
-        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "revenue_clean": 0, "avg_check": 0, "cancels": 0})
-        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "revenue_clean": 0, "avg_check": 0, "cancels": 0})
+        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0, "total_all": 0, "cancels": 0})
+        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0, "total_all": 0, "cancels": 0})
 
         # ══════════════════════════════════════════════
         # 2. KPI — Advertising / Funnel
@@ -661,8 +661,8 @@ async def get_wb_dashboard(
         cur_click_to_cart = round(cur_ads["cart"] / cur_ads["clicks"] * 100, 1) if cur_ads["clicks"] > 0 else 0
         prev_click_to_cart = round(prev_ads["cart"] / prev_ads["clicks"] * 100, 1) if prev_ads["clicks"] > 0 else 0
         # cancel rate
-        cur_cancel_rate = round(cur_orders["cancels"] / cur_orders["count"] * 100, 1) if cur_orders["count"] > 0 else 0
-        prev_cancel_rate = round(prev_orders["cancels"] / prev_orders["count"] * 100, 1) if prev_orders["count"] > 0 else 0
+        cur_cancel_rate = round(cur_orders["cancels"] / cur_orders["total_all"] * 100, 1) if cur_orders["total_all"] > 0 else 0
+        prev_cancel_rate = round(prev_orders["cancels"] / prev_orders["total_all"] * 100, 1) if prev_orders["total_all"] > 0 else 0
 
         # ══════════════════════════════════════════════
         # 3. Profit via unit economics (orders × unit profit)
@@ -770,7 +770,7 @@ async def get_wb_dashboard(
 
             profit_cur = round(profit_cur, 2)
             profit_prev = round(profit_prev, 2)
-            profit_pct = round(profit_cur / cur_orders["revenue_clean"] * 100, 1) if cur_orders["revenue_clean"] > 0 else 0
+            profit_pct = round(profit_cur / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
         except Exception as e:
             logger.warning("WB unit-economics profit failed: %s", e)
 
@@ -793,15 +793,16 @@ async def get_wb_dashboard(
         # ══════════════════════════════════════════════
         sales_daily = ch.query("""
             SELECT toDate(addHours(date, 3)) AS day,
-                   count() AS orders_count,
-                   sum(price_with_disc) AS revenue
+                   countIf(is_cancel = 0) AS orders_count,
+                   sumIf(price_with_disc, is_cancel = 0) AS revenue,
+                   countIf(is_cancel = 1) AS cancels
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(date, 3)) >= {start:Date}
               AND toDate(addHours(date, 3)) <= {end:Date}
             GROUP BY day ORDER BY day
         """, parameters={"shop_id": shop_id, "start": chart_start, "end": cur_end}).result_rows
-        sales_by_day = {str(r[0]): {"orders": int(r[1]), "revenue": float(r[2])} for r in sales_daily}
+        sales_by_day = {str(r[0]): {"orders": int(r[1]), "revenue": float(r[2]), "cancels": int(r[3])} for r in sales_daily}
 
         ads_daily = ch.query("""
             SELECT date AS day,
@@ -1305,11 +1306,11 @@ async def get_wb_dashboard(
                 SELECT
                     nm_id,
                     anyLast(supplier_article) AS article,
-                    countIf(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}) AS orders_cur,
-                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}) AS revenue_cur,
-                    max(if(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date}, toDate(addHours(date, 3)), toDate('1970-01-01'))) AS last_order,
-                    countIf(toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date}) AS orders_prev,
-                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date}) AS revenue_prev
+                    countIf(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date} AND is_cancel = 0) AS orders_cur,
+                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date} AND is_cancel = 0) AS revenue_cur,
+                    max(if(toDate(addHours(date, 3)) >= {start:Date} AND toDate(addHours(date, 3)) <= {end:Date} AND is_cancel = 0, toDate(addHours(date, 3)), toDate('1970-01-01'))) AS last_order,
+                    countIf(toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} AND is_cancel = 0) AS orders_prev,
+                    sumIf(price_with_disc, toDate(addHours(date, 3)) >= {prev_start:Date} AND toDate(addHours(date, 3)) <= {prev_end:Date} AND is_cancel = 0) AS revenue_prev
                 FROM mms_analytics.fact_orders_raw FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND toDate(addHours(date, 3)) >= {prev_start:Date}
