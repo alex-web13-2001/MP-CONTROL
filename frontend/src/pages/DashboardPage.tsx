@@ -32,8 +32,10 @@ import {
   getOzonDashboardApi,
   getWbDashboardApi,
   type DashboardResponse,
+  type WbDashboardResponse,
   type AdsDailyPoint,
 } from '@/api/dashboard'
+import WbDashboardContent from './WbDashboardContent'
 
 /* ═══════════════════════════════════════════════════════════
    Constants & Helpers
@@ -800,9 +802,12 @@ function DashboardSkeleton() {
 export default function DashboardPage() {
   const currentShop = useAppStore((s) => s.currentShop)
   const [period, setPeriod] = useState('today')
-  const [data, setData] = useState<DashboardResponse | null>(null)
+  const [ozonData, setOzonData] = useState<DashboardResponse | null>(null)
+  const [wbData, setWbData] = useState<WbDashboardResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const isWb = currentShop?.marketplace === 'wildberries'
 
   const fetchDashboard = useCallback(async () => {
     if (!currentShop) return
@@ -810,10 +815,15 @@ export default function DashboardPage() {
     setLoading(true)
     setError(null)
     try {
-      const result = currentShop.marketplace === 'ozon'
-        ? await getOzonDashboardApi(currentShop.id, period)
-        : await getWbDashboardApi(currentShop.id, period)
-      setData(result)
+      if (currentShop.marketplace === 'ozon') {
+        const result = await getOzonDashboardApi(currentShop.id, period)
+        setOzonData(result)
+        setWbData(null)
+      } else {
+        const result = await getWbDashboardApi(currentShop.id, period)
+        setWbData(result)
+        setOzonData(null)
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Неизвестная ошибка'
       setError(msg)
@@ -850,16 +860,16 @@ export default function DashboardPage() {
     )
   }
 
-  // Marketplace label for header
-  const marketplaceLabel = currentShop.marketplace === 'ozon' ? 'Ozon' : 'Wildberries'
+  const marketplaceLabel = isWb ? 'Wildberries' : 'Ozon'
+  const hasData = isWb ? !!wbData : !!ozonData
 
   // ── Loading state ──────────────────────────────────
-  if (loading && !data) {
+  if (loading && !hasData) {
     return <DashboardSkeleton />
   }
 
   // ── Error state ────────────────────────────────────
-  if (error && !data) {
+  if (error && !hasData) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
         <div className="text-center space-y-3">
@@ -877,8 +887,30 @@ export default function DashboardPage() {
     )
   }
 
-  if (!data) return null
+  if (!hasData) return null
 
+  // ── WB — use new rich layout ──────────────────────
+  if (isWb && wbData) {
+    return (
+      <div className="space-y-6">
+        <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
+          className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-bold tracking-tight text-[hsl(var(--foreground))]">Обзор</h1>
+            <p className="text-sm text-[hsl(var(--muted-foreground))]">
+              {currentShop.name} • {marketplaceLabel}
+              {loading && <span className="ml-2 inline-flex items-center gap-1 text-[hsl(var(--primary))]"><RefreshCw className="h-3 w-3 animate-spin" /> Обновление…</span>}
+            </p>
+          </div>
+          <PeriodSelector current={period} onChange={setPeriod} />
+        </motion.div>
+        <WbDashboardContent data={wbData} />
+      </div>
+    )
+  }
+
+  // ── Ozon — legacy flat layout ─────────────────────
+  const data = ozonData!
   const kpi = data.kpi
 
   const kpiCards: {
