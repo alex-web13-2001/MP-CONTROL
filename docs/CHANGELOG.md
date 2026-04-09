@@ -1,3 +1,30 @@
+## 2026-04-09 (v17.55.0)
+
+### fix(profit): Единая формула прибыли — реклама + отмены вычитаются везде
+
+**Проблема**: Прибыль на Дашборде (395₽) и в Товарах (1 615₽) отличалась:
+- Дашборд: НЕ вычитал рекламу (638₽)
+- Товары: считал прибыль от ВСЕХ заказов (включая отменённые)
+
+**Единая формула:**
+```
+profit = Σ(unit_profit[nm_id] × qty_без_отмен) − ad_spend
+```
+Где `unit_profit = avg_payout − avg_logistics − COGS` (из fact_finances 30d rolling)
+
+**Исправлено:**
+
+| Модуль | Было | Стало |
+|--------|------|-------|
+| **Дашборд** | `Σ(unit × qty_clean)` (без рекламы) | `Σ(unit × qty_clean) − ad_spend` ✅ |
+| **Товары** | `unit × orders_all − ad_spend` | `unit × orders_clean − ad_spend` ✅ |
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — вычитание ad_spend из profit
+- `backend/app/api/v1/wb_products.py` — orders_clean для прибыли + revenue_clean для маржи
+
+---
+
 ## 2026-04-09 (v17.54.0)
 
 ### fix(analytics): Унификация фильтра is_cancel=0 — одинаковые данные на Dashboard/Sales/Products
