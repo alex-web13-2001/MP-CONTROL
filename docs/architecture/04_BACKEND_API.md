@@ -260,6 +260,20 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 - Сортировка по `orders_cur DESC`, лимит 50
 - Обогащение `name`, `vendor_code`, `image_url` из PostgreSQL `dim_products`
 
+#### Alerts — источники данных по табам
+
+| Таб | Источник остатков | Источник аналитики | Логика |
+|-----|-------------------|--------------------|--------|
+| **Склады** (Ozon) | PostgreSQL `dim_ozon_products` (`stocks_fbo + stocks_fbs`) | ClickHouse `fact_ozon_orders` (avg daily 14д) | stock ≤ 0 → critical; days_left ≤ 10 → warning |
+| **Склады** (WB) | ClickHouse `fact_inventory_snapshot` | ClickHouse `fact_orders_raw` (avg daily 14д) | Аналогично |
+| **Продажи** (Ozon) | PostgreSQL `dim_ozon_products` (stock > 0) | ClickHouse `fact_ozon_orders` (last sale date) | Нет продаж 7+ дней при наличии стока |
+| **Продажи** (WB) | ClickHouse `fact_inventory_snapshot` | ClickHouse `fact_orders_raw` (last sale date) | Аналогично |
+| **Хранение** | — | ClickHouse `fact_ozon_transactions` / `fact_finances` | Расходы на хранение > порога |
+| **Реклама** | — | ClickHouse `fact_advert_stats_v3` / `fact_ozon_ad_daily` + Redis budgets | 7 приоритетов (budget_depleted → clicks_no_orders) |
+| **Финансы** | — | ClickHouse `fact_ozon_transactions` / `fact_finances` + PG `product_costs` | profit < 0 (revenue − commission − services − COGS) |
+
+> **Важно (Ozon):** Остатки берутся из PostgreSQL `dim_ozon_products`, а НЕ из ClickHouse `fact_ozon_warehouse_stocks` (эта таблица часто пуста/не синхронизирована). Источник совпадает со страницей Цен.
+
 ---
 
 ## Товары — `/api/v1/products`
@@ -1297,3 +1311,4 @@ advert_id: int (required)
   - Products WB (`wb_products.py`): profit = `unit_profit × orders_clean − ad_spend`, ранее использовал orders_all (с отменами)
   - Товары без заказов, но с рекламой → gross_profit = −ad_spend (чистый убыток, ранее пропускались в итого)
   - Формула единообразна: unit economics из `fact_finances FINAL` (30d rolling) × qty с `is_cancel=0` − ads из `fact_advert_stats_v3`
+- **Ozon Dashboard Alerts fix** (v17.57.1): алерты «Склады» и «Продажи» переключены с пустой ClickHouse `fact_ozon_warehouse_stocks` на PostgreSQL `dim_ozon_products` (`stocks_fbo + stocks_fbs`). Устранены 28 фейковых critical-алертов. Финансовые алерты проверены — без изменений
