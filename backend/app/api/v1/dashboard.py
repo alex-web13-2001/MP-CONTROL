@@ -698,85 +698,105 @@ async def get_ozon_dashboard(
 
         # ══════════════════════════════════════════════
         # 5. ALERTS — Warehouses (low stock)
+        #    Source: PostgreSQL dim_ozon_products (stocks_fbo/fbs)
+        #    NOT fact_ozon_warehouse_stocks (often empty / not synced)
         # ══════════════════════════════════════════════
         alerts_warehouses: list[dict] = []
+        # Load stock from PostgreSQL (same source as Prices page)
+        pg_stock_map: dict[int, dict] = {}  # sku → {offer_id, stock}
         try:
-            wh_alerts = ch.query("""
-                WITH latest AS (
-                    SELECT sku, offer_id, sum(free_to_sell) AS stock
-                    FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                    GROUP BY sku, offer_id
-                ),
-                avg_sales AS (
+            stock_result = await db.execute(
+                text("""
+                    SELECT sku, offer_id,
+                           COALESCE(stocks_fbo, 0) + COALESCE(stocks_fbs, 0) AS stock
+                    FROM dim_ozon_products
+                    WHERE shop_id = :sid AND sku > 0 AND is_archived = false
+                """),
+                {"sid": shop_id},
+            )
+            for r in stock_result.fetchall():
+                pg_stock_map[int(r[0])] = {"offer_id": str(r[1] or ""), "stock": int(r[2])}
+        except Exception as e:
+            logger.warning("Ozon PG stock load failed: %s", e)
+
+        if pg_stock_map:
+            try:
+                # Get avg daily sales from ClickHouse (14 days)
+                avg_sales_rows = ch.query("""
                     SELECT sku, sum(quantity) / 14.0 AS avg_daily
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(addHours(in_process_at, 3)) >= today() - 14
                       AND cancel_reason = ''
                     GROUP BY sku
-                )
-                SELECT l.sku, l.offer_id, l.stock,
-                       coalesce(a.avg_daily, 0) AS avg_daily,
-                       CASE WHEN a.avg_daily > 0 THEN round(l.stock / a.avg_daily, 1) ELSE 999 END AS days_left
-                FROM latest l
-                LEFT JOIN avg_sales a ON l.sku = a.sku
-                WHERE l.stock <= 0 OR (a.avg_daily > 0 AND l.stock / a.avg_daily <= 10)
-                ORDER BY days_left ASC
-                LIMIT 30
-            """, parameters={"shop_id": shop_id}).result_rows
-            for r in wh_alerts:
-                alerts_warehouses.append({
-                    "nm_id": int(r[0]),
-                    "offer_id": str(r[1] or ""),
-                    "name": "", "vendor_code": "", "image_url": "",
-                    "stock": int(r[2]),
-                    "avg_daily_sales": round(float(r[3]), 1),
-                    "days_left": round(float(r[4]), 1) if float(r[4]) < 999 else None,
-                    "severity": "critical" if int(r[2]) <= 0 else "warning",
-                })
-        except Exception as e:
-            logger.warning("Ozon warehouse alerts failed: %s", e)
+                """, parameters={"shop_id": shop_id}).result_rows
+                avg_sales_map: dict[int, float] = {int(r[0]): float(r[1]) for r in avg_sales_rows}
+
+                for sku, info in pg_stock_map.items():
+                    stock = info["stock"]
+                    avg_daily = avg_sales_map.get(sku, 0)
+                    days_left = round(stock / avg_daily, 1) if avg_daily > 0 else 999.0
+
+                    # Only alert on low/no stock
+                    if stock <= 0 or (avg_daily > 0 and days_left <= 10):
+                        alerts_warehouses.append({
+                            "nm_id": sku,
+                            "offer_id": info["offer_id"],
+                            "name": "", "vendor_code": "", "image_url": "",
+                            "stock": stock,
+                            "avg_daily_sales": round(avg_daily, 1),
+                            "days_left": days_left if days_left < 999 else None,
+                            "severity": "critical" if stock <= 0 else "warning",
+                        })
+
+                # Sort by days_left ASC (most critical first), limit 30
+                alerts_warehouses.sort(key=lambda x: x["days_left"] if x["days_left"] is not None else 999)
+                alerts_warehouses = alerts_warehouses[:30]
+            except Exception as e:
+                logger.warning("Ozon warehouse alerts failed: %s", e)
 
         # ══════════════════════════════════════════════
-        # 6. ALERTS — Sales (no sales 7+ days)
+        # 6. ALERTS — Sales (no sales 7+ days, but has stock)
+        #    Source: PostgreSQL stocks + ClickHouse last sale date
         # ══════════════════════════════════════════════
         alerts_sales: list[dict] = []
         try:
-            no_sales = ch.query("""
-                WITH stocked AS (
-                    SELECT sku, offer_id, sum(free_to_sell) AS stock
-                    FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                    GROUP BY sku, offer_id HAVING stock > 0
-                ),
-                recent_sales AS (
+            # Get SKUs with stock > 0
+            stocked_skus = [sku for sku, info in pg_stock_map.items() if info["stock"] > 0]
+            if stocked_skus:
+                # Get last sale date from ClickHouse for stocked SKUs
+                last_sales_rows = ch.query("""
                     SELECT sku, max(toDate(addHours(in_process_at, 3))) AS last_sale
                     FROM mms_analytics.fact_ozon_orders FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND cancel_reason = ''
+                      AND sku > 0
                     GROUP BY sku
-                )
-                SELECT s.sku, s.offer_id, s.stock,
-                       r.last_sale,
-                       dateDiff('day', coalesce(r.last_sale, today() - 9999), today()) AS days_without
-                FROM stocked s
-                LEFT JOIN recent_sales r ON s.sku = r.sku
-                WHERE coalesce(r.last_sale, toDate('2000-01-01')) < today() - 6
-                ORDER BY days_without DESC
-                LIMIT 30
-            """, parameters={"shop_id": shop_id}).result_rows
-            for r in no_sales:
-                last_sale = str(r[3]) if r[3] and str(r[3]) > '2020-01-01' else None
-                days_w = int(r[4])
-                alerts_sales.append({
-                    "nm_id": int(r[0]),
-                    "offer_id": str(r[1] or ""),
-                    "name": "", "vendor_code": "", "image_url": "",
-                    "stock": int(r[2]),
-                    "last_sale_date": last_sale,
-                    "days_without_sales": min(days_w, 9999),
-                })
+                """, parameters={"shop_id": shop_id}).result_rows
+                last_sale_map: dict[int, str] = {int(r[0]): str(r[1]) for r in last_sales_rows}
+
+                today_str = str(date.today())
+                for sku in stocked_skus:
+                    last_sale = last_sale_map.get(sku)
+                    if last_sale and last_sale > '2020-01-01':
+                        days_w = (date.today() - date.fromisoformat(last_sale)).days
+                    else:
+                        days_w = 9999
+                        last_sale = None
+
+                    if days_w > 6:
+                        info = pg_stock_map[sku]
+                        alerts_sales.append({
+                            "nm_id": sku,
+                            "offer_id": info["offer_id"],
+                            "name": "", "vendor_code": "", "image_url": "",
+                            "stock": info["stock"],
+                            "last_sale_date": last_sale if last_sale and last_sale > '2020-01-01' else None,
+                            "days_without_sales": min(days_w, 9999),
+                        })
+
+                alerts_sales.sort(key=lambda x: -x["days_without_sales"])
+                alerts_sales = alerts_sales[:30]
         except Exception as e:
             logger.warning("Ozon sales alerts failed: %s", e)
 
