@@ -79,6 +79,7 @@ export interface WbKpiSales {
   cancels_delta: number
   cancel_rate: number
   cancel_rate_delta: number
+  profit_estimated?: boolean
 }
 
 export interface WbKpiAdvertising {
@@ -223,6 +224,10 @@ export interface WbFinanceSummary {
   storage_prev: number
   ad_spend: number
   ad_spend_prev: number
+  cogs: number
+  cogs_prev: number
+  other_expenses: number
+  other_expenses_prev: number
   deductions: number
   deductions_prev: number
   acceptance: number

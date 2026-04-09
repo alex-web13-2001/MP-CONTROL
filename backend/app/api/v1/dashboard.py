@@ -16,6 +16,12 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.shop import Shop
 from app.models.user import User
+from app.services.ozon_finance_queries import (
+    get_sku_to_offer_map,
+    get_cost_map,
+    build_sku_cost_map,
+    calc_cogs_from_ch,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -283,19 +289,21 @@ async def get_ozon_dashboard(
         prev_cancel_rate = round(prev_orders["cancels"] / prev_orders["count"] * 100, 1) if prev_orders["count"] > 0 else 0
 
         # ══════════════════════════════════════════════
-        # 3. Profit from real transactions
-        #    Same formula as Products page:
-        #    Profit = accruals_for_sale - commission - services - acquiring - storage - COGS - ad_spend
-        #    Using fact_ozon_transactions (category='Revenue') for per-SKU data
-        #    + bulk charges (Acquiring, Storage) distributed proportionally
+        # 3. Profit — HYBRID approach
+        #    1) Try real transactions (all bulk categories)
+        #    2) If txn coverage < 50% of orders revenue → estimated profit
+        #       using per-SKU historical rates from last 30 days
+        #    Formula: Revenue - Commission - Services - ALL_Bulk - COGS - Ad_Spend
         # ══════════════════════════════════════════════
         profit_cur = 0.0
         profit_prev = 0.0
         profit_pct = 0.0
+        profit_estimated = False
         finance_week_start = None
         finance_week_end = None
 
         # 3a. Load COGS from PostgreSQL
+        cost_map: dict[str, float] = {}
         try:
             cost_result = await db.execute(
                 text("SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost FROM product_costs WHERE shop_id = :sid AND (cost_price > 0 OR packaging_cost > 0)"),
@@ -305,15 +313,16 @@ async def get_ozon_dashboard(
         except Exception as e:
             logger.warning("Ozon COGS load failed: %s", e)
 
-        # 3b. Per-SKU real financials from fact_ozon_transactions (exact periods)
-        #     Revenue = accruals_for_sale, deductions = sale_commission + services_total
+        # 3b. Per-SKU real financials from fact_ozon_transactions
+        #     Include sold_units (positive accruals count) for txn-based COGS
         try:
             txn_per_sku = ch.query("""
                 SELECT
                     period, sku,
                     sum(accruals_for_sale) AS revenue,
                     sum(abs(sale_commission)) AS commission,
-                    sum(abs(services_total)) AS services
+                    sum(abs(services_total)) AS services,
+                    countIf(accruals_for_sale > 0) AS sold_units
                 FROM (
                     SELECT
                         CASE
@@ -336,13 +345,15 @@ async def get_ozon_dashboard(
                 "prev_start": prev_start, "prev_end": prev_end,
             }).result_rows
 
-            # Collect per-period totals: revenue, commission, services
             cur_txn_revenue = 0.0
             prev_txn_revenue = 0.0
             cur_txn_fees = 0.0
             prev_txn_fees = 0.0
+            # Txn-based COGS (only for settled sales)
+            cogs_txn_cur = 0.0
+            cogs_txn_prev = 0.0
 
-            # Map sku → offer_id for COGS lookup
+            # sku → offer_id mapping
             all_txn_skus = list(set(int(r[1]) for r in txn_per_sku))
             sku_to_offer: dict[int, str] = {}
             if all_txn_skus:
@@ -361,14 +372,20 @@ async def get_ozon_dashboard(
                 rev = float(row[2] or 0)
                 comm = float(row[3] or 0)
                 svc = float(row[4] or 0)
+                sold = int(row[5] or 0)
+                offer_id = sku_to_offer.get(sku, "")
+                cogs_per_unit = cost_map.get(offer_id, 0)
                 if period_name == "current":
                     cur_txn_revenue += rev
                     cur_txn_fees += comm + svc
+                    cogs_txn_cur += cogs_per_unit * sold
                 else:
                     prev_txn_revenue += rev
                     prev_txn_fees += comm + svc
+                    cogs_txn_prev += cogs_per_unit * sold
 
-            # 3c. Bulk charges: Acquiring + Storage (not per-SKU, total for shop)
+            # 3c. Bulk charges: Acquiring + Storage only
+            #     (services_total in Revenue rows already includes logistics, refunds etc.)
             bulk_cur_total = 0.0
             bulk_prev_total = 0.0
             try:
@@ -404,19 +421,21 @@ async def get_ozon_dashboard(
             except Exception as e:
                 logger.warning("Ozon bulk charges query failed: %s", e)
 
-            # 3d. COGS from orders qty × unit cost
-            cogs_cur = 0.0
-            cogs_prev = 0.0
+            # 3d. COGS from orders × unit cost (used only for estimated fallback)
+            cogs_ord_cur = 0.0
+            cogs_ord_prev = 0.0
+            # Also collect per-SKU order data for estimated fallback
+            orders_by_sku_map: dict[str, dict] = {}  # period → {sku: qty}
             try:
                 orders_by_sku = ch.query("""
-                    SELECT period, sku, sum(quantity) AS qty
+                    SELECT period, sku, sum(quantity) AS qty, sum(price * quantity) AS rev
                     FROM (
                         SELECT
                             CASE
                                 WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
                                 WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
                             END AS period,
-                            sku, quantity
+                            sku, quantity, price
                         FROM mms_analytics.fact_ozon_orders FINAL
                         WHERE shop_id = {shop_id:UInt32}
                           AND cancel_reason = ''
@@ -431,23 +450,187 @@ async def get_ozon_dashboard(
                     "cur_start": cur_start, "cur_end": cur_end,
                     "prev_start": prev_start, "prev_end": prev_end,
                 }).result_rows
+
                 for row in orders_by_sku:
                     period_name = row[0]
                     sku = int(row[1])
                     qty = int(row[2])
+                    rev_ord = float(row[3] or 0)
                     offer_id = sku_to_offer.get(sku, "")
+                    if not offer_id:
+                        orders_by_sku_map.setdefault(period_name, {})[sku] = {"qty": qty, "rev": rev_ord}
+                    else:
+                        orders_by_sku_map.setdefault(period_name, {})[sku] = {"qty": qty, "rev": rev_ord, "offer_id": offer_id}
                     cogs_per_unit = cost_map.get(offer_id, 0)
                     if period_name == "current":
-                        cogs_cur += cogs_per_unit * qty
+                        cogs_ord_cur += cogs_per_unit * qty
                     else:
-                        cogs_prev += cogs_per_unit * qty
+                        cogs_ord_prev += cogs_per_unit * qty
             except Exception as e:
                 logger.warning("Ozon COGS orders query failed: %s", e)
 
-            # 3e. Final profit = revenue - commission - services - acquiring - storage - COGS - ad_spend
-            profit_cur = round(cur_txn_revenue - cur_txn_fees - bulk_cur_total - cogs_cur - cur_ads["spend"], 2)
-            profit_prev = round(prev_txn_revenue - prev_txn_fees - bulk_prev_total - cogs_prev - prev_ads["spend"], 2)
-            profit_pct = round(profit_cur / cur_txn_revenue * 100, 1) if cur_txn_revenue > 0 else 0
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # 3e. Decide: real txn profit vs. estimated
+            #     If txn revenue < 50% of orders revenue → estimated
+            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            orders_revenue = cur_orders.get("revenue", 0)
+            txn_coverage = cur_txn_revenue / orders_revenue if orders_revenue > 0 else 1.0
+
+            if txn_coverage >= 0.5 and cur_txn_revenue > 0:
+                # ── Real transaction-based profit ──
+                # Use txn-based COGS (only settled units), NOT orders-based COGS
+                profit_cur = round(cur_txn_revenue - cur_txn_fees - bulk_cur_total - cogs_txn_cur - cur_ads["spend"], 2)
+                profit_prev = round(prev_txn_revenue - prev_txn_fees - bulk_prev_total - cogs_txn_prev - prev_ads["spend"], 2)
+                profit_pct = round(profit_cur / cur_txn_revenue * 100, 1) if cur_txn_revenue > 0 else 0
+                profit_estimated = False
+            else:
+                # ── Estimated profit from orders + per-SKU historical rates ──
+                profit_estimated = True
+
+                # Get per-SKU historical rates from last 30 days of transactions
+                sku_rates: dict[int, dict] = {}  # sku → {commission_rate, logistics_per_unit}
+                shop_avg_comm_rate = 0.0
+                shop_avg_logi_per_unit = 0.0
+                try:
+                    hist_rows = ch.query("""
+                        SELECT
+                            sku,
+                            sum(accruals_for_sale) AS hist_rev,
+                            sum(abs(sale_commission)) AS hist_comm,
+                            sum(abs(services_total)) AS hist_svc,
+                            count() AS hist_cnt
+                        FROM mms_analytics.fact_ozon_transactions FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND toDate(operation_date) >= today() - 30
+                          AND sku > 0
+                          AND category = 'Revenue'
+                          AND accruals_for_sale > 0
+                        GROUP BY sku
+                    """, parameters={"shop_id": shop_id}).result_rows
+
+                    total_hist_rev = 0.0
+                    total_hist_comm = 0.0
+                    total_hist_svc = 0.0
+                    total_hist_cnt = 0
+
+                    for hr in hist_rows:
+                        h_sku = int(hr[0])
+                        h_rev = float(hr[1] or 0)
+                        h_comm = float(hr[2] or 0)
+                        h_svc = float(hr[3] or 0)
+                        h_cnt = int(hr[4] or 0)
+                        if h_rev > 0 and h_cnt > 0:
+                            sku_rates[h_sku] = {
+                                "commission_rate": h_comm / h_rev,
+                                "logistics_per_unit": h_svc / h_cnt,
+                            }
+                        total_hist_rev += h_rev
+                        total_hist_comm += h_comm
+                        total_hist_svc += h_svc
+                        total_hist_cnt += h_cnt
+
+                    # Shop-wide averages as fallback
+                    if total_hist_rev > 0:
+                        shop_avg_comm_rate = total_hist_comm / total_hist_rev
+                    if total_hist_cnt > 0:
+                        shop_avg_logi_per_unit = total_hist_svc / total_hist_cnt
+
+                    # Also get avg bulk charges rate (as % of revenue)
+                    bulk_hist = ch.query("""
+                        SELECT sum(abs(amount)) AS bulk_total
+                        FROM mms_analytics.fact_ozon_transactions FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND toDate(operation_date) >= today() - 30
+                          AND category IN ('Acquiring', 'Storage')
+                    """, parameters={"shop_id": shop_id}).result_rows
+                    bulk_hist_total = float(bulk_hist[0][0] or 0) if bulk_hist else 0
+                    bulk_rate = bulk_hist_total / total_hist_rev if total_hist_rev > 0 else 0.05
+
+                except Exception as e:
+                    logger.warning("Historical rates query failed: %s", e)
+                    bulk_rate = 0.05
+
+                # Also need sku_to_offer for current orders SKUs
+                cur_order_skus = list(orders_by_sku_map.get("current", {}).keys())
+                if cur_order_skus:
+                    missing_skus = [s for s in cur_order_skus if s not in sku_to_offer]
+                    if missing_skus:
+                        try:
+                            extra = await db.execute(
+                                text("SELECT sku, offer_id FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
+                                {"sid": shop_id, "skus": missing_skus},
+                            )
+                            for r in extra.fetchall():
+                                sku_to_offer[int(r[0])] = str(r[1]).lower()
+                        except Exception:
+                            pass
+
+                # Recalculate COGS with complete sku_to_offer mapping
+                # (section 3d may have missed SKUs not present in transactions)
+                cogs_est_cur = 0.0
+                for sku, info in orders_by_sku_map.get("current", {}).items():
+                    offer_id = sku_to_offer.get(sku, info.get("offer_id", ""))
+                    cogs_est_cur += cost_map.get(offer_id, 0) * info["qty"]
+
+                # Calculate estimated profit per-SKU
+                est_revenue_cur = 0.0
+                est_fees_cur = 0.0
+                for sku, info in orders_by_sku_map.get("current", {}).items():
+                    rev_ord = info["rev"]
+                    qty = info["qty"]
+                    rates = sku_rates.get(sku)
+                    if rates:
+                        est_comm = rev_ord * rates["commission_rate"]
+                        est_logi = qty * rates["logistics_per_unit"]
+                    else:
+                        est_comm = rev_ord * shop_avg_comm_rate
+                        est_logi = qty * shop_avg_logi_per_unit
+                    est_revenue_cur += rev_ord
+                    est_fees_cur += est_comm + est_logi
+
+                est_bulk_cur = est_revenue_cur * bulk_rate
+
+                # For estimated path: use avg daily ad spend if current day
+                # seems incomplete (ad reports arrive with delay)
+                est_ad_spend = cur_ads["spend"]
+                try:
+                    period_days = (cur_end - cur_start).days + 1
+                    avg_daily_ads_rows = ch.query("""
+                        SELECT sum(money_spent) / 7
+                        FROM mms_analytics.fact_ozon_ad_daily FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND dt >= today() - 7 AND dt < today()
+                    """, parameters={"shop_id": shop_id}).result_rows
+                    avg_daily_ads = float(avg_daily_ads_rows[0][0] or 0) if avg_daily_ads_rows else 0
+                    # If current ad spend is less than expected minimum
+                    # (avg_daily × period_days × 0.5), use avg estimate
+                    expected_min = avg_daily_ads * period_days * 0.5
+                    if avg_daily_ads > 0 and est_ad_spend < expected_min:
+                        est_ad_spend = avg_daily_ads * period_days
+                except Exception:
+                    pass
+
+                profit_cur = round(est_revenue_cur - est_fees_cur - est_bulk_cur - cogs_est_cur - est_ad_spend, 2)
+                profit_pct = round(profit_cur / est_revenue_cur * 100, 1) if est_revenue_cur > 0 else 0
+
+                # Previous period — use real if available, else same approach
+                if prev_txn_revenue > 0:
+                    profit_prev = round(prev_txn_revenue - prev_txn_fees - bulk_prev_total - cogs_txn_prev - prev_ads["spend"], 2)
+                else:
+                    est_rev_prev = 0.0
+                    est_fees_prev = 0.0
+                    for sku, info in orders_by_sku_map.get("previous", {}).items():
+                        rev_ord = info["rev"]
+                        qty = info["qty"]
+                        rates = sku_rates.get(sku)
+                        if rates:
+                            est_fees_prev += rev_ord * rates["commission_rate"] + qty * rates["logistics_per_unit"]
+                        else:
+                            est_fees_prev += rev_ord * shop_avg_comm_rate + qty * shop_avg_logi_per_unit
+                        est_rev_prev += rev_ord
+                    est_bulk_prev = est_rev_prev * bulk_rate
+                    profit_prev = round(est_rev_prev - est_fees_prev - est_bulk_prev - cogs_ord_prev - prev_ads["spend"], 2)
+
         except Exception as e:
             logger.warning("Ozon transaction-based profit failed: %s", e)
 
@@ -905,6 +1088,11 @@ async def get_ozon_dashboard(
 
         # ══════════════════════════════════════════════
         # 11. Finance Summary — Weekly P&L
+        #     Unified with finances.py: same data sources, same filters
+        #     - Revenue filter: category = 'Revenue' (not accruals > 0)
+        #     - Ad spend: transactions Marketing (not fact_ozon_ad_daily)
+        #     - COGS: shared calc_cogs_from_ch() module
+        #     - Aggregation: abs(sum()) not sum(abs())
         # ══════════════════════════════════════════════
         finance_summary = None
         try:
@@ -914,7 +1102,7 @@ async def get_ozon_dashboard(
                 FROM mms_analytics.fact_ozon_transactions FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND toDate(operation_date) >= today() - 21
-                  AND sku > 0
+                  AND category = 'Revenue'
             """, parameters={"shop_id": shop_id}).result_rows
 
             if fw_range and fw_range[0][0] and str(fw_range[0][0]) != '1970-01-01':
@@ -932,84 +1120,72 @@ async def get_ozon_dashboard(
                 prev_fw_start = fw_start - timedelta(days=7)
                 prev_fw_end = fw_end - timedelta(days=7)
 
+                # Revenue, Commission, Services from category='Revenue' transactions
+                # Using abs(sum()) to match finances.py logic
                 fs_data = ch.query("""
                     SELECT
-                        -- Revenue (sales)
                         sumIf(accruals_for_sale,
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS rev_cur,
+                              category = 'Revenue' AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS rev_cur,
                         sumIf(accruals_for_sale,
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS rev_prev,
-                        -- Commission
-                        sumIf(abs(sale_commission),
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS comm_cur,
-                        sumIf(abs(sale_commission),
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS comm_prev,
-                        -- Services (logistics, acquiring, last mile, etc.)
-                        sumIf(abs(services_total),
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS svc_cur,
-                        sumIf(abs(services_total),
-                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS svc_prev,
-                        -- Returns (negative accruals)
+                              category = 'Revenue' AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS rev_prev,
+                        abs(sumIf(sale_commission,
+                              category = 'Revenue' AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date})) AS comm_cur,
+                        abs(sumIf(sale_commission,
+                              category = 'Revenue' AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date})) AS comm_prev,
+                        abs(sumIf(services_total,
+                              category = 'Revenue' AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date})) AS svc_cur,
+                        abs(sumIf(services_total,
+                              category = 'Revenue' AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date})) AS svc_prev,
                         sumIf(abs(accruals_for_sale),
-                              accruals_for_sale < 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ret_cur,
+                              accruals_for_sale < 0 AND category = 'Revenue' AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ret_cur,
                         sumIf(abs(accruals_for_sale),
-                              accruals_for_sale < 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ret_prev,
-                        -- Sale count
-                        sumIf(1, accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ord_cur,
-                        sumIf(1, accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ord_prev
+                              accruals_for_sale < 0 AND category = 'Revenue' AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ret_prev,
+                        countIf(category = 'Revenue' AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ord_cur,
+                        countIf(category = 'Revenue' AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ord_prev
                     FROM mms_analytics.fact_ozon_transactions FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(operation_date) >= {pws:Date}
                       AND toDate(operation_date) <= {we:Date}
-                      AND sku > 0
                 """, parameters={
                     "shop_id": shop_id,
                     "ws": fw_start, "we": fw_end,
                     "pws": prev_fw_start, "pwe": prev_fw_end,
                 }).result_rows
 
-                # Ad spend from fact_ozon_ad_daily
-                ads_week = ch.query("""
+                # ALL non-Revenue categories from transactions
+                # (Logistics, Acquiring, Other, Refund, Compensation, Marketing, Storage)
+                other_cats = ch.query("""
                     SELECT
-                        sumIf(money_spent, dt >= {ws:Date} AND dt <= {we:Date}) AS ads_cur,
-                        sumIf(money_spent, dt >= {pws:Date} AND dt <= {pwe:Date}) AS ads_prev
-                    FROM mms_analytics.fact_ozon_ad_daily FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND dt >= {pws:Date} AND dt <= {we:Date}
-                """, parameters={
-                    "shop_id": shop_id,
-                    "ws": fw_start, "we": fw_end,
-                    "pws": prev_fw_start, "pwe": prev_fw_end,
-                }).result_rows
-
-                # Storage from fact_ozon_placement_cost
-                storage_week = ch.query("""
-                    SELECT
-                        sumIf(placement_cost, dt >= {ws:Date} AND dt <= {we:Date}) AS stor_cur,
-                        sumIf(placement_cost, dt >= {pws:Date} AND dt <= {pwe:Date}) AS stor_prev
-                    FROM mms_analytics.fact_ozon_placement_cost FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND dt >= {pws:Date} AND dt <= {we:Date}
-                """, parameters={
-                    "shop_id": shop_id,
-                    "ws": fw_start, "we": fw_end,
-                    "pws": prev_fw_start, "pwe": prev_fw_end,
-                }).result_rows
-
-                # Acquiring from transactions
-                acq_week = ch.query("""
-                    SELECT
-                        sumIf(abs(amount), toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS acq_cur,
-                        sumIf(abs(amount), toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS acq_prev
+                        category,
+                        abs(sumIf(amount, toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date})) AS amt_cur,
+                        abs(sumIf(amount, toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date})) AS amt_prev
                     FROM mms_analytics.fact_ozon_transactions FINAL
                     WHERE shop_id = {shop_id:UInt32}
                       AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {we:Date}
-                      AND category = 'Acquiring'
+                      AND category NOT IN ('Revenue')
+                    GROUP BY category
                 """, parameters={
                     "shop_id": shop_id,
                     "ws": fw_start, "we": fw_end,
                     "pws": prev_fw_start, "pwe": prev_fw_end,
                 }).result_rows
+
+                cat_vals: dict[str, dict] = {}
+                for cr in other_cats:
+                    cat_vals[cr[0]] = {"cur": float(cr[1] or 0), "prev": float(cr[2] or 0)}
+
+                # COGS — using shared module (same as finances.py)
+                cogs_c_val = 0.0
+                cogs_p_val = 0.0
+                try:
+                    sku_to_offer = await get_sku_to_offer_map(db, shop_id)
+                    cost_map_fw = await get_cost_map(db, shop_id)
+                    sku_cost_map = build_sku_cost_map(sku_to_offer, cost_map_fw)
+                    cogs_c_val, cogs_p_val, _ = calc_cogs_from_ch(
+                        ch, shop_id, sku_cost_map, fw_start, fw_end, prev_fw_start, prev_fw_end
+                    )
+                except Exception as e:
+                    logger.warning("Ozon finance summary COGS failed: %s", e)
 
                 if fs_data:
                     r = fs_data[0]
@@ -1023,16 +1199,44 @@ async def get_ozon_dashboard(
                     ret_p = float(r[7] or 0)
                     ord_c = int(r[8] or 0)
                     ord_p = int(r[9] or 0)
-                    ad_c = float(ads_week[0][0] or 0) if ads_week else 0
-                    ad_p = float(ads_week[0][1] or 0) if ads_week else 0
-                    stor_c = float(storage_week[0][0] or 0) if storage_week else 0
-                    stor_p = float(storage_week[0][1] or 0) if storage_week else 0
-                    acq_c = float(acq_week[0][0] or 0) if acq_week else 0
-                    acq_p = float(acq_week[0][1] or 0) if acq_week else 0
 
-                    # Profit = revenue - commission - services - acquiring - storage - ad_spend
-                    profit_c = rev_c - comm_c - svc_c - acq_c - stor_c - ad_c
-                    profit_p = rev_p - comm_p - svc_p - acq_p - stor_p - ad_p
+                    # Ad spend from transactions Marketing (not fact_ozon_ad_daily)
+                    ad_c = cat_vals.get("Marketing", {}).get("cur", 0)
+                    ad_p = cat_vals.get("Marketing", {}).get("prev", 0)
+
+                    # Storage from transactions Storage category
+                    stor_c = cat_vals.get("Storage", {}).get("cur", 0)
+                    stor_p = cat_vals.get("Storage", {}).get("prev", 0)
+
+                    # Logistics from transactions Logistics category
+                    logi_c = cat_vals.get("Logistics", {}).get("cur", 0)
+                    logi_p = cat_vals.get("Logistics", {}).get("prev", 0)
+
+                    # Acquiring from transactions
+                    acq_c = cat_vals.get("Acquiring", {}).get("cur", 0)
+                    acq_p = cat_vals.get("Acquiring", {}).get("prev", 0)
+
+                    # Other expenses (penalties, compensation, refunds, other)
+                    other_c = (cat_vals.get("Other", {}).get("cur", 0)
+                               + cat_vals.get("Refund", {}).get("cur", 0)
+                               + cat_vals.get("Compensation", {}).get("cur", 0)
+                               + cat_vals.get("Penalty", {}).get("cur", 0))
+                    other_p = (cat_vals.get("Other", {}).get("prev", 0)
+                               + cat_vals.get("Refund", {}).get("prev", 0)
+                               + cat_vals.get("Compensation", {}).get("prev", 0)
+                               + cat_vals.get("Penalty", {}).get("prev", 0))
+
+                    # Total logistics = services_total (per-order) + Logistics (bulk)
+                    total_logistics_c = svc_c + logi_c
+                    total_logistics_p = svc_p + logi_p
+
+                    # Commission includes acquiring (как на странице Финансы)
+                    total_comm_c = comm_c + acq_c
+                    total_comm_p = comm_p + acq_p
+
+                    # Profit = Revenue - Commission(+acq) - Logistics - Storage - Ads - Other - COGS
+                    profit_c = rev_c - total_comm_c - total_logistics_c - stor_c - ad_c - other_c - cogs_c_val
+                    profit_p = rev_p - total_comm_p - total_logistics_p - stor_p - ad_p - other_p - cogs_p_val
                     margin_c = round(profit_c / rev_c * 100, 1) if rev_c > 0 else 0
 
                     finance_summary = {
@@ -1041,14 +1245,18 @@ async def get_ozon_dashboard(
                         "revenue": round(rev_c, 2),
                         "revenue_prev": round(rev_p, 2),
                         "revenue_delta": _safe_delta(rev_c, rev_p),
-                        "commission": round(comm_c, 2),
-                        "commission_prev": round(comm_p, 2),
-                        "logistics": round(svc_c + acq_c, 2),  # 'logistics' label = services + acquiring
-                        "logistics_prev": round(svc_p + acq_p, 2),
+                        "commission": round(total_comm_c, 2),
+                        "commission_prev": round(total_comm_p, 2),
+                        "logistics": round(total_logistics_c, 2),
+                        "logistics_prev": round(total_logistics_p, 2),
                         "storage": round(stor_c, 2),
                         "storage_prev": round(stor_p, 2),
                         "ad_spend": round(ad_c, 2),
                         "ad_spend_prev": round(ad_p, 2),
+                        "cogs": round(cogs_c_val, 2),
+                        "cogs_prev": round(cogs_p_val, 2),
+                        "other_expenses": round(other_c, 2),
+                        "other_expenses_prev": round(other_p, 2),
                         "deductions": 0,
                         "deductions_prev": 0,
                         "acceptance": 0,
@@ -1065,7 +1273,7 @@ async def get_ozon_dashboard(
                         "profit_delta": _safe_delta(profit_c, profit_p),
                     }
         except Exception as e:
-            logger.warning("Ozon finance summary failed: %s", e)
+            logger.warning("Ozon finance summary failed: %s", e, exc_info=True)
 
         # ══════════════════════════════════════════════
         # Enrich alerts + feed with product names/images
@@ -1156,6 +1364,7 @@ async def get_ozon_dashboard(
                     "cancels_delta": _safe_delta(cur_orders["cancels"], prev_orders["cancels"]),
                     "cancel_rate": cur_cancel_rate,
                     "cancel_rate_delta": round(cur_cancel_rate - prev_cancel_rate, 1),
+                    "profit_estimated": profit_estimated,
                 },
                 "advertising": {
                     "ad_spend": round(cur_ads["spend"], 2),

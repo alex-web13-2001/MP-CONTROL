@@ -130,9 +130,9 @@ function OzonKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
           <MetricCard label="Отмены" value={fmtN(s.cancels)} delta={s.cancels_delta}
             icon={AlertTriangle} color="#ef4444" invert
             sub={`${s.cancel_rate}% отмен`} />
-          <MetricCard label="Прибыль" value={fmt(s.profit)} delta={s.profit_delta}
+          <MetricCard label={s.profit_estimated ? '≈ Прибыль' : 'Прибыль'} value={fmt(s.profit)} delta={s.profit_delta}
             icon={TrendingUp} color={s.profit >= 0 ? '#10b981' : '#ef4444'}
-            sub={s.profit_pct !== 0 ? `чист. маржа ${s.profit_pct}%` : 'за вычетом расходов'} />
+            sub={s.profit_estimated ? 'оценочная (нет транзакций)' : s.profit_pct !== 0 ? `чист. маржа ${s.profit_pct}%` : 'за вычетом расходов'} />
         </div>
       </motion.div>
 
@@ -555,10 +555,12 @@ function OzonFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
     { label: 'Сервисы Ozon', value: data.logistics, prev: data.logistics_prev, icon: Truck, color: '#3b82f6', invert: true },
     { label: 'Хранение', value: data.storage, prev: data.storage_prev, icon: Archive, color: '#8b5cf6', invert: true },
     { label: 'Реклама', value: data.ad_spend, prev: data.ad_spend_prev, icon: Megaphone, color: '#ec4899', invert: true },
+    { label: 'Себестоимость', value: data.cogs ?? 0, prev: data.cogs_prev ?? 0, icon: Package, color: '#78716c', invert: true },
   ]
 
-  if (data.returns > 0 || data.returns_prev > 0) {
-    expenseRows.push({ label: 'Возвраты', value: data.returns, prev: data.returns_prev, icon: ShoppingCart, color: '#ef4444', invert: true })
+  // Only show "other expenses" if non-zero
+  if ((data.other_expenses ?? 0) > 0 || (data.other_expenses_prev ?? 0) > 0) {
+    expenseRows.push({ label: 'Прочие удержания', value: data.other_expenses ?? 0, prev: data.other_expenses_prev ?? 0, icon: AlertTriangle, color: '#a855f7', invert: true })
   }
 
   const totalExpenses = expenseRows.reduce((s, r) => s + r.value, 0)
