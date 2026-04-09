@@ -151,10 +151,10 @@ async def get_ozon_dashboard(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Get aggregated Ozon dashboard data.
+    Full Ozon analytics dashboard (V2 — mirrors WB structure).
 
-    Returns KPIs (orders, revenue, ad spend, views, clicks, DRR),
-    sales chart, top products — all in one call.
+    Returns: KPI cards (sales, advertising, funnel), multi-metric chart,
+    alerts (5 tabs), orders feed, weekly finance summary — all in one call.
     """
     # ── Verify shop ownership ─────────────────────────
     result = await db.execute(
@@ -173,28 +173,37 @@ async def get_ozon_dashboard(
 
     # ── Dates ─────────────────────────────────────────
     cur_start, cur_end, prev_start, prev_end = _parse_period(period)
+    chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
 
     from app.core.clickhouse import get_clickhouse_client
 
     try:
         ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
 
+    cost_map: dict[str, float] = {}
+
+    try:
         # ══════════════════════════════════════════════
-        # 1. KPI — Orders (fact_ozon_orders)
+        # 1. KPI — Sales (fact_ozon_orders) + Cancellations
         # ══════════════════════════════════════════════
         orders_kpi = ch.query("""
             SELECT
                 period,
                 count() AS orders_count,
                 sum(price * quantity) AS revenue,
-                sum(price * quantity) / nullIf(count(), 0) AS avg_check
+                sumIf(price * quantity, cancel_reason = '') AS revenue_clean,
+                sum(price * quantity) / nullIf(count(), 0) AS avg_check,
+                countIf(cancel_reason != '') AS cancels
             FROM (
                 SELECT
                     CASE
                         WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
                         WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
                     END AS period,
-                    price, quantity
+                    price, quantity, cancel_reason
                 FROM mms_analytics.fact_ozon_orders FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
@@ -204,33 +213,37 @@ async def get_ozon_dashboard(
             GROUP BY period
         """, parameters={
             "shop_id": shop_id,
-            "cur_start": cur_start,
-            "cur_end": cur_end,
-            "prev_start": prev_start,
-            "prev_end": prev_end,
+            "cur_start": cur_start, "cur_end": cur_end,
+            "prev_start": prev_start, "prev_end": prev_end,
         }).result_rows
 
-        orders_map = {row[0]: {"count": int(row[1]), "revenue": float(row[2]), "avg_check": float(row[3] or 0)} for row in orders_kpi}
-        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "avg_check": 0})
-        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "avg_check": 0})
+        orders_map = {
+            row[0]: {"count": int(row[1]), "revenue": float(row[2]), "revenue_clean": float(row[3]),
+                     "avg_check": float(row[4] or 0), "cancels": int(row[5])}
+            for row in orders_kpi
+        }
+        cur_orders = orders_map.get("current", {"count": 0, "revenue": 0, "revenue_clean": 0, "avg_check": 0, "cancels": 0})
+        prev_orders = orders_map.get("previous", {"count": 0, "revenue": 0, "revenue_clean": 0, "avg_check": 0, "cancels": 0})
 
         # ══════════════════════════════════════════════
-        # 2. KPI — Advertising: spend, views, clicks, DRR (fact_ozon_ad_daily)
+        # 2. KPI — Advertising / Funnel (fact_ozon_ad_daily)
         # ══════════════════════════════════════════════
         ads_kpi = ch.query("""
             SELECT
                 period,
                 sum(money_spent) AS total_spend,
-                sum(revenue) AS total_revenue,
                 sum(views) AS total_views,
-                sum(clicks) AS total_clicks
+                sum(clicks) AS total_clicks,
+                sum(add_to_cart) AS total_cart,
+                sum(orders) AS total_orders,
+                sum(revenue) AS total_ad_revenue
             FROM (
                 SELECT
                     CASE
                         WHEN dt >= {cur_start:Date} AND dt <= {cur_end:Date} THEN 'current'
                         WHEN dt >= {prev_start:Date} AND dt <= {prev_end:Date} THEN 'previous'
                     END AS period,
-                    money_spent, revenue, views, clicks
+                    money_spent, views, clicks, add_to_cart, orders, revenue
                 FROM mms_analytics.fact_ozon_ad_daily FINAL
                 WHERE shop_id = {shop_id:UInt32}
                   AND dt >= {prev_start:Date}
@@ -246,277 +259,952 @@ async def get_ozon_dashboard(
 
         ads_map = {}
         for row in ads_kpi:
-            spend = float(row[1])
             ads_map[row[0]] = {
-                "spend": spend,
-                "views": int(row[3]),
-                "clicks": int(row[4]),
+                "spend": float(row[1]), "views": int(row[2]),
+                "clicks": int(row[3]), "cart": int(row[4]),
+                "orders": int(row[5]), "ad_revenue": float(row[6]),
             }
-        cur_ads = ads_map.get("current", {"spend": 0, "views": 0, "clicks": 0})
-        prev_ads = ads_map.get("previous", {"spend": 0, "views": 0, "clicks": 0})
+        _zero_ads = {"spend": 0, "views": 0, "clicks": 0, "cart": 0, "orders": 0, "ad_revenue": 0}
+        cur_ads = ads_map.get("current", _zero_ads)
+        prev_ads = ads_map.get("previous", _zero_ads)
 
-        # DRR = ad_spend / orders_revenue (NOT ad_revenue!)
-        cur_drr = round(cur_ads["spend"] / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
-        prev_drr = round(prev_ads["spend"] / prev_orders["revenue"] * 100, 1) if prev_orders["revenue"] > 0 else 0
+        # DRR / CTR / Conversion / Cancel rate
+        cur_drr_total = round(cur_ads["spend"] / cur_orders["revenue"] * 100, 1) if cur_orders["revenue"] > 0 else 0
+        prev_drr_total = round(prev_ads["spend"] / prev_orders["revenue"] * 100, 1) if prev_orders["revenue"] > 0 else 0
+        cur_drr_ad = round(cur_ads["spend"] / cur_ads["ad_revenue"] * 100, 1) if cur_ads["ad_revenue"] > 0 else 0
+        prev_drr_ad = round(prev_ads["spend"] / prev_ads["ad_revenue"] * 100, 1) if prev_ads["ad_revenue"] > 0 else 0
+        cur_ctr = round(cur_ads["clicks"] / cur_ads["views"] * 100, 1) if cur_ads["views"] > 0 else 0
+        prev_ctr = round(prev_ads["clicks"] / prev_ads["views"] * 100, 1) if prev_ads["views"] > 0 else 0
+        cur_conv = round(cur_ads["orders"] / cur_ads["clicks"] * 100, 1) if cur_ads["clicks"] > 0 else 0
+        prev_conv = round(prev_ads["orders"] / prev_ads["clicks"] * 100, 1) if prev_ads["clicks"] > 0 else 0
+        cur_click_to_cart = round(cur_ads["cart"] / cur_ads["clicks"] * 100, 1) if cur_ads["clicks"] > 0 else 0
+        prev_click_to_cart = round(prev_ads["cart"] / prev_ads["clicks"] * 100, 1) if prev_ads["clicks"] > 0 else 0
+        cur_cancel_rate = round(cur_orders["cancels"] / cur_orders["count"] * 100, 1) if cur_orders["count"] > 0 else 0
+        prev_cancel_rate = round(prev_orders["cancels"] / prev_orders["count"] * 100, 1) if prev_orders["count"] > 0 else 0
 
         # ══════════════════════════════════════════════
-        # 3. Charts — Sales daily (fact_ozon_orders)
+        # 3. Profit from real transactions
+        #    Same formula as Products page:
+        #    Profit = accruals_for_sale - commission - services - acquiring - storage - COGS - ad_spend
+        #    Using fact_ozon_transactions (category='Revenue') for per-SKU data
+        #    + bulk charges (Acquiring, Storage) distributed proportionally
         # ══════════════════════════════════════════════
-        chart_start = cur_start if period != "today" else cur_start - timedelta(days=29)
+        profit_cur = 0.0
+        profit_prev = 0.0
+        profit_pct = 0.0
+        finance_week_start = None
+        finance_week_end = None
+
+        # 3a. Load COGS from PostgreSQL
+        try:
+            cost_result = await db.execute(
+                text("SELECT offer_id, COALESCE(cost_price, 0) + COALESCE(packaging_cost, 0) AS total_cost FROM product_costs WHERE shop_id = :sid AND (cost_price > 0 OR packaging_cost > 0)"),
+                {"sid": shop_id},
+            )
+            cost_map = {r[0].lower(): float(r[1]) for r in cost_result.fetchall()}
+        except Exception as e:
+            logger.warning("Ozon COGS load failed: %s", e)
+
+        # 3b. Per-SKU real financials from fact_ozon_transactions (exact periods)
+        #     Revenue = accruals_for_sale, deductions = sale_commission + services_total
+        try:
+            txn_per_sku = ch.query("""
+                SELECT
+                    period, sku,
+                    sum(accruals_for_sale) AS revenue,
+                    sum(abs(sale_commission)) AS commission,
+                    sum(abs(services_total)) AS services
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN toDate(operation_date) >= {cur_start:Date} AND toDate(operation_date) <= {cur_end:Date} THEN 'current'
+                            WHEN toDate(operation_date) >= {prev_start:Date} AND toDate(operation_date) <= {prev_end:Date} THEN 'previous'
+                        END AS period,
+                        sku, accruals_for_sale, sale_commission, services_total
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(operation_date) >= {prev_start:Date}
+                      AND toDate(operation_date) <= {cur_end:Date}
+                      AND sku > 0
+                      AND category = 'Revenue'
+                )
+                WHERE period != ''
+                GROUP BY period, sku
+            """, parameters={
+                "shop_id": shop_id,
+                "cur_start": cur_start, "cur_end": cur_end,
+                "prev_start": prev_start, "prev_end": prev_end,
+            }).result_rows
+
+            # Collect per-period totals: revenue, commission, services
+            cur_txn_revenue = 0.0
+            prev_txn_revenue = 0.0
+            cur_txn_fees = 0.0
+            prev_txn_fees = 0.0
+
+            # Map sku → offer_id for COGS lookup
+            all_txn_skus = list(set(int(r[1]) for r in txn_per_sku))
+            sku_to_offer: dict[int, str] = {}
+            if all_txn_skus:
+                try:
+                    sku_offer_result = await db.execute(
+                        text("SELECT sku, offer_id FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
+                        {"sid": shop_id, "skus": all_txn_skus},
+                    )
+                    sku_to_offer = {int(r[0]): str(r[1]).lower() for r in sku_offer_result.fetchall()}
+                except Exception:
+                    pass
+
+            for row in txn_per_sku:
+                period_name = row[0]
+                sku = int(row[1])
+                rev = float(row[2] or 0)
+                comm = float(row[3] or 0)
+                svc = float(row[4] or 0)
+                if period_name == "current":
+                    cur_txn_revenue += rev
+                    cur_txn_fees += comm + svc
+                else:
+                    prev_txn_revenue += rev
+                    prev_txn_fees += comm + svc
+
+            # 3c. Bulk charges: Acquiring + Storage (not per-SKU, total for shop)
+            bulk_cur_total = 0.0
+            bulk_prev_total = 0.0
+            try:
+                bulk_rows = ch.query("""
+                    SELECT
+                        period,
+                        sum(abs(amount)) AS total
+                    FROM (
+                        SELECT
+                            CASE
+                                WHEN toDate(operation_date) >= {cur_start:Date} AND toDate(operation_date) <= {cur_end:Date} THEN 'current'
+                                WHEN toDate(operation_date) >= {prev_start:Date} AND toDate(operation_date) <= {prev_end:Date} THEN 'previous'
+                            END AS period,
+                            amount
+                        FROM mms_analytics.fact_ozon_transactions FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND toDate(operation_date) >= {prev_start:Date}
+                          AND toDate(operation_date) <= {cur_end:Date}
+                          AND category IN ('Acquiring', 'Storage')
+                    )
+                    WHERE period != ''
+                    GROUP BY period
+                """, parameters={
+                    "shop_id": shop_id,
+                    "cur_start": cur_start, "cur_end": cur_end,
+                    "prev_start": prev_start, "prev_end": prev_end,
+                }).result_rows
+                for br in bulk_rows:
+                    if br[0] == "current":
+                        bulk_cur_total = float(br[1] or 0)
+                    else:
+                        bulk_prev_total = float(br[1] or 0)
+            except Exception as e:
+                logger.warning("Ozon bulk charges query failed: %s", e)
+
+            # 3d. COGS from orders qty × unit cost
+            cogs_cur = 0.0
+            cogs_prev = 0.0
+            try:
+                orders_by_sku = ch.query("""
+                    SELECT period, sku, sum(quantity) AS qty
+                    FROM (
+                        SELECT
+                            CASE
+                                WHEN toDate(addHours(in_process_at, 3)) >= {cur_start:Date} AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date} THEN 'current'
+                                WHEN toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date} THEN 'previous'
+                            END AS period,
+                            sku, quantity
+                        FROM mms_analytics.fact_ozon_orders FINAL
+                        WHERE shop_id = {shop_id:UInt32}
+                          AND cancel_reason = ''
+                          AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
+                          AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
+                          AND sku > 0
+                    )
+                    WHERE period != ''
+                    GROUP BY period, sku
+                """, parameters={
+                    "shop_id": shop_id,
+                    "cur_start": cur_start, "cur_end": cur_end,
+                    "prev_start": prev_start, "prev_end": prev_end,
+                }).result_rows
+                for row in orders_by_sku:
+                    period_name = row[0]
+                    sku = int(row[1])
+                    qty = int(row[2])
+                    offer_id = sku_to_offer.get(sku, "")
+                    cogs_per_unit = cost_map.get(offer_id, 0)
+                    if period_name == "current":
+                        cogs_cur += cogs_per_unit * qty
+                    else:
+                        cogs_prev += cogs_per_unit * qty
+            except Exception as e:
+                logger.warning("Ozon COGS orders query failed: %s", e)
+
+            # 3e. Final profit = revenue - commission - services - acquiring - storage - COGS - ad_spend
+            profit_cur = round(cur_txn_revenue - cur_txn_fees - bulk_cur_total - cogs_cur - cur_ads["spend"], 2)
+            profit_prev = round(prev_txn_revenue - prev_txn_fees - bulk_prev_total - cogs_prev - prev_ads["spend"], 2)
+            profit_pct = round(profit_cur / cur_txn_revenue * 100, 1) if cur_txn_revenue > 0 else 0
+        except Exception as e:
+            logger.warning("Ozon transaction-based profit failed: %s", e)
+
+        # 3d. Finance week range from transactions
+        try:
+            week_range = ch.query("""
+                SELECT min(toDate(operation_date)), max(toDate(operation_date))
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(operation_date) >= today() - 14
+                  AND sku > 0
+            """, parameters={"shop_id": shop_id}).result_rows
+            if week_range and week_range[0][0] and str(week_range[0][0]) != '1970-01-01':
+                finance_week_end = week_range[0][1]
+                finance_week_start = finance_week_end - timedelta(days=6)
+        except Exception as e:
+            logger.warning("Ozon finance week range failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 4. Chart data (daily — unified)
+        # ══════════════════════════════════════════════
         sales_daily = ch.query("""
-            SELECT
-                toDate(addHours(in_process_at, 3)) AS day,
-                count() AS orders_count,
-                sum(price * quantity) AS revenue
+            SELECT toDate(addHours(in_process_at, 3)) AS day,
+                   count() AS orders_count,
+                   sum(price * quantity) AS revenue
             FROM mms_analytics.fact_ozon_orders FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(in_process_at, 3)) >= {start:Date}
               AND toDate(addHours(in_process_at, 3)) <= {end:Date}
-            GROUP BY day
-            ORDER BY day
-        """, parameters={
-            "shop_id": shop_id,
-            "start": chart_start,
-            "end": cur_end,
-        }).result_rows
+            GROUP BY day ORDER BY day
+        """, parameters={"shop_id": shop_id, "start": chart_start, "end": cur_end}).result_rows
+        sales_by_day = {str(r[0]): {"orders": int(r[1]), "revenue": float(r[2])} for r in sales_daily}
 
-        charts_sales = [
-            {"date": str(row[0]), "orders": int(row[1]), "revenue": float(row[2])}
-            for row in sales_daily
-        ]
+        ads_daily = ch.query("""
+            SELECT dt AS day,
+                   sum(money_spent) AS spend, sum(views) AS views,
+                   sum(clicks) AS clicks, sum(add_to_cart) AS cart,
+                   sum(orders) AS orders, sum(revenue) AS ad_revenue
+            FROM mms_analytics.fact_ozon_ad_daily FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {start:Date} AND dt <= {end:Date}
+            GROUP BY day ORDER BY day
+        """, parameters={"shop_id": shop_id, "start": chart_start, "end": cur_end}).result_rows
+        ads_by_day = {str(r[0]): {"spend": float(r[1]), "views": int(r[2]), "clicks": int(r[3]),
+                                   "cart": int(r[4]), "orders": int(r[5]), "ad_revenue": float(r[6])} for r in ads_daily}
 
-        # ══════════════════════════════════════════════
-        # 4. Top products (with ad spend joined in CH)
-        # ══════════════════════════════════════════════
-        top_products_rows = ch.query("""
-            WITH
-                orders_cur AS (
-                    SELECT
-                        sku,
-                        anyLast(offer_id) AS offer_id,
-                        count() AS orders_count,
-                        sum(price * quantity) AS revenue
-                    FROM mms_analytics.fact_ozon_orders FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(addHours(in_process_at, 3)) >= {cur_start:Date}
-                      AND toDate(addHours(in_process_at, 3)) <= {cur_end:Date}
-                      AND sku > 0
-                    GROUP BY sku
-                ),
-                orders_prev AS (
-                    SELECT
-                        sku,
-                        count() AS orders_count
-                    FROM mms_analytics.fact_ozon_orders FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
-                      AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date}
-                      AND sku > 0
-                    GROUP BY sku
-                ),
-                latest_stocks AS (
-                    SELECT
-                        offer_id,
-                        sumIf(free_to_sell, warehouse_type = 'fbo') AS stock_fbo,
-                        sumIf(free_to_sell, warehouse_type = 'fbs') AS stock_fbs
-                    FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND dt = (
-                          SELECT max(dt)
-                          FROM mms_analytics.fact_ozon_warehouse_stocks
-                          WHERE shop_id = {shop_id:UInt32}
-                      )
-                    GROUP BY offer_id
-                ),
-                latest_prices AS (
-                    SELECT offer_id, price
-                    FROM mms_analytics.fact_ozon_prices FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND dt = (
-                          SELECT max(dt)
-                          FROM mms_analytics.fact_ozon_prices
-                          WHERE shop_id = {shop_id:UInt32}
-                      )
-                ),
-                ad_per_sku AS (
-                    SELECT
-                        sku,
-                        sum(money_spent) AS ad_spend
-                    FROM mms_analytics.fact_ozon_ad_daily FINAL
-                    WHERE shop_id = {shop_id:UInt32}
-                      AND dt >= {cur_start:Date}
-                      AND dt <= {cur_end:Date}
-                    GROUP BY sku
-                )
-            SELECT
-                oc.offer_id,
-                oc.orders_count,
-                oc.revenue,
-                CASE WHEN op.orders_count > 0
-                    THEN round((oc.orders_count - op.orders_count) / op.orders_count * 100, 1)
-                    ELSE 0
-                END AS delta_pct,
-                coalesce(ls.stock_fbo, 0) AS stock_fbo,
-                coalesce(ls.stock_fbs, 0) AS stock_fbs,
-                coalesce(lp.price, 0) AS price,
-                coalesce(aps.ad_spend, 0) AS ad_spend,
-                CASE WHEN oc.revenue > 0
-                    THEN round(coalesce(aps.ad_spend, 0) / oc.revenue * 100, 1)
-                    ELSE 0
-                END AS drr
-            FROM orders_cur oc
-            LEFT JOIN orders_prev op ON oc.sku = op.sku
-            LEFT JOIN latest_stocks ls ON oc.offer_id = ls.offer_id
-            LEFT JOIN latest_prices lp ON oc.offer_id = lp.offer_id
-            LEFT JOIN ad_per_sku aps ON oc.sku = aps.sku
-            ORDER BY oc.revenue DESC
-            LIMIT 50
-        """, parameters={
-            "shop_id": shop_id,
-            "cur_start": cur_start, "cur_end": cur_end,
-            "prev_start": prev_start, "prev_end": prev_end,
-        }).result_rows
-
-        top_products = []
-        for row in top_products_rows:
-            top_products.append({
-                "offer_id": row[0],
-                "name": "",
-                "image_url": "",
-                "orders": int(row[1]),
-                "revenue": float(row[2]),
-                "delta_pct": float(row[3]),
-                "stock_fbo": int(row[4]),
-                "stock_fbs": int(row[5]),
-                "price": float(row[6]),
-                "ad_spend": float(row[7]),
-                "drr": float(row[8]),
+        all_days = sorted(set(list(sales_by_day.keys()) + list(ads_by_day.keys())))
+        chart_data = []
+        for day in all_days:
+            s = sales_by_day.get(day, {"orders": 0, "revenue": 0})
+            a = ads_by_day.get(day, {"spend": 0, "views": 0, "clicks": 0, "cart": 0, "orders": 0, "ad_revenue": 0})
+            chart_data.append({
+                "date": day,
+                "revenue": round(s["revenue"], 2),
+                "orders": s["orders"],
+                "ad_spend": round(a["spend"], 2),
+                "views": a["views"],
+                "clicks": a["clicks"],
+                "cart": a["cart"],
+                "ad_orders": a["orders"],
+                "drr_ad": round(a["spend"] / a["ad_revenue"] * 100, 1) if a["ad_revenue"] > 0 else 0,
+                "drr_total": round(a["spend"] / s["revenue"] * 100, 1) if s["revenue"] > 0 else 0,
+                "ctr": round(a["clicks"] / a["views"] * 100, 1) if a["views"] > 0 else 0,
             })
 
-        # Enrich with product names & images from PostgreSQL
-        if top_products:
-            offer_ids = [p["offer_id"] for p in top_products]
-            pg_result = await db.execute(
-                text("""
-                    SELECT offer_id, name,
-                           COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS image_url
-                    FROM dim_ozon_products
-                    WHERE shop_id = :shop_id
-                      AND offer_id = ANY(:offer_ids)
-                """),
-                {"shop_id": shop_id, "offer_ids": offer_ids},
-            )
-            pg_map = {}
-            for row in pg_result:
-                pg_map[row[0]] = {"name": row[1], "image_url": row[2]}
-
-            for p in top_products:
-                info = pg_map.get(p["offer_id"], {})
-                p["name"] = info.get("name", p["offer_id"])
-                p["image_url"] = info.get("image_url", "")
+        # ══════════════════════════════════════════════
+        # 5. ALERTS — Warehouses (low stock)
+        # ══════════════════════════════════════════════
+        alerts_warehouses: list[dict] = []
+        try:
+            wh_alerts = ch.query("""
+                WITH latest AS (
+                    SELECT sku, offer_id, sum(free_to_sell) AS stock
+                    FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                    GROUP BY sku, offer_id
+                ),
+                avg_sales AS (
+                    SELECT sku, sum(quantity) / 14.0 AS avg_daily
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(addHours(in_process_at, 3)) >= today() - 14
+                      AND cancel_reason = ''
+                    GROUP BY sku
+                )
+                SELECT l.sku, l.offer_id, l.stock,
+                       coalesce(a.avg_daily, 0) AS avg_daily,
+                       CASE WHEN a.avg_daily > 0 THEN round(l.stock / a.avg_daily, 1) ELSE 999 END AS days_left
+                FROM latest l
+                LEFT JOIN avg_sales a ON l.sku = a.sku
+                WHERE l.stock <= 0 OR (a.avg_daily > 0 AND l.stock / a.avg_daily <= 10)
+                ORDER BY days_left ASC
+                LIMIT 30
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in wh_alerts:
+                alerts_warehouses.append({
+                    "nm_id": int(r[0]),
+                    "offer_id": str(r[1] or ""),
+                    "name": "", "vendor_code": "", "image_url": "",
+                    "stock": int(r[2]),
+                    "avg_daily_sales": round(float(r[3]), 1),
+                    "days_left": round(float(r[4]), 1) if float(r[4]) < 999 else None,
+                    "severity": "critical" if int(r[2]) <= 0 else "warning",
+                })
+        except Exception as e:
+            logger.warning("Ozon warehouse alerts failed: %s", e)
 
         # ══════════════════════════════════════════════
-        # 5. Charts — Ads daily (fact_ozon_ad_daily)
+        # 6. ALERTS — Sales (no sales 7+ days)
         # ══════════════════════════════════════════════
-        ads_daily = ch.query("""
-            WITH ads AS (
-                SELECT
-                    dt AS day,
-                    sum(money_spent) AS spend,
-                    sum(views) AS total_views,
-                    sum(clicks) AS total_clicks,
-                    sum(add_to_cart) AS cart,
-                    sum(orders) AS total_orders,
-                    sum(revenue) AS ad_revenue
-                FROM mms_analytics.fact_ozon_ad_daily FINAL
+        alerts_sales: list[dict] = []
+        try:
+            no_sales = ch.query("""
+                WITH stocked AS (
+                    SELECT sku, offer_id, sum(free_to_sell) AS stock
+                    FROM mms_analytics.fact_ozon_warehouse_stocks FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                    GROUP BY sku, offer_id HAVING stock > 0
+                ),
+                recent_sales AS (
+                    SELECT sku, max(toDate(addHours(in_process_at, 3))) AS last_sale
+                    FROM mms_analytics.fact_ozon_orders FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND cancel_reason = ''
+                    GROUP BY sku
+                )
+                SELECT s.sku, s.offer_id, s.stock,
+                       r.last_sale,
+                       dateDiff('day', coalesce(r.last_sale, today() - 9999), today()) AS days_without
+                FROM stocked s
+                LEFT JOIN recent_sales r ON s.sku = r.sku
+                WHERE coalesce(r.last_sale, toDate('2000-01-01')) < today() - 6
+                ORDER BY days_without DESC
+                LIMIT 30
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in no_sales:
+                last_sale = str(r[3]) if r[3] and str(r[3]) > '2020-01-01' else None
+                days_w = int(r[4])
+                alerts_sales.append({
+                    "nm_id": int(r[0]),
+                    "offer_id": str(r[1] or ""),
+                    "name": "", "vendor_code": "", "image_url": "",
+                    "stock": int(r[2]),
+                    "last_sale_date": last_sale,
+                    "days_without_sales": min(days_w, 9999),
+                })
+        except Exception as e:
+            logger.warning("Ozon sales alerts failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 7. ALERTS — Storage (fact_ozon_placement_cost)
+        # ══════════════════════════════════════════════
+        alerts_storage: list[dict] = []
+        storage_total_cost = 0.0
+        try:
+            storage_data = ch.query("""
+                SELECT sku, offer_id, product_name,
+                       sum(placement_cost) AS total_cost,
+                       avg(volume_liters) AS avg_volume
+                FROM mms_analytics.fact_ozon_placement_cost FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND dt >= {start:Date}
-                  AND dt <= {end:Date}
-                GROUP BY day
-            ),
-            daily_orders AS (
+                  AND dt >= today() - 7
+                GROUP BY sku, offer_id, product_name
+                HAVING total_cost > 0
+                ORDER BY total_cost DESC
+                LIMIT 20
+            """, parameters={"shop_id": shop_id}).result_rows
+            for r in storage_data:
+                cost = float(r[3])
+                storage_total_cost += cost
+                alerts_storage.append({
+                    "nm_id": int(r[0]),
+                    "name": str(r[2] or ""),
+                    "vendor_code": str(r[1] or ""),
+                    "offer_id": str(r[1] or ""),
+                    "image_url": "",
+                    "warehouse": "",
+                    "cost_7d": round(cost, 2),
+                    "volume_liters": round(float(r[4] or 0), 2),
+                })
+        except Exception as e:
+            logger.warning("Ozon storage alerts failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 8. ALERTS — Advertising (5 problem types)
+        # ══════════════════════════════════════════════
+        alerts_advertising: list[dict] = []
+        try:
+            # 8a. Get Ozon campaigns from PostgreSQL
+            camp_result = await db.execute(
+                text("SELECT campaign_id, title, state, daily_budget FROM dim_ozon_campaigns WHERE shop_id = :sid"),
+                {"sid": shop_id},
+            )
+            camp_map: dict[int, dict] = {}
+            for cr in camp_result.fetchall():
+                cid = int(cr[0])
+                state_str = str(cr[2] or "").upper()
+                camp_map[cid] = {
+                    "name": str(cr[1] or ""),
+                    "state": state_str,
+                    "daily_budget": float(cr[3] or 0),
+                    "real_status": "active" if "RUNNING" in state_str else
+                                   "paused" if "INACTIVE" in state_str else "stopped",
+                }
+
+            # 8b. 7-day stats from CH
+            stats_7d_rows = ch.query("""
+                SELECT campaign_id,
+                       sum(views) AS s_views, sum(clicks) AS s_clicks,
+                       sum(money_spent) AS s_spend, sum(revenue) AS s_rev,
+                       sum(orders) AS s_orders,
+                       max(dt) AS last_date
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32} AND dt >= today() - 7
+                GROUP BY campaign_id
+            """, parameters={"shop_id": shop_id}).result_rows
+            stats_7d: dict[int, dict] = {}
+            for sr in stats_7d_rows:
+                stats_7d[int(sr[0])] = {
+                    "views": int(sr[1]), "clicks": int(sr[2]),
+                    "spend": float(sr[3]), "revenue": float(sr[4]),
+                    "orders": int(sr[5]), "last_date": str(sr[6]),
+                }
+
+            # 8c. 3-day views
+            stats_3d_rows = ch.query("""
+                SELECT campaign_id, sum(views) AS s_views, sum(clicks) AS s_clicks
+                FROM mms_analytics.fact_ozon_ad_daily FINAL
+                WHERE shop_id = {shop_id:UInt32} AND dt >= today() - 3
+                GROUP BY campaign_id
+            """, parameters={"shop_id": shop_id}).result_rows
+            views_3d: dict[int, dict] = {}
+            for r3 in stats_3d_rows:
+                views_3d[int(r3[0])] = {"views": int(r3[1]), "clicks": int(r3[2])}
+
+            seen_ids: set[int] = set()
+
+            # ═══ P1: Active, spending with ZERO revenue ═══
+            for cid, info in camp_map.items():
+                if cid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(cid)
+                if not s or s["spend"] < 300:
+                    continue
+                if s["revenue"] == 0 and s["views"] > 0:
+                    seen_ids.add(cid)
+                    alerts_advertising.append({
+                        "advert_id": cid, "name": info["name"],
+                        "problem": "spending_no_revenue", "priority": 1,
+                        "status": info["real_status"], "budget_total": None,
+                        "reason": f"Потрачено {round(s['spend']):,} ₽, 0 заказов за 7 дн.".replace(",", " "),
+                        "spend": round(s["spend"], 2), "revenue": 0,
+                        "orders": 0, "views": s["views"], "clicks": s["clicks"],
+                        "drr": None,
+                    })
+
+            # ═══ P2: Active, high DRR (>30%) ═══
+            for cid, info in camp_map.items():
+                if cid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(cid)
+                if not s or s["spend"] < 200 or s["revenue"] <= 0:
+                    continue
+                drr_val = round(s["spend"] / s["revenue"] * 100, 1)
+                if drr_val > 30:
+                    seen_ids.add(cid)
+                    alerts_advertising.append({
+                        "advert_id": cid, "name": info["name"],
+                        "problem": "high_drr", "priority": 2,
+                        "status": info["real_status"], "budget_total": None,
+                        "reason": f"Расход {round(s['spend']):,} ₽ → выручка {round(s['revenue']):,} ₽".replace(",", " "),
+                        "spend": round(s["spend"], 2), "revenue": round(s["revenue"], 2),
+                        "orders": s["orders"], "views": s["views"], "clicks": s["clicks"],
+                        "drr": drr_val,
+                    })
+
+            # ═══ P3: Active, low views (<200 in 3 days) ═══
+            for cid, info in camp_map.items():
+                if cid in seen_ids or info.get("real_status") != "active":
+                    continue
+                v3 = views_3d.get(cid)
+                s7 = stats_7d.get(cid)
+                if not v3 or not s7:
+                    continue
+                views_3 = v3["views"]
+                if views_3 == 0:
+                    continue
+                if views_3 < 200 and s7["spend"] > 50:
+                    seen_ids.add(cid)
+                    drr_val = round(s7["spend"] / s7["revenue"] * 100, 1) if s7["revenue"] > 0 else None
+                    alerts_advertising.append({
+                        "advert_id": cid, "name": info["name"],
+                        "problem": "low_views", "priority": 3,
+                        "status": info["real_status"], "budget_total": None,
+                        "reason": f"{views_3} показов за 3 дн. — повысьте ставку",
+                        "spend": round(s7["spend"], 2), "revenue": round(s7["revenue"], 2),
+                        "orders": s7["orders"], "views": views_3, "clicks": v3["clicks"],
+                        "drr": drr_val,
+                    })
+
+            # ═══ P4: Active, no views 3 days ═══
+            for cid, info in camp_map.items():
+                if cid in seen_ids or info.get("real_status") != "active":
+                    continue
+                v3 = views_3d.get(cid, {})
+                if v3.get("views", 0) > 0:
+                    continue
+                s7 = stats_7d.get(cid)
+                if not s7:
+                    continue
+                if s7["last_date"] < str(cur_start):
+                    continue
+                seen_ids.add(cid)
+                alerts_advertising.append({
+                    "advert_id": cid, "name": info["name"],
+                    "problem": "no_views", "priority": 4,
+                    "status": info["real_status"], "budget_total": None,
+                    "reason": "0 показов за 3 дня — проверьте ставку и бюджет",
+                    "spend": round(s7["spend"], 2), "revenue": round(s7["revenue"], 2),
+                    "orders": s7["orders"], "views": 0, "clicks": 0, "drr": None,
+                })
+
+            # ═══ P5: Active, clicks but zero orders ═══
+            for cid, info in camp_map.items():
+                if cid in seen_ids or info.get("real_status") != "active":
+                    continue
+                s = stats_7d.get(cid)
+                if not s or s["clicks"] < 50:
+                    continue
+                if s["orders"] == 0 and s["revenue"] == 0:
+                    seen_ids.add(cid)
+                    alerts_advertising.append({
+                        "advert_id": cid, "name": info["name"],
+                        "problem": "clicks_no_orders", "priority": 5,
+                        "status": info["real_status"], "budget_total": None,
+                        "reason": f"{s['clicks']} кликов, 0 заказов — проверьте карточку",
+                        "spend": round(s["spend"], 2), "revenue": 0,
+                        "orders": 0, "views": s["views"], "clicks": s["clicks"],
+                        "drr": None,
+                    })
+
+            alerts_advertising.sort(key=lambda x: (x.get("priority", 9), -(x.get("spend") or 0)))
+        except Exception as e:
+            logger.warning("Ozon advertising alerts failed: %s", e)
+            import traceback
+            logger.warning(traceback.format_exc())
+
+        # ══════════════════════════════════════════════
+        # 9. ALERTS — Finances (loss-making SKUs)
+        # ══════════════════════════════════════════════
+        alerts_finances: list[dict] = []
+        try:
+            if finance_week_start:
+                loss_skus = ch.query("""
+                    SELECT
+                        sku,
+                        sumIf(accruals_for_sale, accruals_for_sale > 0) AS revenue,
+                        sumIf(abs(sale_commission), accruals_for_sale > 0) AS commission,
+                        sumIf(abs(services_total), accruals_for_sale > 0) AS services,
+                        sumIf(1, accruals_for_sale > 0) AS qty
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(operation_date) >= {ws:Date}
+                      AND toDate(operation_date) <= {we:Date}
+                      AND sku > 0
+                    GROUP BY sku
+                    HAVING qty > 0
+                """, parameters={"shop_id": shop_id, "ws": finance_week_start, "we": finance_week_end}).result_rows
+
+                # Get sku → offer_id mapping for COGS
+                fin_skus = [int(r[0]) for r in loss_skus]
+                fin_sku_to_offer: dict[int, str] = {}
+                if fin_skus:
+                    try:
+                        so_result = await db.execute(
+                            text("SELECT sku, offer_id FROM dim_ozon_products WHERE shop_id = :sid AND sku = ANY(:skus)"),
+                            {"sid": shop_id, "skus": fin_skus},
+                        )
+                        fin_sku_to_offer = {int(r[0]): str(r[1]).lower() for r in so_result.fetchall()}
+                    except Exception:
+                        pass
+
+                for r in loss_skus:
+                    sku = int(r[0])
+                    rev = float(r[1] or 0)
+                    comm = float(r[2] or 0)
+                    svc = float(r[3] or 0)
+                    qty = int(r[4] or 0)
+                    offer = fin_sku_to_offer.get(sku, "")
+                    cogs_v = cost_map.get(offer, 0) * qty
+                    profit_v = rev - comm - svc - cogs_v
+                    if profit_v < 0:
+                        reason = "Совокупные расходы превышают выручку"
+                        if rev > 0:
+                            if svc > rev * 0.35:
+                                reason = f"Сервисы Ozon {round(svc / rev * 100)}% от выручки"
+                            elif comm > rev * 0.3:
+                                reason = f"Высокая комиссия ({round(comm):,} ₽)".replace(",", " ")
+                            elif cogs_v > 0 and (rev - cogs_v) < 0:
+                                reason = "Себестоимость выше выручки"
+                        alerts_finances.append({
+                            "vendor_code": offer or str(sku),
+                            "nm_id": sku,
+                            "name": "", "image_url": "",
+                            "revenue": round(rev, 2),
+                            "expenses": round(comm + svc + cogs_v, 2),
+                            "profit": round(profit_v, 2),
+                            "profit_pct": round(profit_v / rev * 100, 1) if rev > 0 else 0,
+                            "qty": qty,
+                            "reason": reason,
+                        })
+                alerts_finances.sort(key=lambda x: x["profit"])
+                alerts_finances = alerts_finances[:20]
+        except Exception as e:
+            logger.warning("Ozon finance alerts failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # 10. Orders Feed
+        # ══════════════════════════════════════════════
+        orders_feed: list[dict] = []
+        try:
+            feed_rows = ch.query("""
                 SELECT
-                    toDate(addHours(in_process_at, 3)) AS day,
-                    sum(price * quantity) AS total_revenue
+                    sku,
+                    anyLast(offer_id) AS offer_id,
+                    countIf(toDate(addHours(in_process_at, 3)) >= {start:Date} AND toDate(addHours(in_process_at, 3)) <= {end:Date}) AS orders_cur,
+                    sumIf(price * quantity, toDate(addHours(in_process_at, 3)) >= {start:Date} AND toDate(addHours(in_process_at, 3)) <= {end:Date}) AS revenue_cur,
+                    max(if(toDate(addHours(in_process_at, 3)) >= {start:Date} AND toDate(addHours(in_process_at, 3)) <= {end:Date}, toDate(addHours(in_process_at, 3)), toDate('1970-01-01'))) AS last_order,
+                    countIf(toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date}) AS orders_prev,
+                    sumIf(price * quantity, toDate(addHours(in_process_at, 3)) >= {prev_start:Date} AND toDate(addHours(in_process_at, 3)) <= {prev_end:Date}) AS revenue_prev
                 FROM mms_analytics.fact_ozon_orders FINAL
                 WHERE shop_id = {shop_id:UInt32}
-                  AND toDate(addHours(in_process_at, 3)) >= {start:Date}
+                  AND toDate(addHours(in_process_at, 3)) >= {prev_start:Date}
                   AND toDate(addHours(in_process_at, 3)) <= {end:Date}
-                GROUP BY day
-            )
-            SELECT
-                a.day,
-                a.spend,
-                a.total_views,
-                a.total_clicks,
-                a.cart,
-                a.total_orders,
-                CASE WHEN a.ad_revenue > 0
-                    THEN round(a.spend / a.ad_revenue * 100, 1) ELSE 0
-                END AS drr_ad,
-                CASE WHEN o.total_revenue > 0
-                    THEN round(a.spend / o.total_revenue * 100, 1) ELSE 0
-                END AS drr_total
-            FROM ads a
-            LEFT JOIN daily_orders o ON a.day = o.day
-            ORDER BY a.day
-        """, parameters={
-            "shop_id": shop_id,
-            "start": chart_start,
-            "end": cur_end,
-        }).result_rows
+                GROUP BY sku
+                HAVING orders_cur > 0
+                ORDER BY orders_cur DESC
+                LIMIT 50
+            """, parameters={
+                "shop_id": shop_id,
+                "start": cur_start, "end": cur_end,
+                "prev_start": prev_start, "prev_end": prev_end,
+            }).result_rows
+            for r in feed_rows:
+                orders_feed.append({
+                    "nm_id": int(r[0]),
+                    "supplier_article": str(r[1] or ""),
+                    "name": "", "image_url": "", "vendor_code": "",
+                    "orders": int(r[2]), "revenue": round(float(r[3]), 2),
+                    "last_order": str(r[4]),
+                    "orders_prev": int(r[5]), "revenue_prev": round(float(r[6]), 2),
+                })
+        except Exception as e:
+            logger.warning("Ozon orders feed failed: %s", e)
 
-        charts_ads = [
-            {
-                "date": str(row[0]),
-                "spend": round(float(row[1]), 2),
-                "views": int(row[2]),
-                "clicks": int(row[3]),
-                "cart": int(row[4]),
-                "orders": int(row[5]),
-                "drr_ad": float(row[6]),
-                "drr_total": float(row[7]),
-            }
-            for row in ads_daily
-        ]
+        # ══════════════════════════════════════════════
+        # 11. Finance Summary — Weekly P&L
+        # ══════════════════════════════════════════════
+        finance_summary = None
+        try:
+            # Find last complete Mon-Sun week
+            fw_range = ch.query("""
+                SELECT toMonday(max(toDate(operation_date))) AS last_monday
+                FROM mms_analytics.fact_ozon_transactions FINAL
+                WHERE shop_id = {shop_id:UInt32}
+                  AND toDate(operation_date) >= today() - 21
+                  AND sku > 0
+            """, parameters={"shop_id": shop_id}).result_rows
+
+            if fw_range and fw_range[0][0] and str(fw_range[0][0]) != '1970-01-01':
+                last_monday = fw_range[0][0]
+                if isinstance(last_monday, str):
+                    last_monday = date.fromisoformat(last_monday)
+                fw_start = last_monday
+                fw_end = last_monday + timedelta(days=6)
+
+                today_d = date.today()
+                if fw_end >= today_d:
+                    fw_start = fw_start - timedelta(days=7)
+                    fw_end = fw_end - timedelta(days=7)
+
+                prev_fw_start = fw_start - timedelta(days=7)
+                prev_fw_end = fw_end - timedelta(days=7)
+
+                fs_data = ch.query("""
+                    SELECT
+                        -- Revenue (sales)
+                        sumIf(accruals_for_sale,
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS rev_cur,
+                        sumIf(accruals_for_sale,
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS rev_prev,
+                        -- Commission
+                        sumIf(abs(sale_commission),
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS comm_cur,
+                        sumIf(abs(sale_commission),
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS comm_prev,
+                        -- Services (logistics, acquiring, last mile, etc.)
+                        sumIf(abs(services_total),
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS svc_cur,
+                        sumIf(abs(services_total),
+                              accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS svc_prev,
+                        -- Returns (negative accruals)
+                        sumIf(abs(accruals_for_sale),
+                              accruals_for_sale < 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ret_cur,
+                        sumIf(abs(accruals_for_sale),
+                              accruals_for_sale < 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ret_prev,
+                        -- Sale count
+                        sumIf(1, accruals_for_sale > 0 AND toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS ord_cur,
+                        sumIf(1, accruals_for_sale > 0 AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS ord_prev
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(operation_date) >= {pws:Date}
+                      AND toDate(operation_date) <= {we:Date}
+                      AND sku > 0
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": fw_start, "we": fw_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                # Ad spend from fact_ozon_ad_daily
+                ads_week = ch.query("""
+                    SELECT
+                        sumIf(money_spent, dt >= {ws:Date} AND dt <= {we:Date}) AS ads_cur,
+                        sumIf(money_spent, dt >= {pws:Date} AND dt <= {pwe:Date}) AS ads_prev
+                    FROM mms_analytics.fact_ozon_ad_daily FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND dt >= {pws:Date} AND dt <= {we:Date}
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": fw_start, "we": fw_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                # Storage from fact_ozon_placement_cost
+                storage_week = ch.query("""
+                    SELECT
+                        sumIf(placement_cost, dt >= {ws:Date} AND dt <= {we:Date}) AS stor_cur,
+                        sumIf(placement_cost, dt >= {pws:Date} AND dt <= {pwe:Date}) AS stor_prev
+                    FROM mms_analytics.fact_ozon_placement_cost FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND dt >= {pws:Date} AND dt <= {we:Date}
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": fw_start, "we": fw_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                # Acquiring from transactions
+                acq_week = ch.query("""
+                    SELECT
+                        sumIf(abs(amount), toDate(operation_date) >= {ws:Date} AND toDate(operation_date) <= {we:Date}) AS acq_cur,
+                        sumIf(abs(amount), toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {pwe:Date}) AS acq_prev
+                    FROM mms_analytics.fact_ozon_transactions FINAL
+                    WHERE shop_id = {shop_id:UInt32}
+                      AND toDate(operation_date) >= {pws:Date} AND toDate(operation_date) <= {we:Date}
+                      AND category = 'Acquiring'
+                """, parameters={
+                    "shop_id": shop_id,
+                    "ws": fw_start, "we": fw_end,
+                    "pws": prev_fw_start, "pwe": prev_fw_end,
+                }).result_rows
+
+                if fs_data:
+                    r = fs_data[0]
+                    rev_c = float(r[0] or 0)
+                    rev_p = float(r[1] or 0)
+                    comm_c = float(r[2] or 0)
+                    comm_p = float(r[3] or 0)
+                    svc_c = float(r[4] or 0)
+                    svc_p = float(r[5] or 0)
+                    ret_c = float(r[6] or 0)
+                    ret_p = float(r[7] or 0)
+                    ord_c = int(r[8] or 0)
+                    ord_p = int(r[9] or 0)
+                    ad_c = float(ads_week[0][0] or 0) if ads_week else 0
+                    ad_p = float(ads_week[0][1] or 0) if ads_week else 0
+                    stor_c = float(storage_week[0][0] or 0) if storage_week else 0
+                    stor_p = float(storage_week[0][1] or 0) if storage_week else 0
+                    acq_c = float(acq_week[0][0] or 0) if acq_week else 0
+                    acq_p = float(acq_week[0][1] or 0) if acq_week else 0
+
+                    # Profit = revenue - commission - services - acquiring - storage - ad_spend
+                    profit_c = rev_c - comm_c - svc_c - acq_c - stor_c - ad_c
+                    profit_p = rev_p - comm_p - svc_p - acq_p - stor_p - ad_p
+                    margin_c = round(profit_c / rev_c * 100, 1) if rev_c > 0 else 0
+
+                    finance_summary = {
+                        "week_start": str(fw_start),
+                        "week_end": str(fw_end),
+                        "revenue": round(rev_c, 2),
+                        "revenue_prev": round(rev_p, 2),
+                        "revenue_delta": _safe_delta(rev_c, rev_p),
+                        "commission": round(comm_c, 2),
+                        "commission_prev": round(comm_p, 2),
+                        "logistics": round(svc_c + acq_c, 2),  # 'logistics' label = services + acquiring
+                        "logistics_prev": round(svc_p + acq_p, 2),
+                        "storage": round(stor_c, 2),
+                        "storage_prev": round(stor_p, 2),
+                        "ad_spend": round(ad_c, 2),
+                        "ad_spend_prev": round(ad_p, 2),
+                        "deductions": 0,
+                        "deductions_prev": 0,
+                        "acceptance": 0,
+                        "acceptance_prev": 0,
+                        "penalties": 0,
+                        "penalties_prev": 0,
+                        "returns": round(ret_c, 2),
+                        "returns_prev": round(ret_p, 2),
+                        "orders": ord_c,
+                        "orders_prev": ord_p,
+                        "profit": round(profit_c, 2),
+                        "profit_prev": round(profit_p, 2),
+                        "profit_pct": margin_c,
+                        "profit_delta": _safe_delta(profit_c, profit_p),
+                    }
+        except Exception as e:
+            logger.warning("Ozon finance summary failed: %s", e)
+
+        # ══════════════════════════════════════════════
+        # Enrich alerts + feed with product names/images
+        # ══════════════════════════════════════════════
+        all_offer_ids: set[str] = set()
+        for item in alerts_warehouses + alerts_sales:
+            oid = item.get("offer_id", "")
+            if oid:
+                all_offer_ids.add(oid)
+        for item in orders_feed:
+            oid = item.get("supplier_article", "")
+            if oid:
+                all_offer_ids.add(oid)
+        for item in alerts_storage:
+            oid = item.get("offer_id", "")
+            if oid:
+                all_offer_ids.add(oid)
+        for item in alerts_finances:
+            oid = item.get("vendor_code", "")
+            if oid:
+                all_offer_ids.add(oid)
+
+        offer_info: dict[str, dict] = {}
+        if all_offer_ids:
+            try:
+                pg_result = await db.execute(
+                    text("""
+                        SELECT offer_id,
+                               COALESCE(name, offer_id, '') AS name,
+                               COALESCE(NULLIF(primary_image_url, ''), main_image_url, '') AS img
+                        FROM dim_ozon_products
+                        WHERE shop_id = :sid AND offer_id = ANY(:oids)
+                    """),
+                    {"sid": shop_id, "oids": list(all_offer_ids)},
+                )
+                for row in pg_result:
+                    offer_info[row[0]] = {"name": row[1], "image_url": row[2]}
+            except Exception as e:
+                logger.warning("Ozon product enrichment failed: %s", e)
+
+        for item in alerts_warehouses + alerts_sales:
+            oid = item.get("offer_id", "")
+            info = offer_info.get(oid, {})
+            item["name"] = info.get("name", oid or str(item.get("nm_id", "")))
+            item["vendor_code"] = oid
+            item["image_url"] = info.get("image_url", "")
+
+        for item in orders_feed:
+            oid = item.get("supplier_article", "")
+            info = offer_info.get(oid, {})
+            item["name"] = info.get("name", oid or str(item.get("nm_id", "")))
+            item["image_url"] = info.get("image_url", "")
+            item["vendor_code"] = oid
+
+        for item in alerts_storage:
+            oid = item.get("offer_id", "")
+            info = offer_info.get(oid, {})
+            if not item.get("name"):
+                item["name"] = info.get("name", oid or str(item.get("nm_id", "")))
+            item["image_url"] = info.get("image_url", "")
+
+        for item in alerts_finances:
+            oid = item.get("vendor_code", "")
+            info = offer_info.get(oid, {})
+            item["name"] = info.get("name", oid or str(item.get("nm_id", "")))
+            item["image_url"] = info.get("image_url", "")
 
         ch.close()
 
         # ══════════════════════════════════════════════
-        # Build response
+        # Build response (mirrors WB structure exactly)
         # ══════════════════════════════════════════════
         return {
             "shop_id": shop_id,
             "period": period,
+            "date_from": str(cur_start),
+            "date_to": str(cur_end),
             "kpi": {
-                "orders_count": cur_orders["count"],
-                "orders_delta": _safe_delta(cur_orders["count"], prev_orders["count"]),
-                "revenue": cur_orders["revenue"],
-                "revenue_delta": _safe_delta(cur_orders["revenue"], prev_orders["revenue"]),
-                "avg_check": round(cur_orders["avg_check"], 0),
-                "ad_spend": cur_ads["spend"],
-                "ad_spend_delta": _safe_delta(cur_ads["spend"], prev_ads["spend"]),
-                "views": cur_ads["views"],
-                "views_delta": _safe_delta(cur_ads["views"], prev_ads["views"]),
-                "clicks": cur_ads["clicks"],
-                "clicks_delta": _safe_delta(cur_ads["clicks"], prev_ads["clicks"]),
-                "drr": cur_drr,
-                "drr_delta": round(cur_drr - prev_drr, 1),
+                "sales": {
+                    "revenue": round(cur_orders["revenue"], 2),
+                    "revenue_delta": _safe_delta(cur_orders["revenue"], prev_orders["revenue"]),
+                    "profit": round(profit_cur, 2),
+                    "profit_delta": _safe_delta(profit_cur, profit_prev),
+                    "profit_pct": profit_pct,
+                    "orders": cur_orders["count"],
+                    "orders_delta": _safe_delta(cur_orders["count"], prev_orders["count"]),
+                    "cancels": cur_orders["cancels"],
+                    "cancels_delta": _safe_delta(cur_orders["cancels"], prev_orders["cancels"]),
+                    "cancel_rate": cur_cancel_rate,
+                    "cancel_rate_delta": round(cur_cancel_rate - prev_cancel_rate, 1),
+                },
+                "advertising": {
+                    "ad_spend": round(cur_ads["spend"], 2),
+                    "ad_spend_delta": _safe_delta(cur_ads["spend"], prev_ads["spend"]),
+                    "drr_total": cur_drr_total,
+                    "drr_total_delta": round(cur_drr_total - prev_drr_total, 1),
+                    "drr_ad": cur_drr_ad,
+                    "drr_ad_delta": round(cur_drr_ad - prev_drr_ad, 1),
+                },
+                "funnel": {
+                    "views": cur_ads["views"],
+                    "views_delta": _safe_delta(cur_ads["views"], prev_ads["views"]),
+                    "clicks": cur_ads["clicks"],
+                    "clicks_delta": _safe_delta(cur_ads["clicks"], prev_ads["clicks"]),
+                    "ctr": cur_ctr,
+                    "ctr_delta": round(cur_ctr - prev_ctr, 1),
+                    "cart": cur_ads["cart"],
+                    "cart_delta": _safe_delta(cur_ads["cart"], prev_ads["cart"]),
+                    "click_to_cart": cur_click_to_cart,
+                    "click_to_cart_delta": round(cur_click_to_cart - prev_click_to_cart, 1),
+                    "cart_conversion": round(cur_ads["orders"] / cur_ads["cart"] * 100, 1) if cur_ads["cart"] > 0 else 0,
+                    "cart_conversion_delta": round(
+                        (round(cur_ads["orders"] / cur_ads["cart"] * 100, 1) if cur_ads["cart"] > 0 else 0) -
+                        (round(prev_ads["orders"] / prev_ads["cart"] * 100, 1) if prev_ads["cart"] > 0 else 0), 1),
+                    "orders": cur_ads["orders"],
+                    "orders_delta": _safe_delta(cur_ads["orders"], prev_ads["orders"]),
+                    "conversion": cur_conv,
+                    "conversion_delta": round(cur_conv - prev_conv, 1),
+                },
             },
-            "charts": {
-                "sales_daily": charts_sales,
-                "ads_daily": charts_ads,
+            "chart": chart_data,
+            "alerts": {
+                "warehouses": {"count": len(alerts_warehouses), "items": alerts_warehouses},
+                "sales": {"count": len(alerts_sales), "items": alerts_sales},
+                "storage": {"count": len(alerts_storage), "total_cost": round(storage_total_cost, 2), "items": alerts_storage},
+                "advertising": {"count": len(alerts_advertising), "items": alerts_advertising},
+                "finances": {"count": len(alerts_finances), "items": alerts_finances},
             },
-            "top_products": top_products,
+            "orders_feed": orders_feed,
+            "finance_summary": finance_summary,
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Dashboard query failed for shop %s: %s", shop_id, e)
+        logger.exception("Ozon Dashboard query failed for shop %s: %s", shop_id, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка загрузки дашборда: {str(e)}",
+            detail=f"Ошибка загрузки дашборда Ozon: {str(e)}",
         )
 
 
