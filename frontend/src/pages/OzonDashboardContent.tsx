@@ -147,10 +147,10 @@ function OzonKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
             icon={Banknote} color="#f97316" invert />
           <MetricCard label="ДРР общий" value={fmtPct(a.drr_total)} delta={0}
             icon={Megaphone} color="#f97316"
-            sub={`${a.drr_total_delta > 0 ? '+' : ''}${a.drr_total_delta.toFixed(1)} п.п.`} />
+            sub={`${(a.drr_total_delta ?? 0) > 0 ? '+' : ''}${(a.drr_total_delta ?? 0).toFixed(1)} п.п.`} />
           <MetricCard label="ДРР рекл." value={fmtPct(a.drr_ad)} delta={0}
             icon={Receipt} color="#f59e0b"
-            sub={`${a.drr_ad_delta > 0 ? '+' : ''}${a.drr_ad_delta.toFixed(1)} п.п.`} />
+            sub={`${(a.drr_ad_delta ?? 0) > 0 ? '+' : ''}${(a.drr_ad_delta ?? 0).toFixed(1)} п.п.`} />
         </div>
 
         {/* Воронка */}
