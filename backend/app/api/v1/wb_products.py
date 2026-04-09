@@ -574,6 +574,9 @@ async def get_wb_products(
             revenue_clean = sales_amount - (orders.get("cancels", 0) * avg_price if orders_7d > 0 else 0)
             if revenue_clean > 0:
                 margin = round(gross_profit / revenue_clean * 100, 1)
+        elif ad_spend_7d > 0:
+            # Товар без заказов, но с рекламой — чистый убыток
+            gross_profit = round(-ad_spend_7d, 2)
 
         p = {
             "nm_id": nm_id,
