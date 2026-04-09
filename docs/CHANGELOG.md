@@ -1,3 +1,27 @@
+## 2026-04-09 (v17.56.2)
+
+### fix(dashboard): Белый экран Ozon Dashboard — переключение на OzonDashboardContent
+
+**Проблема**: Ozon Dashboard показывал белый экран (crash) при выборе любого Ozon-магазина. React падал с `TypeError: undefined is not an object (evaluating 'e.toLocaleString')`.
+
+**Корневая причина**: `DashboardPage.tsx` использовал legacy flat KPI поля (`kpi.orders_count`, `kpi.revenue`, `kpi.views`, `kpi.clicks`, `kpi.ad_spend`, `kpi.drr`) в Ozon-ветке рендеринга, но backend уже возвращал V2 nested формат (`kpi.sales`, `kpi.advertising`, `kpi.funnel`). Вызов `.toLocaleString()` / `.toFixed()` на `undefined` значениях крашил React.
+
+**Решение — 2 файла:**
+
+1. **`dashboard.ts`** — `getOzonDashboardApi` возвращает `WbDashboardResponse` (V2) вместо legacy `DashboardResponse`
+2. **`DashboardPage.tsx`** — полная перезапись (918 → 210 строк):
+   - Удалено ~850 строк мёртвого legacy кода: `KpiCard`, `SalesChart`, `AdsChart`, `TopProductsTable`, все format-хелперы
+   - Ozon ветка теперь использует `OzonDashboardContent` (V2 компонент)
+   - Страница стала чистым shell: header + period selector + маршрутизация WB/Ozon
+
+**TypeScript:** `tsc --noEmit` — 0 ошибок ✅
+
+**Файлы:**
+- `frontend/src/pages/DashboardPage.tsx` — полная перезапись, -850 строк legacy
+- `frontend/src/api/dashboard.ts` — return type fix
+
+---
+
 ## 2026-04-09 (v17.56.1)
 
 ### fix(dashboard): Ozon Profit — замена rolling average на транзакционную формулу
