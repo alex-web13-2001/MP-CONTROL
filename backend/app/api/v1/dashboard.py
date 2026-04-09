@@ -768,8 +768,9 @@ async def get_wb_dashboard(
                     else:
                         profit_prev += up * qty
 
-            profit_cur = round(profit_cur, 2)
-            profit_prev = round(profit_prev, 2)
+            # Subtract ad_spend from profit (реклама — расход, вычитается из прибыли)
+            profit_cur = round(profit_cur - cur_ads["spend"], 2)
+            profit_prev = round(profit_prev - prev_ads["spend"], 2)
             profit_pct = round(profit_cur / cur_orders["revenue_clean"] * 100, 1) if cur_orders["revenue_clean"] > 0 else 0
         except Exception as e:
             logger.warning("WB unit-economics profit failed: %s", e)

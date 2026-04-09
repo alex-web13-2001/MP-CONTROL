@@ -93,7 +93,8 @@ async def get_wb_products(
                 sumIf(price_with_disc, toDate(addHours(date, 3)) >= {d_start:Date})  AS revenue_cur,
                 countIf(toDate(addHours(date, 3)) < {d_start:Date})   AS orders_prev,
                 sumIf(price_with_disc, toDate(addHours(date, 3)) < {d_start:Date})   AS revenue_prev,
-                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur
+                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 1)  AS cancels_cur,
+                countIf(toDate(addHours(date, 3)) >= {d_start:Date} AND is_cancel = 0)  AS orders_clean
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND toDate(addHours(date, 3)) >= {d_prev_start:Date}
@@ -110,6 +111,7 @@ async def get_wb_products(
             nm_id = int(r[0])
             orders_cur = int(r[2])
             cancels_cur = int(r[6])
+            orders_clean = int(r[7])
             orders_map[nm_id] = {
                 "vendor_code": str(r[1] or ""),
                 "orders_7d": orders_cur,
@@ -118,6 +120,7 @@ async def get_wb_products(
                 "revenue_prev": float(r[5]),
                 "cancels": cancels_cur,
                 "cancel_rate": round(cancels_cur / orders_cur * 100, 1) if orders_cur > 0 else 0.0,
+                "orders_clean": orders_clean,
             }
     except Exception as e:
         logger.warning("CH orders query failed: %s", e)
@@ -555,19 +558,22 @@ async def get_wb_products(
 
         # ── Расчётная прибыль (unit economics из fact_finances 30d) ─────
         # unit_profit = avg_payout_per_unit - avg_logistics_per_unit - COGS
-        # gross_profit = unit_profit × orders - ad_spend
+        # gross_profit = unit_profit × orders_clean (без отмен) - ad_spend
         # Аналогичная формула используется на Dashboard для единообразия.
         gross_profit = None
         margin = None
+        orders_clean = orders.get("orders_clean", 0)
         unit_rates = unit_rate_map.get(nm_id, {})
         avg_payout_pu = unit_rates.get("avg_payout", 0)
         avg_logistics_pu = unit_rates.get("avg_logistics", 0)
         if orders_7d > 0 and avg_payout_pu > 0:
             unit_cogs = cost_price + packaging_cost
             unit_profit = avg_payout_pu - avg_logistics_pu - unit_cogs
-            gross_profit = round(unit_profit * orders_7d - ad_spend_7d, 2)
-            if sales_amount > 0:
-                margin = round(gross_profit / sales_amount * 100, 1)
+            gross_profit = round(unit_profit * orders_clean - ad_spend_7d, 2)
+            # Маржа от clean revenue (без отмен)
+            revenue_clean = sales_amount - (orders.get("cancels", 0) * avg_price if orders_7d > 0 else 0)
+            if revenue_clean > 0:
+                margin = round(gross_profit / revenue_clean * 100, 1)
 
         p = {
             "nm_id": nm_id,
