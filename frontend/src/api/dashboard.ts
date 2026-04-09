@@ -264,8 +264,8 @@ export interface WbDashboardResponse {
 export async function getOzonDashboardApi(
   shopId: number,
   period: string = '7d',
-): Promise<DashboardResponse> {
-  const res = await apiClient.get<DashboardResponse>('/dashboard/ozon', {
+): Promise<WbDashboardResponse> {
+  const res = await apiClient.get<WbDashboardResponse>('/dashboard/ozon', {
     params: { shop_id: shopId, period },
   })
   return res.data
