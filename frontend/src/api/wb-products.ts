@@ -145,6 +145,8 @@ export interface WBPriceProduct {
   // Stocks
   stock_fbo: number
   stock_fbs: number
+  // Last sale
+  last_sale_date: string | null
 }
 
 export interface WBPricesResponse {

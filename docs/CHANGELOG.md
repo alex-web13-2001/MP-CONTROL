@@ -1,3 +1,35 @@
+## 2026-04-09 (v17.57.0)
+
+### feat(prices): Посл. продажа + «Ваша цена» + заметная кнопка «История»
+
+**3 UI/UX улучшения страницы Цены:**
+
+**1. Новый столбец «Посл. продажа»:**
+- Дата последней продажи каждого товара из ClickHouse
+- WB: `max(date)` из `fact_orders_raw` (только не отменённые)
+- Ozon: `max(order_date)` из `fact_ozon_orders` (кроме cancelled)
+- Форматирование: «Сегодня», «Вчера», «3 дн. назад», «14 мар.»
+- Цветовая индикация: красный (14+ дней), жёлтый (7+ дней), обычный (<7 дней)
+- Сортировка по дате последней продажи поддерживается
+
+**2. Переименование «Покупатель/Со скидкой» → «Ваша цена»:**
+- Единое название для WB и Ozon
+- Tooltip обновлён: «Текущая цена продажи после всех скидок»
+
+**3. Кнопка «История» — заметнее и под «Ваша цена»:**
+- Перенесена из колонки «До скидки» в колонку «Ваша цена»
+- Стилизация: фон + рамка (bg-primary/0.08, border-primary/0.1) вместо невидимого текста 9px
+- Шрифт 10px bold, иконка 12px — легко нажимается и видна без ховера
+
+**Файлы:**
+- `backend/app/api/v1/wb_prices.py` — last_sale_date из ClickHouse + SORT_FIELDS
+- `backend/app/api/v1/products.py` — last_sale_date из ClickHouse + SORT_FIELDS
+- `frontend/src/api/wb-products.ts` — +last_sale_date в WBPriceProduct
+- `frontend/src/api/products.ts` — +last_sale_date в OzonPriceProduct
+- `frontend/src/pages/ProductsPricesPage.tsx` — PriceRow, normalize, column header, history button, last sale cell
+
+---
+
 ## 2026-04-09 (v17.56.2)
 
 ### fix(dashboard): Белый экран Ozon Dashboard — переключение на OzonDashboardContent

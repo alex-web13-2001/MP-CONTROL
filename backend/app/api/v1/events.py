@@ -617,3 +617,117 @@ async def get_events_feed(
         "page_size": page_size,
         "days": days_list,
     }
+
+
+# ── Price History (for Prices page popup) ─────────────────
+
+@router.get("/price-history")
+async def get_price_history(
+    shop_id: int = Query(..., description="Shop ID"),
+    nm_id: int = Query(..., description="Product nm_id / product_id"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get price change history for a single product.
+    Queries event_log for PRICE_CHANGE / OZON_PRICE_CHANGE events.
+    Returns chronological list sorted newest-first.
+    """
+    # Verify shop ownership
+    shop_result = await db.execute(
+        text("""
+            SELECT id, marketplace FROM shops
+            WHERE id = :shop_id AND user_id = :user_id
+        """),
+        {"shop_id": shop_id, "user_id": str(current_user.id)},
+    )
+    shop_row = shop_result.fetchone()
+    if not shop_row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Магазин не найден",
+        )
+    marketplace = shop_row[1]
+
+    # Determine event types based on marketplace
+    if marketplace == "ozon":
+        event_types = ["OZON_PRICE_CHANGE", "PRICE_CHANGE"]
+    else:
+        event_types = ["PRICE_CHANGE"]
+
+    # Fetch all price change events for this product (last 90 days)
+    d_from = date.today() - timedelta(days=90)
+    events_result = await db.execute(
+        text("""
+            SELECT
+                e.id,
+                e.created_at,
+                e.event_type,
+                e.old_value,
+                e.new_value,
+                e.event_metadata
+            FROM event_log e
+            WHERE e.shop_id = :shop_id
+              AND e.nm_id = :nm_id
+              AND e.event_type = ANY(:event_types)
+              AND e.created_at >= :date_from
+            ORDER BY e.created_at DESC
+            LIMIT 50
+        """),
+        {
+            "shop_id": shop_id,
+            "nm_id": nm_id,
+            "event_types": event_types,
+            "date_from": d_from,
+        },
+    )
+    raw_events = events_result.fetchall()
+
+    history = []
+    for ev in raw_events:
+        ev_id, created_at, event_type, old_value, new_value, metadata = ev
+
+        # Parse metadata for extra context
+        meta = {}
+        if metadata:
+            if isinstance(metadata, str):
+                try:
+                    meta = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    meta = {}
+            elif isinstance(metadata, dict):
+                meta = metadata
+
+        # Format price values
+        try:
+            old_price = float(old_value) if old_value else None
+        except (ValueError, TypeError):
+            old_price = None
+        try:
+            new_price = float(new_value) if new_value else None
+        except (ValueError, TypeError):
+            new_price = None
+
+        # Calculate change direction and percentage
+        direction = None
+        change_pct = None
+        if old_price and new_price:
+            direction = "up" if new_price > old_price else "down"
+            if old_price > 0:
+                change_pct = round((new_price - old_price) / old_price * 100, 1)
+
+        history.append({
+            "id": ev_id,
+            "date": created_at.isoformat() if created_at else None,
+            "old_price": old_price,
+            "new_price": new_price,
+            "direction": direction,
+            "change_pct": change_pct,
+            "price_field": meta.get("price_field", ""),
+        })
+
+    return {
+        "shop_id": shop_id,
+        "nm_id": nm_id,
+        "history": history,
+    }

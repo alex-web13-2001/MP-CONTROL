@@ -2,9 +2,14 @@
  * ProductsPricesPage — Управление ценами, скидками, себестоимостью.
  *
  * WB: live-данные из WB API (цена до/после скидки, клубная, скидка %)
- * Ozon: данные из dim_ozon_products (price, marketing_price, min_price, price_index)
+ * Ozon: данные из dim_ozon_products + ClickHouse (profit, ads, DRR)
  *
  * Общее: себестоимость (редактируемая), остатки FBO/FBS, прибыль на шт.
+ *
+ * Ozon price semantics:
+ *   marketing_price = real buyer-facing price (after all Ozon discounts)
+ *   price           = base/seller price (before marketplace discounts)
+ *   old_price        = original "strike-through" price
  */
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
@@ -20,6 +25,10 @@ import {
   Download,
   Info,
   Megaphone,
+  Copy,
+  History,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
@@ -31,11 +40,13 @@ import {
   type WBPriceProduct,
 } from '@/api/wb-products'
 import {
-  getOzonProductsApi,
+  getOzonPricesApi,
   updateOzonCostApi,
   uploadCostExcelApi,
   downloadCostTemplate,
-  type OzonProduct,
+  getPriceHistoryApi,
+  type OzonPriceProduct,
+  type PriceHistoryItem,
 } from '@/api/products'
 
 /* ═══════════════════════════════════════════════════════════
@@ -49,6 +60,42 @@ function fmtMoney(v: number | null | undefined): string {
 
 function fmtNum(v: number | null | undefined): string {
   return (v ?? 0).toLocaleString('ru-RU')
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Copy to Clipboard Button
+   ═══════════════════════════════════════════════════════════ */
+
+function CopyBtn({ text, className }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    } catch { /* silent */ }
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      title={copied ? 'Скопировано!' : `Копировать: ${text}`}
+      className={cn(
+        'inline-flex items-center justify-center rounded p-0.5 transition-all',
+        copied
+          ? 'text-emerald-400'
+          : 'text-[hsl(var(--muted-foreground)/0.25)] hover:text-[hsl(var(--muted-foreground)/0.7)] hover:bg-white/5',
+        className,
+      )}
+    >
+      {copied
+        ? <Check className="h-3 w-3" />
+        : <Copy className="h-3 w-3" />
+      }
+    </button>
+  )
 }
 
 
@@ -68,7 +115,7 @@ function SortTh({
   return (
     <th
       className={cn(
-        'px-1.5 py-2.5 text-[10px] uppercase tracking-wider font-semibold cursor-pointer select-none whitespace-nowrap hover:text-[hsl(var(--foreground))] transition-colors',
+        'px-2 py-2.5 text-[10px] uppercase tracking-wider font-semibold cursor-pointer select-none whitespace-nowrap hover:text-[hsl(var(--foreground))] transition-colors',
         align === 'right' && 'text-right',
         className,
       )}
@@ -212,15 +259,16 @@ function CostEditor({ costPrice, onSave }: {
 
 interface PriceRow {
   id: string              // unique key (nm_id or offer_id)
-  nm_id?: number          // WB only
+  nm_id?: number          // WB only (nm_id)
+  product_id?: number     // Ozon only (product_id)
   vendor_code: string
   offer_id?: string       // Ozon only
   name: string
   image_url: string
   // Prices
-  price_before_discount: number  // Цена до скидки
+  price_before_discount: number  // Цена до скидки (old_price / base price)
   discount_pct: number           // Скидка %
-  price_after_discount: number   // Цена со скидкой
+  price_after_discount: number   // Цена для покупателя (real buyer price)
   club_price: number | null      // WB Клуб цена (null if club not active)
   club_discount: number | null   // WB Клуб скидка %
   min_price: number | null       // Ozon min_price
@@ -241,6 +289,8 @@ interface PriceRow {
   stock_fbs: number
   // Warnings
   is_bad_turnover: boolean
+  // Last sale
+  last_sale_date: string | null
 }
 
 function normalizeWB(p: WBPriceProduct): PriceRow {
@@ -268,30 +318,34 @@ function normalizeWB(p: WBPriceProduct): PriceRow {
     stock_fbo: p.stock_fbo,
     stock_fbs: p.stock_fbs,
     is_bad_turnover: p.is_bad_turnover,
+    last_sale_date: p.last_sale_date || null,
   }
 }
 
-function normalizeOzon(p: OzonProduct): PriceRow {
-  const cost = p.cost_price + p.packaging_cost
-  let profit: number | null = null
-  if (cost > 0 && p.price > 0) {
-    const estimatedFees = p.price * (p.mp_fees_percent / 100 || 0.25)
-    profit = Math.round(p.price - cost - estimatedFees)
-  }
-
-  const discountPct = p.old_price > 0 && p.price > 0
-    ? Math.round((1 - p.price / p.old_price) * 100)
-    : 0
+/**
+ * Normalize Ozon price data from the dedicated /ozon/prices endpoint.
+ *
+ * Price semantics (Ozon):
+ *   marketing_price = цена для покупателя (после всех скидок Ozon)
+ *   price           = базовая цена продавца (до маркетинговых акций)
+ *   old_price       = зачёркнутая цена (изначальная)
+ */
+function normalizeOzon(p: OzonPriceProduct): PriceRow {
+  // old_price (or price if no old_price) → зачёркнутая "до скидки"
+  const priceBeforeDiscount = p.old_price > 0 ? p.old_price : p.price
+  // marketing_price → реальная покупательская цена
+  const priceAfterDiscount = p.marketing_price > 0 ? p.marketing_price : p.price
 
   return {
     id: `ozon-${p.offer_id}`,
+    product_id: p.product_id,
     offer_id: p.offer_id,
     vendor_code: p.offer_id,
     name: p.name,
     image_url: p.image_url || '',
-    price_before_discount: p.marketing_price || p.old_price || p.price,
-    discount_pct: discountPct,
-    price_after_discount: p.price,
+    price_before_discount: priceBeforeDiscount,
+    discount_pct: p.discount_pct || 0,
+    price_after_discount: priceAfterDiscount,
     club_price: null,
     club_discount: null,
     min_price: p.min_price || null,
@@ -299,13 +353,15 @@ function normalizeOzon(p: OzonProduct): PriceRow {
     price_index_color: p.price_index_color || null,
     cost_price: p.cost_price,
     packaging_cost: p.packaging_cost,
-    profit_per_unit: profit,
-    ad_spend_30d: 0,
-    drr: null,
-    profit_with_ads: null,
-    stock_fbo: p.stocks_fbo,
-    stock_fbs: p.stocks_fbs,
+    profit_per_unit: p.profit_per_unit,
+    profit_source: p.profit_source || null,
+    ad_spend_30d: p.ad_spend_30d ?? 0,
+    drr: p.drr ?? null,
+    profit_with_ads: p.profit_with_ads ?? null,
+    stock_fbo: p.stock_fbo,
+    stock_fbs: p.stock_fbs,
     is_bad_turnover: false,
+    last_sale_date: p.last_sale_date || null,
   }
 }
 
@@ -324,6 +380,157 @@ function PriceIndexBadge({ value, color }: { value: number; color: string | null
     <span className={cn('inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-bold border', cls)}>
       {value.toFixed(2)}
     </span>
+  )
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Price History Modal
+   ═══════════════════════════════════════════════════════════ */
+
+function PriceHistoryModal({
+  shopId, nmId, productName, onClose,
+}: {
+  shopId: number; nmId: number; productName: string; onClose: () => void
+}) {
+  const [items, setItems] = useState<PriceHistoryItem[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    getPriceHistoryApi({ shop_id: shopId, nm_id: nmId })
+      .then((res) => { if (!cancelled) setItems(res.history) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [shopId, nmId])
+
+  // Close on Escape
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', h)
+    return () => document.removeEventListener('keydown', h)
+  }, [onClose])
+
+  const formatDate = (iso: string) => {
+    const d = new Date(iso)
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short', year: 'numeric' })
+      + ' ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+  }
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center" onClick={onClose}>
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      {/* Modal */}
+      <div
+        className="relative w-full max-w-md mx-4 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+        style={{ animation: 'historyPopIn 0.2s ease-out' }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-[hsl(var(--border)/0.3)]">
+          <div className="min-w-0 mr-3">
+            <h3 className="text-sm font-bold text-[hsl(var(--foreground))] flex items-center gap-2">
+              <History className="h-4 w-4 text-[hsl(var(--primary))]" />
+              История цен
+            </h3>
+            <p className="text-[11px] text-[hsl(var(--muted-foreground)/0.6)] mt-0.5 truncate">{productName}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 hover:bg-white/5 transition-colors text-[hsl(var(--muted-foreground)/0.5)] hover:text-[hsl(var(--foreground))]"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="px-5 py-3 max-h-[400px] overflow-y-auto">
+          {loading ? (
+            <div className="flex flex-col items-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-[hsl(var(--primary)/0.6)]" />
+              <p className="mt-2 text-xs text-[hsl(var(--muted-foreground)/0.5)]">Загрузка...</p>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="flex flex-col items-center py-8 text-[hsl(var(--muted-foreground)/0.4)]">
+              <History className="h-8 w-8 mb-2 opacity-30" />
+              <p className="text-sm">Нет данных об изменении цен</p>
+              <p className="text-xs mt-1">за последние 90 дней</p>
+            </div>
+          ) : (
+            <div className="space-y-0">
+              {items.map((item, idx) => (
+                <div
+                  key={item.id}
+                  className={cn(
+                    'flex items-center gap-3 py-2.5 group',
+                    idx < items.length - 1 && 'border-b border-[hsl(var(--border)/0.1)]',
+                  )}
+                >
+                  {/* Direction indicator */}
+                  <div className={cn(
+                    'flex items-center justify-center w-7 h-7 rounded-lg shrink-0',
+                    item.direction === 'up'
+                      ? 'bg-red-500/12 text-red-400'
+                      : item.direction === 'down'
+                        ? 'bg-emerald-500/12 text-emerald-400'
+                        : 'bg-gray-500/12 text-gray-400'
+                  )}>
+                    {item.direction === 'up'
+                      ? <ArrowUpRight className="h-4 w-4" />
+                      : <ArrowDownRight className="h-4 w-4" />}
+                  </div>
+
+                  {/* Price info */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)] tabular-nums">
+                        {item.old_price !== null ? fmtMoney(item.old_price) : '—'}
+                      </span>
+                      <span className="text-[hsl(var(--muted-foreground)/0.3)]">→</span>
+                      <span className={cn(
+                        'text-[14px] font-bold tabular-nums',
+                        item.direction === 'up' ? 'text-red-400' : 'text-emerald-400'
+                      )}>
+                        {item.new_price !== null ? fmtMoney(item.new_price) : '—'}
+                      </span>
+                      {item.change_pct !== null && (
+                        <span className={cn(
+                          'text-[10px] font-bold tabular-nums px-1 py-0.5 rounded',
+                          item.direction === 'up'
+                            ? 'bg-red-500/10 text-red-400'
+                            : 'bg-emerald-500/10 text-emerald-400'
+                        )}>
+                          {item.change_pct > 0 ? '+' : ''}{item.change_pct}%
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-[hsl(var(--muted-foreground)/0.4)] mt-0.5">
+                      {item.date ? formatDate(item.date) : '—'}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        {!loading && items.length > 0 && (
+          <div className="px-5 py-2.5 border-t border-[hsl(var(--border)/0.2)] text-[10px] text-[hsl(var(--muted-foreground)/0.4)] text-center">
+            Последние 90 дней · {items.length} изменени{items.length === 1 ? 'е' : items.length < 5 ? 'я' : 'й'}
+          </div>
+        )}
+      </div>
+
+      <style>{`
+        @keyframes historyPopIn {
+          from { opacity: 0; transform: translateY(8px) scale(0.96); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
+    </div>
   )
 }
 
@@ -352,6 +559,7 @@ export default function ProductsPricesPage() {
   const [searchInput, setSearchInput] = useState('')
   const [uploading, setUploading] = useState(false)
   const [hoverImg, setHoverImg] = useState<{ url: string; x: number; y: number } | null>(null)
+  const [priceHistory, setPriceHistory] = useState<{ nmId: number; name: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const sentinelRef = useRef<HTMLDivElement>(null)
   const loadingMoreRef = useRef(false)
@@ -359,7 +567,7 @@ export default function ProductsPricesPage() {
 
   // Detect if any row has WB Club active (to show/hide column)
   const hasClubActive = isWB && rows.some(r => r.club_price !== null && r.club_discount !== null && r.club_discount > 0)
-  // Detect if any row has ads
+  // Detect if any row has ads (show DRR column for both WB and Ozon)
   const hasAnyAds = rows.some(r => r.ad_spend_30d > 0)
 
   // ── Fetch data ──
@@ -377,9 +585,8 @@ export default function ProductsPricesPage() {
         setCostMissing(data.cost_missing_count)
         setHasMore(data.products.length < data.total)
       } else if (isOzon) {
-        const data = await getOzonProductsApi({
-          shop_id: shopId, search, sort: sort === 'price_after_discount' ? 'price' : sort,
-          order, page: 1, per_page: perPage,
+        const data = await getOzonPricesApi({
+          shop_id: shopId, search, sort, order, page: 1, per_page: perPage,
         })
         setRows(data.products.map(normalizeOzon))
         setTotal(data.total)
@@ -422,10 +629,8 @@ export default function ProductsPricesPage() {
         })
         setHasMore(data.products.length === perPage)
       } else if (isOzon) {
-        const data = await getOzonProductsApi({
-          shop_id: shopId, search,
-          sort: sort === 'price_after_discount' ? 'price' : sort,
-          order, page: nextPage, per_page: perPage,
+        const data = await getOzonPricesApi({
+          shop_id: shopId, search, sort, order, page: nextPage, per_page: perPage,
         })
         setRows(prev => {
           const existingIds = new Set(prev.map(p => p.id))
@@ -515,6 +720,13 @@ export default function ProductsPricesPage() {
     return ''
   }
 
+  // Get display ID for the row
+  const getDisplayId = (row: PriceRow): string | null => {
+    if (row.nm_id) return String(row.nm_id)
+    if (row.product_id) return String(row.product_id)
+    return null
+  }
+
   // ── Not a valid shop ──
   if (!currentShop || (!isWB && !isOzon)) {
     return (
@@ -527,7 +739,8 @@ export default function ProductsPricesPage() {
     )
   }
 
-  const colSpan = 8 + (hasClubActive ? 1 : 0) + (isOzon ? 2 : 0) + (hasAnyAds && isWB ? 2 : 0)
+  // Column count for colSpan (product + stocks + prices + cost + profit + optionals)
+  const colSpan = 11 + (hasClubActive ? 1 : 0) + (isOzon ? 2 : 0) + (hasAnyAds ? 1 : 0)
 
   return (
     <div className="space-y-4">
@@ -589,7 +802,7 @@ export default function ProductsPricesPage() {
           <Search className="h-3.5 w-3.5 text-[hsl(var(--muted-foreground)/0.5)]" />
           <input
             type="text"
-            placeholder="Артикул или название..."
+            placeholder="Артикул, ID или название..."
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className="bg-transparent py-2 text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground)/0.4)] focus:outline-none w-full"
@@ -605,12 +818,18 @@ export default function ProductsPricesPage() {
       {/* ── Table ────────────────────────────────────── */}
       <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
         <div className="overflow-auto max-h-[calc(100vh-220px)]">
-          <table className="w-full min-w-[860px]" style={{ borderCollapse: 'collapse', tableLayout: 'auto' }}>
+          <table className="w-full min-w-[960px]" style={{ borderCollapse: 'collapse', tableLayout: 'auto' }}>
             <thead className="sticky top-0 z-30 bg-[hsl(var(--card))]" style={{ boxShadow: '0 1px 0 hsl(var(--border))' }}>
               <tr className="bg-[hsl(var(--card))]">
-                <th className="pl-3 pr-1 py-2.5 text-left text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" style={{ width: '35%' }}>
+                <th className="pl-3 pr-2 py-2.5 text-left text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" style={{ minWidth: '300px' }}>
                   Товар
                 </th>
+
+                {/* ── Stocks (moved to beginning) ── */}
+                <th className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBO</th>
+                <th className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBS</th>
+
+                {/* ── Price columns ── */}
                 <SortTh
                   label="До скидки"
                   field="price"
@@ -618,18 +837,18 @@ export default function ProductsPricesPage() {
                   align="right"
                   info="Базовая цена до применения скидок"
                 />
-                <th className="px-1 py-2.5 text-center text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
+                <th className="px-2 py-2.5 text-center text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
                   Скидка
                 </th>
                 <SortTh
-                  label="Со скидкой"
-                  field="discounted_price"
+                  label="Ваша цена"
+                  field={isOzon ? "marketing_price" : "discounted_price"}
                   sort={sort} order={order} onSort={toggleSort}
                   align="right"
-                  info="Фактическая цена для покупателя"
+                  info="Текущая цена продажи после всех скидок"
                 />
                 {hasClubActive && (
-                  <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
+                  <th className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">
                     WB Клуб
                   </th>
                 )}
@@ -642,6 +861,8 @@ export default function ProductsPricesPage() {
                     info="Минимальная допустимая цена Ozon"
                   />
                 )}
+
+                {/* ── Cost ── */}
                 <SortTh
                   label="С/с"
                   field="cost_price"
@@ -649,25 +870,39 @@ export default function ProductsPricesPage() {
                   align="right"
                   info="Себестоимость + упаковка (редактируемая)"
                 />
-                {hasAnyAds && isWB && (
-                  <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" title="Доля рекламных расходов (30 дней)">
+
+                {/* ── DRR (universal — both WB and Ozon) ── */}
+                {hasAnyAds && (
+                  <th className="px-2 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" title="Доля рекламных расходов (30 дней)">
                     ДРР
                   </th>
                 )}
+
+                {/* ── Profit ── */}
                 <SortTh
                   label="Прибыль/шт"
                   field="profit_per_unit"
                   sort={sort} order={order} onSort={toggleSort}
                   align="right"
-                  info="Прибыль на единицу: без рекламы / с рекламой"
+                  info="Прибыль на единицу: с рекламой / без рекламы"
+                  className="min-w-[140px]"
                 />
-                <th className="px-1.5 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBO</th>
-                <th className="pl-1.5 pr-3 py-2.5 text-right text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]">FBS</th>
+
+                {/* ── Ozon Price Index ── */}
                 {isOzon && (
                   <th className="px-2 py-2.5 text-center text-[10px] uppercase tracking-wider font-semibold text-[hsl(var(--muted-foreground))]" title="Price Index Ozon">
                     PI
                   </th>
                 )}
+
+                {/* ── Last Sale Date ── */}
+                <SortTh
+                  label="Посл. продажа"
+                  field="last_sale_date"
+                  sort={sort} order={order} onSort={toggleSort}
+                  align="right"
+                  info="Дата последней продажи товара"
+                />
               </tr>
             </thead>
             <tbody>
@@ -703,7 +938,9 @@ export default function ProductsPricesPage() {
                   </td>
                 </tr>
               ) : (
-                rows.map((row) => (
+                rows.map((row) => {
+                  const displayId = getDisplayId(row)
+                  return (
                   <tr
                     key={row.id}
                     className={cn(
@@ -711,9 +948,10 @@ export default function ProductsPricesPage() {
                       row.is_bad_turnover && 'bg-amber-500/[0.03]',
                     )}
                   >
-                    {/* ── Товар (compact) ── */}
-                    <td className="pl-3 pr-1 py-1.5" style={{ maxWidth: '260px' }}>
-                      <div className="flex items-center gap-2">
+                    {/* ── Товар ── */}
+                    <td className="pl-3 pr-2 py-2" style={{ minWidth: '300px' }}>
+                      <div className="flex items-start gap-3">
+                        {/* Image — 3:4 aspect ratio */}
                         {getImageUrl(row) ? (
                           <div
                             className="relative shrink-0 cursor-pointer"
@@ -726,25 +964,43 @@ export default function ProductsPricesPage() {
                             <img
                               src={getImageUrl(row)}
                               alt=""
-                              className="h-10 w-10 rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
+                              className="w-[42px] h-14 rounded-lg object-cover bg-[hsl(var(--muted)/0.1)]"
                               loading="lazy"
                               onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden' }}
                             />
                           </div>
                         ) : (
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
+                          <div className="flex w-[42px] h-14 shrink-0 items-center justify-center rounded-lg bg-[hsl(var(--muted)/0.1)]">
                             <Package className="h-4 w-4 text-[hsl(var(--muted-foreground)/0.2)]" />
                           </div>
                         )}
-                        <div className="min-w-0">
-                          <p className="text-[12px] font-medium leading-tight line-clamp-2" title={row.name}>
+
+                        {/* Text info */}
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13px] font-medium leading-snug line-clamp-2" title={row.name}>
                             {row.name || row.vendor_code}
                           </p>
-                          <p className="text-[10px] text-[hsl(var(--foreground)/0.55)] font-mono">
-                            {row.vendor_code}
-                          </p>
+
+                          {/* Артикул + копирование */}
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <span className="text-[11px] text-[hsl(var(--foreground)/0.65)] font-mono truncate">
+                              {row.vendor_code}
+                            </span>
+                            <CopyBtn text={row.vendor_code} />
+                          </div>
+
+                          {/* ID товара + копирование */}
+                          {displayId && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-[10px] text-[hsl(var(--foreground)/0.45)] font-mono">
+                                ID: {displayId}
+                              </span>
+                              <CopyBtn text={displayId} />
+                            </div>
+                          )}
+
                           {row.is_bad_turnover && (
-                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-400">
+                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-400 mt-0.5">
                               <AlertTriangle className="h-2.5 w-2.5" />
                               Низкая оборач.
                             </span>
@@ -753,15 +1009,35 @@ export default function ProductsPricesPage() {
                       </div>
                     </td>
 
+                    {/* ── FBO ── */}
+                    <td className="px-2 py-2 text-right">
+                      <span className={cn(
+                        'text-[13px] font-semibold tabular-nums',
+                        row.stock_fbo === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground)/0.8)]'
+                      )}>
+                        {fmtNum(row.stock_fbo)}
+                      </span>
+                    </td>
+
+                    {/* ── FBS ── */}
+                    <td className="px-2 py-2 text-right">
+                      <span className={cn(
+                        'text-[13px] font-semibold tabular-nums',
+                        row.stock_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.3)]' : 'text-[hsl(var(--foreground)/0.8)]'
+                      )}>
+                        {fmtNum(row.stock_fbs)}
+                      </span>
+                    </td>
+
                     {/* ── Цена до скидки ── */}
-                    <td className="pl-1 pr-0.5 py-1.5 text-right whitespace-nowrap">
-                      <span className="text-[12px] text-[hsl(var(--muted-foreground)/0.6)] line-through decoration-[hsl(var(--muted-foreground)/0.35)]">
+                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                      <span className="text-[13px] text-[hsl(var(--muted-foreground)/0.6)] line-through decoration-[hsl(var(--muted-foreground)/0.35)]">
                         {fmtMoney(row.price_before_discount)}
                       </span>
                     </td>
 
                     {/* ── Скидка ── */}
-                    <td className="px-0.5 py-1.5 text-center">
+                    <td className="px-1 py-2 text-center">
                       {row.discount_pct > 0 ? (
                         <span className="inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-bold bg-red-500/12 text-red-400 border border-red-500/15">
                           −{row.discount_pct}%
@@ -771,16 +1047,30 @@ export default function ProductsPricesPage() {
                       )}
                     </td>
 
-                    {/* ── Цена со скидкой ── */}
-                    <td className="pl-0.5 pr-2 py-1.5 text-right whitespace-nowrap">
-                      <span className="text-[14px] font-bold text-[hsl(var(--foreground))]">
-                        {fmtMoney(row.price_after_discount)}
-                      </span>
+                    {/* ── Ваша цена + кнопка истории ── */}
+                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="text-[15px] font-bold text-[hsl(var(--foreground))]">
+                          {fmtMoney(row.price_after_discount)}
+                        </span>
+                        {/* Price history button — prominent, under Ваша цена */}
+                        <button
+                          onClick={() => {
+                            const nmId = row.nm_id || row.product_id
+                            if (nmId && shopId) setPriceHistory({ nmId, name: row.name })
+                          }}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-[hsl(var(--primary)/0.08)] text-[hsl(var(--primary)/0.7)] hover:bg-[hsl(var(--primary)/0.15)] hover:text-[hsl(var(--primary))] transition-all cursor-pointer border border-[hsl(var(--primary)/0.1)]"
+                          title="История изменения цен"
+                        >
+                          <History className="h-3 w-3" />
+                          История
+                        </button>
+                      </div>
                     </td>
 
                     {/* ── WB Club ── */}
                     {hasClubActive && (
-                      <td className="px-2 py-1.5 text-right">
+                      <td className="px-2 py-2 text-right">
                         {row.club_price && row.club_discount && row.club_discount > 0 ? (
                           <div className="flex flex-col items-end gap-0">
                             <span className="text-[13px] font-medium text-violet-400">
@@ -798,7 +1088,7 @@ export default function ProductsPricesPage() {
 
                     {/* ── Ozon min price ── */}
                     {isOzon && (
-                      <td className="px-2 py-1.5 text-right">
+                      <td className="px-2 py-2 text-right">
                         {row.min_price ? (
                           <span className="text-[13px] font-medium text-[hsl(var(--foreground)/0.7)]">
                             {fmtMoney(row.min_price)}
@@ -810,16 +1100,16 @@ export default function ProductsPricesPage() {
                     )}
 
                     {/* ── С/с ── */}
-                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                    <td className="px-2 py-2 text-right whitespace-nowrap">
                       <CostEditor
                         costPrice={row.cost_price}
                         onSave={(cost) => handleCostSave(row, cost)}
                       />
                     </td>
 
-                    {/* ── ДРР (30д) ── */}
-                    {hasAnyAds && isWB && (
-                      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                    {/* ── ДРР (30д) — universal for WB and Ozon ── */}
+                    {hasAnyAds && (
+                      <td className="px-2 py-2 text-right whitespace-nowrap">
                         {row.drr !== null ? (
                           <span className={cn(
                             'text-[14px] font-bold tabular-nums',
@@ -834,38 +1124,38 @@ export default function ProductsPricesPage() {
                     )}
 
                     {/* ── Прибыль/шт (с рекламой / без) ── */}
-                    <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                    <td className="pl-3 pr-4 py-2 text-right whitespace-nowrap" style={{ minWidth: '140px' }}>
                       {row.profit_per_unit !== null ? (
                         <div className="flex flex-col items-end gap-0.5">
                           {/* Прибыль с рекламой (основная) */}
                           {row.profit_with_ads !== null ? (
                             <>
-                              <div className="flex items-center gap-1">
-                                <Megaphone className="h-3 w-3 text-violet-400/70" />
+                              <div className="flex items-center gap-1.5">
+                                <Megaphone className="h-3.5 w-3.5 text-violet-400/70" />
                                 <span className={cn(
-                                  'text-[15px] font-bold tabular-nums',
+                                  'text-[16px] font-bold tabular-nums tracking-tight',
                                   row.profit_with_ads < 0 ? 'text-red-400' : row.profit_with_ads < 50 ? 'text-amber-400' : 'text-emerald-400'
                                 )}>
                                   {row.profit_with_ads > 0 ? '+' : ''}{fmtMoney(row.profit_with_ads)}
                                 </span>
                               </div>
-                              <span className="text-[13px] tabular-nums text-[hsl(var(--foreground)/0.6)]">
-                                б/р {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)} ₽
+                              <span className="text-[12px] tabular-nums text-[hsl(var(--foreground)/0.45)]">
+                                б/р {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)}
                               </span>
                             </>
                           ) : (
                             <>
                               <span className={cn(
-                                'text-[15px] font-bold tabular-nums',
+                                'text-[16px] font-bold tabular-nums tracking-tight',
                                 row.profit_per_unit < 0 ? 'text-red-400' : row.profit_per_unit < 50 ? 'text-amber-400' : 'text-emerald-400'
                               )}>
                                 {row.profit_per_unit > 0 ? '+' : ''}{fmtMoney(row.profit_per_unit)}
                               </span>
                               {row.profit_source === 'finance' && (
-                                <span className="text-[10px] text-[hsl(var(--foreground)/0.4)]">без рекл.</span>
+                                <span className="text-[10px] text-[hsl(var(--foreground)/0.35)]">без рекл.</span>
                               )}
                               {row.profit_source === 'estimated' && (
-                                <span className="text-[10px] text-[hsl(var(--foreground)/0.4)]">≈ оценка</span>
+                                <span className="text-[10px] text-[hsl(var(--foreground)/0.35)]">≈ оценка</span>
                               )}
                             </>
                           )}
@@ -873,26 +1163,6 @@ export default function ProductsPricesPage() {
                       ) : (
                         <span className="text-[hsl(var(--muted-foreground)/0.25)]">—</span>
                       )}
-                    </td>
-
-                    {/* ── FBO ── */}
-                    <td className="px-1.5 py-1.5 text-right">
-                      <span className={cn(
-                        'text-[13px] font-semibold tabular-nums',
-                        row.stock_fbo === 0 ? 'text-red-400' : 'text-[hsl(var(--foreground)/0.8)]'
-                      )}>
-                        {fmtNum(row.stock_fbo)}
-                      </span>
-                    </td>
-
-                    {/* ── FBS ── */}
-                    <td className="pl-1.5 pr-3 py-1.5 text-right">
-                      <span className={cn(
-                        'text-[13px] font-semibold tabular-nums',
-                        row.stock_fbs === 0 ? 'text-[hsl(var(--muted-foreground)/0.3)]' : 'text-[hsl(var(--foreground)/0.8)]'
-                      )}>
-                        {fmtNum(row.stock_fbs)}
-                      </span>
                     </td>
 
                     {/* ── Ozon Price Index ── */}
@@ -905,8 +1175,44 @@ export default function ProductsPricesPage() {
                         )}
                       </td>
                     )}
+
+                    {/* ── Посл. продажа ── */}
+                    <td className="px-2 py-2 text-right whitespace-nowrap">
+                      {row.last_sale_date ? (() => {
+                        const d = new Date(row.last_sale_date)
+                        const now = new Date()
+                        const diffMs = now.getTime() - d.getTime()
+                        const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+
+                        let label: string
+                        if (diffDays === 0) label = 'Сегодня'
+                        else if (diffDays === 1) label = 'Вчера'
+                        else if (diffDays < 7) label = `${diffDays} дн. назад`
+                        else label = d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })
+
+                        const isStale = diffDays >= 14
+                        return (
+                          <div className="flex flex-col items-end gap-0.5">
+                            <span className={cn(
+                              'text-[12px] font-medium tabular-nums',
+                              isStale ? 'text-red-400' : diffDays >= 7 ? 'text-amber-400' : 'text-[hsl(var(--foreground)/0.6)]'
+                            )}>
+                              {label}
+                            </span>
+                            {diffDays >= 7 && (
+                              <span className="text-[9px] text-[hsl(var(--muted-foreground)/0.4)]">
+                                {diffDays} дн.
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })() : (
+                        <span className="text-[hsl(var(--muted-foreground)/0.25)]">—</span>
+                      )}
+                    </td>
                   </tr>
-                ))
+                  )
+                })
               )}
             </tbody>
           </table>
@@ -930,10 +1236,20 @@ export default function ProductsPricesPage() {
           <img
             src={hoverImg.url}
             alt=""
-            className="h-[200px] w-[150px] rounded-lg object-cover"
+            className="h-[280px] w-[210px] rounded-lg object-cover"
             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
           />
         </div>
+      )}
+
+      {/* Price History Modal */}
+      {priceHistory && shopId && (
+        <PriceHistoryModal
+          shopId={shopId}
+          nmId={priceHistory.nmId}
+          productName={priceHistory.name}
+          onClose={() => setPriceHistory(null)}
+        />
       )}
     </div>
   )

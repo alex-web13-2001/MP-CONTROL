@@ -189,11 +189,12 @@ async def get_wb_prices(
     except Exception as e:
         logger.warning("CH stocks query failed: %s", e)
 
-    # ── 4. Profit per unit from fact_finances (30-day average, no ads) ──
+    # ── 4. Profit per unit from fact_finances (last 7 days of actual sales) ──
+    # Uses last 7 days instead of 30 to reflect recent pricing changes accurately
     profit_map: dict[int, float | None] = {}
     try:
         from datetime import date, timedelta
-        d30_start = date.today() - timedelta(days=29)
+        d7_start = date.today() - timedelta(days=6)
         finance_result = ch.query("""
             SELECT
                 toUInt64(external_id)  AS nm_id,
@@ -206,10 +207,10 @@ async def get_wb_prices(
             FROM mms_analytics.fact_finances FINAL
             WHERE shop_id = {shop_id:UInt32}
               AND marketplace = 1
-              AND event_date >= {d30_start:Date}
+              AND event_date >= {d7_start:Date}
             GROUP BY nm_id
             HAVING sumIf(quantity, operation_type = 'Продажа' AND quantity > 0) > 0
-        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
         for r in finance_result.result_rows:
             nm = int(r[0])
             avg_payout = float(r[1] or 0)
@@ -218,40 +219,59 @@ async def get_wb_prices(
     except Exception as e:
         logger.warning("CH fact_finances profit query failed: %s", e)
 
-    # ── 4b. Ad spend per product (30d) for DRR + profit with ads ──
+    # ── 4b. Ad spend per product (7d) for DRR + profit with ads ──
+    # Uses last 7 days to reflect current DRR after price changes
     ad_spend_map: dict[int, float] = {}
-    orders_revenue_map: dict[int, tuple[float, int]] = {}  # nm_id → (revenue_30d, orders_30d)
+    orders_revenue_map: dict[int, tuple[float, int]] = {}  # nm_id → (revenue_7d, orders_7d)
     try:
         from datetime import date, timedelta
-        d30_start = date.today() - timedelta(days=29)
+        d7_start = date.today() - timedelta(days=6)
         ad_result = ch.query("""
             SELECT
                 nm_id,
-                round(sum(spend), 2) AS ad_spend_30d
+                round(sum(spend), 2) AS ad_spend_7d
             FROM mms_analytics.fact_advert_stats_v3 FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND date >= {d30_start:Date}
+              AND date >= {d7_start:Date}
             GROUP BY nm_id
-        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
         for r in ad_result.result_rows:
             ad_spend_map[int(r[0])] = float(r[1])
 
-        # Revenue for 30d (for DRR calculation)
+        # Revenue for 7d (for DRR calculation)
         rev_result = ch.query("""
             SELECT
                 nm_id,
-                round(sum(price_with_disc), 2) AS revenue_30d,
-                count() AS orders_30d
+                round(sum(price_with_disc), 2) AS revenue_7d,
+                count() AS orders_7d
             FROM mms_analytics.fact_orders_raw FINAL
             WHERE shop_id = {shop_id:UInt32}
-              AND date >= {d30_start:Date}
+              AND date >= {d7_start:Date}
               AND is_cancel = 0
             GROUP BY nm_id
-        """, parameters={"shop_id": shop_id, "d30_start": d30_start})
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
         for r in rev_result.result_rows:
             orders_revenue_map[int(r[0])] = (float(r[1]), int(r[2]))
     except Exception as e:
         logger.warning("CH ad_spend/revenue query failed: %s", e)
+
+    # ── 4c. Last sale date per product ──
+    last_sale_map: dict[int, str] = {}  # nm_id → ISO date string
+    try:
+        from datetime import date, timedelta
+        last_sale_result = ch.query("""
+            SELECT
+                nm_id,
+                max(date) AS last_sale_date
+            FROM mms_analytics.fact_orders_raw FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND is_cancel = 0
+            GROUP BY nm_id
+        """, parameters={"shop_id": shop_id})
+        for r in last_sale_result.result_rows:
+            last_sale_map[int(r[0])] = str(r[1])
+    except Exception as e:
+        logger.warning("CH last_sale query failed: %s", e)
 
     ch.close()
 
@@ -284,15 +304,15 @@ async def get_wb_prices(
             profit_per_unit = round(discounted - unit_cost - estimated_fees, 2)
             profit_source = "estimated"
 
-        # Ad spend & DRR
-        ad_spend_30d = ad_spend_map.get(nm_id, 0)
+        # Ad spend & DRR (7d — reflects recent price changes)
+        ad_spend_7d = ad_spend_map.get(nm_id, 0)
         rev_data = orders_revenue_map.get(nm_id)
-        revenue_30d = rev_data[0] if rev_data else 0
-        orders_30d = rev_data[1] if rev_data else 0
-        drr = round(ad_spend_30d / revenue_30d * 100, 1) if revenue_30d > 0 and ad_spend_30d > 0 else None
+        revenue_7d = rev_data[0] if rev_data else 0
+        orders_7d = rev_data[1] if rev_data else 0
+        drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 and ad_spend_7d > 0 else None
 
         # Profit with ads = profit_per_unit - (ad_spend / orders)
-        ad_per_unit = round(ad_spend_30d / orders_30d, 2) if orders_30d > 0 and ad_spend_30d > 0 else 0
+        ad_per_unit = round(ad_spend_7d / orders_7d, 2) if orders_7d > 0 and ad_spend_7d > 0 else 0
         profit_with_ads = round(profit_per_unit - ad_per_unit, 2) if profit_per_unit is not None and ad_per_unit > 0 else None
 
         # WB Club: only include if club discount is actually active
@@ -319,13 +339,15 @@ async def get_wb_prices(
             # Profit (без рекламы)
             "profit_per_unit": profit_per_unit,
             "profit_source": profit_source,  # "finance" | "estimated" | null
-            # Ads
-            "ad_spend_30d": ad_spend_30d,
+            # Ads (7d window for up-to-date DRR)
+            "ad_spend_30d": ad_spend_7d,
             "drr": drr,
             "profit_with_ads": profit_with_ads,
             # Stocks
             "stock_fbo": stock_fbo,
             "stock_fbs": stock_fbs,
+            # Last sale
+            "last_sale_date": last_sale_map.get(nm_id),
         })
 
     # ── 5. Search ──
@@ -342,7 +364,7 @@ async def get_wb_prices(
     SORT_FIELDS = {
         "name", "price", "discounted_price", "discount",
         "club_discounted_price", "cost_price", "profit_per_unit",
-        "stock_fbo", "stock_fbs",
+        "stock_fbo", "stock_fbs", "last_sale_date",
     }
     sort_key = sort if sort in SORT_FIELDS else "name"
     reverse = (order == "desc")

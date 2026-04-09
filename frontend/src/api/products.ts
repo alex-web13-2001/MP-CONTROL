@@ -134,3 +134,85 @@ export async function downloadCostTemplate(shopId: number): Promise<void> {
   a.click()
   window.URL.revokeObjectURL(url)
 }
+
+// ── Ozon Prices (for Prices page) ────────────────────────
+
+export interface OzonPriceProduct {
+  product_id: number
+  offer_id: string
+  sku: number | null
+  name: string
+  image_url: string
+  // Price fields
+  price: number           // base seller price
+  old_price: number       // original/strike-through
+  marketing_price: number // real buyer price (after all discounts)
+  min_price: number
+  discount_pct: number    // calculated discount %
+  // Price index
+  price_index_color: string
+  price_index_value: number
+  competitor_min_price: number
+  // Cost
+  cost_price: number
+  packaging_cost: number
+  // Profit
+  profit_per_unit: number | null
+  profit_source: 'finance' | 'estimated' | null
+  profit_with_ads: number | null
+  // Ads
+  ad_spend_30d: number
+  drr: number | null
+  // Stocks
+  stock_fbo: number
+  stock_fbs: number
+  // Last sale
+  last_sale_date: string | null
+}
+
+export interface OzonPricesResponse {
+  products: OzonPriceProduct[]
+  total: number
+  page: number
+  per_page: number
+  cost_missing_count: number
+}
+
+export async function getOzonPricesApi(params: {
+  shop_id: number
+  search?: string
+  sort?: string
+  order?: string
+  page?: number
+  per_page?: number
+}): Promise<OzonPricesResponse> {
+  const { data } = await apiClient.get('/products/ozon/prices', { params })
+  return data
+}
+
+
+// ── Price History (for Prices page popup) ────────────────
+
+export interface PriceHistoryItem {
+  id: number
+  date: string
+  old_price: number | null
+  new_price: number | null
+  direction: 'up' | 'down' | null
+  change_pct: number | null
+  price_field: string
+}
+
+export interface PriceHistoryResponse {
+  shop_id: number
+  nm_id: number
+  history: PriceHistoryItem[]
+}
+
+export async function getPriceHistoryApi(params: {
+  shop_id: number
+  nm_id: number
+}): Promise<PriceHistoryResponse> {
+  const { data } = await apiClient.get('/events/price-history', { params })
+  return data
+}

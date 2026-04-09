@@ -767,6 +767,329 @@ async def get_ozon_products(
     }
 
 
+# ── Ozon Prices (for Prices page) ────────────────────────
+
+@router.get("/ozon/prices")
+async def get_ozon_prices(
+    shop_id: int = Query(...),
+    search: str = Query(""),
+    sort: str = Query("name"),
+    order: str = Query("asc"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=10, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Ozon product prices with profit calculations for the Prices page.
+    
+    Similar to WB /products/wb/prices, returns:
+    - Catalog data (prices, images, names)
+    - Stocks (FBO/FBS)
+    - Profit per unit (from fact_ozon_transactions, 30d average)
+    - Ad spend, DRR, profit_with_ads (from fact_ozon_ad_daily + fact_ozon_orders)
+    - Price index data
+    """
+    # Verify shop ownership
+    shop_result = await db.execute(
+        select(Shop).where(
+            Shop.id == shop_id,
+            Shop.user_id == current_user.id,
+            Shop.marketplace == "ozon",
+        )
+    )
+    shop = shop_result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ozon магазин не найден")
+
+    # ── 1. Catalog from PostgreSQL ──
+    pg_result = await db.execute(
+        text("""
+            SELECT p.product_id, p.offer_id, p.sku, p.name,
+                   COALESCE(NULLIF(p.primary_image_url, ''), p.main_image_url, '') AS image_url,
+                   p.price, p.old_price, p.min_price, p.marketing_price,
+                   p.stocks_fbo, p.stocks_fbs,
+                   p.price_index_color, p.price_index_value, p.competitor_min_price,
+                   p.is_archived,
+                   COALESCE(cost.cost_price, 0) AS cost_price,
+                   COALESCE(cost.packaging_cost, 0) AS packaging_cost
+            FROM dim_ozon_products p
+            LEFT JOIN product_costs cost
+                ON cost.shop_id = p.shop_id AND cost.offer_id = p.offer_id
+            WHERE p.shop_id = :shop_id
+              AND NOT COALESCE(p.is_archived, false)
+            ORDER BY p.name
+        """),
+        {"shop_id": shop_id},
+    )
+    rows = pg_result.fetchall()
+
+    if not rows:
+        return {
+            "products": [],
+            "total": 0,
+            "page": page,
+            "per_page": per_page,
+            "cost_missing_count": 0,
+        }
+
+    # Build products list + lookup maps
+    products_map = {}
+    sku_to_offer = {}
+    for r in rows:
+        oid = r[1]  # offer_id
+        sku = r[2]
+        products_map[oid] = {
+            "product_id": r[0],
+            "offer_id": oid,
+            "sku": sku,
+            "name": r[3] or oid,
+            "image_url": r[4] or "",
+            # Ozon price fields:
+            # price = base seller price (before marketplace discounts)
+            # old_price = "strike-through" price (highest/original)
+            # marketing_price = real buyer-facing price (after all discounts)
+            # min_price = minimum allowed price
+            "price": float(r[5] or 0),        # base seller price
+            "old_price": float(r[6] or 0),     # original/old price
+            "min_price": float(r[7] or 0),     # minimum allowed
+            "marketing_price": float(r[8] or 0),  # real buyer price
+            "stocks_fbo": r[9] or 0,
+            "stocks_fbs": r[10] or 0,
+            "price_index_color": r[11] or "",
+            "price_index_value": float(r[12] or 0),
+            "competitor_min_price": float(r[13] or 0),
+            "cost_price": float(r[15] or 0),
+            "packaging_cost": float(r[16] or 0),
+            # Will be filled from CH
+            "profit_per_unit": None,
+            "profit_source": None,
+            "profit_with_ads": None,
+            "ad_spend_30d": 0,
+            "drr": None,
+        }
+        if sku:
+            sku_to_offer[sku] = oid
+
+    # ── 2. Profit per unit from fact_ozon_transactions (7d) ──
+    # Uses last 7 days instead of 30 to reflect recent pricing changes accurately
+    from app.core.clickhouse import get_clickhouse_client
+    try:
+        ch = get_clickhouse_client()
+    except Exception as e:
+        logger.error("ClickHouse connection error: %s", e)
+        raise HTTPException(status_code=500, detail="Analytics unavailable")
+
+    profit_map: dict = {}
+    try:
+        d7_start = date.today() - timedelta(days=6)
+        txn_result = ch.query("""
+            SELECT sku,
+                   sum(accruals_for_sale) / nullIf(
+                       sumIf(1, category = 'Revenue' AND accruals_for_sale > 0), 0
+                   ) AS avg_revenue_per_unit,
+                   sum(abs(sale_commission)) / nullIf(
+                       sumIf(1, category = 'Revenue' AND accruals_for_sale > 0), 0
+                   ) AS avg_commission_per_unit,
+                   sum(abs(services_total)) / nullIf(
+                       sumIf(1, category = 'Revenue' AND accruals_for_sale > 0), 0
+                   ) AS avg_logistics_per_unit,
+                   sumIf(1, category = 'Revenue' AND accruals_for_sale > 0) AS sales_count
+            FROM mms_analytics.fact_ozon_transactions FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND category = 'Revenue'
+              AND sku > 0
+              AND toDate(operation_date) >= {d7_start:Date}
+            GROUP BY sku
+            HAVING sumIf(1, category = 'Revenue' AND accruals_for_sale > 0) > 0
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
+        for r in txn_result.result_rows:
+            oid = sku_to_offer.get(r[0])
+            if oid:
+                profit_map[oid] = {
+                    "avg_revenue": float(r[1] or 0),
+                    "avg_commission": float(r[2] or 0),
+                    "avg_logistics": float(r[3] or 0),
+                    "sales_count": int(r[4] or 0),
+                }
+    except Exception as e:
+        logger.warning("CH profit query failed: %s", e)
+
+    # ── 3. Ad spend per SKU (7d) + orders/revenue for DRR ──
+    # Uses last 7 days to reflect current DRR after price changes
+    ad_spend_map: dict[int, float] = {}
+    orders_revenue_map: dict[int, tuple] = {}  # offer_id → (revenue, orders)
+    try:
+        d7_start = date.today() - timedelta(days=6)
+        ad_result = ch.query("""
+            SELECT sku,
+                   round(sum(money_spent), 2) AS ad_spend_7d
+            FROM mms_analytics.fact_ozon_ad_daily FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND dt >= {d7_start:Date}
+            GROUP BY sku
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
+        for r in ad_result.result_rows:
+            ad_spend_map[r[0]] = float(r[1])
+
+        # Revenue for DRR (7d)
+        rev_result = ch.query("""
+            SELECT offer_id,
+                   round(sum(price * quantity), 2) AS revenue_7d,
+                   sum(quantity) AS orders_7d
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND order_date >= {d7_start:Date}
+              AND status NOT IN ('cancelled', 'canceled')
+            GROUP BY offer_id
+        """, parameters={"shop_id": shop_id, "d7_start": d7_start})
+        for r in rev_result.result_rows:
+            if r[0] in products_map:
+                orders_revenue_map[r[0]] = (float(r[1]), int(r[2]))
+    except Exception as e:
+        logger.warning("CH ad_spend/revenue query failed: %s", e)
+
+    # ── 3b. Last sale date per product ──
+    last_sale_map: dict[str, str] = {}  # offer_id → ISO date string
+    try:
+        last_sale_result = ch.query("""
+            SELECT
+                offer_id,
+                max(order_date) AS last_sale_date
+            FROM mms_analytics.fact_ozon_orders FINAL
+            WHERE shop_id = {shop_id:UInt32}
+              AND status NOT IN ('cancelled', 'canceled')
+            GROUP BY offer_id
+        """, parameters={"shop_id": shop_id})
+        for r in last_sale_result.result_rows:
+            last_sale_map[r[0]] = str(r[1])
+    except Exception as e:
+        logger.warning("CH last_sale query failed: %s", e)
+
+    ch.close()
+
+    # ── 4. Calculate profit & merge ──
+    products = []
+    for oid, p in products_map.items():
+        cost = p["cost_price"] + p["packaging_cost"]
+        marketing_price = p["marketing_price"]
+        base_price = p["price"]
+
+        # Profit per unit (without ads):
+        # Option 1: from transactions (accurate)
+        # Option 2: fallback — estimated fees ~30% of marketing_price
+        profit_per_unit = None
+        profit_source = None
+
+        if cost > 0 and oid in profit_map:
+            pm = profit_map[oid]
+            # avg_revenue - avg_commission - avg_logistics - cost
+            profit_per_unit = round(pm["avg_revenue"] - pm["avg_commission"] - pm["avg_logistics"] - cost, 2)
+            profit_source = "finance"
+        elif cost > 0 and marketing_price > 0:
+            estimated_fees = round(marketing_price * 0.30, 2)
+            profit_per_unit = round(marketing_price - cost - estimated_fees, 2)
+            profit_source = "estimated"
+
+        # Ad spend & DRR (7d — reflects recent price changes)
+        sku = p.get("sku")
+        ad_spend_7d = ad_spend_map.get(sku, 0) if sku else 0
+        rev_data = orders_revenue_map.get(oid)
+        revenue_7d = rev_data[0] if rev_data else 0
+        orders_7d = rev_data[1] if rev_data else 0
+        drr = round(ad_spend_7d / revenue_7d * 100, 1) if revenue_7d > 0 and ad_spend_7d > 0 else None
+
+        # Profit with ads = profit_per_unit - (ad_spend / orders)
+        ad_per_unit = round(ad_spend_7d / orders_7d, 2) if orders_7d > 0 and ad_spend_7d > 0 else 0
+        profit_with_ads = round(profit_per_unit - ad_per_unit, 2) if profit_per_unit is not None and ad_per_unit > 0 else None
+
+        # Discount calculation:
+        # marketing_price = real buyer price (after all discounts)
+        # price = base seller price
+        # old_price = original "crossed-out" price
+        discount_base = p["old_price"] if p["old_price"] > 0 else base_price
+        buyer_price = marketing_price if marketing_price > 0 else base_price
+        discount_pct = round((1 - buyer_price / discount_base) * 100) if discount_base > 0 and buyer_price < discount_base else 0
+
+        products.append({
+            "product_id": p["product_id"],
+            "offer_id": oid,
+            "sku": p["sku"],
+            "name": p["name"],
+            "image_url": p["image_url"],
+            # Price fields — correctly mapped for UI
+            "price": base_price,               # base seller price
+            "old_price": p["old_price"],         # original/strike-through
+            "marketing_price": marketing_price,  # real buyer price
+            "min_price": p["min_price"],
+            "discount_pct": discount_pct,
+            # Price index
+            "price_index_color": p["price_index_color"],
+            "price_index_value": p["price_index_value"],
+            "competitor_min_price": p["competitor_min_price"],
+            # Cost
+            "cost_price": p["cost_price"],
+            "packaging_cost": p["packaging_cost"],
+            # Profit
+            "profit_per_unit": profit_per_unit,
+            "profit_source": profit_source,
+            "profit_with_ads": profit_with_ads,
+            # Ads (7d window for up-to-date DRR)
+            "ad_spend_30d": ad_spend_7d,
+            "drr": drr,
+            # Stocks
+            "stock_fbo": p["stocks_fbo"],
+            "stock_fbs": p["stocks_fbs"],
+            # Last sale
+            "last_sale_date": last_sale_map.get(oid),
+        })
+
+    # ── 5. Search ──
+    if search:
+        s = search.lower()
+        products = [
+            p for p in products
+            if s in p["name"].lower()
+            or s in p["offer_id"].lower()
+            or s in str(p.get("sku") or "")
+        ]
+
+    # ── 6. Sort ──
+    SORT_FIELDS = {
+        "name", "price", "marketing_price", "old_price",
+        "cost_price", "profit_per_unit",
+        "stock_fbo", "stock_fbs", "last_sale_date",
+    }
+    sort_key = sort if sort in SORT_FIELDS else "name"
+    reverse = (order == "desc")
+
+    def sort_val(p):
+        v = p.get(sort_key)
+        if v is None:
+            return float("-inf") if reverse else float("inf")
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    products.sort(key=sort_val, reverse=reverse)
+
+    # ── 7. Totals ──
+    cost_missing = sum(1 for p in products if p["cost_price"] == 0)
+
+    # ── 8. Paginate ──
+    total = len(products)
+    offset = (page - 1) * per_page
+    page_products = products[offset: offset + per_page]
+
+    return {
+        "products": page_products,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "cost_missing_count": cost_missing,
+    }
+
+
 # ── Update Cost Price ─────────────────────────────────────
 
 @router.patch("/ozon/cost")
