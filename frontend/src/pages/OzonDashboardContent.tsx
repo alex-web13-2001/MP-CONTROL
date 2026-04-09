@@ -1,3 +1,15 @@
+/**
+ * OzonDashboardContent.tsx
+ *
+ * Full Ozon analytics dashboard using the unified V2 response format.
+ * Mirrors WbDashboardContent but with Ozon-specific labels.
+ *
+ * The backend now returns WbDashboardResponse-compatible JSON for Ozon,
+ * so we reuse the same UI patterns but adjust terminology:
+ *   - "Комиссия WB" → "Комиссия Ozon"
+ *   - "Логистика" → "Сервисы Ozon"
+ *   - WB CDN images → Ozon image URLs (from dim_ozon_products)
+ */
 import { useState, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import {
@@ -50,7 +62,7 @@ function DeltaBadge({ value, invert }: { value: number; invert?: boolean }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Metric Card — individual KPI card
+   Metric Card
    ═══════════════════════════════════════════════════════════ */
 
 function MetricCard({ label, value, delta, invert, icon: Icon, color, sub }: {
@@ -81,9 +93,6 @@ function MetricCard({ label, value, delta, invert, icon: Icon, color, sub }: {
     </Card>
   )
 }
-/* ═══════════════════════════════════════════════════════════
-   KPI Section — Продажи & Реклама (v3 compact)
-   ═══════════════════════════════════════════════════════════ */
 
 /* п.п. delta — inline */
 function PPDelta({ value, invert, className = '' }: { value: number; invert?: boolean; className?: string }) {
@@ -98,13 +107,17 @@ function PPDelta({ value, invert, className = '' }: { value: number; invert?: bo
   )
 }
 
-function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
+/* ═══════════════════════════════════════════════════════════
+   KPI Section — Продажи & Реклама (Ozon labels)
+   ═══════════════════════════════════════════════════════════ */
+
+function OzonKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
   if (!kpi?.sales || !kpi?.advertising || !kpi?.funnel) return null
   const { sales: s, advertising: a, funnel: f } = kpi
 
   return (
     <div className="space-y-5">
-      {/* ── Продажи: Выручка → Заказы → Отмены → Прибыль ── */}
+      {/* ── Продажи ── */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
         <h2 className="text-lg font-bold tracking-tight text-[hsl(var(--foreground))] mb-3 flex items-center gap-2">
           💰 Продажи
@@ -123,13 +136,12 @@ function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
         </div>
       </motion.div>
 
-      {/* ── Реклама — единый компактный блок ── */}
+      {/* ── Реклама ── */}
       <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08, duration: 0.35 }}>
         <h2 className="text-lg font-bold tracking-tight text-[hsl(var(--foreground))] mb-3 flex items-center gap-2">
           📢 Реклама
         </h2>
 
-        {/* Расход → ДРР общий → ДРР рекл. */}
         <div className="grid grid-cols-3 gap-3 mb-3">
           <MetricCard label="Расход" value={fmt(a.ad_spend)} delta={a.ad_spend_delta}
             icon={Banknote} color="#f97316" invert />
@@ -141,13 +153,12 @@ function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
             sub={`${a.drr_ad_delta > 0 ? '+' : ''}${a.drr_ad_delta.toFixed(1)} п.п.`} />
         </div>
 
-        {/* Воронка — 4 компактные карточки */}
+        {/* Воронка */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {/* Показы */}
           <MetricCard label="Показы" value={fmtN(f.views)} delta={f.views_delta}
             icon={Eye} color="#3b82f6" />
 
-          {/* Клики + CTR inline */}
+          {/* Клики + CTR */}
           <Card className="relative overflow-hidden transition-all duration-200 hover:shadow-md">
             <div className="absolute top-0 inset-x-0 h-[2px] opacity-60" style={{ background: 'linear-gradient(90deg, #06b6d4, transparent)' }} />
             <CardContent className="p-3.5">
@@ -169,7 +180,7 @@ function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
             </CardContent>
           </Card>
 
-          {/* Корзины + клик→корзина inline */}
+          {/* Корзины */}
           <Card className="relative overflow-hidden transition-all duration-200 hover:shadow-md">
             <div className="absolute top-0 inset-x-0 h-[2px] opacity-60" style={{ background: 'linear-gradient(90deg, #8b5cf6, transparent)' }} />
             <CardContent className="p-3.5">
@@ -191,7 +202,7 @@ function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
             </CardContent>
           </Card>
 
-          {/* Заказы + конверсии inline */}
+          {/* Заказы */}
           <Card className="relative overflow-hidden transition-all duration-200 hover:shadow-md">
             <div className="absolute top-0 inset-x-0 h-[2px] opacity-60" style={{ background: 'linear-gradient(90deg, #10b981, transparent)' }} />
             <CardContent className="p-3.5">
@@ -224,7 +235,7 @@ function WbKpiSection({ kpi }: { kpi: WbDashboardResponse['kpi'] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Unified Chart
+   Unified Chart (identical to WB)
    ═══════════════════════════════════════════════════════════ */
 
 const CHART_METRICS = [
@@ -240,7 +251,7 @@ const CHART_METRICS = [
 type ChartKey = typeof CHART_METRICS[number]['key']
 const CHART_LABELS: Record<string,string> = Object.fromEntries(CHART_METRICS.map(m => [m.key, m.label]))
 
-function WbUnifiedChart({ data }: { data: WbChartPoint[] }) {
+function OzonUnifiedChart({ data }: { data: WbChartPoint[] }) {
   const [active, setActive] = useState<Set<ChartKey>>(new Set<ChartKey>(['revenue', 'ad_spend']))
   const toggle = (k: ChartKey) => setActive(p => { const n = new Set(p); n.has(k) ? (n.size > 1 && n.delete(k)) : n.add(k); return n })
 
@@ -268,8 +279,8 @@ function WbUnifiedChart({ data }: { data: WbChartPoint[] }) {
       <ResponsiveContainer width="100%" height={340}>
         <ComposedChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
           <defs>
-            <linearGradient id="wbRevGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#10b981" stopOpacity={0.3} /><stop offset="100%" stopColor="#10b981" stopOpacity={0.03} /></linearGradient>
-            <linearGradient id="wbSpendGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f97316" stopOpacity={0.3} /><stop offset="100%" stopColor="#f97316" stopOpacity={0.03} /></linearGradient>
+            <linearGradient id="ozRevGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#10b981" stopOpacity={0.3} /><stop offset="100%" stopColor="#10b981" stopOpacity={0.03} /></linearGradient>
+            <linearGradient id="ozSpendGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#f97316" stopOpacity={0.3} /><stop offset="100%" stopColor="#f97316" stopOpacity={0.03} /></linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" opacity={0.4} />
           <XAxis dataKey="date" tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} tickFormatter={fmtChartDate} interval={0} angle={-45} textAnchor="end" height={50} axisLine={false} tickLine={false} />
@@ -281,8 +292,8 @@ function WbUnifiedChart({ data }: { data: WbChartPoint[] }) {
             labelFormatter={fmtTooltipDate} />
           <Legend verticalAlign="top" height={30} formatter={(v: string) => CHART_LABELS[v] || v} wrapperStyle={{ fontSize: '12px', color: 'hsl(var(--muted-foreground))' }} />
 
-          {active.has('revenue') && <Area yAxisId="left" type="monotone" dataKey="revenue" fill="url(#wbRevGrad)" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#10b981' }} />}
-          {active.has('ad_spend') && <Area yAxisId="left" type="monotone" dataKey="ad_spend" fill="url(#wbSpendGrad)" stroke="#f97316" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#f97316' }} />}
+          {active.has('revenue') && <Area yAxisId="left" type="monotone" dataKey="revenue" fill="url(#ozRevGrad)" stroke="#10b981" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#10b981' }} />}
+          {active.has('ad_spend') && <Area yAxisId="left" type="monotone" dataKey="ad_spend" fill="url(#ozSpendGrad)" stroke="#f97316" strokeWidth={2} dot={false} activeDot={{ r: 4, fill: '#f97316' }} />}
           {active.has('orders') && <Bar yAxisId="right" dataKey="orders" fill="#6366f180" radius={[3,3,0,0]} barSize={14} />}
           {active.has('views') && <Line yAxisId="right" type="monotone" dataKey="views" stroke="#3b82f6" strokeWidth={2} dot={false} />}
           {active.has('clicks') && <Line yAxisId="right" type="monotone" dataKey="clicks" stroke="#06b6d4" strokeWidth={2} dot={false} />}
@@ -296,7 +307,7 @@ function WbUnifiedChart({ data }: { data: WbChartPoint[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Alerts Panel — 5 tabs ("Важное")
+   Alerts Panel — 5 tabs
    ═══════════════════════════════════════════════════════════ */
 
 type AlertTab = 'warehouses' | 'sales' | 'storage' | 'advertising' | 'finances'
@@ -309,7 +320,6 @@ const ALERT_TABS: { key: AlertTab; label: string; icon: React.ElementType; color
   { key: 'finances', label: 'Финансы', icon: Banknote, color: '#ec4899' },
 ]
 
-/* Copy-to-clipboard helper */
 function CopyBtn({ text }: { text: string | number }) {
   const [copied, setCopied] = useState(false)
   const copy = useCallback(() => {
@@ -325,7 +335,6 @@ function CopyBtn({ text }: { text: string | number }) {
   )
 }
 
-/* Unified product row for all alert tabs */
 function AlertProductRow({ imageUrl, name, vendorCode, nmId, children }: {
   imageUrl?: string
   name: string
@@ -336,7 +345,6 @@ function AlertProductRow({ imageUrl, name, vendorCode, nmId, children }: {
   const [imgErr, setImgErr] = useState(false)
   return (
     <div className="flex items-center gap-3 rounded-lg border border-[hsl(var(--border)/0.5)] p-3 hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
-      {/* Image */}
       <div className="h-12 w-10 rounded-md overflow-hidden shrink-0 bg-[hsl(var(--muted)/0.3)] flex items-center justify-center">
         {imageUrl && !imgErr ? (
           <img src={imageUrl} className="h-full w-full object-cover" onError={() => setImgErr(true)} />
@@ -344,7 +352,6 @@ function AlertProductRow({ imageUrl, name, vendorCode, nmId, children }: {
           <Package className="h-5 w-5 text-[hsl(var(--muted-foreground)/0.3)]" />
         )}
       </div>
-      {/* Info */}
       <div className="min-w-0 flex-1">
         <p className="text-sm font-medium truncate leading-tight">{name}</p>
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
@@ -352,7 +359,6 @@ function AlertProductRow({ imageUrl, name, vendorCode, nmId, children }: {
           {nmId && nmId > 0 && <CopyBtn text={nmId} />}
         </div>
       </div>
-      {/* Right side — tab-specific metric */}
       <div className="shrink-0 flex flex-col items-end gap-0.5">
         {children}
       </div>
@@ -360,7 +366,7 @@ function AlertProductRow({ imageUrl, name, vendorCode, nmId, children }: {
   )
 }
 
-function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
+function OzonAlertsPanel({ alerts }: { alerts: WbAlerts }) {
   const [tab, setTab] = useState<AlertTab>('warehouses')
 
   if (!alerts) return null
@@ -391,7 +397,6 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
           ))}
         </div>
 
-        {/* Tab content — fixed height + scroll */}
         <div className="max-h-[420px] overflow-y-auto pr-1 space-y-2">
           {tab === 'warehouses' && (<>
             {alerts.warehouses.items.length === 0 ? <p className="text-sm text-center py-4 text-[hsl(var(--muted-foreground)/0.5)]">Нет проблем со складами</p> : alerts.warehouses.items.map((a, i) => (
@@ -425,7 +430,7 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
               {alerts.storage.items.map((a, i) => (
                 <AlertProductRow key={i} imageUrl={a.image_url} name={a.name} vendorCode={a.vendor_code} nmId={a.nm_id}>
                   <span className="font-bold text-sm text-red-400">{fmt(a.cost_7d)}</span>
-                  <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{a.warehouse} · {a.volume_liters} л</span>
+                  <span className="text-[11px] text-[hsl(var(--muted-foreground)/0.5)]">{a.volume_liters} л</span>
                 </AlertProductRow>
               ))}
             </>}
@@ -463,7 +468,7 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
               const icon = iconMap[a.problem] || <AlertTriangle className="h-5 w-5" />
               const badgeColor = colorMap[a.problem] || 'bg-gray-500/15 text-gray-400'
               const badgeLabel = labelMap[a.problem] || a.problem
-              // Status badge
+
               const statusEl = a.status === 'no_budget'
                 ? <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-red-500/15 text-red-400"><BatteryWarning className="h-2.5 w-2.5" />0₽</span>
                 : a.status === 'paused'
@@ -471,7 +476,7 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
                 : a.status === 'active'
                 ? <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium bg-emerald-500/15 text-emerald-400"><Play className="h-2.5 w-2.5" />Акт</span>
                 : null
-              // Key metric — the main value to highlight LARGE
+
               const keyMetric = a.problem === 'high_drr' && a.drr != null
                 ? <span className="text-base font-bold text-orange-400">ДРР {a.drr}%</span>
                 : a.problem === 'budget_depleted'
@@ -485,6 +490,7 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
                 : a.problem === 'clicks_no_orders' && a.clicks
                 ? <span className="text-base font-bold text-purple-400">{a.clicks} кликов</span>
                 : null
+
               return (
                 <div key={i} className="flex items-start gap-3 rounded-lg border border-[hsl(var(--border)/0.5)] p-3 hover:bg-[hsl(var(--muted)/0.15)] transition-colors">
                   <div className={`flex items-center justify-center h-10 w-10 rounded-lg shrink-0 mt-0.5 ${badgeColor.split(' ')[0]}`}>
@@ -495,11 +501,8 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
                       <p className="text-sm font-medium truncate max-w-[220px]">{a.name || `Кампания #${a.advert_id}`}</p>
                       {statusEl}
                     </div>
-                    {/* Key metric — LARGE and visible */}
                     {keyMetric && <div className="mt-1">{keyMetric}</div>}
-                    {/* Context line */}
                     <p className="text-xs text-[hsl(var(--muted-foreground)/0.6)] mt-0.5">{a.reason || ''}</p>
-                    {/* Secondary metrics */}
                     <div className="flex items-center gap-3 mt-1 text-xs text-[hsl(var(--muted-foreground)/0.5)]">
                       {a.spend != null && a.spend > 0 && <span>Расход: <b className="text-[hsl(var(--foreground)/0.8)]">{fmt(a.spend)}</b></span>}
                       {a.revenue != null && a.revenue > 0 && <span>Выручка: <b className="text-emerald-400/80">{fmt(a.revenue)}</b></span>}
@@ -529,39 +532,33 @@ function WbAlertsPanel({ alerts }: { alerts: WbAlerts }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Finance Summary — full P&L breakdown (Mon-Sun week)
+   Finance Summary — Ozon P&L (labels differ from WB)
    ═══════════════════════════════════════════════════════════ */
 
-/** Format ISO date → "6 апреля" */
 function fmtHumanDate(d: string) {
   const p = d.split('-')
   if (p.length >= 3) return `${+p[2]} ${MONTHS_FULL[+p[1] - 1] || p[1]}`
   return d
 }
 
-/** Percentage delta between current and previous */
 function pctDelta(cur: number, prev: number): number {
   if (!prev || prev === 0) return cur > 0 ? 100 : 0
   return ((cur - prev) / Math.abs(prev)) * 100
 }
 
-function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
+function OzonFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
   const expenseRows: {
     label: string; value: number; prev: number; icon: React.ElementType; color: string; invert?: boolean
   }[] = [
-    { label: 'Комиссия WB', value: data.commission, prev: data.commission_prev, icon: Receipt, color: '#f97316', invert: true },
-    { label: 'Логистика', value: data.logistics, prev: data.logistics_prev, icon: Truck, color: '#3b82f6', invert: true },
+    // Ozon-specific labels
+    { label: 'Комиссия Ozon', value: data.commission, prev: data.commission_prev, icon: Receipt, color: '#f97316', invert: true },
+    { label: 'Сервисы Ozon', value: data.logistics, prev: data.logistics_prev, icon: Truck, color: '#3b82f6', invert: true },
     { label: 'Хранение', value: data.storage, prev: data.storage_prev, icon: Archive, color: '#8b5cf6', invert: true },
     { label: 'Реклама', value: data.ad_spend, prev: data.ad_spend_prev, icon: Megaphone, color: '#ec4899', invert: true },
-    { label: 'Удержания', value: data.deductions, prev: data.deductions_prev, icon: AlertTriangle, color: '#ef4444', invert: true },
   ]
 
-  // Only show non-zero optional rows
-  if (data.acceptance > 0 || data.acceptance_prev > 0) {
-    expenseRows.push({ label: 'Приёмка', value: data.acceptance, prev: data.acceptance_prev, icon: Truck, color: '#06b6d4', invert: true })
-  }
-  if (data.penalties > 0 || data.penalties_prev > 0) {
-    expenseRows.push({ label: 'Штрафы', value: data.penalties, prev: data.penalties_prev, icon: AlertTriangle, color: '#dc2626', invert: true })
+  if (data.returns > 0 || data.returns_prev > 0) {
+    expenseRows.push({ label: 'Возвраты', value: data.returns, prev: data.returns_prev, icon: ShoppingCart, color: '#ef4444', invert: true })
   }
 
   const totalExpenses = expenseRows.reduce((s, r) => s + r.value, 0)
@@ -580,7 +577,7 @@ function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-1">
-        {/* Revenue row — highlighted */}
+        {/* Revenue */}
         <div className="flex items-center justify-between py-2.5 px-3 rounded-lg bg-emerald-500/5">
           <div className="flex items-center gap-2.5">
             <Banknote className="h-4.5 w-4.5 text-emerald-400" />
@@ -592,21 +589,6 @@ function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
           </div>
         </div>
 
-        {/* Returns row — if non-zero */}
-        {(data.returns > 0 || data.returns_prev > 0) && (
-          <div className="flex items-center justify-between py-2 px-3">
-            <div className="flex items-center gap-2.5">
-              <ShoppingCart className="h-4 w-4 text-orange-400" />
-              <span className="text-sm text-[hsl(var(--muted-foreground))]">Возвраты</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="text-sm font-semibold text-orange-400">{fmt(data.returns)}</span>
-              <DeltaBadge value={pctDelta(data.returns, data.returns_prev)} invert />
-            </div>
-          </div>
-        )}
-
-        {/* Divider */}
         <div className="border-t border-[hsl(var(--border)/0.4)] my-1" />
 
         {/* Expense rows */}
@@ -635,7 +617,7 @@ function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
           </div>
         </div>
 
-        {/* Profit — prominent */}
+        {/* Profit */}
         <div className="flex items-center justify-between pt-3 pb-1 px-3 border-t-2 border-[hsl(var(--border))]">
           <div className="flex items-center gap-2">
             <TrendingUp className="h-5 w-5" style={{ color: data.profit >= 0 ? '#10b981' : '#ef4444' }} />
@@ -662,18 +644,15 @@ function WbFinanceSummaryCard({ data }: { data: WbFinanceSummary }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Orders Feed — fixed height, 3:4 images
+   Orders Feed
    ═══════════════════════════════════════════════════════════ */
 
-function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
+function OzonOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
   if (!items?.length) return null
 
-  /** Format date: "2026-04-08" → "8 апреля" */
   const fmtOrderDate = (d: string) => {
     const p = d.split('-')
-    if (p.length >= 3) {
-      return `${+p[2]} ${MONTHS_FULL[+p[1] - 1] || p[1]}`
-    }
+    if (p.length >= 3) return `${+p[2]} ${MONTHS_FULL[+p[1] - 1] || p[1]}`
     return d
   }
 
@@ -741,38 +720,38 @@ function WbOrdersFeed({ items }: { items: WbOrderFeedItem[] }) {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   Main WB Dashboard Content
+   Main Ozon Dashboard Content
    ═══════════════════════════════════════════════════════════ */
 
-export default function WbDashboardContent({ data }: { data: WbDashboardResponse }) {
+export default function OzonDashboardContent({ data }: { data: WbDashboardResponse }) {
   return (
     <div className="space-y-6">
       {/* KPI Groups */}
-      <WbKpiSection kpi={data.kpi} />
+      <OzonKpiSection kpi={data.kpi} />
 
       {/* Unified Chart */}
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.25 }}>
         <Card>
           <CardHeader><CardTitle className="text-lg">📊 Динамика</CardTitle></CardHeader>
-          <CardContent><WbUnifiedChart data={data.chart} /></CardContent>
+          <CardContent><OzonUnifiedChart data={data.chart} /></CardContent>
         </Card>
       </motion.div>
 
-      {/* Alerts Panel — right after chart */}
+      {/* Alerts Panel */}
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.3 }}>
-        <WbAlertsPanel alerts={data.alerts} />
+        <OzonAlertsPanel alerts={data.alerts} />
       </motion.div>
 
       {/* Finance Summary */}
       {data.finance_summary && (
         <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.35 }}>
-          <WbFinanceSummaryCard data={data.finance_summary} />
+          <OzonFinanceSummaryCard data={data.finance_summary} />
         </motion.div>
       )}
 
       {/* Orders Feed */}
       <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, delay: 0.4 }}>
-        <WbOrdersFeed items={data.orders_feed} />
+        <OzonOrdersFeed items={data.orders_feed} />
       </motion.div>
     </div>
   )
