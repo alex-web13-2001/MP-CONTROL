@@ -225,7 +225,16 @@ period: "today" | "7d" | "30d"  — период (default: "7d")
 ### Ключевая логика
 
 - 10+ SQL-запросов к ClickHouse: KPI (заказы/реклама), графики, ТОП товаров, алерты, заказы за период, финансы за неделю
-- **Все заказы:** фильтры на cancelled/is_cancel убраны — учитываются все статусы (совпадение с ЛК)
+- **Маркетинговая воронка (gross → net):**
+  - **Gross (маркетинг):** Заказы, Выручка, DRR, CTR = от ВСЕХ заказов (включая отменённые) — эффект воронки
+  - **Net (финансы):** Прибыль, Маржа = за вычетом отменённых заказов и рекламы
+- **Формула прибыли KPI-карточки:**
+  ```
+  profit = Σ(unit_profit[nm_id] × qty_clean) − ad_spend
+  ```
+  - `unit_profit = avg_payout − avg_logistics − COGS` (из `fact_finances FINAL`, rolling 30d)
+  - `qty_clean` = заказы с `is_cancel = 0` из `fact_orders_raw`
+  - `ad_spend` = из `fact_advert_stats_v3` (вычитается целиком)
 - **Timezone:** группировка по дате в МСК (UTC+3): `toDate(addHours(in_process_at, 3))` (Ozon), `toDate(addHours(date, 3))` (WB)
 - **DRR** = `ad_spend / orders_revenue × 100` (НЕ ad_revenue)
 - Delta = процент изменения к предыдущему аналогичному периоду
@@ -334,14 +343,22 @@ date_from / date_to: date (optional) — кастомный диапазон
 ### Ключевая логика
 
 - 8 источников: PG каталог + product_costs → CH финансы (primary) / заказы (fallback) / остатки / реклама
-- **Формула прибыли WB** (единый источник `fact_finances FINAL`):
-  - `revenue` = `sum(retail_price_withdisc_rub)` — розничная цена (source of truth)
+- **Маркетинговая воронка (gross → net):**
+  - **Gross (маркетинг):** Продажи, Выручка = от ВСЕХ заказов (включая отменённые)
+  - **Net (финансы):** Прибыль = за вычетом отменённых + рекламы
+- **Формула прибыли WB** (unit economics из `fact_finances FINAL` 30d rolling):
+  ```
+  gross_profit = unit_profit × orders_clean − ad_spend
+  ```
+  - `unit_profit = avg_payout_per_unit − avg_logistics_per_unit − COGS`
+  - `orders_clean` = заказы с `is_cancel = 0` (без отменённых)
+  - `ad_spend` = из `fact_advert_stats_v3` per product
+  - **Товары без заказов, но с рекламой:** `gross_profit = −ad_spend` (чистый убыток, учитывается в итого)
+  - Маржа считается от `revenue_clean` (выручка без отменённых)
+- **Информационные данные из `fact_finances`** (fee breakdown):
   - `payout` = `sum(ppvz_for_pay)` — к выплате
-  - `mp_fees` = `revenue − payout` — все удержания
-  - `profit` = `payout − COGS − ads` — чистая прибыль
+  - `mp_fees` = логистика + хранение + удержания + приёмка + штрафы
   - Удержания: только product-specific (с vendor_code). Общие (отзывы за баллы, авансы) — исключены
-  - Хранение: распределяется пропорционально revenue (нет product ID)
-  - `fact_orders_raw` → только fallback для товаров без реализации (`fees_source='estimated'`)
 - WB CDN: `wb_image_url(nm_id)` — динамическая генерация URL фото
 - Серверные `totals`: итоги по всем товарам до пагинации (product-only экономика, без general deductions)
 - Фильтры: `with_ads` (ad_spend > 0), `leaders` (top 20% revenue), `falling` (delta < -20%), `problems` (stock = 0)
@@ -1275,3 +1292,8 @@ advert_id: int (required)
 - **Dashboard WB** (`dashboard.py`): `finance_summary` — P&L за неделю (Mon→Mon, 8 дней), 10+ строк расходов с % дельтами. Revenue из `fact_finances FINAL`, ad spend из MAX-reconciliation
 - **Dashboard WB** (`dashboard.py`): `orders_feed` — два периода в одном ClickHouse запросе через `countIf/sumIf`, обогащение из `dim_products`
 - Response schema `/dashboard/wb` обновлена: `+finance_summary`, `+orders_feed`, `+alerts`, KPI разбит на 4 группы (sales, funnel, ads, profit)
+- **Единая формула прибыли** (v17.55.0):
+  - Dashboard (`dashboard.py`): profit = `Σ(unit_profit × qty_clean) − ad_spend`, ранее ad_spend НЕ вычитался
+  - Products WB (`wb_products.py`): profit = `unit_profit × orders_clean − ad_spend`, ранее использовал orders_all (с отменами)
+  - Товары без заказов, но с рекламой → gross_profit = −ad_spend (чистый убыток, ранее пропускались в итого)
+  - Формула единообразна: unit economics из `fact_finances FINAL` (30d rolling) × qty с `is_cancel=0` − ads из `fact_advert_stats_v3`
