@@ -1,3 +1,93 @@
+## 2026-04-09 (v17.56.1)
+
+### fix(dashboard): Ozon Profit — замена rolling average на транзакционную формулу
+
+**Проблема**: Прибыль Ozon на дашборде завышалась на ~58% (показывало +113K₽ вместо реальных -207K₽). Причина — 30-дневный rolling average unit economics (`avg_payout_per_unit - avg_logistics - COGS`) не учитывал Acquiring, не совпадал по периодам, и усреднял SKU с разной маржинальностью.
+
+**Корневая причина — 3 бага в старой формуле:**
+
+1. **Rolling average ≠ реальные транзакции**: `avg(accruals_for_sale/qty)` за 30 дней применялся к заказам за 7 дней → mismatched periods
+2. **Отсутствие Acquiring и Storage**: Bulk charges из `fact_ozon_transactions` (категории `Acquiring`, `Storage`) не учитывались в формуле прибыли
+3. **Усреднение маски маржи**: SKU с маржой -10% и +50% давали avg +20%, скрывая убыточные товары
+
+**Решение — прямые транзакции (как Products page):**
+
+```
+Profit = Σ accruals_for_sale
+       - Σ |sale_commission|
+       - Σ |services_total|
+       - Σ |Acquiring|
+       - Σ |Storage|
+       - COGS (orders × unit_cost)
+       - ad_spend (fact_ozon_ad_daily)
+```
+
+**Источники данных:**
+- `fact_ozon_transactions FINAL` (category='Revenue') → revenue, commission, services
+- `fact_ozon_transactions FINAL` (category IN ('Acquiring', 'Storage')) → bulk charges
+- `fact_ozon_orders FINAL` × `product_costs` → COGS
+- `fact_ozon_ad_daily` → рекламный расход
+
+**Также исправлено — Weekly P&L (Finance Summary):**
+- Добавлен Acquiring в расчёт прибыли за неделю
+- `logistics` теперь = `services_total + acquiring` (не только services)
+- Формула прибыли: `revenue - commission - services - acquiring - storage - ad_spend`
+- Исправлены отступы (IndentationError на проде)
+
+**Результат (PF Ozon, 30 дней):**
+
+| Показатель | Было (rolling avg) | Стало (transactions) |
+|---|---|---|
+| Прибыль | +113,000₽ | **-206,921₽** |
+| Маржа | +8.7% (фейковая) | **-8.1%** (реальная) |
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — секция 3 (Profit) полностью переписана, секция Finance Summary обновлена
+
+---
+
+
+
+### feat(dashboard): Ozon Dashboard V2 — миграция на единую архитектуру Marketing Funnel
+
+**Полная миграция Ozon-дашборда на унифицированную архитектуру, идентичную WB:**
+
+**1. Backend — новый endpoint `/dashboard/ozon/v2` (WbDashboardResponse):**
+- **11 секций** (как WB): KPI продажи, KPI реклама/воронка, прибыль (unit economics), график динамики, 5 табов алертов, лента заказов, P&L за неделю
+- Источники данных: `fact_ozon_orders`, `fact_ozon_transactions`, `fact_ozon_ad_daily`, `dim_ozon_products`
+- Прибыль через unit economics: `accruals_for_sale − services − cogs − ad_spend`
+- Маркетинговая воронка: показы → клики → корзины → заказы (из `log_ozon_search_promo`)
+- Алерты: склады (остатки/дни), продажи (без продаж), хранение, реклама (7 приоритетов), финансы (убыточные SKU)
+- P&L за неделю: ПН→ПН, «Комиссия Ozon» и «Сервисы Ozon» вместо WB-терминов
+- Обогащение через `offer_id` → `dim_ozon_products` (название, фото, product_id)
+
+**2. Frontend — `OzonDashboardContent.tsx` (757 строк):**
+- Зеркальная копия `WbDashboardContent.tsx` с Ozon-специфичными лейблами:
+  - «Комиссия WB» → «Комиссия Ozon»
+  - «Логистика» → «Сервисы Ozon»
+  - WB CDN images → Ozon image URLs
+- Все подкомпоненты: `OzonKpiSection`, `OzonUnifiedChart`, `OzonAlertsPanel`, `OzonFinanceSummaryCard`, `OzonOrdersFeed`
+- Полная поддержка 8 метрик графика, 5 табов алертов, 7 типов рекламных проблем
+
+**3. Frontend — очистка `DashboardPage.tsx` (~930 → 215 строк):**
+- Удалено ~700 строк legacy-кода: `KpiCard`, `SalesChart`, `AdsChart`, `TopProductsTable`
+- Убраны все неиспользуемые импорты (`BarChart3`, `PieChart`, `Activity`, `ArrowUpRight`, etc.)
+- Теперь: чистая маршрутизация WB → `WbDashboardContent` / Ozon → `OzonDashboardContent`
+- Единый `WbDashboardResponse` интерфейс для обоих маркетплейсов
+
+**4. API клиент:**
+- `getOzonDashboardV2Api(shopId, period)` → `WbDashboardResponse` (unified format)
+
+**TypeScript:** Чистая компиляция `tsc --noEmit` ✅
+
+**Файлы:**
+- `backend/app/api/v1/dashboard.py` — endpoint V2 Ozon (375 строк нового кода)
+- `frontend/src/pages/OzonDashboardContent.tsx` — **[NEW]** полный компонент
+- `frontend/src/pages/DashboardPage.tsx` — очистка ~700 строк legacy
+- `frontend/src/api/dashboard.ts` — `getOzonDashboardV2Api`
+
+---
+
 ## 2026-04-09 (v17.55.1)
 
 ### fix(profit): Товары без заказов с рекламой учитываются в итого прибыли
